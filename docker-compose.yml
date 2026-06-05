@@ -1,0 +1,152 @@
+version: "3.9"
+
+services:
+
+  # ─── Banco de dados principal ───────────────────────────────────────────────
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: mes_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-manutencao}
+      POSTGRES_USER: ${DB_USER:-mesadmin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-mesadmin}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Cache e filas ──────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: mes_redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ─── Broker MQTT (captores IoT) ─────────────────────────────────────────────
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: mes_mqtt
+    restart: unless-stopped
+    volumes:
+      - mqtt_data:/mosquitto/data
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+
+  # ─── Backend API (FastAPI) ───────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mes_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-mesadmin}:${DB_PASSWORD:-changeme}@db:5432/${DB_NAME:-manutencao}
+      REDIS_URL: redis://redis:6379
+      MQTT_BROKER: mqtt
+      MQTT_PORT: 1883
+      SECRET_KEY: ${SECRET_KEY:-troque-esta-chave-em-producao}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+    volumes:
+      - uploads_data:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  # ─── Worker de alertas IoT (consome MQTT, grava TimescaleDB) ─────────────────
+  iot_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mes_iot_worker
+    restart: unless-stopped
+    command: python -m app.workers.iot_consumer
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-mesadmin}:${DB_PASSWORD:-changeme}@db:5432/${DB_NAME:-manutencao}
+      REDIS_URL: redis://redis:6379
+      MQTT_BROKER: mqtt
+      MQTT_PORT: 1883
+    depends_on:
+      - backend
+      - mqtt
+
+  # ─── Frontend React ──────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mes_frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: /api
+      VITE_WS_URL: ws://localhost/ws
+    depends_on:
+      - backend
+
+  # ─── Proxy reverso ───────────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: mes_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    command: |
+      /bin/sh -c "cat > /etc/nginx/nginx.conf << 'NGINXCONF'
+      events { worker_connections 1024; }
+      http {
+        upstream backend { server backend:8000; }
+        upstream frontend { server frontend:3000; }
+        server {
+          listen 80;
+          location /api/ { proxy_pass http://backend/api/; proxy_set_header Host $$host; }
+          location /docs { proxy_pass http://backend/docs; }
+          location /openapi.json { proxy_pass http://backend/openapi.json; }
+          location / { proxy_pass http://frontend/; proxy_set_header Host $$host; proxy_set_header Upgrade $$http_upgrade; proxy_set_header Connection upgrade; }
+        }
+      }
+      NGINXCONF
+      nginx -g 'daemon off;'"
+    depends_on:
+      - backend
+      - frontend
+
+  # ─── Backup automático diário ────────────────────────────────────────────────
+  backup:
+    image: prodrigestivill/postgres-backup-local
+    container_name: mes_backup
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: ${DB_NAME:-manutencao}
+      POSTGRES_USER: ${DB_USER:-mesadmin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      SCHEDULE: "@daily"
+      BACKUP_KEEP_DAYS: 30
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db_data:
+  redis_data:
+  mqtt_data:
+  uploads_data:

@@ -1,0 +1,35 @@
+# API
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+
+# Banco de dados
+sqlalchemy[asyncio]==2.0.30
+asyncpg==0.29.0
+alembic==1.13.1
+
+# Autenticação
+python-jose[cryptography]==3.3.0
+bcrypt==4.1.3
+python-multipart==0.0.9
+
+# Redis / filas
+redis==5.0.4
+celery==5.4.0
+
+# MQTT (captores IoT)
+aiomqtt==1.2.1
+
+# Validação e config
+pydantic==2.7.1
+pydantic-settings==2.2.1
+python-dotenv==1.0.1
+
+# Email
+fastapi-mail==1.4.1
+
+# Utilitários
+httpx==0.27.0
+python-dateutil==2.9.0
+openpyxl==3.1.2
+reportlab==4.2.0
+qrcode[pil]==7.4.2
