@@ -421,14 +421,20 @@ Phase 1 — CMMS Core (current)
   ⬜ KPI calculations (stub backend exists)
   ⬜ Machine stop tracking (paradas_maquina table)
 
+  ⬜ WO Detail page — full tabbed UI (Labor / Parts / Costs / Timeline) [backend ready, frontend stub only]
+  ⬜ Technician management UI (create/list technicians) [backend ready]
+  ⬜ Fix iot_worker crash — aiomqtt 1.x API change (see Section 13)
+  ⬜ Inventory management UI (stub backend exists)
+  ⬜ KPI calculations (stub backend exists)
+  ⬜ Machine stop tracking (paradas_maquina table)
+
 Phase 2 — Full Maintenance + IoT (3-6 months)
   ⬜ paradas_maquina table + stop registration flow
   ⬜ Auto-corrective WO from IoT alert
   ⬜ MTBF / MTTR / Availability KPI endpoints
   ⬜ PM compliance and backlog reports
   ⬜ Stock movements + low-stock alerts
-  ⬜ Labor records + cost per WO / per equipment
-  ⬜ Frontend: KPI dashboard, inventory module, technician management
+  ⬜ Frontend: KPI dashboard, inventory module
 
 Phase 3 — MES + Predictive (12+ months)
   ⬜ OEE calculation (needs production counters)
@@ -472,6 +478,41 @@ MQTT_PORT=1883
 ## 12. Naming Conventions
 
 - **Backend:** Portuguese table/field names (`ordens_servico`, `equipamento_id`, `data_abertura`). English route paths (`/api/wo/`, `/api/equipment/`). English Python identifiers in business logic.
-- **Frontend:** English TypeScript identifiers. Enum values match backend string values exactly (e.g., `'aberta'`, `'em_andamento'`).
+- **New tables** (tecnicos, labor_records, wo_parts, wo_costs, wo_actions, supplier_orders) use English column names directly — no alias needed.
+- **Frontend:** English TypeScript identifiers. Enum values match backend string values exactly (`'open'`, `'in_progress'`, `'corrective'`, etc.).
 - **WO number format:** `WO-YYYY-NNNNN` (zero-padded to 5 digits), generated server-side.
 - **API responses:** list endpoints always return `{ total: number, items: T[] }`. Single-item endpoints return the object directly. Never a bare array at top level.
+
+---
+
+## 13. Known Bugs (as of 2026-06-05)
+
+| Bug | File | Fix |
+|---|---|---|
+| `iot_worker` crashes — `TypeError: 'async for' requires an object with __aiter__ method` | `backend/app/workers/iot_consumer.py:92` | `aiomqtt` 1.2.1 changed API. Change `async for message in client.messages:` → `async with client.messages() as messages:` then `async for message in messages:` |
+| `fetchTechnicians()` calls `/api/users/` and manually maps `nome→full_name` | `frontend/src/api/workOrders.ts` | Update to call `/api/technicians/` which already returns `full_name` and `email` |
+| `WorkOrderDetail.tsx` is a stub — shows only basic fields | `frontend/src/pages/WorkOrders/WorkOrderDetail.tsx` | Full rewrite with Labor / Parts / Costs / Timeline tabs (all backend endpoints ready) |
+| `docker-compose.yml` has deprecated `version:` key | `docker-compose.yml` line 1 | Remove `version: "3.9"` line |
+
+---
+
+## 14. Session History
+
+### Session 2026-06-05 — Interal CMMS Mapping + DB Expansion
+
+**Completed:**
+- Fixed Dashboard: `Promise.allSettled`, zero-state KPI cards, `GET /api/wo/dashboard`, `GET /api/wo/?limit=5`
+- Fixed `recentWOs.map is not a function` — API returns `{ total, items }` not bare array
+- Migrated all enums from Portuguese to English values; added `native_enum=False` everywhere
+- Applied Pydantic v2 `validation_alias` pattern: ORM reads Portuguese attrs, JSON outputs English keys
+- Fixed UUID vs Number cast on equipment_id
+- Seeded: Plant PLT1, EQ-001/002/003, admin@foliot.com/admin123
+- New Work Order form: loads equipment from API, submits to `POST /api/wo/`, redirects on success
+- Mapped Interal CMMS field spec → 16 new `ordens_servico` columns
+- Added 5 new enums: `EspecialidadeTecnico`, `TurnoTecnico`, `ModoExecucao`, `TipoTransacaoCusto`, `StatusPedidoFornecedor`
+- Created 6 new tables: `tecnicos`, `labor_records`, `wo_parts`, `wo_costs`, `wo_actions`, `supplier_orders`
+- Full sub-resource API: `/api/wo/{id}/labor|parts|costs|costs/summary|actions`
+- New route: `/api/technicians/` (GET list, GET by id, POST create)
+- Updated `CONTEXT.md` with full field mapping, new tables, new endpoints
+- Created `SESSION_HANDOFF.md`
+- Git repo initialized, `.gitignore` created, initial commit `ade20a7`
