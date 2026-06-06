@@ -129,6 +129,9 @@ class TicketOut(BaseModel):
     status:                     TicketStatus
     assigned_to_id:             Optional[UUID]      = None
     assigned_to_name:           Optional[str]       = None
+    work_order_id:              Optional[UUID]      = None
+    work_order_number:          Optional[str]       = None
+    work_order_status:          Optional[str]       = None
     opened_at:                  datetime
     started_at:                 Optional[datetime]  = None
     completed_at:               Optional[datetime]  = None
@@ -145,3 +148,40 @@ class TicketOut(BaseModel):
 class TicketListResponse(BaseModel):
     total: int
     items: List[TicketOut]
+
+
+# ── Supervisor overview ────────────────────────────────────────────────────────
+
+class TicketSummary(BaseModel):
+    id:                       UUID
+    ticket_number:            str
+    machine_name:             Optional[str] = None
+    priority:                 str
+    problem_type:             str
+    status:                   str
+    opened_at:                datetime
+    is_overdue:               bool
+    current_escalation_level: int
+    work_order_id:            Optional[UUID] = None
+
+
+class WOSummary(BaseModel):
+    id:                   UUID
+    wo_number:            str
+    ticket_id:            Optional[UUID]   = None
+    ticket_number:        Optional[str]    = None
+    machine_name:         Optional[str]    = None
+    priority:             str
+    status:               str
+    opened_at:            datetime
+    executor_id:          Optional[UUID]   = None
+    executor_name:        Optional[str]    = None
+    scheduled_date:       Optional[str]    = None
+    scheduled_start_time: Optional[str]    = None
+    scheduled_end_time:   Optional[str]    = None
+
+
+class SupervisorOverview(BaseModel):
+    pending_tickets:  List[TicketSummary]
+    unassigned_wos:   List[WOSummary]
+    unscheduled_wos:  List[WOSummary]

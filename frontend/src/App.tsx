@@ -18,6 +18,7 @@ import NewAlert from './pages/Alerts/NewAlert';
 import TicketList from './pages/Tickets/TicketList';
 import TicketDetail from './pages/Tickets/TicketDetail';
 import MaintenanceDashboard from './pages/MaintenanceDashboard/MaintenanceDashboard';
+import SupervisorDashboard from './pages/MaintenanceDashboard/SupervisorDashboard';
 
 const App = () => (
   <BrowserRouter>
@@ -47,7 +48,8 @@ const App = () => (
         <Route path="alerts/new"            element={<NewAlert />} />
         <Route path="tickets"               element={<TicketList />} />
         <Route path="tickets/:id"           element={<TicketDetail />} />
-        <Route path="maintenance/dashboard" element={<MaintenanceDashboard />} />
+        <Route path="maintenance/dashboard"  element={<MaintenanceDashboard />} />
+        <Route path="maintenance/supervisor" element={<SupervisorDashboard />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

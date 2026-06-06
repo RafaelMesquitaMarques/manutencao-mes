@@ -9,8 +9,9 @@ from app.db.session import get_db
 from app.models.models import (
     User, WorkOrder, Equipment, WorkOrderStatus, WorkOrderType, WorkOrderPriority,
     LaborRecord, WOPart, WOCost, WOAction, Technician,
+    MaintenanceTicket, TicketStatus,
 )
-from app.schemas.work_order import WorkOrderCreate, WorkOrderUpdate, WorkOrderOut, WorkOrderListResponse
+from app.schemas.work_order import WorkOrderCreate, WorkOrderUpdate, WorkOrderOut, WorkOrderListResponse, WOAssign, WOSchedule
 from app.schemas.wo_subresources import (
     LaborCreate, LaborOut, LaborListResponse,
     WOPartCreate, WOPartOut, WOPartListResponse,
@@ -21,6 +22,39 @@ from app.schemas.wo_subresources import (
 from app.core.security import get_current_user
 
 router = APIRouter()
+
+
+async def _sync_ticket_from_wo(wo: WorkOrder, db: AsyncSession) -> None:
+    if not wo.ticket_id:
+        return
+    ticket = await db.get(MaintenanceTicket, wo.ticket_id)
+    if not ticket:
+        return
+    status = wo.status.value if hasattr(wo.status, "value") else str(wo.status)
+    if status == WorkOrderStatus.in_progress:
+        ticket.status = TicketStatus.in_progress
+    elif status == WorkOrderStatus.completed:
+        ticket.status = TicketStatus.completed
+    # open/assigned → keep ticket as assigned
+
+
+async def _enrich_wo(wo: WorkOrder, db: AsyncSession) -> WorkOrderOut:
+    out = WorkOrderOut.model_validate(wo)
+    equip = await db.get(Equipment, wo.equipment_id)
+    if equip:
+        out.equipment_name = equip.name
+        out.equipment_location = equip.location
+    if wo.ticket_id:
+        ticket = await db.get(MaintenanceTicket, wo.ticket_id)
+        if ticket:
+            out.ticket_number = ticket.ticket_number
+    if wo.executor_id:
+        tech = await db.get(Technician, wo.executor_id)
+        if tech:
+            user = await db.get(User, tech.user_id)
+            if user:
+                out.executor_name = user.name
+    return out
 
 
 async def _generate_work_order_number(db: AsyncSession) -> str:
@@ -221,7 +255,51 @@ async def update_work_order(
 
     await db.commit()
     await db.refresh(wo)
+
+    if "status" in update_data:
+        await _sync_ticket_from_wo(wo, db)
+        await db.commit()
+
     return wo
+
+
+@router.patch("/{work_order_id}/assign", response_model=WorkOrderOut)
+async def assign_work_order(
+    work_order_id: UUID,
+    data: WOAssign,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    wo = await db.get(WorkOrder, work_order_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    wo.executor_id = data.executor_id
+    if wo.ticket_id:
+        ticket = await db.get(MaintenanceTicket, wo.ticket_id)
+        if ticket:
+            ticket.status = TicketStatus.assigned
+    await db.commit()
+    await db.refresh(wo)
+    return await _enrich_wo(wo, db)
+
+
+@router.post("/{work_order_id}/schedule", response_model=WorkOrderOut)
+async def schedule_work_order(
+    work_order_id: UUID,
+    data: WOSchedule,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    wo = await db.get(WorkOrder, work_order_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    wo.executor_id          = data.executor_id
+    wo.scheduled_date       = data.scheduled_date
+    wo.scheduled_start_time = data.scheduled_start_time
+    wo.scheduled_end_time   = data.scheduled_end_time
+    await db.commit()
+    await db.refresh(wo)
+    return await _enrich_wo(wo, db)
 
 
 @router.post("/{work_order_id}/start", response_model=WorkOrderOut)

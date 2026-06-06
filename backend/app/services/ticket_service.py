@@ -3,7 +3,11 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
-from app.models.models import MaintenanceTicket, TicketComment, TicketStatus, Machine
+from app.models.models import (
+    MaintenanceTicket, TicketComment, TicketStatus, Machine,
+    WorkOrder, WorkOrderType, WorkOrderStatus, WorkOrderPriority, WorkOrderSource,
+    Equipment,
+)
 from app.schemas.maintenance import TicketCreate, TicketClose, CommentCreate
 
 
@@ -68,6 +72,82 @@ class TicketService:
         await self.db.commit()
         await self.db.refresh(comment)
         return comment
+
+    async def generate_work_order(
+        self, ticket_id: UUID, created_by_id: UUID
+    ) -> tuple[MaintenanceTicket, WorkOrder]:
+        ticket = await self.db.get(MaintenanceTicket, ticket_id)
+        if not ticket:
+            raise ValueError("Ticket not found")
+        if ticket.work_order_id:
+            raise ValueError("Ticket already has a linked work order")
+
+        machine = await self.db.get(Machine, ticket.machine_id)
+        machine_name = machine.name if machine else "Unknown Machine"
+
+        # Find equipment: match by name, then location, then any active
+        equip = None
+        if machine:
+            r = await self.db.execute(
+                select(Equipment)
+                .where(Equipment.name.ilike(f"%{machine.name}%"), Equipment.active == True)
+                .limit(1)
+            )
+            equip = r.scalar_one_or_none()
+        if not equip and machine and machine.location:
+            r = await self.db.execute(
+                select(Equipment)
+                .where(Equipment.location.ilike(f"%{machine.location}%"), Equipment.active == True)
+                .limit(1)
+            )
+            equip = r.scalar_one_or_none()
+        if not equip:
+            r = await self.db.execute(
+                select(Equipment).where(Equipment.active == True).limit(1)
+            )
+            equip = r.scalar_one_or_none()
+        if not equip:
+            raise ValueError("No active equipment found to link work order")
+
+        year = datetime.now(timezone.utc).year
+        r = await self.db.execute(
+            select(func.count(WorkOrder.id)).where(
+                func.extract("year", WorkOrder.opened_at) == year
+            )
+        )
+        wo_number = f"WO-{year}-{(r.scalar() + 1):05d}"
+
+        priority_map = {
+            "critical": WorkOrderPriority.critical,
+            "high":     WorkOrderPriority.high,
+            "medium":   WorkOrderPriority.medium,
+            "low":      WorkOrderPriority.low,
+        }
+        pval = ticket.priority.value if hasattr(ticket.priority, "value") else str(ticket.priority)
+        tval = ticket.problem_type.value if hasattr(ticket.problem_type, "value") else str(ticket.problem_type)
+
+        wo = WorkOrder(
+            wo_number=wo_number,
+            equipment_id=equip.id,
+            created_by_id=created_by_id,
+            type=WorkOrderType.corrective,
+            priority=priority_map.get(pval, WorkOrderPriority.medium),
+            status=WorkOrderStatus.open,
+            title=f"[{ticket.ticket_number}] {machine_name} – {tval.replace('_', ' ').title()}",
+            description=ticket.diagnosis,
+            ticket_id=ticket.id,
+            source=WorkOrderSource.ticket,
+        )
+        self.db.add(wo)
+        await self.db.flush()
+
+        ticket.work_order_id = wo.id
+        ticket.status = TicketStatus.assigned
+
+        await self.db.commit()
+        await self.db.refresh(ticket)
+        await self.db.refresh(wo)
+        return ticket, wo
 
     def open_minutes(self, ticket: MaintenanceTicket) -> int:
         now    = datetime.now(timezone.utc)

@@ -6,7 +6,9 @@ import type {
   MaintenanceTicket,
   TicketComment,
   MaintenanceDashboardData,
+  SupervisorOverview,
 } from '../types';
+import type { WorkOrder } from '../types';
 
 interface Paginated<T> {
   total: number;
@@ -105,6 +107,22 @@ export const addTicketComment = async (
   return data;
 };
 
+// ── WO generation from ticket ─────────────────────────────────────────────────
+
+export const generateWorkOrder = async (
+  ticketId: string
+): Promise<{ ticket: MaintenanceTicket; work_order: WorkOrder }> => {
+  const { data } = await api.post<{ ticket: MaintenanceTicket; work_order: WorkOrder }>(
+    `/api/tickets/${ticketId}/generate-wo`
+  );
+  return data;
+};
+
+export const fetchTicketWorkOrder = async (ticketId: string): Promise<WorkOrder> => {
+  const { data } = await api.get<WorkOrder>(`/api/tickets/${ticketId}/work-order`);
+  return data;
+};
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 export const fetchMaintenanceDashboard =
@@ -112,3 +130,8 @@ export const fetchMaintenanceDashboard =
     const { data } = await api.get<MaintenanceDashboardData>('/api/maintenance/dashboard');
     return data;
   };
+
+export const fetchSupervisorOverview = async (): Promise<SupervisorOverview> => {
+  const { data } = await api.get<SupervisorOverview>('/api/maintenance/supervisor');
+  return data;
+};

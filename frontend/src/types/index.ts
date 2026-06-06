@@ -1,6 +1,7 @@
 export type WorkOrderStatus = 'open' | 'in_progress' | 'on_hold' | 'completed' | 'cancelled';
 export type WorkOrderType = 'corrective' | 'preventive' | 'predictive' | 'inspection' | 'improvement';
 export type Priority = 'low' | 'medium' | 'high' | 'critical';
+export type WorkOrderSource = 'manual' | 'ticket';
 
 export interface User {
   id: string;
@@ -45,6 +46,13 @@ export interface WorkOrder {
   created_by_id?: string;
   created_by_name?: string;
   executor_id?: string;
+  executor_name?: string;
+  ticket_id?: string;
+  ticket_number?: string;
+  source?: WorkOrderSource;
+  scheduled_date?: string;
+  scheduled_start_time?: string;
+  scheduled_end_time?: string;
   root_cause?: string;
   solution_applied?: string;
   opened_at: string;
@@ -296,6 +304,9 @@ export interface MaintenanceTicket {
   status:                      TicketStatus;
   assigned_to_id?:             string;
   assigned_to_name?:           string;
+  work_order_id?:              string;
+  work_order_number?:          string;
+  work_order_status?:          string;
   opened_at:                   string;
   started_at?:                 string;
   completed_at?:               string;
@@ -314,6 +325,41 @@ export interface PartUsed {
   qty:      number;
   unit?:    string;
   part_no?: string;
+}
+
+export interface TicketSummary {
+  id:                       string;
+  ticket_number:            string;
+  machine_name?:            string;
+  priority:                 string;
+  problem_type:             string;
+  status:                   string;
+  opened_at:                string;
+  is_overdue:               boolean;
+  current_escalation_level: number;
+  work_order_id?:           string;
+}
+
+export interface WOSummary {
+  id:                   string;
+  wo_number:            string;
+  ticket_id?:           string;
+  ticket_number?:       string;
+  machine_name?:        string;
+  priority:             string;
+  status:               string;
+  opened_at:            string;
+  executor_id?:         string;
+  executor_name?:       string;
+  scheduled_date?:      string;
+  scheduled_start_time?: string;
+  scheduled_end_time?:  string;
+}
+
+export interface SupervisorOverview {
+  pending_tickets: TicketSummary[];
+  unassigned_wos:  WOSummary[];
+  unscheduled_wos: WOSummary[];
 }
 
 export interface MaintenanceDashboardData {

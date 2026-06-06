@@ -128,6 +128,10 @@ class SupplierOrderStatus(str, enum.Enum):
     received  = "received"
     cancelled = "cancelled"
 
+class WorkOrderSource(str, enum.Enum):
+    manual = "manual"
+    ticket = "ticket"
+
 
 # ─── Plant ─────────────────────────────────────────────────────────────────────
 
@@ -259,6 +263,15 @@ class WorkOrder(Base):
     # IoT origin
     from_iot = Column(Boolean, default=False)
     alert_id = Column(UUID(as_uuid=True), ForeignKey("alerts.id"), nullable=True)
+
+    # Ticket origin (soft reference — no FK to avoid circular dependency)
+    ticket_id = Column(UUID(as_uuid=True), nullable=True)
+    source    = Column(SAEnum(WorkOrderSource, native_enum=False), default=WorkOrderSource.manual)
+
+    # Scheduler
+    scheduled_date       = Column(Date, nullable=True)
+    scheduled_start_time = Column(String(10), nullable=True)
+    scheduled_end_time   = Column(String(10), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -556,6 +569,7 @@ class MaintenanceTicket(Base):
     ticket_number              = Column(String(30), unique=True, nullable=False)
     alert_id                   = Column(UUID(as_uuid=True), ForeignKey("maintenance_alerts.id"), nullable=True)
     machine_id                 = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    work_order_id              = Column(UUID(as_uuid=True), ForeignKey("work_orders.id"), nullable=True)
     priority                   = Column(SAEnum(AlertPriority, native_enum=False), default=AlertPriority.medium)
     status                     = Column(SAEnum(TicketStatus, native_enum=False), default=TicketStatus.open)
     assigned_to_id             = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)

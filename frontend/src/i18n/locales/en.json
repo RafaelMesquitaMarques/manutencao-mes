@@ -43,7 +43,8 @@
     "logout":               "Logout",
     "alerts":               "Maintenance Alerts",
     "tickets":              "Open Tickets",
-    "maintenanceDashboard": "Maintenance Dashboard"
+    "maintenanceDashboard": "Maintenance Dashboard",
+    "supervisorView":       "Supervisor View"
   },
   "auth": {
     "login": "Login",
@@ -389,6 +390,32 @@
     "yourName":            "Your Name",
     "namePlaceholder":     "Your full name",
     "commentPlaceholder":  "Type a comment..."
+  },
+  "supervisor": {
+    "title":             "Supervisor View",
+    "subtitle":          "Ticket → Work Order → Schedule flow",
+    "flow":              "Ticket → Generate WO → Assign → Schedule → Execute",
+    "pendingTickets":    "Pending Tickets (no WO)",
+    "unassignedWOs":     "Unassigned Work Orders",
+    "unscheduledWOs":    "Assigned, Not Scheduled",
+    "noPendingTickets":  "All tickets have work orders",
+    "noUnassignedWOs":   "All work orders are assigned",
+    "noUnscheduledWOs":  "All assigned WOs are scheduled",
+    "generateWO":        "Generate WO",
+    "generating":        "Generating...",
+    "assign":            "Assign",
+    "assigning":         "Assigning...",
+    "schedule":          "Schedule",
+    "scheduling":        "Scheduling...",
+    "selectTechnician":  "Select technician...",
+    "scheduledDate":     "Scheduled Date",
+    "startTime":         "Start Time",
+    "endTime":           "End Time",
+    "tabWorkOrder":      "Work Order",
+    "noWorkOrder":       "No work order linked yet",
+    "woLinked":          "Linked Work Order",
+    "generateButton":    "Generate Work Order",
+    "viewWO":            "View WO"
   },
   "maintenanceDash": {
     "title":                "Maintenance Dashboard",

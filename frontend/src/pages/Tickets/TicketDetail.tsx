@@ -3,15 +3,15 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft, Play, CheckCircle2, XCircle, PauseCircle,
-  Package, MessageSquare, Info, Clock, ChevronRight,
+  Package, MessageSquare, Info, Clock, ChevronRight, Wrench,
 } from 'lucide-react';
 import {
-  fetchTicket, updateTicketStatus, closeTicket, addTicketComment,
+  fetchTicket, updateTicketStatus, closeTicket, addTicketComment, generateWorkOrder,
 } from '../../api/maintenance';
 import type { MaintenanceTicket, TicketComment, TicketStatus, PartUsed } from '../../types';
 import Spinner from '../../components/ui/Spinner';
 
-type Tab = 'details' | 'comments' | 'parts';
+type Tab = 'details' | 'comments' | 'parts' | 'workorder';
 
 const STATUS_BADGE: Record<TicketStatus, string> = {
   open:          'bg-blue-500/15 text-blue-400 border-blue-500/25',
@@ -65,6 +65,10 @@ export default function TicketDetail() {
   const [newPartQty, setNewPartQty]   = useState('1');
   const [newPartUnit, setNewPartUnit] = useState('');
   const [newPartNo, setNewPartNo]     = useState('');
+
+  // WO generation state
+  const [generatingWO, setGeneratingWO] = useState(false);
+  const [woError, setWoError]           = useState('');
 
   useEffect(() => {
     if (!id) return;
@@ -153,6 +157,20 @@ export default function TicketDetail() {
     const updated = await updateTicketStatus(id, { parts_used: [...currentParts, part] });
     setTicket(updated);
     setNewPartName(''); setNewPartQty('1'); setNewPartUnit(''); setNewPartNo('');
+  };
+
+  const doGenerateWO = async () => {
+    if (!id) return;
+    setGeneratingWO(true);
+    setWoError('');
+    try {
+      const result = await generateWorkOrder(id);
+      setTicket(result.ticket);
+    } catch (e: unknown) {
+      setWoError(e instanceof Error ? e.message : 'Failed to generate work order');
+    } finally {
+      setGeneratingWO(false);
+    }
   };
 
   if (loading) {
@@ -272,9 +290,10 @@ export default function TicketDetail() {
       {/* Tabs */}
       <div className="flex gap-1 border-b border-white/[0.06]">
         {([
-          { id: 'details',  icon: Info,          label: 'tickets.tabDetails' },
-          { id: 'comments', icon: MessageSquare,  label: 'tickets.tabComments' },
-          { id: 'parts',    icon: Package,        label: 'tickets.tabParts' },
+          { id: 'details',   icon: Info,           label: 'tickets.tabDetails' },
+          { id: 'comments',  icon: MessageSquare,  label: 'tickets.tabComments' },
+          { id: 'parts',     icon: Package,        label: 'tickets.tabParts' },
+          { id: 'workorder', icon: Wrench,         label: 'supervisor.tabWorkOrder' },
         ] as const).map(({ id: tid, icon: Icon, label }) => (
           <button
             key={tid}
@@ -458,6 +477,55 @@ export default function TicketDetail() {
               <button onClick={doAddPart} disabled={!newPartName} className="btn-primary">
                 <Package size={14} /> {t('tickets.addPart')}
               </button>
+            </div>
+          )}
+        </div>
+      )}
+      {/* Tab: Work Order */}
+      {tab === 'workorder' && (
+        <div className="space-y-3">
+          {!ticket.work_order_id ? (
+            <div className="glass-card p-8 flex flex-col items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-blue-600/20 flex items-center justify-center">
+                <Wrench size={24} className="text-blue-400" />
+              </div>
+              <p className="text-gray-400 text-sm">{t('supervisor.noWorkOrder')}</p>
+              {woError && <p className="text-red-400 text-xs">{woError}</p>}
+              {isActive && (
+                <button
+                  onClick={doGenerateWO}
+                  disabled={generatingWO}
+                  className="btn-primary"
+                >
+                  <Wrench size={14} />
+                  {generatingWO ? t('supervisor.generating') : t('supervisor.generateButton')}
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="glass-card p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-white font-semibold flex items-center gap-2">
+                  <Wrench size={15} className="text-blue-400" />
+                  {t('supervisor.woLinked')}
+                </h3>
+                <button
+                  onClick={() => navigate(`/work-orders/${ticket.work_order_id}`)}
+                  className="btn-secondary py-1.5 px-3 text-xs"
+                >
+                  <ChevronRight size={13} /> {t('supervisor.viewWO')}
+                </button>
+              </div>
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">WO Number</p>
+                  <p className="text-gray-200 text-sm font-mono">{ticket.work_order_number ?? '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">{t('common.status')}</p>
+                  <p className="text-gray-200 text-sm">{ticket.work_order_status ?? '—'}</p>
+                </div>
+              </div>
             </div>
           )}
         </div>

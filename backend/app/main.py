@@ -2,6 +2,7 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from sqlalchemy import text
 
 from app.core.config import settings
 from app.db.session import engine, AsyncSessionLocal
@@ -25,10 +26,26 @@ async def _escalation_loop() -> None:
             print(f"[EscalationService] {exc}")
 
 
+async def _run_migrations() -> None:
+    """Add new columns to existing tables (idempotent via IF NOT EXISTS)."""
+    stmts = [
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS ticket_id UUID",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'manual'",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS scheduled_date DATE",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS scheduled_start_time VARCHAR(10)",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS scheduled_end_time VARCHAR(10)",
+        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS work_order_id UUID REFERENCES work_orders(id)",
+    ]
+    async with engine.begin() as conn:
+        for stmt in stmts:
+            await conn.execute(text(stmt))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _run_migrations()
     task = asyncio.create_task(_escalation_loop())
     yield
     task.cancel()

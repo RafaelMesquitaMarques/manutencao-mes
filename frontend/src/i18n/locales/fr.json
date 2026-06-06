@@ -43,7 +43,8 @@
     "logout":               "Déconnexion",
     "alerts":               "Alertes maintenance",
     "tickets":              "Tickets ouverts",
-    "maintenanceDashboard": "Tableau maintenance"
+    "maintenanceDashboard": "Tableau maintenance",
+    "supervisorView":       "Vue superviseur"
   },
   "auth": {
     "login": "Connexion",
@@ -389,6 +390,32 @@
     "yourName":            "Votre nom",
     "namePlaceholder":     "Votre nom complet",
     "commentPlaceholder":  "Tapez un commentaire..."
+  },
+  "supervisor": {
+    "title":             "Vue superviseur",
+    "subtitle":          "Flux Ticket → OT → Planification",
+    "flow":              "Ticket → Générer OT → Assigner → Planifier → Exécuter",
+    "pendingTickets":    "Tickets sans OT",
+    "unassignedWOs":     "OT non assignés",
+    "unscheduledWOs":    "Assignés, non planifiés",
+    "noPendingTickets":  "Tous les tickets ont un OT",
+    "noUnassignedWOs":   "Tous les OT sont assignés",
+    "noUnscheduledWOs":  "Tous les OT assignés sont planifiés",
+    "generateWO":        "Générer OT",
+    "generating":        "Génération...",
+    "assign":            "Assigner",
+    "assigning":         "Assignation...",
+    "schedule":          "Planifier",
+    "scheduling":        "Planification...",
+    "selectTechnician":  "Sélectionner technicien...",
+    "scheduledDate":     "Date planifiée",
+    "startTime":         "Heure début",
+    "endTime":           "Heure fin",
+    "tabWorkOrder":      "Ordre de travail",
+    "noWorkOrder":       "Aucun OT lié",
+    "woLinked":          "OT lié",
+    "generateButton":    "Générer un OT",
+    "viewWO":            "Voir OT"
   },
   "maintenanceDash": {
     "title":                "Tableau maintenance",

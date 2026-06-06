@@ -2,7 +2,7 @@ from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime, date
-from app.models.models import WorkOrderStatus, WorkOrderType, WorkOrderPriority, ExecutionMode
+from app.models.models import WorkOrderStatus, WorkOrderType, WorkOrderPriority, ExecutionMode, WorkOrderSource
 
 
 class WorkOrderCreate(BaseModel):
@@ -38,6 +38,21 @@ class WorkOrderUpdate(BaseModel):
     repair_hours: Optional[float] = None
     total_cost: Optional[float] = None
     assigned_to_id: Optional[UUID] = None
+    executor_id: Optional[UUID] = None
+    scheduled_date: Optional[date] = None
+    scheduled_start_time: Optional[str] = None
+    scheduled_end_time: Optional[str] = None
+
+
+class WOAssign(BaseModel):
+    executor_id: UUID
+
+
+class WOSchedule(BaseModel):
+    executor_id: UUID
+    scheduled_date: date
+    scheduled_start_time: Optional[str] = None
+    scheduled_end_time: Optional[str] = None
 
 
 class WorkOrderOut(BaseModel):
@@ -81,6 +96,14 @@ class WorkOrderOut(BaseModel):
     project_number: Optional[str] = None
     cost_center: Optional[str] = None
     from_iot: bool = False
+    ticket_id: Optional[UUID] = None
+    ticket_number: Optional[str] = None
+    source: Optional[WorkOrderSource] = None
+    assigned_to_name: Optional[str] = None
+    executor_name: Optional[str] = None
+    scheduled_date: Optional[date] = None
+    scheduled_start_time: Optional[str] = None
+    scheduled_end_time: Optional[str] = None
 
 
 class WorkOrderListResponse(BaseModel):

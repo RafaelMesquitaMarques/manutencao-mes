@@ -6,11 +6,12 @@ from uuid import UUID
 from datetime import datetime, timezone
 
 from app.db.session import get_db
-from app.models.models import MaintenanceTicket, TicketComment, Machine, User, TicketStatus
+from app.models.models import MaintenanceTicket, TicketComment, Machine, User, TicketStatus, WorkOrder, Equipment
 from app.schemas.maintenance import (
     TicketCreate, TicketUpdate, TicketClose, CommentCreate,
     TicketOut, TicketListResponse, CommentOut,
 )
+from app.schemas.work_order import WorkOrderOut
 from app.services.ticket_service import TicketService
 from app.core.security import get_current_user
 
@@ -20,7 +21,8 @@ router = APIRouter()
 def _ticket_to_dict(ticket: MaintenanceTicket) -> dict:
     cols = {attr.key: getattr(ticket, attr.key)
             for attr in sa_inspect(type(ticket)).mapper.column_attrs}
-    cols.update(machine_name=None, assigned_to_name=None, comments=None)
+    cols.update(machine_name=None, assigned_to_name=None, comments=None,
+                work_order_number=None, work_order_status=None)
     return cols
 
 
@@ -33,6 +35,11 @@ async def _enrich(ticket: MaintenanceTicket, db: AsyncSession, with_comments: bo
         user = await db.get(User, ticket.assigned_to_id)
         if user:
             data.assigned_to_name = user.name
+    if ticket.work_order_id:
+        wo = await db.get(WorkOrder, ticket.work_order_id)
+        if wo:
+            data.work_order_number = wo.wo_number
+            data.work_order_status = wo.status.value if hasattr(wo.status, "value") else str(wo.status)
     if with_comments:
         r = await db.execute(
             select(TicketComment)
@@ -149,3 +156,43 @@ async def add_comment(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return comment
+
+
+@router.post("/{ticket_id}/generate-wo", status_code=201)
+async def generate_work_order(
+    ticket_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    svc = TicketService(db)
+    try:
+        ticket, wo = await svc.generate_work_order(ticket_id, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    ticket_out = await _enrich(ticket, db)
+    wo_out = WorkOrderOut.model_validate(wo)
+    equip = await db.get(Equipment, wo.equipment_id)
+    if equip:
+        wo_out.equipment_name = equip.name
+    return {"ticket": ticket_out, "work_order": wo_out}
+
+
+@router.get("/{ticket_id}/work-order", response_model=WorkOrderOut)
+async def get_ticket_work_order(
+    ticket_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ticket = await db.get(MaintenanceTicket, ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if not ticket.work_order_id:
+        raise HTTPException(status_code=404, detail="No work order linked to this ticket")
+    wo = await db.get(WorkOrder, ticket.work_order_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    wo_out = WorkOrderOut.model_validate(wo)
+    equip = await db.get(Equipment, wo.equipment_id)
+    if equip:
+        wo_out.equipment_name = equip.name
+    return wo_out

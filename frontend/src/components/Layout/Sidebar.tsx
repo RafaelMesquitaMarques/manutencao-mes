@@ -13,6 +13,7 @@ import {
   Bell,
   Ticket,
   Activity,
+  Shield,
   X,
 } from 'lucide-react';
 
@@ -29,9 +30,10 @@ const navGroups = [
   {
     label: 'Maintenance',
     items: [
-      { to: '/alerts',                icon: Bell,     key: 'alerts' },
-      { to: '/tickets',               icon: Ticket,   key: 'tickets' },
-      { to: '/maintenance/dashboard', icon: Activity, key: 'maintenanceDashboard' },
+      { to: '/alerts',                  icon: Bell,     key: 'alerts' },
+      { to: '/tickets',                 icon: Ticket,   key: 'tickets' },
+      { to: '/maintenance/dashboard',   icon: Activity, key: 'maintenanceDashboard' },
+      { to: '/maintenance/supervisor',  icon: Shield,   key: 'supervisorView' },
     ],
   },
   {

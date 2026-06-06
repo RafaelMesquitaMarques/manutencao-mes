@@ -13,6 +13,11 @@ import type {
   WOCostSummary,
   WOAction,
   User,
+  MaintenancePlan,
+  KPISummary,
+  BacklogData,
+  MTTRItem,
+  CostItem,
 } from '../types';
 
 interface PaginatedResponse<T> {
@@ -37,6 +42,11 @@ export const createWorkOrder = async (payload: WorkOrderCreate): Promise<WorkOrd
   return data;
 };
 
+export const updateWorkOrder = async (id: string, payload: Partial<WorkOrderCreate & { status: string; executor_id: string | null }>): Promise<WorkOrder> => {
+  const { data } = await api.patch<WorkOrder>(`/api/wo/${id}`, payload);
+  return data;
+};
+
 export const startWorkOrder = async (id: string): Promise<WorkOrder> => {
   const { data } = await api.post<WorkOrder>(`/api/wo/${id}/start`);
   return data;
@@ -46,6 +56,27 @@ export const completeWorkOrder = async (id: string, repairHours?: number): Promi
   const params: Record<string, string> = {};
   if (repairHours != null) params.repair_hours = String(repairHours);
   const { data } = await api.post<WorkOrder>(`/api/wo/${id}/complete`, null, { params });
+  return data;
+};
+
+export const assignWorkOrder = async (
+  id: string,
+  executor_id: string
+): Promise<WorkOrder> => {
+  const { data } = await api.patch<WorkOrder>(`/api/wo/${id}/assign`, { executor_id });
+  return data;
+};
+
+export const scheduleWorkOrder = async (
+  id: string,
+  payload: {
+    executor_id: string;
+    scheduled_date: string;
+    scheduled_start_time?: string;
+    scheduled_end_time?: string;
+  }
+): Promise<WorkOrder> => {
+  const { data } = await api.post<WorkOrder>(`/api/wo/${id}/schedule`, payload);
   return data;
 };
 
@@ -66,10 +97,19 @@ export const fetchDashboardStats = async (): Promise<DashboardStats> => {
   return data;
 };
 
-export const fetchEquipment = async (): Promise<Equipment[]> => {
-  const { data } = await api.get<PaginatedResponse<Equipment> | Equipment[]>('/api/equipment/');
+// ─── Equipment ────────────────────────────────────────────────────────────────
+
+export const fetchEquipment = async (params?: Record<string, string>): Promise<Equipment[]> => {
+  const { data } = await api.get<PaginatedResponse<Equipment> | Equipment[]>('/api/equipment/', { params });
   return Array.isArray(data) ? data : (data.items ?? []);
 };
+
+export const fetchEquipmentById = async (id: string): Promise<Equipment> => {
+  const { data } = await api.get<Equipment>(`/api/equipment/${id}`);
+  return data;
+};
+
+// ─── Technicians ─────────────────────────────────────────────────────────────
 
 export const fetchTechnicians = async (): Promise<Technician[]> => {
   try {
@@ -99,7 +139,7 @@ export const fetchUsers = async (): Promise<User[]> => {
   return Array.isArray(data) ? data : (data.items ?? []);
 };
 
-// WO sub-resources
+// ─── WO sub-resources ─────────────────────────────────────────────────────────
 
 export const fetchWOLabor = async (id: string): Promise<LaborRecord[]> => {
   const { data } = await api.get<PaginatedResponse<LaborRecord>>(`/api/wo/${id}/labor`);
@@ -177,4 +217,46 @@ export const addWOAction = async (
 ): Promise<WOAction> => {
   const { data } = await api.post<WOAction>(`/api/wo/${id}/actions`, payload);
   return data;
+};
+
+// ─── Maintenance Plans ────────────────────────────────────────────────────────
+
+export const fetchMaintenancePlans = async (equipment_id?: string): Promise<MaintenancePlan[]> => {
+  const params = equipment_id ? { equipment_id } : undefined;
+  const { data } = await api.get<MaintenancePlan[]>('/api/plans/', { params });
+  return Array.isArray(data) ? data : [];
+};
+
+export const createMaintenancePlan = async (payload: {
+  equipment_id: string;
+  name: string;
+  description?: string;
+  trigger_type?: string;
+  interval_days?: number;
+  next_execution_at?: string;
+}): Promise<MaintenancePlan> => {
+  const { data } = await api.post<MaintenancePlan>('/api/plans/', payload);
+  return data;
+};
+
+// ─── KPIs ─────────────────────────────────────────────────────────────────────
+
+export const fetchKPISummary = async (period_days = 30): Promise<KPISummary> => {
+  const { data } = await api.get<KPISummary>('/api/kpis/summary', { params: { period_days } });
+  return data;
+};
+
+export const fetchBacklog = async (): Promise<BacklogData> => {
+  const { data } = await api.get<BacklogData>('/api/kpis/backlog');
+  return data;
+};
+
+export const fetchMTTR = async (period_days = 90): Promise<MTTRItem[]> => {
+  const { data } = await api.get<MTTRItem[]>('/api/kpis/mttr', { params: { period_days } });
+  return Array.isArray(data) ? data : [];
+};
+
+export const fetchCostByType = async (period_days = 30): Promise<CostItem[]> => {
+  const { data } = await api.get<CostItem[]>('/api/kpis/cost', { params: { period_days } });
+  return Array.isArray(data) ? data : [];
 };
