@@ -1,0 +1,130 @@
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
+
+from app.db.session import get_db
+from app.models.models import (
+    MaintenanceAlert, MaintenanceTicket, AlertStatus, TicketStatus,
+    AlertPriority, Machine, User,
+)
+from app.core.security import get_current_user
+
+router = APIRouter()
+
+_OPEN_ALERT_STATUSES  = [AlertStatus.new_alert, AlertStatus.assigned, AlertStatus.in_progress]
+_OPEN_TICKET_STATUSES = [TicketStatus.open, TicketStatus.in_progress, TicketStatus.on_hold_parts, TicketStatus.on_hold_ext]
+
+
+@router.get("/dashboard")
+async def maintenance_dashboard(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # ── KPI counts ────────────────────────────────────────────────────────────
+    r = await db.execute(
+        select(func.count(MaintenanceAlert.id)).where(
+            MaintenanceAlert.status.in_(_OPEN_ALERT_STATUSES)
+        )
+    )
+    open_alerts = r.scalar() or 0
+
+    r = await db.execute(
+        select(func.count(MaintenanceTicket.id)).where(
+            MaintenanceTicket.status.in_(_OPEN_TICKET_STATUSES)
+        )
+    )
+    open_tickets = r.scalar() or 0
+
+    r = await db.execute(
+        select(func.count(MaintenanceTicket.id)).where(
+            MaintenanceTicket.priority == AlertPriority.critical,
+            MaintenanceTicket.status.in_(_OPEN_TICKET_STATUSES),
+        )
+    )
+    critical_tickets = r.scalar() or 0
+
+    r = await db.execute(
+        select(func.count(MaintenanceAlert.id)).where(
+            MaintenanceAlert.is_overdue == True,
+            MaintenanceAlert.status.in_(_OPEN_ALERT_STATUSES),
+        )
+    )
+    overdue_alerts = r.scalar() or 0
+
+    # ── Avg resolution time ───────────────────────────────────────────────────
+    r = await db.execute(
+        select(MaintenanceTicket).where(
+            MaintenanceTicket.status == TicketStatus.completed,
+            MaintenanceTicket.total_intervention_minutes.isnot(None),
+        )
+    )
+    completed = r.scalars().all()
+    avg_resolution_hours = 0.0
+    if completed:
+        total_mins = sum(t.total_intervention_minutes or 0 for t in completed)
+        avg_resolution_hours = round(total_mins / len(completed) / 60, 1)
+
+    # ── Charts data ───────────────────────────────────────────────────────────
+
+    # Tickets by machine
+    r = await db.execute(
+        select(MaintenanceTicket.machine_id, func.count(MaintenanceTicket.id))
+        .group_by(MaintenanceTicket.machine_id)
+        .order_by(func.count(MaintenanceTicket.id).desc())
+        .limit(10)
+    )
+    by_machine = []
+    for machine_id, count in r.all():
+        m = await db.get(Machine, machine_id)
+        by_machine.append({"machine": m.name if m else str(machine_id), "count": count})
+
+    # Alerts by problem type
+    r = await db.execute(
+        select(MaintenanceAlert.problem_type, func.count(MaintenanceAlert.id))
+        .group_by(MaintenanceAlert.problem_type)
+    )
+    by_problem_type = [
+        {"type": pt, "count": c} for pt, c in r.all() if pt
+    ]
+
+    # Tickets by technician
+    r = await db.execute(
+        select(MaintenanceTicket.assigned_to_id, func.count(MaintenanceTicket.id))
+        .where(MaintenanceTicket.assigned_to_id.isnot(None))
+        .group_by(MaintenanceTicket.assigned_to_id)
+        .order_by(func.count(MaintenanceTicket.id).desc())
+        .limit(10)
+    )
+    by_technician = []
+    for user_id, count in r.all():
+        u = await db.get(User, user_id)
+        by_technician.append({"technician": u.name if u else str(user_id), "count": count})
+
+    # Escalation by level (alerts that were escalated)
+    r = await db.execute(
+        select(MaintenanceAlert.escalation_level, func.count(MaintenanceAlert.id))
+        .where(MaintenanceAlert.escalation_level > 0)
+        .group_by(MaintenanceAlert.escalation_level)
+        .order_by(MaintenanceAlert.escalation_level)
+    )
+    by_escalation = [{"level": f"L{lv}", "count": c} for lv, c in r.all()]
+
+    # Open tickets by status
+    r = await db.execute(
+        select(MaintenanceTicket.status, func.count(MaintenanceTicket.id))
+        .group_by(MaintenanceTicket.status)
+    )
+    by_ticket_status = [{"status": s, "count": c} for s, c in r.all() if s]
+
+    return {
+        "open_alerts":          open_alerts,
+        "open_tickets":         open_tickets,
+        "critical_tickets":     critical_tickets,
+        "overdue_alerts":       overdue_alerts,
+        "avg_resolution_hours": avg_resolution_hours,
+        "by_machine":           by_machine,
+        "by_problem_type":      by_problem_type,
+        "by_technician":        by_technician,
+        "by_escalation":        by_escalation,
+        "by_ticket_status":     by_ticket_status,
+    }

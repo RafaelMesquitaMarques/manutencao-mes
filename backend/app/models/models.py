@@ -39,11 +39,55 @@ class WorkOrderPriority(str, enum.Enum):
     critical = "critical"
 
 class UserRole(str, enum.Enum):
-    technician    = "technician"
-    supervisor    = "supervisor"
-    plant_manager = "plant_manager"
-    director      = "director"
-    admin         = "admin"
+    operator             = "operator"
+    technician           = "technician"
+    supervisor           = "supervisor"
+    maintenance_director = "maintenance_director"
+    plant_manager        = "plant_manager"
+    director             = "director"
+    admin                = "admin"
+
+
+class AlertPriority(str, enum.Enum):
+    low      = "low"
+    medium   = "medium"
+    high     = "high"
+    critical = "critical"
+
+
+class AlertStatus(str, enum.Enum):
+    new_alert   = "new_alert"
+    assigned    = "assigned"
+    in_progress = "in_progress"
+    resolved    = "resolved"
+    cancelled   = "cancelled"
+
+
+class AlertProblemType(str, enum.Enum):
+    mechanical         = "mechanical"
+    electrical         = "electrical"
+    pneumatic          = "pneumatic"
+    sensor             = "sensor"
+    safety_risk        = "safety_risk"
+    quality_impact     = "quality_impact"
+    machine_stop       = "machine_stop"
+    preventive_request = "preventive_request"
+    other              = "other"
+
+
+class AlertShift(str, enum.Enum):
+    morning   = "morning"
+    afternoon = "afternoon"
+    night     = "night"
+
+
+class TicketStatus(str, enum.Enum):
+    open          = "open"
+    in_progress   = "in_progress"
+    on_hold_parts = "on_hold_parts"
+    on_hold_ext   = "on_hold_ext"
+    completed     = "completed"
+    cancelled     = "cancelled"
 
 class EquipmentStatus(str, enum.Enum):
     running        = "running"
@@ -463,3 +507,96 @@ class SupplierOrder(Base):
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
 
     work_order = relationship("WorkOrder", back_populates="supplier_orders")
+
+
+# ─── Maintenance Alerts & Tickets ──────────────────────────────────────────────
+
+class Machine(Base):
+    __tablename__ = "machines"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name       = Column(String(200), nullable=False)
+    department = Column(String(200))
+    location   = Column(String(200))
+    is_active  = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    alerts  = relationship("MaintenanceAlert", back_populates="machine")
+    tickets = relationship("MaintenanceTicket", back_populates="machine")
+
+
+class MaintenanceAlert(Base):
+    __tablename__ = "maintenance_alerts"
+
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    alert_number     = Column(String(30), unique=True, nullable=False)
+    machine_id       = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    department       = Column(String(200))
+    problem_type     = Column(SAEnum(AlertProblemType, native_enum=False), nullable=False)
+    priority         = Column(SAEnum(AlertPriority, native_enum=False), default=AlertPriority.medium)
+    description      = Column(Text)
+    created_by       = Column(String(200))
+    shift            = Column(SAEnum(AlertShift, native_enum=False))
+    status           = Column(SAEnum(AlertStatus, native_enum=False), default=AlertStatus.new_alert)
+    assigned_to_id   = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    escalation_level = Column(Integer, default=0)
+    escalated_at     = Column(DateTime(timezone=True), nullable=True)
+    is_overdue       = Column(Boolean, default=False)
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at       = Column(DateTime(timezone=True), onupdate=func.now())
+
+    machine     = relationship("Machine", back_populates="alerts")
+    assigned_to = relationship("User", foreign_keys=[assigned_to_id])
+
+
+class MaintenanceTicket(Base):
+    __tablename__ = "maintenance_tickets"
+
+    id                         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticket_number              = Column(String(30), unique=True, nullable=False)
+    alert_id                   = Column(UUID(as_uuid=True), ForeignKey("maintenance_alerts.id"), nullable=True)
+    machine_id                 = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    priority                   = Column(SAEnum(AlertPriority, native_enum=False), default=AlertPriority.medium)
+    status                     = Column(SAEnum(TicketStatus, native_enum=False), default=TicketStatus.open)
+    assigned_to_id             = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    opened_at                  = Column(DateTime(timezone=True), server_default=func.now())
+    started_at                 = Column(DateTime(timezone=True), nullable=True)
+    completed_at               = Column(DateTime(timezone=True), nullable=True)
+    diagnosis                  = Column(Text)
+    corrective_action          = Column(Text)
+    parts_used                 = Column(JSON, default=[])
+    estimated_downtime_minutes = Column(Integer)
+    total_intervention_minutes = Column(Integer)
+    current_escalation_level   = Column(Integer, default=0)
+    last_updated_at            = Column(DateTime(timezone=True), onupdate=func.now())
+
+    machine     = relationship("Machine", back_populates="tickets")
+    assigned_to = relationship("User", foreign_keys=[assigned_to_id])
+    comments    = relationship("TicketComment", back_populates="ticket", cascade="all, delete-orphan")
+
+
+class NotificationLog(Base):
+    __tablename__ = "notification_logs"
+
+    id                = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    alert_id          = Column(UUID(as_uuid=True), ForeignKey("maintenance_alerts.id"), nullable=True)
+    ticket_id         = Column(UUID(as_uuid=True), ForeignKey("maintenance_tickets.id"), nullable=True)
+    notification_type = Column(String(50))
+    recipient_role    = Column(String(100))
+    recipient_name    = Column(String(200))
+    recipient_contact = Column(String(300))
+    message           = Column(Text)
+    status            = Column(String(20), default="sent")
+    created_at        = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class TicketComment(Base):
+    __tablename__ = "ticket_comments"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticket_id  = Column(UUID(as_uuid=True), ForeignKey("maintenance_tickets.id"), nullable=False)
+    author     = Column(String(200), nullable=False)
+    comment    = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    ticket = relationship("MaintenanceTicket", back_populates="comments")

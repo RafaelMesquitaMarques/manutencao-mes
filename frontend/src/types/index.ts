@@ -16,9 +16,14 @@ export interface Equipment {
   name: string;
   location?: string;
   description?: string;
+  manufacturer?: string;
+  model?: string;
+  serial_number?: string;
+  manufacturing_year?: number;
   criticality: string;
   status: string;
   hour_meter: number;
+  specifications?: Record<string, unknown>;
   active: boolean;
   created_at: string;
 }
@@ -69,6 +74,7 @@ export interface WorkOrderCreate {
   description?: string;
   due_date?: string;
   assigned_to_id?: string;
+  executor_id?: string;
 }
 
 export interface DashboardStats {
@@ -180,4 +186,145 @@ export interface LoginResponse {
 export interface LoginCredentials {
   email: string;
   password: string;
+}
+
+export interface MaintenancePlan {
+  id: string;
+  equipment_id: string;
+  equipment_name?: string;
+  name: string;
+  description?: string;
+  trigger_type?: string;
+  interval_days?: number;
+  interval_hours?: number;
+  last_executed_at?: string;
+  next_execution_at?: string;
+  active: boolean;
+}
+
+export interface KPISummary {
+  mttr_hours: number;
+  backlog_count: number;
+  pm_compliance_pct: number;
+  total_cost_cad: number;
+  period_days: number;
+}
+
+export interface BacklogData {
+  total: number;
+  buckets: { label: string; count: number }[];
+}
+
+export interface MTTRItem {
+  equipment: string;
+  code: string;
+  avg_repair_hours: number;
+  repairs: number;
+}
+
+export interface CostItem {
+  type: string;
+  total: number;
+}
+
+// ── Maintenance Alerts & Tickets ──────────────────────────────────────────────
+
+export type AlertPriority  = 'low' | 'medium' | 'high' | 'critical';
+export type AlertStatus    = 'new_alert' | 'assigned' | 'in_progress' | 'resolved' | 'cancelled';
+export type AlertShift     = 'morning' | 'afternoon' | 'night';
+export type TicketStatus   = 'open' | 'in_progress' | 'on_hold_parts' | 'on_hold_ext' | 'completed' | 'cancelled';
+export type AlertProblemType =
+  | 'mechanical' | 'electrical' | 'pneumatic' | 'sensor'
+  | 'safety_risk' | 'quality_impact' | 'machine_stop' | 'preventive_request' | 'other';
+
+export interface Machine {
+  id:         string;
+  name:       string;
+  department?: string;
+  location?:  string;
+  is_active:  boolean;
+  created_at: string;
+}
+
+export interface MaintenanceAlert {
+  id:               string;
+  alert_number:     string;
+  machine_id:       string;
+  machine_name?:    string;
+  department?:      string;
+  problem_type:     AlertProblemType;
+  priority:         AlertPriority;
+  description?:     string;
+  created_by?:      string;
+  shift?:           AlertShift;
+  status:           AlertStatus;
+  assigned_to_id?:  string;
+  assigned_to_name?: string;
+  ticket_id?:       string;
+  escalation_level: number;
+  escalated_at?:    string;
+  is_overdue:       boolean;
+  created_at:       string;
+  updated_at?:      string;
+}
+
+export interface AlertCreate {
+  machine_id:   string;
+  department?:  string;
+  problem_type: AlertProblemType;
+  priority:     AlertPriority;
+  description?: string;
+  created_by:   string;
+  shift?:       AlertShift;
+}
+
+export interface TicketComment {
+  id:         string;
+  ticket_id:  string;
+  author:     string;
+  comment:    string;
+  created_at: string;
+}
+
+export interface MaintenanceTicket {
+  id:                          string;
+  ticket_number:               string;
+  alert_id?:                   string;
+  machine_id:                  string;
+  machine_name?:               string;
+  priority:                    AlertPriority;
+  status:                      TicketStatus;
+  assigned_to_id?:             string;
+  assigned_to_name?:           string;
+  opened_at:                   string;
+  started_at?:                 string;
+  completed_at?:               string;
+  diagnosis?:                  string;
+  corrective_action?:          string;
+  parts_used?:                 PartUsed[];
+  estimated_downtime_minutes?: number;
+  total_intervention_minutes?: number;
+  current_escalation_level:   number;
+  last_updated_at?:            string;
+  comments?:                   TicketComment[];
+}
+
+export interface PartUsed {
+  name:     string;
+  qty:      number;
+  unit?:    string;
+  part_no?: string;
+}
+
+export interface MaintenanceDashboardData {
+  open_alerts:          number;
+  open_tickets:         number;
+  critical_tickets:     number;
+  overdue_alerts:       number;
+  avg_resolution_hours: number;
+  by_machine:           { machine: string; count: number }[];
+  by_problem_type:      { type: string; count: number }[];
+  by_technician:        { technician: string; count: number }[];
+  by_escalation:        { level: string; count: number }[];
+  by_ticket_status:     { status: string; count: number }[];
 }

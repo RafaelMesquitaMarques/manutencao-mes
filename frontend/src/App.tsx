@@ -8,6 +8,16 @@ import WorkOrderDetail from './pages/WorkOrders/WorkOrderDetail';
 import NewWorkOrder from './pages/WorkOrders/NewWorkOrder';
 import TechnicianList from './pages/Technicians/TechnicianList';
 import NewTechnician from './pages/Technicians/NewTechnician';
+import KPIDashboard from './pages/KPIs/KPIDashboard';
+import EquipmentList from './pages/Equipment/EquipmentList';
+import EquipmentDetail from './pages/Equipment/EquipmentDetail';
+import PMCalendar from './pages/PMCalendar/PMCalendar';
+import LaborScheduler from './pages/Schedule/LaborScheduler';
+import AlertList from './pages/Alerts/AlertList';
+import NewAlert from './pages/Alerts/NewAlert';
+import TicketList from './pages/Tickets/TicketList';
+import TicketDetail from './pages/Tickets/TicketDetail';
+import MaintenanceDashboard from './pages/MaintenanceDashboard/MaintenanceDashboard';
 
 const App = () => (
   <BrowserRouter>
@@ -22,12 +32,22 @@ const App = () => (
         }
       >
         <Route index element={<Navigate to="/dashboard" replace />} />
-        <Route path="dashboard" element={<Dashboard />} />
-        <Route path="work-orders" element={<WorkOrderList />} />
-        <Route path="work-orders/new" element={<NewWorkOrder />} />
-        <Route path="work-orders/:id" element={<WorkOrderDetail />} />
-        <Route path="technicians" element={<TechnicianList />} />
-        <Route path="technicians/new" element={<NewTechnician />} />
+        <Route path="dashboard"             element={<Dashboard />} />
+        <Route path="work-orders"           element={<WorkOrderList />} />
+        <Route path="work-orders/new"       element={<NewWorkOrder />} />
+        <Route path="work-orders/:id"       element={<WorkOrderDetail />} />
+        <Route path="technicians"           element={<TechnicianList />} />
+        <Route path="technicians/new"       element={<NewTechnician />} />
+        <Route path="kpis"                  element={<KPIDashboard />} />
+        <Route path="equipment"             element={<EquipmentList />} />
+        <Route path="equipment/:id"         element={<EquipmentDetail />} />
+        <Route path="pm-calendar"           element={<PMCalendar />} />
+        <Route path="schedule"              element={<LaborScheduler />} />
+        <Route path="alerts"                element={<AlertList />} />
+        <Route path="alerts/new"            element={<NewAlert />} />
+        <Route path="tickets"               element={<TicketList />} />
+        <Route path="tickets/:id"           element={<TicketDetail />} />
+        <Route path="maintenance/dashboard" element={<MaintenanceDashboard />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
