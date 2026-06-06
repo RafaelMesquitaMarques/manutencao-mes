@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     MQTT_BROKER: str = "mqtt"
     MQTT_PORT: int = 1883
 
-    # Security — change SECRET_KEY in production
+    # TODO: set SECRET_KEY environment variable in production — never use this default
     SECRET_KEY: str = "troque-em-producao"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480  # 8 hours

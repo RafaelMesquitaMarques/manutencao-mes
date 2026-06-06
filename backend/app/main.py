@@ -80,6 +80,61 @@ async def _run_migrations() -> None:
         "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS operator_id UUID REFERENCES machine_operators(id) ON DELETE SET NULL",
         "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS shift VARCHAR(20)",
         "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS job_number VARCHAR(100)",
+        # Phase: user permissions system
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) NOT NULL DEFAULT 'operator'",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS job_title VARCHAR(200)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS invited_by_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS invited_at TIMESTAMPTZ",
+        """
+        CREATE TABLE IF NOT EXISTS permissions (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            plant_id UUID REFERENCES plants(id) ON DELETE CASCADE,
+            resource VARCHAR(100) NOT NULL,
+            action VARCHAR(50) NOT NULL,
+            granted BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS user_invitations (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            email VARCHAR(200) NOT NULL,
+            role VARCHAR(50) NOT NULL DEFAULT 'operator',
+            plant_id UUID REFERENCES plants(id) ON DELETE SET NULL,
+            token VARCHAR(128) UNIQUE NOT NULL,
+            invited_by_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            expires_at TIMESTAMPTZ NOT NULL,
+            accepted_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token VARCHAR(128) UNIQUE NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL,
+            used_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS email_logs (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            email_type VARCHAR(50) NOT NULL,
+            recipient_email VARCHAR(200) NOT NULL,
+            subject VARCHAR(500),
+            body TEXT,
+            status VARCHAR(20) NOT NULL DEFAULT 'sent',
+            sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
         # New tables
         """
         CREATE TABLE IF NOT EXISTS reject_categories (

@@ -49,7 +49,12 @@
       "Bash(curl -s \"http://localhost:8000/api/machines/e9158b54-bcbd-45f5-ba55-e2d04056d035/reject-categories\")",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('OK - count:', len\\(d\\)\\)\")",
       "Bash(npx tsc *)",
-      "Bash(node_modules/.bin/tsc --noEmit)"
+      "Bash(node_modules/.bin/tsc --noEmit)",
+      "Bash(Get-ChildItem -Path \"Z:\\\\manutencao-mes\\\\manutencao-mes\" -Directory)",
+      "Bash(Select-Object Name)",
+      "Bash(timeout 15 docker logs mes_backend --tail=30)",
+      "Bash(curl -s -X POST http://localhost/api/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"admin@foliot.com\",\"password\":\"admin123\"}')",
+      "Bash(python -m json.tool)"
     ]
   }
 }

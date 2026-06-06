@@ -27,12 +27,22 @@ import MachinesSetup from './pages/Settings/MachinesSetup';
 import MachineConfig from './pages/Settings/MachineConfig';
 import MachineOperators from './pages/Settings/MachineOperators';
 import MachineSettings from './pages/Settings/MachineSettings';
+import UsersSetup from './pages/Settings/UsersSetup';
+import UserDetail from './pages/Settings/UserDetail';
+import MyProfile from './pages/Settings/MyProfile';
+import ChangePassword from './pages/Settings/ChangePassword';
+import AcceptInvite from './pages/AcceptInvite';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 
 const App = () => (
   <BrowserRouter>
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/machines/:slug" element={<MachinePage />} />
+      <Route path="/accept-invite" element={<AcceptInvite />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
       <Route
         path="/"
         element={
@@ -53,10 +63,10 @@ const App = () => (
         <Route path="equipment/:id"         element={<EquipmentDetail />} />
         <Route path="pm-calendar"           element={<PMCalendar />} />
         <Route path="schedule"              element={<LaborScheduler />} />
-        <Route path="alerts"                element={<AlertList />} />
+        <Route path="alerts"               element={<AlertList />} />
         <Route path="alerts/new"            element={<NewAlert />} />
-        <Route path="tickets"               element={<TicketList />} />
-        <Route path="tickets/:id"           element={<TicketDetail />} />
+        <Route path="tickets"              element={<TicketList />} />
+        <Route path="tickets/:id"          element={<TicketDetail />} />
         <Route path="maintenance/dashboard"  element={<MaintenanceDashboard />} />
         <Route path="maintenance/supervisor" element={<SupervisorDashboard />} />
         <Route path="machines"              element={<MachineList />} />
@@ -66,6 +76,10 @@ const App = () => (
         <Route path="settings/machines/:id/config"            element={<MachineConfig />} />
         <Route path="settings/machines/:id/operators"         element={<MachineOperators />} />
         <Route path="settings/stop-categories"                element={<StopCategoriesPage />} />
+        <Route path="settings/users"                          element={<UsersSetup />} />
+        <Route path="settings/users/:id"                      element={<UserDetail />} />
+        <Route path="settings/profile"                        element={<MyProfile />} />
+        <Route path="settings/change-password"                element={<ChangePassword />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

@@ -48,7 +48,8 @@
     "machines":             "Toutes les machines",
     "myWork":               "Mon travail",
     "machinesSetup":        "Config machines",
-    "stopCategories":       "Catégories d'arrêt"
+    "stopCategories":       "Catégories d'arrêt",
+    "userManagement":       "Gestion utilisateurs"
   },
   "auth": {
     "login": "Connexion",

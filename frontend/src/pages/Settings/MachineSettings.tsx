@@ -165,7 +165,8 @@ function CloneModal({
 
 // ── Stop Categories tab ───────────────────────────────────────────────────────
 
-function StopCategoriesTab({ ref: machineRef, allMachines, machineId }: { ref: string; allMachines: Machine[]; machineId: string }) {
+function StopCategoriesTab({ slug, allMachines, machineId }: { slug: string; allMachines: Machine[]; machineId: string }) {
+  const machineRef = slug;
   const [cats, setCats] = useState<StopCategoryOut[]>([]);
   const [selected, setSelected] = useState<StopCategoryOut | null>(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -323,7 +324,8 @@ function StopCategoriesTab({ ref: machineRef, allMachines, machineId }: { ref: s
 
 // ── Reject Categories tab ─────────────────────────────────────────────────────
 
-function RejectCategoriesTab({ ref: machineRef, allMachines, machineId }: { ref: string; allMachines: Machine[]; machineId: string }) {
+function RejectCategoriesTab({ slug, allMachines, machineId }: { slug: string; allMachines: Machine[]; machineId: string }) {
+  const machineRef = slug;
   const [cats, setCats] = useState<RejectCategoryOut[]>([]);
   const [selected, setSelected] = useState<RejectCategoryOut | null>(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -795,11 +797,11 @@ export default function MachineSettings() {
           )}
 
           {tab === 'stop' && (
-            <StopCategoriesTab ref={machineRef} allMachines={allMachines} machineId={machine.id} />
+            <StopCategoriesTab slug={machineRef} allMachines={allMachines} machineId={machine.id} />
           )}
 
           {tab === 'reject' && (
-            <RejectCategoriesTab ref={machineRef} allMachines={allMachines} machineId={machine.id} />
+            <RejectCategoriesTab slug={machineRef} allMachines={allMachines} machineId={machine.id} />
           )}
 
           {tab === 'operators' && (

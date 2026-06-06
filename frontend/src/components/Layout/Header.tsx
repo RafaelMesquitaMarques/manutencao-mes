@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
-import { Menu, Globe, ChevronDown, LogOut, User as UserIcon } from 'lucide-react';
+import { useNavigate, Link } from 'react-router-dom';
+import { Menu, Globe, ChevronDown, LogOut, User as UserIcon, Lock, Shield } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
+import type { UserRole } from '../../types';
 import i18n from '../../i18n';
 
 const LANGUAGES = [
@@ -10,6 +11,26 @@ const LANGUAGES = [
   { code: 'fr', label: 'FR', name: 'Français' },
   { code: 'es', label: 'ES', name: 'Español' },
 ];
+
+const ROLE_LABELS: Record<UserRole, string> = {
+  operator: 'Operator',
+  technician: 'Technician',
+  supervisor: 'Supervisor',
+  maintenance_director: 'Maint. Director',
+  plant_manager: 'Plant Manager',
+  director: 'Director',
+  admin: 'Administrator',
+};
+
+const ROLE_COLORS: Record<UserRole, string> = {
+  operator: 'text-gray-400',
+  technician: 'text-blue-400',
+  supervisor: 'text-purple-400',
+  maintenance_director: 'text-amber-400',
+  plant_manager: 'text-green-400',
+  director: 'text-cyan-400',
+  admin: 'text-red-400',
+};
 
 interface HeaderProps {
   onMenuToggle: () => void;
@@ -26,6 +47,8 @@ const Header = ({ onMenuToggle }: HeaderProps) => {
   const userRef = useRef<HTMLDivElement>(null);
 
   const currentLang = LANGUAGES.find((l) => i18n.language?.startsWith(l.code)) ?? LANGUAGES[0];
+  const role = (user?.role ?? 'operator') as UserRole;
+  const initials = (user?.name ?? 'U').split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase();
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -74,10 +97,7 @@ const Header = ({ onMenuToggle }: HeaderProps) => {
               {LANGUAGES.map((lang) => (
                 <button
                   key={lang.code}
-                  onClick={() => {
-                    i18n.changeLanguage(lang.code);
-                    setLangOpen(false);
-                  }}
+                  onClick={() => { i18n.changeLanguage(lang.code); setLangOpen(false); }}
                   className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-sm transition-colors
                     ${currentLang.code === lang.code
                       ? 'text-blue-400 bg-blue-500/10'
@@ -100,8 +120,8 @@ const Header = ({ onMenuToggle }: HeaderProps) => {
                        bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.08]
                        pl-2 pr-3 py-1.5 rounded-lg transition-all duration-150"
           >
-            <div className="w-6 h-6 rounded-full bg-blue-600/30 border border-blue-500/30 flex items-center justify-center">
-              <UserIcon size={12} className="text-blue-400" />
+            <div className="w-6 h-6 rounded-full bg-blue-600/30 border border-blue-500/30 flex items-center justify-center text-blue-400 font-bold text-[10px]">
+              {initials}
             </div>
             <span className="text-sm font-medium text-gray-300 hidden sm:block max-w-[120px] truncate">
               {user?.name ?? user?.email ?? 'User'}
@@ -110,18 +130,51 @@ const Header = ({ onMenuToggle }: HeaderProps) => {
           </button>
 
           {userOpen && (
-            <div className="absolute right-0 top-full mt-1.5 w-48 bg-[#111827] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden animate-slide-in">
+            <div className="absolute right-0 top-full mt-1.5 w-52 bg-[#111827] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden animate-slide-in">
               <div className="px-3 py-2.5 border-b border-white/[0.06]">
                 <p className="text-white text-sm font-medium truncate">{user?.name}</p>
                 <p className="text-gray-500 text-xs truncate mt-0.5">{user?.email}</p>
+                {user?.role && (
+                  <span className={`text-[10px] font-medium mt-1 inline-block ${ROLE_COLORS[role]}`}>
+                    {ROLE_LABELS[role]}
+                  </span>
+                )}
               </div>
-              <button
-                onClick={handleLogout}
-                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-red-400 hover:text-red-300 hover:bg-red-500/5 transition-colors"
+              <Link
+                to="/settings/profile"
+                onClick={() => setUserOpen(false)}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/[0.05] transition-colors"
               >
-                <LogOut size={14} />
-                {t('nav.logout')}
-              </button>
+                <UserIcon size={14} />
+                My Profile
+              </Link>
+              <Link
+                to="/settings/change-password"
+                onClick={() => setUserOpen(false)}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/[0.05] transition-colors"
+              >
+                <Lock size={14} />
+                Change Password
+              </Link>
+              {user?.role === 'admin' && (
+                <Link
+                  to="/settings/users"
+                  onClick={() => setUserOpen(false)}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/[0.05] transition-colors"
+                >
+                  <Shield size={14} />
+                  User Management
+                </Link>
+              )}
+              <div className="border-t border-white/[0.06]">
+                <button
+                  onClick={handleLogout}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-red-400 hover:text-red-300 hover:bg-red-500/5 transition-colors"
+                >
+                  <LogOut size={14} />
+                  {t('nav.logout')}
+                </button>
+              </div>
             </div>
           )}
         </div>

@@ -48,7 +48,8 @@
     "machines":             "Todas las máquinas",
     "myWork":               "Mi trabajo",
     "machinesSetup":        "Config máquinas",
-    "stopCategories":       "Categorías de parada"
+    "stopCategories":       "Categorías de parada",
+    "userManagement":       "Gestión de usuarios"
   },
   "auth": {
     "login": "Iniciar sesión",

@@ -1,24 +1,25 @@
 import { NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  LayoutDashboard,
-  ClipboardList,
-  Wrench,
-  Users,
-  BarChart3,
-  Settings,
-  Factory,
-  CalendarDays,
-  CalendarCheck,
-  Bell,
-  Ticket,
-  Activity,
-  Shield,
-  Briefcase,
-  X,
+  LayoutDashboard, ClipboardList, Wrench, Users, BarChart3,
+  Settings, Factory, CalendarDays, CalendarCheck, Bell, Ticket,
+  Activity, Shield, Briefcase, X, UserCog, type LucideIcon,
 } from 'lucide-react';
+import { useAuthStore } from '../../store/authStore';
 
-const navGroups = [
+interface NavItem {
+  to: string;
+  icon: LucideIcon;
+  key: string;
+  disabled?: boolean;
+}
+
+interface NavGroup {
+  label: string;
+  items: NavItem[];
+}
+
+const CORE_GROUPS: NavGroup[] = [
   {
     label: 'Core',
     items: [
@@ -57,13 +58,6 @@ const navGroups = [
       { to: '/kpis', icon: BarChart3, key: 'kpis' },
     ],
   },
-  {
-    label: 'Settings',
-    items: [
-      { to: '/settings/machines',        icon: Factory,  key: 'machinesSetup' },
-      { to: '/settings/stop-categories', icon: Settings, key: 'stopCategories' },
-    ],
-  },
 ];
 
 interface SidebarProps {
@@ -72,6 +66,18 @@ interface SidebarProps {
 
 const Sidebar = ({ onClose }: SidebarProps) => {
   const { t } = useTranslation();
+  const isAdmin = useAuthStore((s) => s.isAdmin());
+
+  const settingsItems: NavItem[] = [
+    { to: '/settings/machines',        icon: Factory,  key: 'machinesSetup' },
+    { to: '/settings/stop-categories', icon: Settings, key: 'stopCategories' },
+    ...(isAdmin ? [{ to: '/settings/users', icon: UserCog, key: 'userManagement' }] : []),
+  ];
+
+  const navGroups: NavGroup[] = [
+    ...CORE_GROUPS,
+    { label: 'Settings', items: settingsItems },
+  ];
 
   return (
     <aside className="flex flex-col h-full w-64 bg-[#0d1421] border-r border-white/[0.06]">
@@ -136,7 +142,7 @@ const Sidebar = ({ onClose }: SidebarProps) => {
 
       {/* Bottom version */}
       <div className="px-4 py-3 border-t border-white/[0.06]">
-        <p className="text-gray-700 text-[10px] font-mono">v0.3.0 · 2026</p>
+        <p className="text-gray-700 text-[10px] font-mono">v0.4.0 · 2026</p>
       </div>
     </aside>
   );

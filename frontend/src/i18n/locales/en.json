@@ -48,7 +48,8 @@
     "machines":             "All Machines",
     "myWork":               "My Work",
     "machinesSetup":        "Machine Setup",
-    "stopCategories":       "Stop Categories"
+    "stopCategories":       "Stop Categories",
+    "userManagement":       "User Management"
   },
   "auth": {
     "login": "Login",

@@ -1,3 +1,12 @@
+export type UserRole =
+  | 'operator'
+  | 'technician'
+  | 'supervisor'
+  | 'maintenance_director'
+  | 'plant_manager'
+  | 'director'
+  | 'admin';
+
 export type WorkOrderStatus = 'open' | 'in_progress' | 'on_hold' | 'completed' | 'cancelled';
 export type WorkOrderType = 'corrective' | 'preventive' | 'predictive' | 'inspection' | 'improvement';
 export type Priority = 'low' | 'medium' | 'high' | 'critical';
@@ -15,6 +24,41 @@ export interface User {
   name: string;
   email: string;
   active: boolean;
+  role?: UserRole;
+  language?: string;
+  avatar_url?: string;
+  phone?: string;
+  job_title?: string;
+  last_login_at?: string;
+  must_change_password?: boolean;
+  invited_by_id?: string;
+  invited_at?: string;
+  created_at?: string;
+}
+
+export interface UserPermission {
+  id: string;
+  resource: string;
+  action: string;
+  granted: boolean;
+  plant_id?: string;
+}
+
+export interface UserInviteRequest {
+  email: string;
+  role: UserRole;
+  plant_id?: string;
+}
+
+export interface UserAdminUpdate {
+  name?: string;
+  language?: string;
+  active?: boolean;
+  role?: UserRole;
+  phone?: string;
+  job_title?: string;
+  avatar_url?: string;
+  must_change_password?: boolean;
 }
 
 export interface Equipment {
@@ -196,6 +240,7 @@ export interface LoginResponse {
   user_id: number | string;
   name: string;
   language?: string;
+  role?: UserRole;
 }
 
 export interface LoginCredentials {

@@ -41,6 +41,8 @@ const Login = () => {
         email,
         name: result.name,
         active: true,
+        role: result.role,
+        language: result.language,
       };
       setAuth(user, result.access_token);
       navigate('/dashboard', { replace: true });

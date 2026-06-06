@@ -193,15 +193,24 @@ class Plant(Base):
 class User(Base):
     __tablename__ = "users"
 
-    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name          = Column(String(200), nullable=False)
-    email         = Column(String(200), unique=True, nullable=False)
-    password_hash = Column(String(500), nullable=False)
-    language      = Column(String(10), default="en")
-    active        = Column(Boolean, default=True)
-    created_at    = Column(DateTime(timezone=True), server_default=func.now())
+    id                   = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name                 = Column(String(200), nullable=False)
+    email                = Column(String(200), unique=True, nullable=False)
+    password_hash        = Column(String(500), nullable=False)
+    language             = Column(String(10), default="en")
+    active               = Column(Boolean, default=True)
+    role                 = Column(SAEnum(UserRole, native_enum=False), default=UserRole.operator)
+    avatar_url           = Column(String(500))
+    phone                = Column(String(50))
+    job_title            = Column(String(200))
+    last_login_at        = Column(DateTime(timezone=True))
+    must_change_password = Column(Boolean, default=False)
+    invited_by_id        = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    invited_at           = Column(DateTime(timezone=True))
+    created_at           = Column(DateTime(timezone=True), server_default=func.now())
 
     plants               = relationship("UserPlant", back_populates="user")
+    permissions          = relationship("Permission", back_populates="user", cascade="all, delete-orphan")
     created_work_orders  = relationship("WorkOrder", back_populates="created_by",  foreign_keys="WorkOrder.created_by_id")
     assigned_work_orders = relationship("WorkOrder", back_populates="assigned_to", foreign_keys="WorkOrder.assigned_to_id")
     technician_profile   = relationship("Technician", back_populates="user", uselist=False)
@@ -218,6 +227,46 @@ class UserPlant(Base):
 
     user  = relationship("User", back_populates="plants")
     plant = relationship("Plant", back_populates="users")
+
+
+class Permission(Base):
+    __tablename__ = "permissions"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    plant_id   = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    resource   = Column(String(100), nullable=False)
+    action     = Column(String(50), nullable=False)
+    granted    = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", back_populates="permissions")
+
+
+class UserInvitation(Base):
+    __tablename__ = "user_invitations"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email         = Column(String(200), nullable=False)
+    role          = Column(SAEnum(UserRole, native_enum=False), default=UserRole.operator)
+    plant_id      = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    token         = Column(String(128), unique=True, nullable=False)
+    invited_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    expires_at    = Column(DateTime(timezone=True), nullable=False)
+    accepted_at   = Column(DateTime(timezone=True))
+    created_at    = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    token      = Column(String(128), unique=True, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at    = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 # ─── Equipment ─────────────────────────────────────────────────────────────────
