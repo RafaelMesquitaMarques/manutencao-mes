@@ -2,7 +2,10 @@ export type WorkOrderStatus = 'open' | 'in_progress' | 'on_hold' | 'completed' |
 export type WorkOrderType = 'corrective' | 'preventive' | 'predictive' | 'inspection' | 'improvement';
 export type Priority = 'low' | 'medium' | 'high' | 'critical';
 export type WorkOrderSource = 'manual' | 'ticket';
-export type MachineStatus = 'running' | 'stopped' | 'maintenance' | 'idle';
+export type MachineStatus = 'running' | 'stopped' | 'maintenance' | 'idle' | 'planned_stop';
+export type StopCategoryType = 'planned' | 'unplanned' | 'maintenance';
+export type OperatorShift = 'morning' | 'afternoon' | 'night' | 'all';
+export type PageLanguage = 'en' | 'fr' | 'es';
 
 export interface User {
   id: string;
@@ -247,18 +250,96 @@ export type AlertProblemType =
   | 'safety_risk' | 'quality_impact' | 'machine_stop' | 'preventive_request' | 'other';
 
 export interface Machine {
-  id:                  string;
-  name:                string;
-  code?:               string;
-  department?:         string;
-  location?:           string;
-  is_active:           boolean;
-  current_status?:     MachineStatus;
-  current_operator?:   string;
-  current_shift?:      string;
-  last_maintenance_at?: string;
-  page_slug?:          string;
-  created_at:          string;
+  id:                       string;
+  name:                     string;
+  code?:                    string;
+  department?:              string;
+  location?:                string;
+  is_active:                boolean;
+  current_status?:          MachineStatus;
+  current_operator?:        string;
+  current_shift?:           string;
+  current_job_number?:      string;
+  last_maintenance_at?:     string;
+  last_stop_at?:            string;
+  last_start_at?:           string;
+  page_slug?:               string;
+  page_language?:           PageLanguage;
+  target_availability_pct?: number;
+  target_count?:            number;
+  show_production_panel?:   boolean;
+  show_reject_panel?:       boolean;
+  show_availability_gauge?: boolean;
+  show_job_number?:         boolean;
+  custom_color?:            string;
+  display_name?:            string;
+  created_at:               string;
+}
+
+export interface StopSubcategoryOut {
+  id:                   string;
+  category_id:          string;
+  name:                 string;
+  icon:                 string;
+  color?:               string;
+  triggers_maintenance: boolean;
+  is_active:            boolean;
+  sort_order:           number;
+}
+
+export interface StopCategoryOut {
+  id:            string;
+  name:          string;
+  type:          StopCategoryType;
+  icon:          string;
+  color:         string;
+  is_active:     boolean;
+  sort_order:    number;
+  subcategories: StopSubcategoryOut[];
+}
+
+export interface StopCategoryMini {
+  id:    string;
+  name:  string;
+  icon:  string;
+  color: string;
+  type:  string;
+}
+
+export interface MachineStopOut {
+  id:               string;
+  machine_id:       string;
+  started_at:       string;
+  ended_at?:        string;
+  duration_minutes?: number;
+  comments?:        string;
+  justified_by?:    string;
+  ticket_id?:       string;
+  category?:        StopCategoryMini;
+  subcategory?: {
+    id: string; name: string; icon: string; color?: string; triggers_maintenance: boolean;
+  };
+}
+
+export interface MachineOperatorOut {
+  id:            string;
+  machine_id:    string;
+  user_id?:      string;
+  name:          string;
+  employee_code?: string;
+  shift:         OperatorShift;
+  is_active:     boolean;
+  created_at:    string;
+}
+
+export interface MESDataExtended {
+  production_count:       number;
+  target:                 number;
+  oee_pct:                number;
+  availability_pct:       number;
+  reject_count:           number;
+  downtime_today_minutes: number;
+  is_placeholder:         boolean;
 }
 
 export interface TicketForMachine {
@@ -277,6 +358,32 @@ export interface TicketForMachine {
 
 export interface MachinePageData extends Machine {
   open_tickets: TicketForMachine[];
+}
+
+export interface StopCreateRequest {
+  stop_category_id?:    string;
+  stop_subcategory_id?: string;
+  comments?:            string;
+  justified_by?:        string;
+}
+
+export interface MachineConfigUpdate {
+  display_name?:            string;
+  page_language?:           string;
+  custom_color?:            string;
+  target_availability_pct?: number;
+  target_count?:            number;
+  show_production_panel?:   boolean;
+  show_reject_panel?:       boolean;
+  show_availability_gauge?: boolean;
+  show_job_number?:         boolean;
+}
+
+export interface MachineOperatorCreate {
+  name:           string;
+  employee_code?: string;
+  shift:          OperatorShift;
+  user_id?:       string;
 }
 
 export interface MaintenanceRequestCreate {

@@ -46,7 +46,9 @@
     "maintenanceDashboard": "Panel de mantenimiento",
     "supervisorView":       "Vista supervisor",
     "machines":             "Todas las máquinas",
-    "myWork":               "Mi trabajo"
+    "myWork":               "Mi trabajo",
+    "machinesSetup":        "Config máquinas",
+    "stopCategories":       "Categorías de parada"
   },
   "auth": {
     "login": "Iniciar sesión",

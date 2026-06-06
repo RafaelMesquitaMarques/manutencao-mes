@@ -3,7 +3,10 @@ from typing import Optional, List, Any
 from uuid import UUID
 from datetime import datetime
 
-from app.models.models import AlertPriority, AlertStatus, AlertProblemType, AlertShift, TicketStatus, MachineStatus
+from app.models.models import (
+    AlertPriority, AlertStatus, AlertProblemType, AlertShift, TicketStatus,
+    MachineStatus, StopCategoryType, OperatorShift, PageLanguage,
+)
 
 
 # ── Machine ────────────────────────────────────────────────────────────────────
@@ -11,18 +14,30 @@ from app.models.models import AlertPriority, AlertStatus, AlertProblemType, Aler
 class MachineOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id:                  UUID
-    name:                str
-    code:                Optional[str] = None
-    department:          Optional[str] = None
-    location:            Optional[str] = None
-    is_active:           bool
-    current_status:      Optional[str] = None
-    current_operator:    Optional[str] = None
-    current_shift:       Optional[str] = None
-    last_maintenance_at: Optional[datetime] = None
-    page_slug:           Optional[str] = None
-    created_at:          datetime
+    id:                      UUID
+    name:                    str
+    code:                    Optional[str] = None
+    department:              Optional[str] = None
+    location:                Optional[str] = None
+    is_active:               bool
+    current_status:          Optional[str] = None
+    current_operator:        Optional[str] = None
+    current_shift:           Optional[str] = None
+    current_job_number:      Optional[str] = None
+    last_maintenance_at:     Optional[datetime] = None
+    last_stop_at:            Optional[datetime] = None
+    last_start_at:           Optional[datetime] = None
+    page_slug:               Optional[str] = None
+    page_language:           Optional[str] = None
+    target_availability_pct: Optional[float] = 70.0
+    target_count:            Optional[int] = None
+    show_production_panel:   bool = True
+    show_reject_panel:       bool = True
+    show_availability_gauge: bool = True
+    show_job_number:         bool = True
+    custom_color:            Optional[str] = None
+    display_name:            Optional[str] = None
+    created_at:              datetime
 
 
 class MachineListResponse(BaseModel):
@@ -47,24 +62,217 @@ class TicketForMachine(BaseModel):
 
 
 class MachinePageData(BaseModel):
-    id:                  UUID
-    name:                str
-    code:                Optional[str] = None
-    department:          Optional[str] = None
-    location:            Optional[str] = None
-    is_active:           bool
-    current_status:      str
-    current_operator:    Optional[str] = None
-    current_shift:       Optional[str] = None
-    last_maintenance_at: Optional[datetime] = None
-    page_slug:           Optional[str] = None
-    open_tickets:        List[TicketForMachine] = []
+    id:                      UUID
+    name:                    str
+    code:                    Optional[str] = None
+    department:              Optional[str] = None
+    location:                Optional[str] = None
+    is_active:               bool
+    current_status:          str
+    current_operator:        Optional[str] = None
+    current_shift:           Optional[str] = None
+    current_job_number:      Optional[str] = None
+    last_maintenance_at:     Optional[datetime] = None
+    last_stop_at:            Optional[datetime] = None
+    last_start_at:           Optional[datetime] = None
+    page_slug:               Optional[str] = None
+    page_language:           str = "fr"
+    target_availability_pct: float = 70.0
+    target_count:            Optional[int] = None
+    show_production_panel:   bool = True
+    show_reject_panel:       bool = True
+    show_availability_gauge: bool = True
+    show_job_number:         bool = True
+    custom_color:            Optional[str] = None
+    display_name:            Optional[str] = None
+    open_tickets:            List[TicketForMachine] = []
 
 
 class MachineStatusUpdate(BaseModel):
     status:           MachineStatus
     current_operator: Optional[str] = None
     current_shift:    Optional[str] = None
+
+
+class MachineJobUpdate(BaseModel):
+    job_number: Optional[str] = None
+
+
+class MachineOperatorUpdate(BaseModel):
+    operator_name: Optional[str] = None
+    operator_id:   Optional[UUID] = None
+
+
+class MachineConfigUpdate(BaseModel):
+    display_name:            Optional[str]   = None
+    page_language:           Optional[str]   = None
+    custom_color:            Optional[str]   = None
+    target_availability_pct: Optional[float] = None
+    target_count:            Optional[int]   = None
+    show_production_panel:   Optional[bool]  = None
+    show_reject_panel:       Optional[bool]  = None
+    show_availability_gauge: Optional[bool]  = None
+    show_job_number:         Optional[bool]  = None
+
+
+class MachineRejectUpdate(BaseModel):
+    delta: int = 1  # +1 or -1
+
+
+# ── Stop Categories ───────────────────────────────────────────────────────────
+
+class StopSubcategoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id:                  UUID
+    category_id:         UUID
+    name:                str
+    icon:                str
+    color:               Optional[str] = None
+    triggers_maintenance: bool
+    is_active:           bool
+    sort_order:          int
+
+
+class StopCategoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id:            UUID
+    name:          str
+    type:          StopCategoryType
+    icon:          str
+    color:         str
+    is_active:     bool
+    sort_order:    int
+    subcategories: List[StopSubcategoryOut] = []
+
+
+class StopCategoryCreate(BaseModel):
+    name:       str
+    type:       StopCategoryType
+    icon:       str = "⏸"
+    color:      str = "#6b7280"
+    sort_order: int = 0
+
+
+class StopCategoryUpdate(BaseModel):
+    name:       Optional[str]             = None
+    type:       Optional[StopCategoryType] = None
+    icon:       Optional[str]             = None
+    color:      Optional[str]             = None
+    is_active:  Optional[bool]            = None
+    sort_order: Optional[int]             = None
+
+
+class StopSubcategoryCreate(BaseModel):
+    name:                str
+    icon:                str = "⏸"
+    color:               Optional[str] = None
+    triggers_maintenance: bool = False
+    sort_order:          int = 0
+
+
+class StopSubcategoryUpdate(BaseModel):
+    name:                Optional[str]  = None
+    icon:                Optional[str]  = None
+    color:               Optional[str]  = None
+    triggers_maintenance: Optional[bool] = None
+    is_active:           Optional[bool] = None
+    sort_order:          Optional[int]  = None
+
+
+class SortOrderItem(BaseModel):
+    id:         UUID
+    sort_order: int
+
+
+# ── Machine Stops ─────────────────────────────────────────────────────────────
+
+class MachineStopCreate(BaseModel):
+    stop_category_id:    Optional[UUID] = None
+    stop_subcategory_id: Optional[UUID] = None
+    comments:            Optional[str]  = None
+    justified_by:        Optional[str]  = None
+
+
+class MachineStopClose(BaseModel):
+    stop_category_id:    Optional[UUID] = None
+    stop_subcategory_id: Optional[UUID] = None
+    comments:            Optional[str]  = None
+    justified_by:        Optional[str]  = None
+
+
+class StopCategoryMini(BaseModel):
+    id:    UUID
+    name:  str
+    icon:  str
+    color: str
+    type:  str
+
+
+class StopSubcategoryMini(BaseModel):
+    id:    UUID
+    name:  str
+    icon:  str
+    color: Optional[str] = None
+    triggers_maintenance: bool
+
+
+class MachineStopOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id:               UUID
+    machine_id:       UUID
+    started_at:       datetime
+    ended_at:         Optional[datetime] = None
+    duration_minutes: Optional[int]      = None
+    comments:         Optional[str]      = None
+    justified_by:     Optional[str]      = None
+    ticket_id:        Optional[UUID]     = None
+    category:         Optional[StopCategoryMini] = None
+    subcategory:      Optional[StopSubcategoryMini] = None
+
+
+# ── Machine Operators ─────────────────────────────────────────────────────────
+
+class MachineOperatorOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id:            UUID
+    machine_id:    UUID
+    user_id:       Optional[UUID]   = None
+    name:          str
+    employee_code: Optional[str]    = None
+    shift:         OperatorShift
+    is_active:     bool
+    created_at:    datetime
+
+
+class MachineOperatorCreate(BaseModel):
+    name:          str
+    employee_code: Optional[str]  = None
+    shift:         OperatorShift  = OperatorShift.all
+    user_id:       Optional[UUID] = None
+
+
+class MachineOperatorUpdate(BaseModel):
+    name:          Optional[str]          = None
+    employee_code: Optional[str]          = None
+    shift:         Optional[OperatorShift] = None
+    user_id:       Optional[UUID]         = None
+    is_active:     Optional[bool]         = None
+
+
+# ── Extended MES Data ─────────────────────────────────────────────────────────
+
+class MESDataExtended(BaseModel):
+    production_count:       int   = 0
+    target:                 int   = 0
+    oee_pct:                float = 0.0
+    availability_pct:       float = 0.0
+    reject_count:           int   = 0
+    downtime_today_minutes: int   = 0
+    is_placeholder:         bool  = True
 
 
 class MaintenanceRequestCreate(BaseModel):

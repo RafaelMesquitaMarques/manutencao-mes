@@ -22,6 +22,10 @@ import SupervisorDashboard from './pages/MaintenanceDashboard/SupervisorDashboar
 import MachineList from './pages/Machines/MachineList';
 import MachinePage from './pages/Machines/MachinePage';
 import MyWorkPage from './pages/MyWork/MyWorkPage';
+import StopCategoriesPage from './pages/Settings/StopCategories';
+import MachinesSetup from './pages/Settings/MachinesSetup';
+import MachineConfig from './pages/Settings/MachineConfig';
+import MachineOperators from './pages/Settings/MachineOperators';
 
 const App = () => (
   <BrowserRouter>
@@ -56,6 +60,10 @@ const App = () => (
         <Route path="maintenance/supervisor" element={<SupervisorDashboard />} />
         <Route path="machines"              element={<MachineList />} />
         <Route path="my-work"               element={<MyWorkPage />} />
+        <Route path="settings/machines"                       element={<MachinesSetup />} />
+        <Route path="settings/machines/:id/config"            element={<MachineConfig />} />
+        <Route path="settings/machines/:id/operators"         element={<MachineOperators />} />
+        <Route path="settings/stop-categories"                element={<StopCategoriesPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

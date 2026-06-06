@@ -96,10 +96,27 @@ class EquipmentStatus(str, enum.Enum):
     scrapped       = "scrapped"
 
 class MachineStatus(str, enum.Enum):
-    running     = "running"
-    stopped     = "stopped"
+    running      = "running"
+    stopped      = "stopped"
+    maintenance  = "maintenance"
+    idle         = "idle"
+    planned_stop = "planned_stop"
+
+class StopCategoryType(str, enum.Enum):
+    planned     = "planned"
+    unplanned   = "unplanned"
     maintenance = "maintenance"
-    idle        = "idle"
+
+class OperatorShift(str, enum.Enum):
+    morning   = "morning"
+    afternoon = "afternoon"
+    night     = "night"
+    all       = "all"
+
+class PageLanguage(str, enum.Enum):
+    en = "en"
+    fr = "fr"
+    es = "es"
 
 class TechnicianSpecialty(str, enum.Enum):
     electromechanical = "electromechanical"
@@ -533,21 +550,126 @@ class SupplierOrder(Base):
 class Machine(Base):
     __tablename__ = "machines"
 
-    id                  = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name                = Column(String(200), nullable=False)
-    code                = Column(String(50), unique=True, nullable=True)
-    department          = Column(String(200))
-    location            = Column(String(200))
-    is_active           = Column(Boolean, default=True)
-    current_status      = Column(SAEnum(MachineStatus, native_enum=False), default=MachineStatus.running)
-    current_operator    = Column(String(200), nullable=True)
-    current_shift       = Column(SAEnum(AlertShift, native_enum=False), nullable=True)
-    last_maintenance_at = Column(DateTime(timezone=True), nullable=True)
-    page_slug           = Column(String(200), unique=True, nullable=True)
-    created_at          = Column(DateTime(timezone=True), server_default=func.now())
+    id                       = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name                     = Column(String(200), nullable=False)
+    code                     = Column(String(50), unique=True, nullable=True)
+    department               = Column(String(200))
+    location                 = Column(String(200))
+    is_active                = Column(Boolean, default=True)
+    current_status           = Column(SAEnum(MachineStatus, native_enum=False), default=MachineStatus.running)
+    current_operator         = Column(String(200), nullable=True)
+    current_operator_id      = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    current_shift            = Column(SAEnum(AlertShift, native_enum=False), nullable=True)
+    current_job_number       = Column(String(100), nullable=True)
+    last_maintenance_at      = Column(DateTime(timezone=True), nullable=True)
+    last_stop_at             = Column(DateTime(timezone=True), nullable=True)
+    last_start_at            = Column(DateTime(timezone=True), nullable=True)
+    page_slug                = Column(String(200), unique=True, nullable=True)
+    page_language            = Column(SAEnum(PageLanguage, native_enum=False), default=PageLanguage.fr)
+    target_availability_pct  = Column(Float, default=70.0)
+    target_count             = Column(Integer, nullable=True)
+    show_production_panel    = Column(Boolean, default=True)
+    show_reject_panel        = Column(Boolean, default=True)
+    show_availability_gauge  = Column(Boolean, default=True)
+    show_job_number          = Column(Boolean, default=True)
+    custom_color             = Column(String(20), nullable=True)
+    display_name             = Column(String(200), nullable=True)
+    created_at               = Column(DateTime(timezone=True), server_default=func.now())
 
-    alerts  = relationship("MaintenanceAlert", back_populates="machine")
-    tickets = relationship("MaintenanceTicket", back_populates="machine")
+    alerts          = relationship("MaintenanceAlert", back_populates="machine")
+    tickets         = relationship("MaintenanceTicket", back_populates="machine")
+    stops           = relationship("MachineStop", back_populates="machine", cascade="all, delete-orphan")
+    operators       = relationship("MachineOperator", back_populates="machine", cascade="all, delete-orphan")
+    production_logs = relationship("MachineProductionLog", back_populates="machine", cascade="all, delete-orphan")
+
+
+class StopCategory(Base):
+    __tablename__ = "stop_categories"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name       = Column(String(200), nullable=False)
+    type       = Column(SAEnum(StopCategoryType, native_enum=False), nullable=False)
+    icon       = Column(String(50), nullable=False, default="⏸")
+    color      = Column(String(20), nullable=False, default="#6b7280")
+    is_active  = Column(Boolean, default=True)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    subcategories = relationship("StopSubcategory", back_populates="category", cascade="all, delete-orphan")
+
+
+class StopSubcategory(Base):
+    __tablename__ = "stop_subcategories"
+
+    id                   = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    category_id          = Column(UUID(as_uuid=True), ForeignKey("stop_categories.id"), nullable=False)
+    name                 = Column(String(200), nullable=False)
+    icon                 = Column(String(50), nullable=False, default="⏸")
+    color                = Column(String(20), nullable=True)
+    triggers_maintenance = Column(Boolean, default=False)
+    is_active            = Column(Boolean, default=True)
+    sort_order           = Column(Integer, default=0)
+
+    category = relationship("StopCategory", back_populates="subcategories")
+
+
+class MachineStop(Base):
+    __tablename__ = "machine_stops"
+
+    id                  = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    machine_id          = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    started_at          = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    ended_at            = Column(DateTime(timezone=True), nullable=True)
+    duration_minutes    = Column(Integer, nullable=True)
+    stop_category_id    = Column(UUID(as_uuid=True), ForeignKey("stop_categories.id"), nullable=True)
+    stop_subcategory_id = Column(UUID(as_uuid=True), ForeignKey("stop_subcategories.id"), nullable=True)
+    comments            = Column(Text, nullable=True)
+    justified_by        = Column(String(200), nullable=True)
+    ticket_id           = Column(UUID(as_uuid=True), ForeignKey("maintenance_tickets.id"), nullable=True)
+    created_at          = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at          = Column(DateTime(timezone=True), onupdate=func.now())
+
+    machine     = relationship("Machine", back_populates="stops")
+    category    = relationship("StopCategory")
+    subcategory = relationship("StopSubcategory")
+
+
+class MachineOperator(Base):
+    __tablename__ = "machine_operators"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    machine_id    = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    user_id       = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    name          = Column(String(200), nullable=False)
+    employee_code = Column(String(50), nullable=True)
+    shift         = Column(SAEnum(OperatorShift, native_enum=False), default=OperatorShift.all)
+    is_active     = Column(Boolean, default=True)
+    created_at    = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at    = Column(DateTime(timezone=True), onupdate=func.now())
+
+    machine = relationship("Machine", back_populates="operators")
+
+
+class MachineProductionLog(Base):
+    __tablename__ = "machine_production_logs"
+
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    machine_id       = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    date             = Column(Date, nullable=False)
+    shift            = Column(SAEnum(AlertShift, native_enum=False), nullable=False)
+    job_number       = Column(String(100), nullable=True)
+    target_count     = Column(Integer, default=0)
+    actual_count     = Column(Integer, default=0)
+    reject_count     = Column(Integer, default=0)
+    availability_pct = Column(Float, default=0.0)
+    performance_pct  = Column(Float, default=0.0)
+    quality_pct      = Column(Float, default=0.0)
+    oee_pct          = Column(Float, default=0.0)
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at       = Column(DateTime(timezone=True), onupdate=func.now())
+
+    machine = relationship("Machine", back_populates="production_logs")
 
 
 class MaintenanceAlert(Base):

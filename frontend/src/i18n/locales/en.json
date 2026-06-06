@@ -46,7 +46,9 @@
     "maintenanceDashboard": "Maintenance Dashboard",
     "supervisorView":       "Supervisor View",
     "machines":             "All Machines",
-    "myWork":               "My Work"
+    "myWork":               "My Work",
+    "machinesSetup":        "Machine Setup",
+    "stopCategories":       "Stop Categories"
   },
   "auth": {
     "login": "Login",

@@ -46,7 +46,9 @@
     "maintenanceDashboard": "Tableau maintenance",
     "supervisorView":       "Vue superviseur",
     "machines":             "Toutes les machines",
-    "myWork":               "Mon travail"
+    "myWork":               "Mon travail",
+    "machinesSetup":        "Config machines",
+    "stopCategories":       "Catégories d'arrêt"
   },
   "auth": {
     "login": "Connexion",

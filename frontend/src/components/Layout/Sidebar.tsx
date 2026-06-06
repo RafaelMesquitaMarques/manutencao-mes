@@ -54,8 +54,14 @@ const navGroups = [
   {
     label: 'Analytics',
     items: [
-      { to: '/kpis',     icon: BarChart3, key: 'kpis' },
-      { to: '/settings', icon: Settings,  key: 'settings', disabled: true },
+      { to: '/kpis', icon: BarChart3, key: 'kpis' },
+    ],
+  },
+  {
+    label: 'Settings',
+    items: [
+      { to: '/settings/machines',        icon: Factory,  key: 'machinesSetup' },
+      { to: '/settings/stop-categories', icon: Settings, key: 'stopCategories' },
     ],
   },
 ];
