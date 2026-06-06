@@ -2,11 +2,11 @@ from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime, date
-from app.models.models import TipoTransacaoCusto
+from app.models.models import CostTransactionType
 
 
 class LaborCreate(BaseModel):
-    tecnico_id: UUID
+    technician_id: UUID
     date: date
     hours_worked: float
     hourly_rate: Optional[float] = None
@@ -18,8 +18,8 @@ class LaborOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    ordem_id: UUID
-    tecnico_id: UUID
+    work_order_id: UUID
+    technician_id: UUID
     date: date
     hours_worked: float
     hourly_rate: Optional[float] = None
@@ -30,7 +30,7 @@ class LaborOut(BaseModel):
 
 
 class WOPartCreate(BaseModel):
-    item_estoque_id: Optional[UUID] = None
+    stock_item_id: Optional[UUID] = None
     part_number: Optional[str] = None
     description: str
     quantity: float
@@ -44,8 +44,8 @@ class WOPartOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    ordem_id: UUID
-    item_estoque_id: Optional[UUID] = None
+    work_order_id: UUID
+    stock_item_id: Optional[UUID] = None
     part_number: Optional[str] = None
     description: str
     quantity: float
@@ -58,7 +58,7 @@ class WOPartOut(BaseModel):
 
 
 class WOCostCreate(BaseModel):
-    transaction_type: TipoTransacaoCusto
+    transaction_type: CostTransactionType
     description: str
     amount: float
     currency: str = "CAD"
@@ -71,8 +71,8 @@ class WOCostOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    ordem_id: UUID
-    transaction_type: TipoTransacaoCusto
+    work_order_id: UUID
+    transaction_type: CostTransactionType
     description: str
     amount: float
     currency: str
@@ -93,7 +93,7 @@ class WOActionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    ordem_id: UUID
+    work_order_id: UUID
     author_id: Optional[UUID] = None
     action_type: str
     content: Optional[str] = None

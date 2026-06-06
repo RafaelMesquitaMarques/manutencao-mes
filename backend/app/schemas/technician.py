@@ -2,26 +2,26 @@ from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
-from app.models.models import EspecialidadeTecnico, TurnoTecnico
+from app.models.models import TechnicianSpecialty, TechnicianShift
 
 
-class TecnicoCreate(BaseModel):
+class TechnicianCreate(BaseModel):
     user_id: UUID
     employee_number: Optional[str] = None
-    specialty: Optional[EspecialidadeTecnico] = None
-    shift: Optional[TurnoTecnico] = None
+    specialty: Optional[TechnicianSpecialty] = None
+    shift: Optional[TechnicianShift] = None
     hourly_rate: Optional[float] = None
     certifications: Optional[List[str]] = []
 
 
-class TecnicoOut(BaseModel):
+class TechnicianOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     user_id: UUID
     employee_number: Optional[str] = None
-    specialty: Optional[EspecialidadeTecnico] = None
-    shift: Optional[TurnoTecnico] = None
+    specialty: Optional[TechnicianSpecialty] = None
+    shift: Optional[TechnicianShift] = None
     hourly_rate: Optional[float] = None
     certifications: List[str] = []
     active: bool
@@ -30,6 +30,6 @@ class TecnicoOut(BaseModel):
     email: Optional[str] = None
 
 
-class TecnicoListResponse(BaseModel):
+class TechnicianListResponse(BaseModel):
     total: int
-    items: List[TecnicoOut]
+    items: List[TechnicianOut]

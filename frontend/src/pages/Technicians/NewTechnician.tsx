@@ -92,7 +92,7 @@ const NewTechnician = () => {
             <option value="">{t('technicians.selectUser')}</option>
             {users.map((u) => (
               <option key={u.id} value={u.id}>
-                {u.nome} ({u.email})
+                {u.name} ({u.email})
               </option>
             ))}
           </select>

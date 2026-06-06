@@ -3,8 +3,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.db.session import get_db
-from app.models.models import Usuario
-from app.schemas.usuario import LoginRequest, TokenResponse, UsuarioCreate, UsuarioOut
+from app.models.models import User
+from app.schemas.user import LoginRequest, TokenResponse, UserCreate, UserOut
 from app.core.security import verify_password, hash_password, create_access_token, get_current_user
 
 router = APIRouter()
@@ -13,11 +13,11 @@ router = APIRouter()
 @router.post("/login", response_model=TokenResponse)
 async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(Usuario).where(Usuario.email == data.email, Usuario.ativo == True)
+        select(User).where(User.email == data.email, User.active == True)
     )
     user = result.scalar_one_or_none()
 
-    if not user or not verify_password(data.password, user.senha_hash):
+    if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -27,23 +27,22 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
     return TokenResponse(
         access_token=token,
         user_id=str(user.id),
-        nome=user.nome,
-        idioma=user.idioma,
+        name=user.name,
+        language=user.language,
     )
 
 
-@router.post("/register", response_model=UsuarioOut, status_code=201)
-async def register(data: UsuarioCreate, db: AsyncSession = Depends(get_db)):
-    # Verifica se email já existe
-    result = await db.execute(select(Usuario).where(Usuario.email == data.email))
+@router.post("/register", response_model=UserOut, status_code=201)
+async def register(data: UserCreate, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.email == data.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    user = Usuario(
-        nome=data.nome,
+    user = User(
+        name=data.name,
         email=data.email,
-        senha_hash=hash_password(data.password),
-        idioma=data.idioma,
+        password_hash=hash_password(data.password),
+        language=data.language,
     )
     db.add(user)
     await db.commit()
@@ -51,6 +50,6 @@ async def register(data: UsuarioCreate, db: AsyncSession = Depends(get_db)):
     return user
 
 
-@router.get("/me", response_model=UsuarioOut)
-async def me(current_user: Usuario = Depends(get_current_user)):
+@router.get("/me", response_model=UserOut)
+async def me(current_user: User = Depends(get_current_user)):
     return current_user

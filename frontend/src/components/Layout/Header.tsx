@@ -104,7 +104,7 @@ const Header = ({ onMenuToggle }: HeaderProps) => {
               <UserIcon size={12} className="text-blue-400" />
             </div>
             <span className="text-sm font-medium text-gray-300 hidden sm:block max-w-[120px] truncate">
-              {user?.full_name ?? user?.email ?? 'User'}
+              {user?.name ?? user?.email ?? 'User'}
             </span>
             <ChevronDown size={12} className={`transition-transform hidden sm:block ${userOpen ? 'rotate-180' : ''}`} />
           </button>
@@ -112,7 +112,7 @@ const Header = ({ onMenuToggle }: HeaderProps) => {
           {userOpen && (
             <div className="absolute right-0 top-full mt-1.5 w-48 bg-[#111827] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden animate-slide-in">
               <div className="px-3 py-2.5 border-b border-white/[0.06]">
-                <p className="text-white text-sm font-medium truncate">{user?.full_name}</p>
+                <p className="text-white text-sm font-medium truncate">{user?.name}</p>
                 <p className="text-gray-500 text-xs truncate mt-0.5">{user?.email}</p>
               </div>
               <button

@@ -38,14 +38,14 @@ export const createWorkOrder = async (payload: WorkOrderCreate): Promise<WorkOrd
 };
 
 export const startWorkOrder = async (id: string): Promise<WorkOrder> => {
-  const { data } = await api.post<WorkOrder>(`/api/wo/${id}/iniciar`);
+  const { data } = await api.post<WorkOrder>(`/api/wo/${id}/start`);
   return data;
 };
 
 export const completeWorkOrder = async (id: string, repairHours?: number): Promise<WorkOrder> => {
   const params: Record<string, string> = {};
-  if (repairHours != null) params.tempo_reparo_h = String(repairHours);
-  const { data } = await api.post<WorkOrder>(`/api/wo/${id}/concluir`, null, { params });
+  if (repairHours != null) params.repair_hours = String(repairHours);
+  const { data } = await api.post<WorkOrder>(`/api/wo/${id}/complete`, null, { params });
   return data;
 };
 
@@ -56,7 +56,7 @@ export const updateWorkOrderStatus = async (
 ): Promise<WorkOrder> => {
   const { data } = await api.patch<WorkOrder>(`/api/wo/${id}`, {
     status,
-    tempo_reparo_h: repairHours,
+    repair_hours: repairHours,
   });
   return data;
 };
@@ -109,7 +109,7 @@ export const fetchWOLabor = async (id: string): Promise<LaborRecord[]> => {
 export const addWOLabor = async (
   id: string,
   payload: {
-    tecnico_id: string;
+    technician_id: string;
     date: string;
     hours_worked: number;
     hourly_rate?: number;

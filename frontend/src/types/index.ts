@@ -4,14 +4,14 @@ export type Priority = 'low' | 'medium' | 'high' | 'critical';
 
 export interface User {
   id: string;
-  nome: string;
+  name: string;
   email: string;
-  ativo: boolean;
+  active: boolean;
 }
 
 export interface Equipment {
   id: string;
-  usina_id: string;
+  plant_id: string;
   code: string;
   name: string;
   location?: string;
@@ -41,29 +41,24 @@ export interface WorkOrder {
   created_by_name?: string;
   executor_id?: string;
   root_cause?: string;
-  solution?: string;
-  diagnostic?: string;
-  resolution?: string;
+  solution_applied?: string;
   opened_at: string;
   due_date?: string;
   started_at?: string;
   completed_at?: string;
-  close_date?: string;
   downtime_hours?: number;
-  downtime_minutes?: number;
   repair_hours?: number;
-  completion_ratio?: number;
   total_cost?: number;
   execution_mode?: string;
   classification?: string;
   failure_code?: string;
-  componente?: string;
+  component?: string;
   tag?: string;
-  counter_open?: number;
-  counter_close?: number;
   project_number?: string;
   cost_center?: string;
   from_iot: boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface WorkOrderCreate {
@@ -117,8 +112,8 @@ export interface TechnicianCreate {
 
 export interface LaborRecord {
   id: string;
-  ordem_id: string;
-  tecnico_id: string;
+  work_order_id: string;
+  technician_id: string;
   date: string;
   hours_worked: number;
   hourly_rate?: number;
@@ -130,8 +125,8 @@ export interface LaborRecord {
 
 export interface WOPart {
   id: string;
-  ordem_id: string;
-  item_estoque_id?: string;
+  work_order_id: string;
+  stock_item_id?: string;
   part_number?: string;
   description: string;
   quantity: number;
@@ -145,7 +140,7 @@ export interface WOPart {
 
 export interface WOCost {
   id: string;
-  ordem_id: string;
+  work_order_id: string;
   transaction_type: string;
   description: string;
   amount: number;
@@ -165,7 +160,7 @@ export interface WOCostSummary {
 
 export interface WOAction {
   id: string;
-  ordem_id: string;
+  work_order_id: string;
   author_id?: string;
   action_type: string;
   content?: string;
@@ -178,8 +173,8 @@ export interface LoginResponse {
   access_token: string;
   token_type: string;
   user_id: number | string;
-  nome: string;
-  idioma?: string;
+  name: string;
+  language?: string;
 }
 
 export interface LoginCredentials {

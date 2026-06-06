@@ -1,54 +1,54 @@
--- Inicialização do banco de dados MES Manutenção
--- Executado automaticamente pelo Docker na primeira subida
+-- MES Maintenance Platform — database initialization
+-- Executed automatically by Docker on first startup
 
--- Habilita extensão TimescaleDB (já incluída na imagem)
+-- Enable TimescaleDB extension (included in the base image)
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 
--- Cria hypertable para séries temporais dos captores IoT
--- (executado após o SQLAlchemy criar a tabela via Alembic/create_all)
--- Este bloco é idempotente: não falha se já existir
+-- Create hypertable for IoT sensor time-series data
+-- (executed after SQLAlchemy creates the table via create_all)
+-- This block is idempotent: it does not fail if the hypertable already exists
 
 DO $$
 BEGIN
   IF EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_name = 'leituras_iot'
+    WHERE table_name = 'sensor_readings'
   ) THEN
     PERFORM create_hypertable(
-      'leituras_iot', 'timestamp',
+      'sensor_readings', 'timestamp',
       if_not_exists => TRUE,
       chunk_time_interval => INTERVAL '7 days'
     );
 
-    -- Política de compressão automática (dados > 30 dias)
+    -- Auto-compression policy (data older than 30 days)
     PERFORM add_compression_policy(
-      'leituras_iot',
+      'sensor_readings',
       INTERVAL '30 days',
       if_not_exists => TRUE
     );
 
-    -- Política de retenção (apaga dados > 2 anos)
+    -- Retention policy (drop data older than 2 years)
     PERFORM add_retention_policy(
-      'leituras_iot',
+      'sensor_readings',
       INTERVAL '2 years',
       if_not_exists => TRUE
     );
   END IF;
 END $$;
 
--- Índices adicionais para performance
-CREATE INDEX IF NOT EXISTS idx_leituras_captor_ts
-  ON leituras_iot (captor_id, timestamp DESC);
+-- Additional performance indexes
+CREATE INDEX IF NOT EXISTS idx_sensor_readings_sensor_ts
+  ON sensor_readings (sensor_id, timestamp DESC);
 
-CREATE INDEX IF NOT EXISTS idx_leituras_equip_ts
-  ON leituras_iot (equipamento_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sensor_readings_equip_ts
+  ON sensor_readings (equipment_id, timestamp DESC);
 
-CREATE INDEX IF NOT EXISTS idx_os_status
-  ON ordens_servico (status, data_abertura DESC);
+CREATE INDEX IF NOT EXISTS idx_wo_status
+  ON work_orders (status, opened_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_os_equipamento
-  ON ordens_servico (equipamento_id, status);
+CREATE INDEX IF NOT EXISTS idx_wo_equipment
+  ON work_orders (equipment_id, status);
 
-CREATE INDEX IF NOT EXISTS idx_alertas_nao_reconhecidos
-  ON alertas (reconhecido, criado_em DESC)
-  WHERE reconhecido = false;
+CREATE INDEX IF NOT EXISTS idx_alerts_unacknowledged
+  ON alerts (acknowledged, created_at DESC)
+  WHERE acknowledged = false;

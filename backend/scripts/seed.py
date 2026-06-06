@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import select
 
-from app.models.models import Usina, Equipamento, Usuario
+from app.models.models import Plant, Equipment, User
 from app.core.security import hash_password
 from app.core.config import settings
 
@@ -23,38 +23,38 @@ async def main() -> None:
 
     async with Session() as db:
         # ── Plant ─────────────────────────────────────────────────────────────
-        r = await db.execute(select(Usina).where(Usina.codigo == "PLT1"))
-        usina = r.scalar_one_or_none()
-        if not usina:
-            usina = Usina(codigo="PLT1", nome="Foliot Furniture - Plant 1")
-            db.add(usina)
+        r = await db.execute(select(Plant).where(Plant.code == "PLT1"))
+        plant = r.scalar_one_or_none()
+        if not plant:
+            plant = Plant(code="PLT1", name="Foliot Furniture - Plant 1")
+            db.add(plant)
             await db.flush()
-            print(f"[+] Plant created:  {usina.nome}  (id={usina.id})")
+            print(f"[+] Plant created:  {plant.name}  (id={plant.id})")
         else:
-            print(f"[=] Plant exists:   {usina.nome}")
+            print(f"[=] Plant exists:   {plant.name}")
 
         # ── Equipment ─────────────────────────────────────────────────────────
         equipment_rows = [
-            {"codigo": "EQ-001", "nome": "CNC Router Line 3",   "localizacao": "Production Line 3", "criticidade": "alta"},
-            {"codigo": "EQ-002", "nome": "Edge Banding Machine", "localizacao": "Production Line 1", "criticidade": "media"},
-            {"codigo": "EQ-003", "nome": "Hydraulic Press A",    "localizacao": "Press Room",         "criticidade": "critica"},
+            {"code": "EQ-001", "name": "CNC Router Line 3",   "location": "Production Line 3", "criticality": "high"},
+            {"code": "EQ-002", "name": "Edge Banding Machine", "location": "Production Line 1", "criticality": "medium"},
+            {"code": "EQ-003", "name": "Hydraulic Press A",    "location": "Press Room",         "criticality": "critical"},
         ]
         for row in equipment_rows:
-            r = await db.execute(select(Equipamento).where(Equipamento.codigo == row["codigo"]))
+            r = await db.execute(select(Equipment).where(Equipment.code == row["code"]))
             if not r.scalar_one_or_none():
-                db.add(Equipamento(usina_id=usina.id, **row))
-                print(f"[+] Equipment created: {row['nome']}")
+                db.add(Equipment(plant_id=plant.id, **row))
+                print(f"[+] Equipment created: {row['name']}")
             else:
-                print(f"[=] Equipment exists:  {row['nome']}")
+                print(f"[=] Equipment exists:  {row['name']}")
 
         # ── Default admin user ────────────────────────────────────────────────
-        r = await db.execute(select(Usuario).limit(1))
+        r = await db.execute(select(User).limit(1))
         if not r.scalar_one_or_none():
-            admin = Usuario(
-                nome="Admin",
+            admin = User(
+                name="Admin",
                 email="admin@foliot.com",
-                senha_hash=hash_password("admin123"),
-                idioma="en",
+                password_hash=hash_password("admin123"),
+                language="en",
             )
             db.add(admin)
             print("[+] Admin user created:  admin@foliot.com  /  admin123")

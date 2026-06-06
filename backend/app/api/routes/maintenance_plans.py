@@ -1,6 +1,8 @@
 from fastapi import APIRouter
+
 router = APIRouter()
 
+
 @router.get("/")
-async def list_planos_manutencao():
+async def list_maintenance_plans():
     return []

@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Banco
+    # Database
     DATABASE_URL: str = "postgresql+asyncpg://mesadmin:changeme@db:5432/manutencao"
 
     # Redis
@@ -12,12 +12,12 @@ class Settings(BaseSettings):
     MQTT_BROKER: str = "mqtt"
     MQTT_PORT: int = 1883
 
-    # Segurança
+    # Security — change SECRET_KEY in production
     SECRET_KEY: str = "troque-em-producao"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 480  # 8 horas
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 480  # 8 hours
 
-    # Ambiente
+    # Environment
     ENVIRONMENT: str = "development"
     DEBUG: bool = True
 

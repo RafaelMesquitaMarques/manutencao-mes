@@ -1,12 +1,12 @@
 """
-Worker IoT: consome mensagens MQTT dos captores,
-grava séries temporais no TimescaleDB e gera alertas automáticos.
+IoT Worker: consumes MQTT messages from sensors,
+stores time-series data in TimescaleDB, and generates automatic alerts.
 
-Substitui a empresa externa que hoje faz este processamento.
-
-Tópicos MQTT esperados:
-  usinas/{usina_id}/captores/{captor_codigo}/leitura
+Expected MQTT topics:
+  usinas/{plant_id}/captores/{sensor_code}/leitura
   Payload JSON: {"valor": 12.5, "timestamp": "2024-01-01T10:00:00Z"}
+
+NOTE: The topic pattern is kept unchanged — changing it would break device firmware.
 """
 import asyncio
 import json
@@ -19,73 +19,72 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
-from app.models.models import Captor, LeituraIoT, Alerta, Equipamento
+from app.models.models import Sensor, SensorReading, Alert
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("iot_worker")
 
 
-async def processar_leitura(session: AsyncSession, captor_codigo: str, payload: dict):
-    """Grava leitura e verifica limites para gerar alerta."""
-    
-    # Busca captor pelo código MQTT
+async def process_reading(session: AsyncSession, sensor_code: str, payload: dict):
+    """Store sensor reading and check limits to generate alerts."""
+
     result = await session.execute(
-        select(Captor).where(Captor.codigo == captor_codigo, Captor.ativo == True)
+        select(Sensor).where(Sensor.code == sensor_code, Sensor.active == True)
     )
-    captor = result.scalar_one_or_none()
-    if not captor:
-        log.warning(f"Captor não encontrado: {captor_codigo}")
+    sensor = result.scalar_one_or_none()
+    if not sensor:
+        log.warning(f"Sensor not found: {sensor_code}")
         return
 
-    valor = float(payload.get("valor", 0))
+    value = float(payload.get("valor", 0))
     ts_str = payload.get("timestamp")
     timestamp = datetime.fromisoformat(ts_str) if ts_str else datetime.now(timezone.utc)
 
-    # Grava leitura (TimescaleDB hypertable)
-    leitura = LeituraIoT(
-        captor_id=captor.id,
-        equipamento_id=captor.equipamento_id,
+    # Store reading in TimescaleDB hypertable
+    reading = SensorReading(
+        sensor_id=sensor.id,
+        equipment_id=sensor.equipment_id,
         timestamp=timestamp,
-        valor=valor,
+        value=value,
     )
-    session.add(leitura)
+    session.add(reading)
 
-    # Verifica limites → gera alerta se necessário
-    alerta = None
-    if captor.limite_max is not None and valor > captor.limite_max:
-        alerta = Alerta(
-            captor_id=captor.id,
-            equipamento_id=captor.equipamento_id,
-            tipo="limite_excedido",
-            severidade="critico" if valor > captor.limite_max * 1.2 else "aviso",
-            valor_lido=valor,
-            limite=captor.limite_max,
-            mensagem=f"{captor.nome}: valor {valor} {captor.unidade} acima do limite {captor.limite_max}",
+    # Check limits and generate alert if needed
+    alert = None
+    if sensor.max_limit is not None and value > sensor.max_limit:
+        alert = Alert(
+            sensor_id=sensor.id,
+            equipment_id=sensor.equipment_id,
+            type="limit_exceeded",
+            severity="critical" if value > sensor.max_limit * 1.2 else "warning",
+            value_read=value,
+            limit_value=sensor.max_limit,
+            message=f"{sensor.name}: value {value} {sensor.unit} above limit {sensor.max_limit}",
         )
-    elif captor.limite_min is not None and valor < captor.limite_min:
-        alerta = Alerta(
-            captor_id=captor.id,
-            equipamento_id=captor.equipamento_id,
-            tipo="limite_excedido",
-            severidade="aviso",
-            valor_lido=valor,
-            limite=captor.limite_min,
-            mensagem=f"{captor.nome}: valor {valor} {captor.unidade} abaixo do limite {captor.limite_min}",
+    elif sensor.min_limit is not None and value < sensor.min_limit:
+        alert = Alert(
+            sensor_id=sensor.id,
+            equipment_id=sensor.equipment_id,
+            type="limit_exceeded",
+            severity="warning",
+            value_read=value,
+            limit_value=sensor.min_limit,
+            message=f"{sensor.name}: value {value} {sensor.unit} below limit {sensor.min_limit}",
         )
 
-    if alerta:
-        session.add(alerta)
-        log.warning(f"ALERTA [{alerta.severidade}] {alerta.mensagem}")
+    if alert:
+        session.add(alert)
+        log.warning(f"ALERT [{alert.severity}] {alert.message}")
 
     await session.commit()
-    log.debug(f"Leitura gravada: {captor_codigo} = {valor} {captor.unidade}")
+    log.debug(f"Reading stored: {sensor_code} = {value} {sensor.unit}")
 
 
 async def main():
-    log.info(f"Conectando ao broker MQTT {settings.MQTT_BROKER}:{settings.MQTT_PORT}")
-    
+    log.info(f"Connecting to MQTT broker {settings.MQTT_BROKER}:{settings.MQTT_PORT}")
+
     async with aiomqtt.Client(settings.MQTT_BROKER, settings.MQTT_PORT) as client:
-        # Assina todos os tópicos de leitura de todas as usinas
+        # Subscribe to all sensor reading topics across all plants
         await client.subscribe("usinas/+/captores/+/leitura")
         log.info("Subscribed: usinas/+/captores/+/leitura")
 
@@ -93,18 +92,18 @@ async def main():
             async for message in messages:
                 try:
                     topic_parts = str(message.topic).split("/")
-                    # usinas/{usina_id}/captores/{captor_codigo}/leitura
-                    captor_codigo = topic_parts[3] if len(topic_parts) >= 4 else None
-                    if not captor_codigo:
+                    # usinas/{plant_id}/captores/{sensor_code}/leitura
+                    sensor_code = topic_parts[3] if len(topic_parts) >= 4 else None
+                    if not sensor_code:
                         continue
 
                     payload = json.loads(message.payload.decode())
 
                     async with AsyncSessionLocal() as session:
-                        await processar_leitura(session, captor_codigo, payload)
+                        await process_reading(session, sensor_code, payload)
 
                 except Exception as e:
-                    log.error(f"Erro processando mensagem: {e}")
+                    log.error(f"Error processing message: {e}")
 
 
 if __name__ == "__main__":

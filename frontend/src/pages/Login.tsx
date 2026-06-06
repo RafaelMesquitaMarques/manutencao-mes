@@ -37,10 +37,10 @@ const Login = () => {
     try {
       const result = await login({ email, password });
       const user: User = {
-        id: Number(result.user_id),
+        id: String(result.user_id),
         email,
-        full_name: result.nome,
-        role: '',
+        name: result.name,
+        active: true,
       };
       setAuth(user, result.access_token);
       navigate('/dashboard', { replace: true });

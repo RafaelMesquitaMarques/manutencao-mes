@@ -114,9 +114,7 @@ const OverviewTab = ({ wo }: { wo: WorkOrder }) => {
     { key: 'short_description', label: t('workOrders.shortDescription'), val: wo.short_description },
     { key: 'description', label: t('common.description'), val: wo.description },
     { key: 'root_cause', label: t('workOrders.rootCause'), val: wo.root_cause },
-    { key: 'solution', label: t('workOrders.solutionApplied'), val: wo.solution },
-    { key: 'diagnostic', label: t('workOrders.diagnostic'), val: wo.diagnostic },
-    { key: 'resolution', label: t('workOrders.resolution'), val: wo.resolution },
+    { key: 'solution_applied', label: t('workOrders.solutionApplied'), val: wo.solution_applied },
   ].filter((f) => f.val);
 
   return (
@@ -176,25 +174,6 @@ const OverviewTab = ({ wo }: { wo: WorkOrder }) => {
                 <span className="font-mono text-blue-400 font-semibold">{wo.repair_hours} {t('common.hours')}</span>
               } />
             )}
-            {wo.downtime_minutes != null && (
-              <FieldRow label={t('workOrders.downtimeMinutes')} value={
-                <span className="font-mono text-amber-400">{wo.downtime_minutes} min</span>
-              } />
-            )}
-            {wo.completion_ratio != null && (
-              <div>
-                <p className="text-gray-600 text-[11px] uppercase tracking-wide mb-1">{t('workOrders.completionRatio')}</p>
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-blue-500 rounded-full"
-                      style={{ width: `${Math.round(wo.completion_ratio * 100)}%` }}
-                    />
-                  </div>
-                  <span className="text-xs font-mono text-gray-300">{Math.round(wo.completion_ratio * 100)}%</span>
-                </div>
-              </div>
-            )}
             {wo.total_cost != null && (
               <FieldRow label={t('workOrders.totalCost')} value={
                 <span className="font-mono text-green-400 font-semibold">{fmtMoney(wo.total_cost)}</span>
@@ -204,8 +183,8 @@ const OverviewTab = ({ wo }: { wo: WorkOrder }) => {
         </SectionCard>
 
         {/* Additional CMMS fields */}
-        {(wo.execution_mode || wo.classification || wo.failure_code || wo.componente ||
-          wo.project_number || wo.cost_center || wo.counter_open != null || wo.counter_close != null) && (
+        {(wo.execution_mode || wo.classification || wo.failure_code || wo.component ||
+          wo.project_number || wo.cost_center) && (
           <SectionCard icon={Info} title={t('workOrders.classification')}>
             <div className="space-y-3">
               {wo.execution_mode && (
@@ -217,20 +196,14 @@ const OverviewTab = ({ wo }: { wo: WorkOrder }) => {
               {wo.failure_code && (
                 <FieldRow label={t('workOrders.failureCode')} value={<span className="font-mono text-xs">{wo.failure_code}</span>} />
               )}
-              {wo.componente && (
-                <FieldRow label={t('workOrders.component')} value={wo.componente} />
+              {wo.component && (
+                <FieldRow label={t('workOrders.component')} value={wo.component} />
               )}
               {wo.cost_center && (
                 <FieldRow label={t('workOrders.costCenter')} value={<span className="font-mono text-xs">{wo.cost_center}</span>} />
               )}
               {wo.project_number && (
                 <FieldRow label={t('workOrders.projectNumber')} value={<span className="font-mono text-xs">{wo.project_number}</span>} />
-              )}
-              {wo.counter_open != null && (
-                <FieldRow label={t('workOrders.counterOpen')} value={<span className="font-mono text-xs">{wo.counter_open}</span>} />
-              )}
-              {wo.counter_close != null && (
-                <FieldRow label={t('workOrders.counterClose')} value={<span className="font-mono text-xs">{wo.counter_close}</span>} />
               )}
             </div>
           </SectionCard>
@@ -258,7 +231,7 @@ const LaborTab = ({
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [form, setForm] = useState({
-    tecnico_id: '',
+    technician_id: '',
     date: new Date().toISOString().slice(0, 10),
     hours_worked: '',
     hourly_rate: '',
@@ -271,12 +244,12 @@ const LaborTab = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.tecnico_id || !form.hours_worked) return;
+    if (!form.technician_id || !form.hours_worked) return;
     setSubmitting(true);
     setErr(null);
     try {
       const rec = await addWOLabor(woId, {
-        tecnico_id: form.tecnico_id,
+        technician_id: form.technician_id,
         date: form.date,
         hours_worked: Number(form.hours_worked),
         hourly_rate: form.hourly_rate ? Number(form.hourly_rate) : undefined,
@@ -285,7 +258,7 @@ const LaborTab = ({
       });
       onAdded(rec);
       setShowForm(false);
-      setForm({ tecnico_id: '', date: new Date().toISOString().slice(0, 10), hours_worked: '', hourly_rate: '', activity: '', notes: '' });
+      setForm({ technician_id: '', date: new Date().toISOString().slice(0, 10), hours_worked: '', hourly_rate: '', activity: '', notes: '' });
     } catch {
       setErr(t('common.error'));
     } finally {
@@ -332,8 +305,8 @@ const LaborTab = ({
               <label className="label">{t('workOrders.technicianLabel')} *</label>
               <select
                 className="input-field"
-                value={form.tecnico_id}
-                onChange={(e) => setForm({ ...form, tecnico_id: e.target.value })}
+                value={form.technician_id}
+                onChange={(e) => setForm({ ...form, technician_id: e.target.value })}
                 required
               >
                 <option value="">{t('form.selectTechnician')}</option>
@@ -400,7 +373,7 @@ const LaborTab = ({
                 {records.map((r) => (
                   <tr key={r.id} className="table-row">
                     <td className="table-cell font-mono text-xs text-gray-400">{fmtDate(r.date)}</td>
-                    <td className="table-cell text-gray-200">{r.tecnico_id.slice(0, 8)}…</td>
+                    <td className="table-cell text-gray-200">{r.technician_id.slice(0, 8)}…</td>
                     <td className="table-cell text-right font-mono text-blue-400">{r.hours_worked}h</td>
                     <td className="table-cell text-right font-mono text-gray-400 text-xs">
                       {r.hourly_rate ? `$${r.hourly_rate}/h` : '—'}
