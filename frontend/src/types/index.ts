@@ -6,6 +6,9 @@ export type MachineStatus = 'running' | 'stopped' | 'maintenance' | 'idle' | 'pl
 export type StopCategoryType = 'planned' | 'unplanned' | 'maintenance';
 export type OperatorShift = 'morning' | 'afternoon' | 'night' | 'all';
 export type PageLanguage = 'en' | 'fr' | 'es';
+export type HourlyRateCurrency = 'CAD' | 'USD' | 'EUR';
+export type JobOrderStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
+export type JobOrderSource = 'manual' | 'erp';
 
 export interface User {
   id: string;
@@ -267,6 +270,9 @@ export interface Machine {
   page_language?:           PageLanguage;
   target_availability_pct?: number;
   target_count?:            number;
+  target_count_per_shift?:  number;
+  hourly_rate?:             number;
+  hourly_rate_currency?:    HourlyRateCurrency;
   show_production_panel?:   boolean;
   show_reject_panel?:       boolean;
   show_availability_gauge?: boolean;
@@ -280,22 +286,86 @@ export interface StopSubcategoryOut {
   id:                   string;
   category_id:          string;
   name:                 string;
+  name_en?:             string;
+  name_fr?:             string;
+  name_es?:             string;
   icon:                 string;
   color?:               string;
+  comment_required?:    boolean;
   triggers_maintenance: boolean;
   is_active:            boolean;
   sort_order:           number;
 }
 
 export interface StopCategoryOut {
-  id:            string;
-  name:          string;
-  type:          StopCategoryType;
-  icon:          string;
-  color:         string;
-  is_active:     boolean;
-  sort_order:    number;
-  subcategories: StopSubcategoryOut[];
+  id:                   string;
+  machine_id?:          string;
+  name:                 string;
+  name_en?:             string;
+  name_fr?:             string;
+  name_es?:             string;
+  type:                 StopCategoryType;
+  icon:                 string;
+  color:                string;
+  comment_required?:    boolean;
+  triggers_maintenance?: boolean;
+  is_active:            boolean;
+  is_global?:           boolean;
+  sort_order:           number;
+  subcategories:        StopSubcategoryOut[];
+}
+
+export interface RejectSubcategoryOut {
+  id:                string;
+  category_id:       string;
+  name:              string;
+  name_en?:          string;
+  name_fr?:          string;
+  name_es?:          string;
+  icon?:             string;
+  color?:            string;
+  comment_required?: boolean;
+  is_active:         boolean;
+  sort_order:        number;
+}
+
+export interface RejectCategoryOut {
+  id:                string;
+  machine_id?:       string;
+  name:              string;
+  name_en?:          string;
+  name_fr?:          string;
+  name_es?:          string;
+  icon?:             string;
+  color?:            string;
+  comment_required?: boolean;
+  is_active:         boolean;
+  is_global?:        boolean;
+  sort_order:        number;
+  subcategories:     RejectSubcategoryOut[];
+}
+
+export interface RejectLogCreate {
+  category_id?:    string;
+  subcategory_id?: string;
+  quantity:        number;
+  operator_id?:    string;
+  shift?:          string;
+  job_number?:     string;
+  comment?:        string;
+}
+
+export interface JobOrder {
+  id:               string;
+  job_number:       string;
+  machine_id?:      string;
+  description?:     string;
+  target_quantity?: number;
+  status:           JobOrderStatus;
+  source:           JobOrderSource;
+  started_at?:      string;
+  completed_at?:    string;
+  created_at:       string;
 }
 
 export interface StopCategoryMini {
@@ -373,6 +443,9 @@ export interface MachineConfigUpdate {
   custom_color?:            string;
   target_availability_pct?: number;
   target_count?:            number;
+  target_count_per_shift?:  number;
+  hourly_rate?:             number;
+  hourly_rate_currency?:    HourlyRateCurrency;
   show_production_panel?:   boolean;
   show_reject_panel?:       boolean;
   show_availability_gauge?: boolean;

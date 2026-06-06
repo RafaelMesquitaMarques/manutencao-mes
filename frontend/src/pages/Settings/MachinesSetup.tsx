@@ -73,13 +73,7 @@ export default function MachinesSetup() {
                     </Link>
                   )}
                   <Link
-                    to={`/settings/machines/${m.id}/operators`}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:text-white border border-white/10 hover:border-white/20 transition-all"
-                  >
-                    <Users size={12} /> Operators
-                  </Link>
-                  <Link
-                    to={`/settings/machines/${m.id}/config`}
+                    to={`/settings/machines/${m.id}`}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-blue-600/20 text-blue-400 border border-blue-500/30 hover:bg-blue-600/30 transition-all font-bold"
                   >
                     <Settings size={12} /> Configure

@@ -26,6 +26,7 @@ import StopCategoriesPage from './pages/Settings/StopCategories';
 import MachinesSetup from './pages/Settings/MachinesSetup';
 import MachineConfig from './pages/Settings/MachineConfig';
 import MachineOperators from './pages/Settings/MachineOperators';
+import MachineSettings from './pages/Settings/MachineSettings';
 
 const App = () => (
   <BrowserRouter>
@@ -61,6 +62,7 @@ const App = () => (
         <Route path="machines"              element={<MachineList />} />
         <Route path="my-work"               element={<MyWorkPage />} />
         <Route path="settings/machines"                       element={<MachinesSetup />} />
+        <Route path="settings/machines/:id"                   element={<MachineSettings />} />
         <Route path="settings/machines/:id/config"            element={<MachineConfig />} />
         <Route path="settings/machines/:id/operators"         element={<MachineOperators />} />
         <Route path="settings/stop-categories"                element={<StopCategoriesPage />} />

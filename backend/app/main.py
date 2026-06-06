@@ -10,7 +10,7 @@ from app.db.base import Base
 from app.api.routes import (
     auth, plants, equipment, work_orders,
     maintenance_plans, inventory, alerts, iot, users, kpis, technicians,
-    tickets, maintenance_dashboard, machines, stop_categories,
+    tickets, maintenance_dashboard, machines, stop_categories, job_orders,
 )
 
 
@@ -62,10 +62,88 @@ async def _run_migrations() -> None:
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS show_job_number BOOLEAN NOT NULL DEFAULT TRUE",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS custom_color VARCHAR(20)",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS display_name VARCHAR(200)",
+        # Phase: MES panel + per-machine categories
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS hourly_rate FLOAT",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS hourly_rate_currency VARCHAR(10) NOT NULL DEFAULT 'CAD'",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS target_count_per_shift INT",
+        "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS machine_id UUID REFERENCES machines(id) ON DELETE CASCADE",
+        "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS name_en VARCHAR(200)",
+        "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS name_fr VARCHAR(200)",
+        "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS name_es VARCHAR(200)",
+        "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS comment_required BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS triggers_maintenance BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS is_global BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE stop_subcategories ADD COLUMN IF NOT EXISTS name_en VARCHAR(200)",
+        "ALTER TABLE stop_subcategories ADD COLUMN IF NOT EXISTS name_fr VARCHAR(200)",
+        "ALTER TABLE stop_subcategories ADD COLUMN IF NOT EXISTS name_es VARCHAR(200)",
+        "ALTER TABLE stop_subcategories ADD COLUMN IF NOT EXISTS comment_required BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS operator_id UUID REFERENCES machine_operators(id) ON DELETE SET NULL",
+        "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS shift VARCHAR(20)",
+        "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS job_number VARCHAR(100)",
+        # New tables
+        """
+        CREATE TABLE IF NOT EXISTS reject_categories (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            machine_id UUID REFERENCES machines(id) ON DELETE CASCADE,
+            name VARCHAR(200) NOT NULL,
+            name_en VARCHAR(200), name_fr VARCHAR(200), name_es VARCHAR(200),
+            icon VARCHAR(100), color VARCHAR(20),
+            comment_required BOOLEAN NOT NULL DEFAULT FALSE,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            is_global BOOLEAN NOT NULL DEFAULT FALSE,
+            sort_order INT NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS reject_subcategories (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            category_id UUID NOT NULL REFERENCES reject_categories(id) ON DELETE CASCADE,
+            name VARCHAR(200) NOT NULL,
+            name_en VARCHAR(200), name_fr VARCHAR(200), name_es VARCHAR(200),
+            icon VARCHAR(100), color VARCHAR(20),
+            comment_required BOOLEAN NOT NULL DEFAULT FALSE,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            sort_order INT NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS reject_logs (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            machine_id UUID NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+            category_id UUID REFERENCES reject_categories(id) ON DELETE SET NULL,
+            subcategory_id UUID REFERENCES reject_subcategories(id) ON DELETE SET NULL,
+            quantity INT NOT NULL DEFAULT 1,
+            operator_id UUID REFERENCES machine_operators(id) ON DELETE SET NULL,
+            shift VARCHAR(20),
+            job_number VARCHAR(100),
+            comment TEXT,
+            logged_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS job_orders (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            job_number VARCHAR(100) NOT NULL UNIQUE,
+            machine_id UUID REFERENCES machines(id) ON DELETE SET NULL,
+            description TEXT,
+            target_quantity INT,
+            status VARCHAR(30) NOT NULL DEFAULT 'pending',
+            source VARCHAR(20) NOT NULL DEFAULT 'manual',
+            started_at TIMESTAMPTZ,
+            completed_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
     ]
     async with engine.begin() as conn:
         for stmt in stmts:
             await conn.execute(text(stmt))
+        # Mark pre-existing global stop categories
+        await conn.execute(text(
+            "UPDATE stop_categories SET is_global = TRUE WHERE machine_id IS NULL AND is_global = FALSE"
+        ))
         await _seed_stop_categories(conn)
 
 
@@ -137,6 +215,7 @@ app.include_router(kpis.router,                   prefix="/api/kpis",          t
 app.include_router(technicians.router,            prefix="/api/technicians",   tags=["Technicians"])
 app.include_router(machines.router,               prefix="/api/machines",      tags=["Machines"])
 app.include_router(stop_categories.router,        prefix="/api/stop-categories", tags=["Stop Categories"])
+app.include_router(job_orders.router,             prefix="/api/job-orders",      tags=["Job Orders"])
 
 
 @app.get("/api/health", tags=["System"])

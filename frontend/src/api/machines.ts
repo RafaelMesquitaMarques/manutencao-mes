@@ -12,6 +12,8 @@ import type {
   StopCreateRequest,
   MachineConfigUpdate,
   MachineOperatorCreate,
+  RejectCategoryOut,
+  RejectLogCreate,
 } from '../types';
 
 interface Paginated<T> { total: number; items: T[] }
@@ -119,6 +121,145 @@ export const addRejects = async (
 
 export const fetchStopCategories = async (): Promise<StopCategoryOut[]> => {
   const { data } = await axios.get<StopCategoryOut[]>('/api/stop-categories/');
+  return data;
+};
+
+export const fetchMachineStopCategories = async (ref: string): Promise<StopCategoryOut[]> => {
+  const { data } = await axios.get<StopCategoryOut[]>(`/api/machines/${ref}/stop-categories`);
+  return data;
+};
+
+export const createMachineStopCategory = async (
+  ref: string,
+  payload: Partial<StopCategoryOut>,
+): Promise<StopCategoryOut> => {
+  const { data } = await api.post<StopCategoryOut>(`/api/machines/${ref}/stop-categories`, payload);
+  return data;
+};
+
+export const updateMachineStopCategory = async (
+  ref: string,
+  catId: string,
+  payload: Partial<StopCategoryOut>,
+): Promise<StopCategoryOut> => {
+  const { data } = await api.patch<StopCategoryOut>(`/api/machines/${ref}/stop-categories/${catId}`, payload);
+  return data;
+};
+
+export const deleteMachineStopCategory = async (ref: string, catId: string): Promise<void> => {
+  await api.delete(`/api/machines/${ref}/stop-categories/${catId}`);
+};
+
+export const reorderMachineStopCategories = async (
+  ref: string,
+  items: { id: string; sort_order: number }[],
+): Promise<void> => {
+  await api.patch(`/api/machines/${ref}/stop-categories/reorder`, items);
+};
+
+export const addStopSubcategory = async (
+  ref: string,
+  catId: string,
+  payload: Record<string, unknown>,
+) => {
+  const { data } = await api.post(`/api/machines/${ref}/stop-categories/${catId}/subcategories`, payload);
+  return data;
+};
+
+export const updateStopSubcategory = async (
+  ref: string,
+  subId: string,
+  payload: Record<string, unknown>,
+) => {
+  const { data } = await api.patch(`/api/machines/${ref}/stop-subcategories/${subId}`, payload);
+  return data;
+};
+
+export const deleteStopSubcategory = async (ref: string, subId: string): Promise<void> => {
+  await api.delete(`/api/machines/${ref}/stop-subcategories/${subId}`);
+};
+
+// ── Reject categories ─────────────────────────────────────────────────────────
+
+export const fetchMachineRejectCategories = async (ref: string): Promise<RejectCategoryOut[]> => {
+  const { data } = await axios.get<RejectCategoryOut[]>(`/api/machines/${ref}/reject-categories`);
+  return data;
+};
+
+export const createMachineRejectCategory = async (
+  ref: string,
+  payload: Partial<RejectCategoryOut>,
+): Promise<RejectCategoryOut> => {
+  const { data } = await api.post<RejectCategoryOut>(`/api/machines/${ref}/reject-categories`, payload);
+  return data;
+};
+
+export const updateMachineRejectCategory = async (
+  ref: string,
+  catId: string,
+  payload: Partial<RejectCategoryOut>,
+): Promise<RejectCategoryOut> => {
+  const { data } = await api.patch<RejectCategoryOut>(`/api/machines/${ref}/reject-categories/${catId}`, payload);
+  return data;
+};
+
+export const deleteMachineRejectCategory = async (ref: string, catId: string): Promise<void> => {
+  await api.delete(`/api/machines/${ref}/reject-categories/${catId}`);
+};
+
+export const addRejectSubcategory = async (
+  ref: string,
+  catId: string,
+  payload: Record<string, unknown>,
+) => {
+  const { data } = await api.post(`/api/machines/${ref}/reject-categories/${catId}/subcategories`, payload);
+  return data;
+};
+
+export const updateRejectSubcategory = async (
+  ref: string,
+  subId: string,
+  payload: Record<string, unknown>,
+) => {
+  const { data } = await api.patch(`/api/machines/${ref}/reject-subcategories/${subId}`, payload);
+  return data;
+};
+
+export const deleteRejectSubcategory = async (ref: string, subId: string): Promise<void> => {
+  await api.delete(`/api/machines/${ref}/reject-subcategories/${subId}`);
+};
+
+// ── Reject logs (kiosk) ───────────────────────────────────────────────────────
+
+export const logReject = async (
+  ref: string,
+  payload: RejectLogCreate,
+): Promise<{ id: string; reject_count: number }> => {
+  const { data } = await axios.post(`/api/machines/${ref}/reject-logs`, payload);
+  return data;
+};
+
+export const fetchTodayRejects = async (
+  ref: string,
+): Promise<{ total: number; by_category: Record<string, number> }> => {
+  const { data } = await axios.get(`/api/machines/${ref}/rejects/today`);
+  return data;
+};
+
+// ── Operator management ───────────────────────────────────────────────────────
+
+export const deleteOperator = async (opId: string): Promise<void> => {
+  await api.delete(`/api/machines/operators/${opId}`);
+};
+
+// ── Clone categories ──────────────────────────────────────────────────────────
+
+export const cloneCategories = async (payload: {
+  source_machine_id: string;
+  target_machine_ids: string[];
+  category_type: 'stop' | 'reject';
+}): Promise<{ status: string; cloned_to: number }> => {
+  const { data } = await api.post('/api/machines/clone-categories', payload);
   return data;
 };
 

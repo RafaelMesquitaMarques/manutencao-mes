@@ -12,7 +12,8 @@ from app.models.models import (
     Machine, MaintenanceTicket, TicketStatus, WorkOrder,
     User, MachineStatus, AlertPriority,
     MachineStop, MachineOperator, StopCategory, StopSubcategory,
-    AlertShift,
+    RejectCategory, RejectSubcategory, RejectLog,
+    AlertShift, JobOrder, JobOrderSource,
 )
 from app.schemas.maintenance import (
     MachineOut, MachineListResponse, MachinePageData, TicketForMachine,
@@ -22,6 +23,12 @@ from app.schemas.maintenance import (
     MachineStopOut, StopCategoryMini, StopSubcategoryMini,
     MachineOperatorOut, MachineOperatorCreate, MachineOperatorUpdate as OperatorPatch,
     MESDataExtended,
+    StopCategoryOut, StopCategoryCreate, StopCategoryUpdate,
+    StopSubcategoryOut, StopSubcategoryCreate, StopSubcategoryUpdate,
+    RejectCategoryOut, RejectCategoryCreate, RejectCategoryUpdate,
+    RejectSubcategoryOut, RejectSubcategoryCreate, RejectSubcategoryUpdate,
+    RejectLogCreate, CloneCategoriesRequest, SortOrderItem,
+    JobOrderOut, JobOrderCreate,
 )
 from app.core.security import get_current_user
 from app.services.ticket_service import TicketService, _next_ticket_number
@@ -47,6 +54,7 @@ def _machine_to_page_data(machine: Machine, open_tickets: list) -> MachinePageDa
     cstatus = machine.current_status.value if hasattr(machine.current_status, "value") else str(machine.current_status or MachineStatus.running)
     cshift  = machine.current_shift.value if machine.current_shift and hasattr(machine.current_shift, "value") else (str(machine.current_shift) if machine.current_shift else None)
     clang   = machine.page_language.value if machine.page_language and hasattr(machine.page_language, "value") else (str(machine.page_language) if machine.page_language else "fr")
+    currency = machine.hourly_rate_currency.value if machine.hourly_rate_currency and hasattr(machine.hourly_rate_currency, "value") else (str(machine.hourly_rate_currency) if machine.hourly_rate_currency else "CAD")
     return MachinePageData(
         id=machine.id, name=machine.name, code=machine.code,
         department=machine.department, location=machine.location,
@@ -62,12 +70,15 @@ def _machine_to_page_data(machine: Machine, open_tickets: list) -> MachinePageDa
         page_language=clang,
         target_availability_pct=machine.target_availability_pct or 70.0,
         target_count=machine.target_count,
+        target_count_per_shift=getattr(machine, "target_count_per_shift", None),
         show_production_panel=machine.show_production_panel if machine.show_production_panel is not None else True,
         show_reject_panel=machine.show_reject_panel if machine.show_reject_panel is not None else True,
         show_availability_gauge=machine.show_availability_gauge if machine.show_availability_gauge is not None else True,
         show_job_number=machine.show_job_number if machine.show_job_number is not None else True,
         custom_color=machine.custom_color,
         display_name=machine.display_name,
+        hourly_rate=getattr(machine, "hourly_rate", None),
+        hourly_rate_currency=currency,
         open_tickets=open_tickets,
     )
 
@@ -202,6 +213,55 @@ async def add_rejects(
     return {"status": "ok", "reject_count": new_total}
 
 
+@router.post("/{ref}/reject-logs", status_code=201)
+async def log_reject(
+    ref: str,
+    data: RejectLogCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Kiosk: log a reject with category (also increments production_log)."""
+    machine = await _get_machine(ref, db)
+    shift_str = machine.current_shift.value if machine.current_shift and hasattr(machine.current_shift, "value") else "morning"
+    try:
+        shift_enum = AlertShift(shift_str)
+    except ValueError:
+        shift_enum = AlertShift.morning
+
+    log = RejectLog(
+        machine_id=machine.id,
+        date=date.today(),
+        shift=shift_enum,
+        job_number=data.job_number or machine.current_job_number,
+        reject_category_id=data.reject_category_id,
+        reject_subcategory_id=data.reject_subcategory_id,
+        quantity=data.quantity,
+        comments=data.comments,
+    )
+    db.add(log)
+    svc = MesService(db)
+    new_total = await svc.increment_rejects(machine.id, data.quantity, shift_str)
+    await db.commit()
+    return {"status": "ok", "reject_count": new_total}
+
+
+@router.get("/{ref}/rejects/today")
+async def today_rejects(ref: str, db: AsyncSession = Depends(get_db)):
+    machine = await _get_machine(ref, db)
+    today = date.today()
+    r = await db.execute(
+        select(RejectLog)
+        .where(RejectLog.machine_id == machine.id, RejectLog.date == today)
+        .order_by(RejectLog.created_at.desc())
+    )
+    logs = r.scalars().all()
+    total = sum(l.quantity for l in logs)
+    by_cat: dict = {}
+    for l in logs:
+        cat_id = str(l.reject_category_id) if l.reject_category_id else "uncategorized"
+        by_cat[cat_id] = by_cat.get(cat_id, 0) + l.quantity
+    return {"total": total, "by_category": by_cat, "logs": [{"id": str(l.id), "quantity": l.quantity, "category_id": str(l.reject_category_id) if l.reject_category_id else None} for l in logs]}
+
+
 # ── Machine stops ─────────────────────────────────────────────────────────────
 
 @router.post("/{ref}/stops", status_code=201)
@@ -225,6 +285,13 @@ async def create_stop(
         if cat and cat.type.value == "maintenance":
             triggers = True
 
+    shift_val = None
+    if data.shift:
+        try:
+            shift_val = AlertShift(data.shift)
+        except ValueError:
+            pass
+
     stop = MachineStop(
         machine_id=machine.id,
         started_at=now,
@@ -232,6 +299,9 @@ async def create_stop(
         stop_subcategory_id=data.stop_subcategory_id,
         comments=data.comments,
         justified_by=data.justified_by,
+        operator_id=data.operator_id,
+        shift=shift_val,
+        job_number=data.job_number or machine.current_job_number,
     )
 
     ticket_number = None
@@ -465,3 +535,431 @@ async def request_maintenance(
         "ticket_number": ticket.ticket_number,
         "machine_name": machine.name,
     }
+
+
+# ── Per-machine Stop Categories ───────────────────────────────────────────────
+
+def _cat_type_value(cat) -> str:
+    return cat.type.value if hasattr(cat.type, "value") else str(cat.type)
+
+
+@router.get("/{ref}/stop-categories", response_model=List[StopCategoryOut])
+async def get_machine_stop_categories(ref: str, db: AsyncSession = Depends(get_db)):
+    """Kiosk-accessible: returns machine-specific categories, falls back to global."""
+    machine = await _get_machine(ref, db)
+    r = await db.execute(
+        select(StopCategory)
+        .where(StopCategory.machine_id == machine.id, StopCategory.is_active == True)
+        .order_by(StopCategory.sort_order)
+    )
+    cats = r.scalars().all()
+    if not cats:
+        # Fall back to global templates
+        r2 = await db.execute(
+            select(StopCategory)
+            .where(StopCategory.is_global == True, StopCategory.is_active == True)
+            .order_by(StopCategory.sort_order)
+        )
+        cats = r2.scalars().all()
+    result = []
+    for c in cats:
+        subs_r = await db.execute(
+            select(StopSubcategory)
+            .where(StopSubcategory.category_id == c.id, StopSubcategory.is_active == True)
+            .order_by(StopSubcategory.sort_order)
+        )
+        subs = subs_r.scalars().all()
+        result.append(StopCategoryOut(
+            id=c.id, machine_id=c.machine_id, name=c.name,
+            name_en=getattr(c, "name_en", None), name_fr=getattr(c, "name_fr", None), name_es=getattr(c, "name_es", None),
+            type=c.type, icon=c.icon, color=c.color,
+            comment_required=getattr(c, "comment_required", False),
+            triggers_maintenance=getattr(c, "triggers_maintenance", False),
+            is_active=c.is_active, is_global=getattr(c, "is_global", False),
+            sort_order=c.sort_order,
+            subcategories=[StopSubcategoryOut(
+                id=s.id, category_id=s.category_id, name=s.name,
+                name_en=getattr(s, "name_en", None), name_fr=getattr(s, "name_fr", None), name_es=getattr(s, "name_es", None),
+                icon=s.icon, color=s.color,
+                comment_required=getattr(s, "comment_required", False),
+                triggers_maintenance=s.triggers_maintenance,
+                is_active=s.is_active, sort_order=s.sort_order,
+            ) for s in subs],
+        ))
+    return result
+
+
+@router.post("/{ref}/stop-categories", response_model=StopCategoryOut, status_code=201)
+async def create_machine_stop_category(
+    ref: str,
+    data: StopCategoryCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    machine = await _get_machine(ref, db)
+    cat = StopCategory(machine_id=machine.id, is_global=False, **data.model_dump())
+    db.add(cat)
+    await db.commit()
+    await db.refresh(cat)
+    return StopCategoryOut(id=cat.id, machine_id=cat.machine_id, name=cat.name,
+                           name_en=cat.name_en, name_fr=cat.name_fr, name_es=cat.name_es,
+                           type=cat.type, icon=cat.icon, color=cat.color,
+                           comment_required=cat.comment_required, triggers_maintenance=cat.triggers_maintenance,
+                           is_active=cat.is_active, is_global=cat.is_global, sort_order=cat.sort_order,
+                           subcategories=[])
+
+
+@router.patch("/{ref}/stop-categories/{cat_id}", response_model=StopCategoryOut)
+async def update_machine_stop_category(
+    ref: str, cat_id: UUID, data: StopCategoryUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_machine(ref, db)
+    cat = await db.get(StopCategory, cat_id)
+    if not cat:
+        raise HTTPException(404, "Category not found")
+    for k, v in data.model_dump(exclude_none=True).items():
+        setattr(cat, k, v)
+    await db.commit()
+    await db.refresh(cat)
+    subs_r = await db.execute(select(StopSubcategory).where(StopSubcategory.category_id == cat.id).order_by(StopSubcategory.sort_order))
+    subs = subs_r.scalars().all()
+    return StopCategoryOut(id=cat.id, machine_id=cat.machine_id, name=cat.name,
+                           name_en=cat.name_en, name_fr=cat.name_fr, name_es=cat.name_es,
+                           type=cat.type, icon=cat.icon, color=cat.color,
+                           comment_required=cat.comment_required, triggers_maintenance=cat.triggers_maintenance,
+                           is_active=cat.is_active, is_global=cat.is_global, sort_order=cat.sort_order,
+                           subcategories=[StopSubcategoryOut(
+                               id=s.id, category_id=s.category_id, name=s.name,
+                               name_en=s.name_en, name_fr=s.name_fr, name_es=s.name_es,
+                               icon=s.icon, color=s.color, comment_required=s.comment_required,
+                               triggers_maintenance=s.triggers_maintenance, is_active=s.is_active, sort_order=s.sort_order,
+                           ) for s in subs])
+
+
+@router.delete("/{ref}/stop-categories/{cat_id}", status_code=204)
+async def delete_machine_stop_category(
+    ref: str, cat_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cat = await db.get(StopCategory, cat_id)
+    if not cat:
+        raise HTTPException(404, "Category not found")
+    await db.delete(cat)
+    await db.commit()
+
+
+@router.patch("/{ref}/stop-categories/reorder")
+async def reorder_machine_stop_categories(
+    ref: str, items: List[SortOrderItem],
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    for item in items:
+        cat = await db.get(StopCategory, item.id)
+        if cat:
+            cat.sort_order = item.sort_order
+    await db.commit()
+    return {"status": "ok"}
+
+
+@router.post("/{ref}/stop-categories/{cat_id}/subcategories", response_model=StopSubcategoryOut, status_code=201)
+async def add_stop_subcategory(
+    ref: str, cat_id: UUID, data: StopSubcategoryCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cat = await db.get(StopCategory, cat_id)
+    if not cat:
+        raise HTTPException(404, "Category not found")
+    sub = StopSubcategory(category_id=cat_id, **data.model_dump())
+    db.add(sub)
+    await db.commit()
+    await db.refresh(sub)
+    return sub
+
+
+@router.patch("/{ref}/stop-subcategories/{sub_id}", response_model=StopSubcategoryOut)
+async def update_stop_subcategory(
+    ref: str, sub_id: UUID, data: StopSubcategoryUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    sub = await db.get(StopSubcategory, sub_id)
+    if not sub:
+        raise HTTPException(404, "Subcategory not found")
+    for k, v in data.model_dump(exclude_none=True).items():
+        setattr(sub, k, v)
+    await db.commit()
+    await db.refresh(sub)
+    return sub
+
+
+@router.delete("/{ref}/stop-subcategories/{sub_id}", status_code=204)
+async def delete_stop_subcategory(
+    ref: str, sub_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    sub = await db.get(StopSubcategory, sub_id)
+    if not sub:
+        raise HTTPException(404, "Subcategory not found")
+    await db.delete(sub)
+    await db.commit()
+
+
+# ── Per-machine Reject Categories ─────────────────────────────────────────────
+
+@router.get("/{ref}/reject-categories", response_model=List[RejectCategoryOut])
+async def get_machine_reject_categories(ref: str, db: AsyncSession = Depends(get_db)):
+    """Kiosk-accessible: returns machine-specific reject categories, falls back to global."""
+    machine = await _get_machine(ref, db)
+    r = await db.execute(
+        select(RejectCategory)
+        .where(RejectCategory.machine_id == machine.id, RejectCategory.is_active == True)
+        .order_by(RejectCategory.sort_order)
+    )
+    cats = r.scalars().all()
+    if not cats:
+        r2 = await db.execute(
+            select(RejectCategory)
+            .where(RejectCategory.is_global == True, RejectCategory.is_active == True)
+            .order_by(RejectCategory.sort_order)
+        )
+        cats = r2.scalars().all()
+    result = []
+    for c in cats:
+        subs_r = await db.execute(
+            select(RejectSubcategory)
+            .where(RejectSubcategory.category_id == c.id, RejectSubcategory.is_active == True)
+            .order_by(RejectSubcategory.sort_order)
+        )
+        subs = subs_r.scalars().all()
+        result.append(RejectCategoryOut(
+            id=c.id, machine_id=c.machine_id, name=c.name,
+            name_en=c.name_en, name_fr=c.name_fr, name_es=c.name_es,
+            icon=c.icon, color=c.color, comment_required=c.comment_required,
+            is_active=c.is_active, is_global=c.is_global, sort_order=c.sort_order,
+            subcategories=[RejectSubcategoryOut(
+                id=s.id, category_id=s.category_id, name=s.name,
+                name_en=s.name_en, name_fr=s.name_fr, name_es=s.name_es,
+                icon=s.icon, color=s.color, comment_required=s.comment_required,
+                is_active=s.is_active, sort_order=s.sort_order,
+            ) for s in subs],
+        ))
+    return result
+
+
+@router.post("/{ref}/reject-categories", response_model=RejectCategoryOut, status_code=201)
+async def create_machine_reject_category(
+    ref: str, data: RejectCategoryCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    machine = await _get_machine(ref, db)
+    cat = RejectCategory(machine_id=machine.id, is_global=False, **data.model_dump())
+    db.add(cat)
+    await db.commit()
+    await db.refresh(cat)
+    return RejectCategoryOut(id=cat.id, machine_id=cat.machine_id, name=cat.name,
+                             name_en=cat.name_en, name_fr=cat.name_fr, name_es=cat.name_es,
+                             icon=cat.icon, color=cat.color, comment_required=cat.comment_required,
+                             is_active=cat.is_active, is_global=cat.is_global, sort_order=cat.sort_order,
+                             subcategories=[])
+
+
+@router.patch("/{ref}/reject-categories/{cat_id}", response_model=RejectCategoryOut)
+async def update_machine_reject_category(
+    ref: str, cat_id: UUID, data: RejectCategoryUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_machine(ref, db)
+    cat = await db.get(RejectCategory, cat_id)
+    if not cat:
+        raise HTTPException(404, "Reject category not found")
+    for k, v in data.model_dump(exclude_none=True).items():
+        setattr(cat, k, v)
+    await db.commit()
+    await db.refresh(cat)
+    subs_r = await db.execute(select(RejectSubcategory).where(RejectSubcategory.category_id == cat.id).order_by(RejectSubcategory.sort_order))
+    subs = subs_r.scalars().all()
+    return RejectCategoryOut(id=cat.id, machine_id=cat.machine_id, name=cat.name,
+                             name_en=cat.name_en, name_fr=cat.name_fr, name_es=cat.name_es,
+                             icon=cat.icon, color=cat.color, comment_required=cat.comment_required,
+                             is_active=cat.is_active, is_global=cat.is_global, sort_order=cat.sort_order,
+                             subcategories=[RejectSubcategoryOut(
+                                 id=s.id, category_id=s.category_id, name=s.name,
+                                 name_en=s.name_en, name_fr=s.name_fr, name_es=s.name_es,
+                                 icon=s.icon, color=s.color, comment_required=s.comment_required,
+                                 is_active=s.is_active, sort_order=s.sort_order,
+                             ) for s in subs])
+
+
+@router.delete("/{ref}/reject-categories/{cat_id}", status_code=204)
+async def delete_machine_reject_category(
+    ref: str, cat_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cat = await db.get(RejectCategory, cat_id)
+    if not cat:
+        raise HTTPException(404, "Reject category not found")
+    await db.delete(cat)
+    await db.commit()
+
+
+@router.patch("/{ref}/reject-categories/reorder")
+async def reorder_machine_reject_categories(
+    ref: str, items: List[SortOrderItem],
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    for item in items:
+        cat = await db.get(RejectCategory, item.id)
+        if cat:
+            cat.sort_order = item.sort_order
+    await db.commit()
+    return {"status": "ok"}
+
+
+@router.post("/{ref}/reject-categories/{cat_id}/subcategories", response_model=RejectSubcategoryOut, status_code=201)
+async def add_reject_subcategory(
+    ref: str, cat_id: UUID, data: RejectSubcategoryCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cat = await db.get(RejectCategory, cat_id)
+    if not cat:
+        raise HTTPException(404, "Reject category not found")
+    sub = RejectSubcategory(category_id=cat_id, **data.model_dump())
+    db.add(sub)
+    await db.commit()
+    await db.refresh(sub)
+    return sub
+
+
+@router.patch("/{ref}/reject-subcategories/{sub_id}", response_model=RejectSubcategoryOut)
+async def update_reject_subcategory(
+    ref: str, sub_id: UUID, data: RejectSubcategoryUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    sub = await db.get(RejectSubcategory, sub_id)
+    if not sub:
+        raise HTTPException(404, "Reject subcategory not found")
+    for k, v in data.model_dump(exclude_none=True).items():
+        setattr(sub, k, v)
+    await db.commit()
+    await db.refresh(sub)
+    return sub
+
+
+@router.delete("/{ref}/reject-subcategories/{sub_id}", status_code=204)
+async def delete_reject_subcategory(
+    ref: str, sub_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    sub = await db.get(RejectSubcategory, sub_id)
+    if not sub:
+        raise HTTPException(404, "Reject subcategory not found")
+    await db.delete(sub)
+    await db.commit()
+
+
+# ── Delete operator ───────────────────────────────────────────────────────────
+
+@router.delete("/operators/{op_id}", status_code=204)
+async def delete_operator(
+    op_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    op = await db.get(MachineOperator, op_id)
+    if not op:
+        raise HTTPException(404, "Operator not found")
+    await db.delete(op)
+    await db.commit()
+
+
+# ── Clone categories ──────────────────────────────────────────────────────────
+
+@router.post("/clone-categories")
+async def clone_categories(
+    data: CloneCategoriesRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Clone all stop or reject categories from source machine to target machines."""
+    import copy
+
+    if data.category_type == "stop":
+        src_cats_r = await db.execute(
+            select(StopCategory).where(StopCategory.machine_id == data.source_machine_id).order_by(StopCategory.sort_order)
+        )
+        src_cats = src_cats_r.scalars().all()
+
+        for target_id in data.target_machine_ids:
+            # Remove existing machine-specific categories on target
+            existing_r = await db.execute(select(StopCategory).where(StopCategory.machine_id == target_id))
+            for old in existing_r.scalars().all():
+                await db.delete(old)
+
+            for src_cat in src_cats:
+                new_cat = StopCategory(
+                    machine_id=target_id,
+                    name=src_cat.name, name_en=src_cat.name_en, name_fr=src_cat.name_fr, name_es=src_cat.name_es,
+                    type=src_cat.type, icon=src_cat.icon, color=src_cat.color,
+                    comment_required=src_cat.comment_required, triggers_maintenance=src_cat.triggers_maintenance,
+                    is_active=src_cat.is_active, is_global=False, sort_order=src_cat.sort_order,
+                )
+                db.add(new_cat)
+                await db.flush()
+
+                subs_r = await db.execute(select(StopSubcategory).where(StopSubcategory.category_id == src_cat.id))
+                for sub in subs_r.scalars().all():
+                    db.add(StopSubcategory(
+                        category_id=new_cat.id,
+                        name=sub.name, name_en=sub.name_en, name_fr=sub.name_fr, name_es=sub.name_es,
+                        icon=sub.icon, color=sub.color,
+                        comment_required=sub.comment_required, triggers_maintenance=sub.triggers_maintenance,
+                        is_active=sub.is_active, sort_order=sub.sort_order,
+                    ))
+
+    elif data.category_type == "reject":
+        src_cats_r = await db.execute(
+            select(RejectCategory).where(RejectCategory.machine_id == data.source_machine_id).order_by(RejectCategory.sort_order)
+        )
+        src_cats = src_cats_r.scalars().all()
+
+        for target_id in data.target_machine_ids:
+            existing_r = await db.execute(select(RejectCategory).where(RejectCategory.machine_id == target_id))
+            for old in existing_r.scalars().all():
+                await db.delete(old)
+
+            for src_cat in src_cats:
+                new_cat = RejectCategory(
+                    machine_id=target_id,
+                    name=src_cat.name, name_en=src_cat.name_en, name_fr=src_cat.name_fr, name_es=src_cat.name_es,
+                    icon=src_cat.icon, color=src_cat.color,
+                    comment_required=src_cat.comment_required,
+                    is_active=src_cat.is_active, is_global=False, sort_order=src_cat.sort_order,
+                )
+                db.add(new_cat)
+                await db.flush()
+
+                subs_r = await db.execute(select(RejectSubcategory).where(RejectSubcategory.category_id == src_cat.id))
+                for sub in subs_r.scalars().all():
+                    db.add(RejectSubcategory(
+                        category_id=new_cat.id,
+                        name=sub.name, name_en=sub.name_en, name_fr=sub.name_fr, name_es=sub.name_es,
+                        icon=sub.icon, color=sub.color,
+                        comment_required=sub.comment_required,
+                        is_active=sub.is_active, sort_order=sub.sort_order,
+                    ))
+
+    await db.commit()
+    return {"status": "ok", "cloned_to": len(data.target_machine_ids)}

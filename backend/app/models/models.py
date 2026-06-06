@@ -155,6 +155,21 @@ class WorkOrderSource(str, enum.Enum):
     manual = "manual"
     ticket = "ticket"
 
+class HourlyRateCurrency(str, enum.Enum):
+    CAD = "CAD"
+    USD = "USD"
+    EUR = "EUR"
+
+class JobOrderStatus(str, enum.Enum):
+    pending     = "pending"
+    in_progress = "in_progress"
+    completed   = "completed"
+    cancelled   = "cancelled"
+
+class JobOrderSource(str, enum.Enum):
+    manual = "manual"
+    erp    = "erp"
+
 
 # ─── Plant ─────────────────────────────────────────────────────────────────────
 
@@ -574,28 +589,41 @@ class Machine(Base):
     show_job_number          = Column(Boolean, default=True)
     custom_color             = Column(String(20), nullable=True)
     display_name             = Column(String(200), nullable=True)
+    hourly_rate              = Column(Float, nullable=True)
+    hourly_rate_currency     = Column(SAEnum(HourlyRateCurrency, native_enum=False), default=HourlyRateCurrency.CAD)
+    target_count_per_shift   = Column(Integer, nullable=True)
     created_at               = Column(DateTime(timezone=True), server_default=func.now())
 
-    alerts          = relationship("MaintenanceAlert", back_populates="machine")
-    tickets         = relationship("MaintenanceTicket", back_populates="machine")
-    stops           = relationship("MachineStop", back_populates="machine", cascade="all, delete-orphan")
-    operators       = relationship("MachineOperator", back_populates="machine", cascade="all, delete-orphan")
-    production_logs = relationship("MachineProductionLog", back_populates="machine", cascade="all, delete-orphan")
+    alerts             = relationship("MaintenanceAlert", back_populates="machine")
+    tickets            = relationship("MaintenanceTicket", back_populates="machine")
+    stops              = relationship("MachineStop", back_populates="machine", cascade="all, delete-orphan")
+    operators          = relationship("MachineOperator", back_populates="machine", cascade="all, delete-orphan")
+    production_logs    = relationship("MachineProductionLog", back_populates="machine", cascade="all, delete-orphan")
+    stop_categories    = relationship("StopCategory", back_populates="machine", cascade="all, delete-orphan", foreign_keys="StopCategory.machine_id")
+    reject_categories  = relationship("RejectCategory", back_populates="machine", cascade="all, delete-orphan")
 
 
 class StopCategory(Base):
     __tablename__ = "stop_categories"
 
-    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name       = Column(String(200), nullable=False)
-    type       = Column(SAEnum(StopCategoryType, native_enum=False), nullable=False)
-    icon       = Column(String(50), nullable=False, default="⏸")
-    color      = Column(String(20), nullable=False, default="#6b7280")
-    is_active  = Column(Boolean, default=True)
-    sort_order = Column(Integer, default=0)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    machine_id       = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
+    name             = Column(String(200), nullable=False)
+    name_en          = Column(String(200), nullable=True)
+    name_fr          = Column(String(200), nullable=True)
+    name_es          = Column(String(200), nullable=True)
+    type             = Column(SAEnum(StopCategoryType, native_enum=False), nullable=False)
+    icon             = Column(String(50), nullable=False, default="⏸")
+    color            = Column(String(20), nullable=False, default="#6b7280")
+    comment_required = Column(Boolean, default=False)
+    triggers_maintenance = Column(Boolean, default=False)
+    is_active        = Column(Boolean, default=True)
+    is_global        = Column(Boolean, default=False)
+    sort_order       = Column(Integer, default=0)
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at       = Column(DateTime(timezone=True), onupdate=func.now())
 
+    machine       = relationship("Machine", back_populates="stop_categories", foreign_keys=[machine_id])
     subcategories = relationship("StopSubcategory", back_populates="category", cascade="all, delete-orphan")
 
 
@@ -605,8 +633,12 @@ class StopSubcategory(Base):
     id                   = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     category_id          = Column(UUID(as_uuid=True), ForeignKey("stop_categories.id"), nullable=False)
     name                 = Column(String(200), nullable=False)
+    name_en              = Column(String(200), nullable=True)
+    name_fr              = Column(String(200), nullable=True)
+    name_es              = Column(String(200), nullable=True)
     icon                 = Column(String(50), nullable=False, default="⏸")
     color                = Column(String(20), nullable=True)
+    comment_required     = Column(Boolean, default=False)
     triggers_maintenance = Column(Boolean, default=False)
     is_active            = Column(Boolean, default=True)
     sort_order           = Column(Integer, default=0)
@@ -626,6 +658,9 @@ class MachineStop(Base):
     stop_subcategory_id = Column(UUID(as_uuid=True), ForeignKey("stop_subcategories.id"), nullable=True)
     comments            = Column(Text, nullable=True)
     justified_by        = Column(String(200), nullable=True)
+    operator_id         = Column(UUID(as_uuid=True), ForeignKey("machine_operators.id"), nullable=True)
+    shift               = Column(SAEnum(AlertShift, native_enum=False), nullable=True)
+    job_number          = Column(String(100), nullable=True)
     ticket_id           = Column(UUID(as_uuid=True), ForeignKey("maintenance_tickets.id"), nullable=True)
     created_at          = Column(DateTime(timezone=True), server_default=func.now())
     updated_at          = Column(DateTime(timezone=True), onupdate=func.now())
@@ -753,3 +788,83 @@ class TicketComment(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     ticket = relationship("MaintenanceTicket", back_populates="comments")
+
+
+# ─── Reject Categories ─────────────────────────────────────────────────────────
+
+class RejectCategory(Base):
+    __tablename__ = "reject_categories"
+
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    machine_id       = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
+    name             = Column(String(200), nullable=False)
+    name_en          = Column(String(200), nullable=True)
+    name_fr          = Column(String(200), nullable=True)
+    name_es          = Column(String(200), nullable=True)
+    icon             = Column(String(50), nullable=False, default="❌")
+    color            = Column(String(20), nullable=False, default="#ef4444")
+    comment_required = Column(Boolean, default=False)
+    is_active        = Column(Boolean, default=True)
+    is_global        = Column(Boolean, default=False)
+    sort_order       = Column(Integer, default=0)
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at       = Column(DateTime(timezone=True), onupdate=func.now())
+
+    machine       = relationship("Machine", back_populates="reject_categories")
+    subcategories = relationship("RejectSubcategory", back_populates="category", cascade="all, delete-orphan")
+
+
+class RejectSubcategory(Base):
+    __tablename__ = "reject_subcategories"
+
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    category_id      = Column(UUID(as_uuid=True), ForeignKey("reject_categories.id"), nullable=False)
+    name             = Column(String(200), nullable=False)
+    name_en          = Column(String(200), nullable=True)
+    name_fr          = Column(String(200), nullable=True)
+    name_es          = Column(String(200), nullable=True)
+    icon             = Column(String(50), nullable=False, default="❌")
+    color            = Column(String(20), nullable=True)
+    comment_required = Column(Boolean, default=False)
+    is_active        = Column(Boolean, default=True)
+    sort_order       = Column(Integer, default=0)
+
+    category = relationship("RejectCategory", back_populates="subcategories")
+
+
+class RejectLog(Base):
+    __tablename__ = "reject_logs"
+
+    id                    = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    machine_id            = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    date                  = Column(Date, nullable=False)
+    shift                 = Column(SAEnum(AlertShift, native_enum=False), nullable=False, default=AlertShift.morning)
+    job_number            = Column(String(100), nullable=True)
+    reject_category_id    = Column(UUID(as_uuid=True), ForeignKey("reject_categories.id"), nullable=True)
+    reject_subcategory_id = Column(UUID(as_uuid=True), ForeignKey("reject_subcategories.id"), nullable=True)
+    quantity              = Column(Integer, default=1)
+    operator_id           = Column(UUID(as_uuid=True), ForeignKey("machine_operators.id"), nullable=True)
+    comments              = Column(Text, nullable=True)
+    created_at            = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at            = Column(DateTime(timezone=True), onupdate=func.now())
+
+    category    = relationship("RejectCategory")
+    subcategory = relationship("RejectSubcategory")
+
+
+# ─── Job Orders ────────────────────────────────────────────────────────────────
+
+class JobOrder(Base):
+    __tablename__ = "job_orders"
+
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    machine_id      = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
+    job_number      = Column(String(100), unique=True, nullable=False)
+    product_name    = Column(String(300), nullable=True)
+    target_quantity = Column(Integer, nullable=True)
+    scheduled_date  = Column(Date, nullable=True)
+    status          = Column(SAEnum(JobOrderStatus, native_enum=False), default=JobOrderStatus.pending)
+    source          = Column(SAEnum(JobOrderSource, native_enum=False), default=JobOrderSource.manual)
+    erp_reference   = Column(String(200), nullable=True)
+    created_at      = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at      = Column(DateTime(timezone=True), onupdate=func.now())

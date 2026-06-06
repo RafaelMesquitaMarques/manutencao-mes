@@ -4,13 +4,16 @@ import { AlertTriangle, CheckCircle2, X, Play, ChevronLeft, User } from 'lucide-
 import {
   fetchMachinePage, fetchTodayStops, fetchMESData, fetchMachineOperators,
   updateMachineStatus, updateMachineJob, updateMachineOperator,
-  createMachineStop, closeMachineStop, fetchStopCategories, addRejects,
+  createMachineStop, closeMachineStop, fetchMachineStopCategories,
+  fetchMachineRejectCategories, logReject,
 } from '../../api/machines';
 import { openTicketField, closeTicket } from '../../api/maintenance';
 import type {
   MachinePageData, MachineStatus, MachineStopOut, StopCategoryOut,
   StopSubcategoryOut, MachineOperatorOut, MESDataExtended,
+  RejectCategoryOut, RejectSubcategoryOut,
 } from '../../types';
+import { IconRenderer } from '../../components/ui/IconLibrary';
 
 // ── Local i18n (machine page has its own language setting) ────────────────────
 
@@ -239,6 +242,7 @@ function StopTimeline({ stops, accentColor }: { stops: MachineStopOut[]; accentC
 }
 
 type ModalStep = 'categories' | 'subcategories' | 'confirm-maintenance' | 'confirm-unplanned';
+type RejectStep = 'categories' | 'subcategories' | 'quantity';
 
 export default function MachinePage() {
   const { slug } = useParams<{ slug: string }>();
@@ -247,8 +251,18 @@ export default function MachinePage() {
   const [stops, setStops]     = useState<MachineStopOut[]>([]);
   const [operators, setOps]   = useState<MachineOperatorOut[]>([]);
   const [categories, setCats] = useState<StopCategoryOut[]>([]);
+  const [rejectCats, setRejectCats] = useState<RejectCategoryOut[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
+
+  // Reject modal
+  const [showRejectModal, setShowRejectModal]     = useState(false);
+  const [rejectStep, setRejectStep]               = useState<RejectStep>('categories');
+  const [selectedRejectCat, setSelectedRejectCat] = useState<RejectCategoryOut | null>(null);
+  const [selectedRejectSub, setSelectedRejectSub] = useState<RejectSubcategoryOut | null>(null);
+  const [rejectQty, setRejectQty]                 = useState(1);
+  const [rejectComment, setRejectComment]         = useState('');
+  const [rejectBusy, setRejectBusy]               = useState(false);
 
   const [jobInput, setJobInput]       = useState('');
   const [showOpList, setShowOpList]   = useState(false);
@@ -286,8 +300,9 @@ export default function MachinePage() {
       fetchMachinePage(slug),
       fetchTodayStops(slug),
       fetchMESData(slug),
-      fetchStopCategories(),
-    ]).then(([mp, ms, md, cats]) => {
+      fetchMachineStopCategories(slug),
+      fetchMachineRejectCategories(slug),
+    ]).then(([mp, ms, md, cats, rcats]) => {
       if (mp.status === 'fulfilled') {
         setMachine(mp.value);
         setJobInput(mp.value.current_job_number ?? '');
@@ -297,6 +312,7 @@ export default function MachinePage() {
       if (ms.status === 'fulfilled') setStops(ms.value);
       if (md.status === 'fulfilled') setMes(md.value);
       if (cats.status === 'fulfilled') setCats(cats.value);
+      if (rcats.status === 'fulfilled') setRejectCats(rcats.value);
       setLoading(false);
     });
     if (slug) {
@@ -386,10 +402,43 @@ export default function MachinePage() {
     load();
   };
 
-  const handleAddReject = async (delta: number) => {
+  const openRejectModal = () => {
+    setRejectStep(rejectCats.length > 0 ? 'categories' : 'quantity');
+    setSelectedRejectCat(null); setSelectedRejectSub(null);
+    setRejectQty(1); setRejectComment('');
+    setShowRejectModal(true);
+  };
+
+  const handleRejectCatSelect = (cat: RejectCategoryOut) => {
+    setSelectedRejectCat(cat);
+    if (cat.subcategories.length > 0) {
+      setRejectStep('subcategories');
+    } else {
+      setRejectStep('quantity');
+    }
+  };
+
+  const handleRejectSubSelect = (sub: RejectSubcategoryOut) => {
+    setSelectedRejectSub(sub);
+    setRejectStep('quantity');
+  };
+
+  const submitReject = async () => {
     if (!slug) return;
-    const res = await addRejects(slug, delta);
-    setMes((prev) => prev ? { ...prev, reject_count: res.reject_count } : prev);
+    setRejectBusy(true);
+    try {
+      const payload = {
+        category_id:    selectedRejectCat?.id,
+        subcategory_id: selectedRejectSub?.id,
+        quantity:       rejectQty,
+        comment:        rejectComment || undefined,
+      };
+      const res = await logReject(slug, payload);
+      setMes((prev) => prev ? { ...prev, reject_count: res.reject_count } : prev);
+      setShowRejectModal(false);
+    } finally {
+      setRejectBusy(false);
+    }
   };
 
   const doOpenField = async (ticketId: string) => {
@@ -617,13 +666,9 @@ export default function MachinePage() {
             </div>
             <div className="flex flex-col gap-3">
               <button
-                onClick={() => handleAddReject(1)}
+                onClick={openRejectModal}
                 className="w-16 h-16 rounded-full bg-red-600/20 hover:bg-red-600/30 border-2 border-red-500/40 text-red-400 text-3xl font-black transition-all active:scale-90"
               >+1</button>
-              <button
-                onClick={() => handleAddReject(-1)}
-                className="w-16 h-16 rounded-full bg-orange-500/20 hover:bg-orange-500/30 border-2 border-orange-500/40 text-orange-400 text-2xl font-black transition-all active:scale-90"
-              >-1</button>
             </div>
           </div>
 
@@ -699,6 +744,93 @@ export default function MachinePage() {
         </div>
       )}
 
+      {/* ── Reject Category Modal ── */}
+      {showRejectModal && (
+        <div className="fixed inset-0 z-50 bg-black/90 flex flex-col">
+          <div className="flex items-center justify-between px-8 py-6 border-b border-white/[0.06]">
+            <div>
+              <h2 className="text-2xl font-black text-white">{t.rejects}</h2>
+              <p className="text-gray-400 text-base mt-1">{machine?.display_name || machine?.name}</p>
+            </div>
+            {rejectStep !== 'categories' && (
+              <button onClick={() => setRejectStep(rejectStep === 'quantity' && selectedRejectSub ? 'subcategories' : 'categories')}
+                className="flex items-center gap-2 text-gray-400 hover:text-white text-base font-medium">
+                <ChevronLeft size={20} /> {t.backToMachines}
+              </button>
+            )}
+            <button onClick={() => setShowRejectModal(false)}><X size={28} className="text-gray-600 hover:text-gray-300" /></button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-8 py-8">
+            {rejectStep === 'categories' && (
+              <div className="space-y-6">
+                <div className="flex flex-wrap gap-6 justify-center">
+                  {rejectCats.map((cat) => (
+                    <button key={cat.id} onClick={() => handleRejectCatSelect(cat)}
+                      className="flex flex-col items-center gap-3 p-6 rounded-3xl border-2 transition-all active:scale-95 hover:scale-105"
+                      style={{ borderColor: (cat.color || '#6b7280') + '80', backgroundColor: (cat.color || '#6b7280') + '15', minWidth: '140px', minHeight: '140px' }}>
+                      <IconRenderer icon={cat.icon || 'quality'} color={cat.color || '#6b7280'} size={40} />
+                      <span className="text-base font-bold text-white text-center leading-snug">{cat.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {rejectStep === 'subcategories' && selectedRejectCat && (
+              <div className="space-y-6">
+                <p className="text-xl text-gray-400 font-semibold">{selectedRejectCat.name}</p>
+                <div className="flex flex-wrap gap-6 justify-center">
+                  {selectedRejectCat.subcategories.map((sub: RejectSubcategoryOut) => (
+                    <button key={sub.id} onClick={() => handleRejectSubSelect(sub)}
+                      className="flex flex-col items-center gap-3 p-6 rounded-3xl border-2 border-white/10 bg-white/[0.04] hover:bg-white/[0.08] transition-all active:scale-95 hover:scale-105"
+                      style={{ minWidth: '140px', minHeight: '140px' }}>
+                      <IconRenderer icon={sub.icon || 'quality'} color={sub.color || '#6b7280'} size={40} />
+                      <span className="text-base font-bold text-white text-center">{sub.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {rejectStep === 'quantity' && (
+              <div className="max-w-md mx-auto space-y-6">
+                {selectedRejectCat && (
+                  <div className="text-center space-y-2">
+                    <IconRenderer icon={selectedRejectCat.icon || 'quality'} color={selectedRejectCat.color || '#6b7280'} size={40} className="mx-auto" />
+                    <h3 className="text-xl font-black text-white">
+                      {selectedRejectSub?.name ?? selectedRejectCat.name}
+                    </h3>
+                  </div>
+                )}
+                <div>
+                  <label className="block text-sm text-gray-500 uppercase tracking-wide mb-2">Quantity</label>
+                  <div className="flex items-center gap-4 justify-center">
+                    <button onClick={() => setRejectQty((q) => Math.max(1, q - 1))}
+                      className="w-14 h-14 rounded-full bg-gray-700 hover:bg-gray-600 text-white text-2xl font-black transition-all active:scale-90">−</button>
+                    <span className="text-6xl font-black text-white w-20 text-center">{rejectQty}</span>
+                    <button onClick={() => setRejectQty((q) => q + 1)}
+                      className="w-14 h-14 rounded-full bg-gray-700 hover:bg-gray-600 text-white text-2xl font-black transition-all active:scale-90">+</button>
+                  </div>
+                </div>
+                {(selectedRejectCat?.comment_required || selectedRejectSub?.comment_required) && (
+                  <div>
+                    <label className="block text-sm text-gray-500 uppercase tracking-wide mb-2">{t.comment}</label>
+                    <textarea value={rejectComment} onChange={(e) => setRejectComment(e.target.value)}
+                      rows={3} placeholder={t.commentPlaceholder}
+                      className="w-full bg-[#0d1421] border border-white/10 rounded-xl px-5 py-4 text-white text-base placeholder-gray-600 focus:outline-none focus:border-red-500 resize-none" />
+                  </div>
+                )}
+                <button onClick={submitReject} disabled={rejectBusy}
+                  className="w-full py-5 rounded-2xl font-black text-xl text-white bg-red-600 hover:bg-red-500 transition-all active:scale-95 disabled:opacity-50">
+                  {rejectBusy ? '...' : `${t.confirmStop} — ${rejectQty}`}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ── Stop Justification Modal ── */}
       {showModal && (
         <div className="fixed inset-0 z-50 bg-black/90 flex flex-col">
@@ -743,7 +875,7 @@ export default function MachinePage() {
                           minWidth: '140px', minHeight: '140px',
                         }}
                       >
-                        <span className="text-5xl leading-none">{cat.icon}</span>
+                        <IconRenderer icon={cat.icon} color={cat.color} size={36} />
                         <span className="text-base font-bold text-white text-center leading-snug">{cat.name}</span>
                         {todayCount > 0 && (
                           <span
@@ -772,7 +904,7 @@ export default function MachinePage() {
                       className="flex flex-col items-center gap-3 p-6 rounded-3xl border-2 border-white/10 bg-white/[0.04] hover:bg-white/[0.08] transition-all active:scale-95 hover:scale-105"
                       style={{ minWidth: '140px', minHeight: '140px' }}
                     >
-                      <span className="text-5xl leading-none">{sub.icon}</span>
+                      <IconRenderer icon={sub.icon} color={sub.color || '#6b7280'} size={36} />
                       <span className="text-base font-bold text-white text-center leading-snug">{sub.name}</span>
                       {sub.triggers_maintenance && (
                         <span className="text-[10px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full">
@@ -789,7 +921,7 @@ export default function MachinePage() {
             {modalStep === 'confirm-maintenance' && selectedCat && (
               <div className="max-w-lg mx-auto space-y-6">
                 <div className="text-center space-y-3">
-                  <span className="text-7xl">{selectedCat.icon}</span>
+                  <div className="flex justify-center"><IconRenderer icon={selectedCat.icon} color={selectedCat.color} size={48} /></div>
                   <h3 className="text-2xl font-black text-white">{selectedCat.name}</h3>
                   <p className="text-gray-400 text-base">{t.maintenanceWillBeNotified}</p>
                 </div>
@@ -818,7 +950,7 @@ export default function MachinePage() {
             {modalStep === 'confirm-unplanned' && (selectedCat || selectedSub) && (
               <div className="max-w-lg mx-auto space-y-6">
                 <div className="text-center space-y-3">
-                  <span className="text-7xl">{selectedSub?.icon ?? selectedCat?.icon}</span>
+                  <div className="flex justify-center"><IconRenderer icon={(selectedSub?.icon ?? selectedCat?.icon) || 'wrench'} color={selectedSub?.color ?? selectedCat?.color ?? '#6b7280'} size={48} /></div>
                   <h3 className="text-2xl font-black text-white">{selectedSub?.name ?? selectedCat?.name}</h3>
                   {selectedSub?.triggers_maintenance && (
                     <p className="text-amber-400 text-base font-semibold">{t.maintenanceWillBeNotified}</p>

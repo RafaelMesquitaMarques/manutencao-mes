@@ -6,6 +6,7 @@ from datetime import datetime
 from app.models.models import (
     AlertPriority, AlertStatus, AlertProblemType, AlertShift, TicketStatus,
     MachineStatus, StopCategoryType, OperatorShift, PageLanguage,
+    HourlyRateCurrency, JobOrderStatus, JobOrderSource,
 )
 
 
@@ -37,6 +38,9 @@ class MachineOut(BaseModel):
     show_job_number:         bool = True
     custom_color:            Optional[str] = None
     display_name:            Optional[str] = None
+    hourly_rate:             Optional[float] = None
+    hourly_rate_currency:    Optional[str] = "CAD"
+    target_count_per_shift:  Optional[int] = None
     created_at:              datetime
 
 
@@ -85,6 +89,9 @@ class MachinePageData(BaseModel):
     show_job_number:         bool = True
     custom_color:            Optional[str] = None
     display_name:            Optional[str] = None
+    hourly_rate:             Optional[float] = None
+    hourly_rate_currency:    Optional[str] = "CAD"
+    target_count_per_shift:  Optional[int] = None
     open_tickets:            List[TicketForMachine] = []
 
 
@@ -109,10 +116,13 @@ class MachineConfigUpdate(BaseModel):
     custom_color:            Optional[str]   = None
     target_availability_pct: Optional[float] = None
     target_count:            Optional[int]   = None
+    target_count_per_shift:  Optional[int]   = None
     show_production_panel:   Optional[bool]  = None
     show_reject_panel:       Optional[bool]  = None
     show_availability_gauge: Optional[bool]  = None
     show_job_number:         Optional[bool]  = None
+    hourly_rate:             Optional[float] = None
+    hourly_rate_currency:    Optional[str]   = None
 
 
 class MachineRejectUpdate(BaseModel):
@@ -124,58 +134,87 @@ class MachineRejectUpdate(BaseModel):
 class StopSubcategoryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id:                  UUID
-    category_id:         UUID
-    name:                str
-    icon:                str
-    color:               Optional[str] = None
+    id:                   UUID
+    category_id:          UUID
+    name:                 str
+    name_en:              Optional[str] = None
+    name_fr:              Optional[str] = None
+    name_es:              Optional[str] = None
+    icon:                 str
+    color:                Optional[str] = None
+    comment_required:     bool = False
     triggers_maintenance: bool
-    is_active:           bool
-    sort_order:          int
+    is_active:            bool
+    sort_order:           int
 
 
 class StopCategoryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id:            UUID
-    name:          str
-    type:          StopCategoryType
-    icon:          str
-    color:         str
-    is_active:     bool
-    sort_order:    int
-    subcategories: List[StopSubcategoryOut] = []
+    id:                   UUID
+    machine_id:           Optional[UUID] = None
+    name:                 str
+    name_en:              Optional[str] = None
+    name_fr:              Optional[str] = None
+    name_es:              Optional[str] = None
+    type:                 StopCategoryType
+    icon:                 str
+    color:                str
+    comment_required:     bool = False
+    triggers_maintenance: bool = False
+    is_active:            bool
+    is_global:            bool = False
+    sort_order:           int
+    subcategories:        List[StopSubcategoryOut] = []
 
 
 class StopCategoryCreate(BaseModel):
-    name:       str
-    type:       StopCategoryType
-    icon:       str = "⏸"
-    color:      str = "#6b7280"
-    sort_order: int = 0
+    name:                str
+    name_en:             Optional[str] = None
+    name_fr:             Optional[str] = None
+    name_es:             Optional[str] = None
+    type:                StopCategoryType
+    icon:                str = "⏸"
+    color:               str = "#6b7280"
+    comment_required:    bool = False
+    triggers_maintenance: bool = False
+    sort_order:          int = 0
 
 
 class StopCategoryUpdate(BaseModel):
-    name:       Optional[str]             = None
-    type:       Optional[StopCategoryType] = None
-    icon:       Optional[str]             = None
-    color:      Optional[str]             = None
-    is_active:  Optional[bool]            = None
-    sort_order: Optional[int]             = None
+    name:                Optional[str]              = None
+    name_en:             Optional[str]              = None
+    name_fr:             Optional[str]              = None
+    name_es:             Optional[str]              = None
+    type:                Optional[StopCategoryType] = None
+    icon:                Optional[str]              = None
+    color:               Optional[str]              = None
+    comment_required:    Optional[bool]             = None
+    triggers_maintenance: Optional[bool]            = None
+    is_active:           Optional[bool]             = None
+    sort_order:          Optional[int]              = None
 
 
 class StopSubcategoryCreate(BaseModel):
     name:                str
+    name_en:             Optional[str]  = None
+    name_fr:             Optional[str]  = None
+    name_es:             Optional[str]  = None
     icon:                str = "⏸"
-    color:               Optional[str] = None
+    color:               Optional[str]  = None
+    comment_required:    bool = False
     triggers_maintenance: bool = False
     sort_order:          int = 0
 
 
 class StopSubcategoryUpdate(BaseModel):
     name:                Optional[str]  = None
+    name_en:             Optional[str]  = None
+    name_fr:             Optional[str]  = None
+    name_es:             Optional[str]  = None
     icon:                Optional[str]  = None
     color:               Optional[str]  = None
+    comment_required:    Optional[bool] = None
     triggers_maintenance: Optional[bool] = None
     is_active:           Optional[bool] = None
     sort_order:          Optional[int]  = None
@@ -186,6 +225,102 @@ class SortOrderItem(BaseModel):
     sort_order: int
 
 
+# ── Reject Categories ─────────────────────────────────────────────────────────
+
+class RejectSubcategoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id:               UUID
+    category_id:      UUID
+    name:             str
+    name_en:          Optional[str] = None
+    name_fr:          Optional[str] = None
+    name_es:          Optional[str] = None
+    icon:             str
+    color:            Optional[str] = None
+    comment_required: bool = False
+    is_active:        bool
+    sort_order:       int
+
+
+class RejectCategoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id:               UUID
+    machine_id:       Optional[UUID] = None
+    name:             str
+    name_en:          Optional[str] = None
+    name_fr:          Optional[str] = None
+    name_es:          Optional[str] = None
+    icon:             str
+    color:            str
+    comment_required: bool = False
+    is_active:        bool
+    is_global:        bool = False
+    sort_order:       int
+    subcategories:    List[RejectSubcategoryOut] = []
+
+
+class RejectCategoryCreate(BaseModel):
+    name:             str
+    name_en:          Optional[str] = None
+    name_fr:          Optional[str] = None
+    name_es:          Optional[str] = None
+    icon:             str = "❌"
+    color:            str = "#ef4444"
+    comment_required: bool = False
+    sort_order:       int = 0
+
+
+class RejectCategoryUpdate(BaseModel):
+    name:             Optional[str]  = None
+    name_en:          Optional[str]  = None
+    name_fr:          Optional[str]  = None
+    name_es:          Optional[str]  = None
+    icon:             Optional[str]  = None
+    color:            Optional[str]  = None
+    comment_required: Optional[bool] = None
+    is_active:        Optional[bool] = None
+    sort_order:       Optional[int]  = None
+
+
+class RejectSubcategoryCreate(BaseModel):
+    name:             str
+    name_en:          Optional[str] = None
+    name_fr:          Optional[str] = None
+    name_es:          Optional[str] = None
+    icon:             str = "❌"
+    color:            Optional[str] = None
+    comment_required: bool = False
+    sort_order:       int = 0
+
+
+class RejectSubcategoryUpdate(BaseModel):
+    name:             Optional[str]  = None
+    name_en:          Optional[str]  = None
+    name_fr:          Optional[str]  = None
+    name_es:          Optional[str]  = None
+    icon:             Optional[str]  = None
+    color:            Optional[str]  = None
+    comment_required: Optional[bool] = None
+    is_active:        Optional[bool] = None
+    sort_order:       Optional[int]  = None
+
+
+class RejectLogCreate(BaseModel):
+    reject_category_id:    Optional[UUID] = None
+    reject_subcategory_id: Optional[UUID] = None
+    quantity:              int = 1
+    comments:              Optional[str] = None
+    job_number:            Optional[str] = None
+
+
+class CloneCategoriesRequest(BaseModel):
+    source_machine_id: UUID
+    target_machine_ids: List[UUID]
+    category_type:     str  # 'stop' | 'reject'
+
+
 # ── Machine Stops ─────────────────────────────────────────────────────────────
 
 class MachineStopCreate(BaseModel):
@@ -193,6 +328,9 @@ class MachineStopCreate(BaseModel):
     stop_subcategory_id: Optional[UUID] = None
     comments:            Optional[str]  = None
     justified_by:        Optional[str]  = None
+    operator_id:         Optional[UUID] = None
+    shift:               Optional[str]  = None
+    job_number:          Optional[str]  = None
 
 
 class MachineStopClose(BaseModel):
@@ -460,3 +598,38 @@ class SupervisorOverview(BaseModel):
     pending_tickets:  List[TicketSummary]
     unassigned_wos:   List[WOSummary]
     unscheduled_wos:  List[WOSummary]
+
+
+# ── Job Orders ─────────────────────────────────────────────────────────────────
+
+class JobOrderOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id:              UUID
+    machine_id:      Optional[UUID] = None
+    job_number:      str
+    product_name:    Optional[str] = None
+    target_quantity: Optional[int] = None
+    scheduled_date:  Optional[Any] = None
+    status:          JobOrderStatus
+    source:          JobOrderSource
+    erp_reference:   Optional[str] = None
+    created_at:      datetime
+
+
+class JobOrderCreate(BaseModel):
+    machine_id:      Optional[UUID] = None
+    job_number:      str
+    product_name:    Optional[str] = None
+    target_quantity: Optional[int] = None
+    scheduled_date:  Optional[Any] = None
+    source:          JobOrderSource = JobOrderSource.manual
+    erp_reference:   Optional[str] = None
+
+
+class JobOrderUpdate(BaseModel):
+    product_name:    Optional[str]           = None
+    target_quantity: Optional[int]           = None
+    scheduled_date:  Optional[Any]           = None
+    status:          Optional[JobOrderStatus] = None
+    machine_id:      Optional[UUID]          = None
