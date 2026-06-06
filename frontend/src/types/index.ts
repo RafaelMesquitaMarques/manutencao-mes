@@ -4,13 +4,13 @@ export type Priority = 'low' | 'medium' | 'high' | 'critical';
 
 export interface User {
   id: string;
+  nome: string;
   email: string;
-  full_name: string;
-  role: string;
+  ativo: boolean;
 }
 
 export interface Equipment {
-  id: string;          // UUID
+  id: string;
   usina_id: string;
   code: string;
   name: string;
@@ -24,38 +24,56 @@ export interface Equipment {
 }
 
 export interface WorkOrder {
-  id: string;                  // UUID
+  id: string;
   wo_number: string;
   title: string;
+  short_description?: string;
   description?: string;
   status: WorkOrderStatus;
   type: WorkOrderType;
   priority: Priority;
-  equipment_id: string;        // UUID
+  equipment_id: string;
   equipment_name?: string;
   equipment_location?: string;
   assigned_to_id?: string;
+  assigned_to_name?: string;
   created_by_id?: string;
+  created_by_name?: string;
+  executor_id?: string;
   root_cause?: string;
   solution?: string;
+  diagnostic?: string;
+  resolution?: string;
   opened_at: string;
   due_date?: string;
   started_at?: string;
   completed_at?: string;
+  close_date?: string;
   downtime_hours?: number;
+  downtime_minutes?: number;
   repair_hours?: number;
+  completion_ratio?: number;
   total_cost?: number;
+  execution_mode?: string;
+  classification?: string;
+  failure_code?: string;
+  componente?: string;
+  tag?: string;
+  counter_open?: number;
+  counter_close?: number;
+  project_number?: string;
+  cost_center?: string;
   from_iot: boolean;
 }
 
 export interface WorkOrderCreate {
-  equipment_id: string;        // UUID
+  equipment_id: string;
   type: WorkOrderType;
   priority: Priority;
   title: string;
   description?: string;
   due_date?: string;
-  assigned_to_id?: string;     // UUID
+  assigned_to_id?: string;
 }
 
 export interface DashboardStats {
@@ -72,6 +90,88 @@ export interface Technician {
   id: string;
   full_name: string;
   email: string;
+}
+
+export interface TechnicianFull {
+  id: string;
+  user_id: string;
+  employee_number?: string;
+  specialty?: string;
+  shift?: string;
+  hourly_rate?: number;
+  certifications: string[];
+  active: boolean;
+  created_at: string;
+  full_name?: string;
+  email?: string;
+}
+
+export interface TechnicianCreate {
+  user_id: string;
+  employee_number?: string;
+  specialty?: string;
+  shift?: string;
+  hourly_rate?: number;
+  certifications?: string[];
+}
+
+export interface LaborRecord {
+  id: string;
+  ordem_id: string;
+  tecnico_id: string;
+  date: string;
+  hours_worked: number;
+  hourly_rate?: number;
+  labor_cost?: number;
+  activity?: string;
+  notes?: string;
+  created_at: string;
+}
+
+export interface WOPart {
+  id: string;
+  ordem_id: string;
+  item_estoque_id?: string;
+  part_number?: string;
+  description: string;
+  quantity: number;
+  unit: string;
+  unit_cost?: number;
+  total_cost?: number;
+  supplier?: string;
+  notes?: string;
+  created_at: string;
+}
+
+export interface WOCost {
+  id: string;
+  ordem_id: string;
+  transaction_type: string;
+  description: string;
+  amount: number;
+  currency: string;
+  reference?: string;
+  date: string;
+  notes?: string;
+  created_at: string;
+}
+
+export interface WOCostSummary {
+  labor_total: number;
+  parts_total: number;
+  other_total: number;
+  grand_total: number;
+}
+
+export interface WOAction {
+  id: string;
+  ordem_id: string;
+  author_id?: string;
+  action_type: string;
+  content?: string;
+  old_value?: string;
+  new_value?: string;
+  created_at: string;
 }
 
 export interface LoginResponse {

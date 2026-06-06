@@ -5,6 +5,14 @@ import type {
   DashboardStats,
   Equipment,
   Technician,
+  TechnicianFull,
+  TechnicianCreate,
+  LaborRecord,
+  WOPart,
+  WOCost,
+  WOCostSummary,
+  WOAction,
+  User,
 } from '../types';
 
 interface PaginatedResponse<T> {
@@ -26,6 +34,18 @@ export const fetchWorkOrder = async (id: string): Promise<WorkOrder> => {
 
 export const createWorkOrder = async (payload: WorkOrderCreate): Promise<WorkOrder> => {
   const { data } = await api.post<WorkOrder>('/api/wo/', payload);
+  return data;
+};
+
+export const startWorkOrder = async (id: string): Promise<WorkOrder> => {
+  const { data } = await api.post<WorkOrder>(`/api/wo/${id}/iniciar`);
+  return data;
+};
+
+export const completeWorkOrder = async (id: string, repairHours?: number): Promise<WorkOrder> => {
+  const params: Record<string, string> = {};
+  if (repairHours != null) params.tempo_reparo_h = String(repairHours);
+  const { data } = await api.post<WorkOrder>(`/api/wo/${id}/concluir`, null, { params });
   return data;
 };
 
@@ -53,9 +73,108 @@ export const fetchEquipment = async (): Promise<Equipment[]> => {
 
 export const fetchTechnicians = async (): Promise<Technician[]> => {
   try {
-    const { data } = await api.get<{ id: string; nome: string; email: string }[]>('/api/users/');
-    return data.map((u) => ({ id: u.id, full_name: u.nome, email: u.email }));
+    const { data } = await api.get<PaginatedResponse<TechnicianFull>>('/api/technicians/');
+    return (data.items ?? []).map((t) => ({
+      id: t.id,
+      full_name: t.full_name ?? '',
+      email: t.email ?? '',
+    }));
   } catch {
     return [];
   }
+};
+
+export const fetchTechniciansFull = async (): Promise<TechnicianFull[]> => {
+  const { data } = await api.get<PaginatedResponse<TechnicianFull>>('/api/technicians/');
+  return data.items ?? [];
+};
+
+export const createTechnician = async (payload: TechnicianCreate): Promise<TechnicianFull> => {
+  const { data } = await api.post<TechnicianFull>('/api/technicians/', payload);
+  return data;
+};
+
+export const fetchUsers = async (): Promise<User[]> => {
+  const { data } = await api.get<PaginatedResponse<User> | User[]>('/api/users/');
+  return Array.isArray(data) ? data : (data.items ?? []);
+};
+
+// WO sub-resources
+
+export const fetchWOLabor = async (id: string): Promise<LaborRecord[]> => {
+  const { data } = await api.get<PaginatedResponse<LaborRecord>>(`/api/wo/${id}/labor`);
+  return data.items ?? [];
+};
+
+export const addWOLabor = async (
+  id: string,
+  payload: {
+    tecnico_id: string;
+    date: string;
+    hours_worked: number;
+    hourly_rate?: number;
+    activity?: string;
+    notes?: string;
+  }
+): Promise<LaborRecord> => {
+  const { data } = await api.post<LaborRecord>(`/api/wo/${id}/labor`, payload);
+  return data;
+};
+
+export const fetchWOParts = async (id: string): Promise<WOPart[]> => {
+  const { data } = await api.get<PaginatedResponse<WOPart>>(`/api/wo/${id}/parts`);
+  return data.items ?? [];
+};
+
+export const addWOPart = async (
+  id: string,
+  payload: {
+    description: string;
+    part_number?: string;
+    quantity: number;
+    unit?: string;
+    unit_cost?: number;
+    supplier?: string;
+  }
+): Promise<WOPart> => {
+  const { data } = await api.post<WOPart>(`/api/wo/${id}/parts`, payload);
+  return data;
+};
+
+export const fetchWOCosts = async (id: string): Promise<WOCost[]> => {
+  const { data } = await api.get<PaginatedResponse<WOCost>>(`/api/wo/${id}/costs`);
+  return data.items ?? [];
+};
+
+export const addWOCost = async (
+  id: string,
+  payload: {
+    transaction_type: string;
+    description: string;
+    amount: number;
+    currency?: string;
+    date: string;
+    reference?: string;
+  }
+): Promise<WOCost> => {
+  const { data } = await api.post<WOCost>(`/api/wo/${id}/costs`, payload);
+  return data;
+};
+
+export const fetchWOCostSummary = async (id: string): Promise<WOCostSummary> => {
+  const { data } = await api.get<WOCostSummary>(`/api/wo/${id}/costs/summary`);
+  return data;
+};
+
+export const fetchWOActions = async (id: string): Promise<WOAction[]> => {
+  const { data } = await api.get<PaginatedResponse<WOAction>>(`/api/wo/${id}/actions`);
+  return data.items ?? [];
+};
+
+export const addWOAction = async (
+  id: string,
+  payload: { action_type: string; content?: string }
+): Promise<WOAction> => {
+  const { data } = await api.post<WOAction>(`/api/wo/${id}/actions`, payload);
+  return data;
 };

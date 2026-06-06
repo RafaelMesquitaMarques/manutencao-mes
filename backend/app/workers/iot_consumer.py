@@ -89,21 +89,22 @@ async def main():
         await client.subscribe("usinas/+/captores/+/leitura")
         log.info("Subscribed: usinas/+/captores/+/leitura")
 
-        async for message in client.messages:
-            try:
-                topic_parts = str(message.topic).split("/")
-                # usinas/{usina_id}/captores/{captor_codigo}/leitura
-                captor_codigo = topic_parts[3] if len(topic_parts) >= 4 else None
-                if not captor_codigo:
-                    continue
+        async with client.messages() as messages:
+            async for message in messages:
+                try:
+                    topic_parts = str(message.topic).split("/")
+                    # usinas/{usina_id}/captores/{captor_codigo}/leitura
+                    captor_codigo = topic_parts[3] if len(topic_parts) >= 4 else None
+                    if not captor_codigo:
+                        continue
 
-                payload = json.loads(message.payload.decode())
+                    payload = json.loads(message.payload.decode())
 
-                async with AsyncSessionLocal() as session:
-                    await processar_leitura(session, captor_codigo, payload)
+                    async with AsyncSessionLocal() as session:
+                        await processar_leitura(session, captor_codigo, payload)
 
-            except Exception as e:
-                log.error(f"Erro processando mensagem: {e}")
+                except Exception as e:
+                    log.error(f"Erro processando mensagem: {e}")
 
 
 if __name__ == "__main__":

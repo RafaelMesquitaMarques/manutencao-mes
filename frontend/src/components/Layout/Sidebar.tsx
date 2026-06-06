@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   ClipboardList,
   Wrench,
+  Users,
   BarChart3,
   Settings,
   Factory,
@@ -13,6 +14,7 @@ import {
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, key: 'dashboard' },
   { to: '/work-orders', icon: ClipboardList, key: 'workOrders' },
+  { to: '/technicians', icon: Users, key: 'technicians' },
   { to: '/equipment', icon: Wrench, key: 'equipment', disabled: true },
   { to: '/reports', icon: BarChart3, key: 'reports', disabled: true },
   { to: '/settings', icon: Settings, key: 'settings', disabled: true },
