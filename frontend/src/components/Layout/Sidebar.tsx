@@ -14,6 +14,7 @@ import {
   Ticket,
   Activity,
   Shield,
+  Briefcase,
   X,
 } from 'lucide-react';
 
@@ -25,6 +26,7 @@ const navGroups = [
       { to: '/work-orders', icon: ClipboardList,   key: 'workOrders' },
       { to: '/technicians', icon: Users,            key: 'technicians' },
       { to: '/equipment',   icon: Wrench,           key: 'equipment' },
+      { to: '/my-work',     icon: Briefcase,        key: 'myWork' },
     ],
   },
   {
@@ -34,6 +36,12 @@ const navGroups = [
       { to: '/tickets',                 icon: Ticket,   key: 'tickets' },
       { to: '/maintenance/dashboard',   icon: Activity, key: 'maintenanceDashboard' },
       { to: '/maintenance/supervisor',  icon: Shield,   key: 'supervisorView' },
+    ],
+  },
+  {
+    label: 'Machines',
+    items: [
+      { to: '/machines', icon: Factory, key: 'machines' },
     ],
   },
   {

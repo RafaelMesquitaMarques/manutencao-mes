@@ -3,7 +3,7 @@ from typing import Optional, List, Any
 from uuid import UUID
 from datetime import datetime
 
-from app.models.models import AlertPriority, AlertStatus, AlertProblemType, AlertShift, TicketStatus
+from app.models.models import AlertPriority, AlertStatus, AlertProblemType, AlertShift, TicketStatus, MachineStatus
 
 
 # ── Machine ────────────────────────────────────────────────────────────────────
@@ -11,17 +11,76 @@ from app.models.models import AlertPriority, AlertStatus, AlertProblemType, Aler
 class MachineOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id:         UUID
-    name:       str
-    department: Optional[str] = None
-    location:   Optional[str] = None
-    is_active:  bool
-    created_at: datetime
+    id:                  UUID
+    name:                str
+    code:                Optional[str] = None
+    department:          Optional[str] = None
+    location:            Optional[str] = None
+    is_active:           bool
+    current_status:      Optional[str] = None
+    current_operator:    Optional[str] = None
+    current_shift:       Optional[str] = None
+    last_maintenance_at: Optional[datetime] = None
+    page_slug:           Optional[str] = None
+    created_at:          datetime
 
 
 class MachineListResponse(BaseModel):
     total: int
     items: List[MachineOut]
+
+
+# ── Machine page ───────────────────────────────────────────────────────────────
+
+class TicketForMachine(BaseModel):
+    id:                      UUID
+    ticket_number:           str
+    status:                  str
+    priority:                str
+    problem_type:            Optional[str] = None
+    description:             Optional[str] = None
+    assigned_to_name:        Optional[str] = None
+    opened_at:               datetime
+    opened_by_technician_at: Optional[datetime] = None
+    work_order_id:           Optional[UUID] = None
+    work_order_number:       Optional[str] = None
+
+
+class MachinePageData(BaseModel):
+    id:                  UUID
+    name:                str
+    code:                Optional[str] = None
+    department:          Optional[str] = None
+    location:            Optional[str] = None
+    is_active:           bool
+    current_status:      str
+    current_operator:    Optional[str] = None
+    current_shift:       Optional[str] = None
+    last_maintenance_at: Optional[datetime] = None
+    page_slug:           Optional[str] = None
+    open_tickets:        List[TicketForMachine] = []
+
+
+class MachineStatusUpdate(BaseModel):
+    status:           MachineStatus
+    current_operator: Optional[str] = None
+    current_shift:    Optional[str] = None
+
+
+class MaintenanceRequestCreate(BaseModel):
+    problem_type:  AlertProblemType
+    priority:      AlertPriority = AlertPriority.high
+    description:   Optional[str] = None
+    operator_name: str
+    shift:         Optional[AlertShift] = None
+
+
+class MESData(BaseModel):
+    production_count:       int = 0
+    target:                 int = 0
+    oee_pct:                float = 0.0
+    downtime_today_minutes: int = 0
+    is_placeholder:         bool = True
 
 
 # ── Alert ──────────────────────────────────────────────────────────────────────
@@ -77,11 +136,14 @@ class AlertListResponse(BaseModel):
 # ── Ticket ─────────────────────────────────────────────────────────────────────
 
 class TicketCreate(BaseModel):
-    alert_id:                   Optional[UUID]        = None
+    alert_id:                   Optional[UUID]          = None
     machine_id:                 UUID
-    priority:                   AlertPriority         = AlertPriority.medium
-    assigned_to_id:             Optional[UUID]        = None
-    estimated_downtime_minutes: Optional[int]         = None
+    priority:                   AlertPriority           = AlertPriority.medium
+    assigned_to_id:             Optional[UUID]          = None
+    estimated_downtime_minutes: Optional[int]           = None
+    problem_type:               Optional[AlertProblemType] = None
+    description:                Optional[str]           = None
+    machine_page_source:        bool                    = False
 
 
 class TicketUpdate(BaseModel):
@@ -132,6 +194,11 @@ class TicketOut(BaseModel):
     work_order_id:              Optional[UUID]      = None
     work_order_number:          Optional[str]       = None
     work_order_status:          Optional[str]       = None
+    problem_type:               Optional[AlertProblemType] = None
+    description:                Optional[str]       = None
+    machine_page_source:        bool                = False
+    opened_by_technician_at:    Optional[datetime]  = None
+    closed_by_technician_at:    Optional[datetime]  = None
     opened_at:                  datetime
     started_at:                 Optional[datetime]  = None
     completed_at:               Optional[datetime]  = None

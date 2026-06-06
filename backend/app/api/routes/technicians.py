@@ -31,6 +31,23 @@ async def list_technicians(
     return TechnicianListResponse(total=len(items), items=items)
 
 
+@router.get("/me", response_model=TechnicianOut)
+async def get_my_technician_profile(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Technician).where(Technician.user_id == current_user.id, Technician.active == True)
+    )
+    t = result.scalar_one_or_none()
+    if not t:
+        raise HTTPException(status_code=404, detail="No technician profile for current user")
+    out = TechnicianOut.model_validate(t)
+    out.full_name = current_user.name
+    out.email = current_user.email
+    return out
+
+
 @router.get("/{technician_id}", response_model=TechnicianOut)
 async def get_technician(
     technician_id: UUID,

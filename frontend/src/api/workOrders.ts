@@ -129,6 +129,11 @@ export const fetchTechniciansFull = async (): Promise<TechnicianFull[]> => {
   return data.items ?? [];
 };
 
+export const fetchMyTechnicianProfile = async (): Promise<TechnicianFull> => {
+  const { data } = await api.get<TechnicianFull>('/api/technicians/me');
+  return data;
+};
+
 export const createTechnician = async (payload: TechnicianCreate): Promise<TechnicianFull> => {
   const { data } = await api.post<TechnicianFull>('/api/technicians/', payload);
   return data;

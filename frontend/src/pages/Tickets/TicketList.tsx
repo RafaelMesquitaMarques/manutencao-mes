@@ -160,7 +160,14 @@ export default function TicketList() {
                   return (
                     <tr key={ticket.id} className="table-row">
                       <td className="table-cell">
-                        <span className="font-mono text-blue-400 text-xs">{ticket.ticket_number}</span>
+                        <div className="flex flex-col gap-1">
+                          <span className="font-mono text-blue-400 text-xs">{ticket.ticket_number}</span>
+                          {ticket.machine_page_source && (
+                            <span className="text-[10px] font-medium bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 px-1.5 py-0.5 rounded w-fit">
+                              Machine Page
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="table-cell font-medium text-gray-200">
                         {ticket.machine_name ?? '—'}

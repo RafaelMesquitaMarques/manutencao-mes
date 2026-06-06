@@ -19,11 +19,15 @@ import TicketList from './pages/Tickets/TicketList';
 import TicketDetail from './pages/Tickets/TicketDetail';
 import MaintenanceDashboard from './pages/MaintenanceDashboard/MaintenanceDashboard';
 import SupervisorDashboard from './pages/MaintenanceDashboard/SupervisorDashboard';
+import MachineList from './pages/Machines/MachineList';
+import MachinePage from './pages/Machines/MachinePage';
+import MyWorkPage from './pages/MyWork/MyWorkPage';
 
 const App = () => (
   <BrowserRouter>
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/machines/:slug" element={<MachinePage />} />
       <Route
         path="/"
         element={
@@ -50,6 +54,8 @@ const App = () => (
         <Route path="tickets/:id"           element={<TicketDetail />} />
         <Route path="maintenance/dashboard"  element={<MaintenanceDashboard />} />
         <Route path="maintenance/supervisor" element={<SupervisorDashboard />} />
+        <Route path="machines"              element={<MachineList />} />
+        <Route path="my-work"               element={<MyWorkPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

@@ -44,7 +44,9 @@
     "alerts":               "Alertas de mantenimiento",
     "tickets":              "Tickets abiertos",
     "maintenanceDashboard": "Panel de mantenimiento",
-    "supervisorView":       "Vista supervisor"
+    "supervisorView":       "Vista supervisor",
+    "machines":             "Todas las máquinas",
+    "myWork":               "Mi trabajo"
   },
   "auth": {
     "login": "Iniciar sesión",

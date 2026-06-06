@@ -95,6 +95,12 @@ class EquipmentStatus(str, enum.Enum):
     stopped        = "stopped"
     scrapped       = "scrapped"
 
+class MachineStatus(str, enum.Enum):
+    running     = "running"
+    stopped     = "stopped"
+    maintenance = "maintenance"
+    idle        = "idle"
+
 class TechnicianSpecialty(str, enum.Enum):
     electromechanical = "electromechanical"
     mechanical        = "mechanical"
@@ -527,12 +533,18 @@ class SupplierOrder(Base):
 class Machine(Base):
     __tablename__ = "machines"
 
-    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name       = Column(String(200), nullable=False)
-    department = Column(String(200))
-    location   = Column(String(200))
-    is_active  = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    id                  = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name                = Column(String(200), nullable=False)
+    code                = Column(String(50), unique=True, nullable=True)
+    department          = Column(String(200))
+    location            = Column(String(200))
+    is_active           = Column(Boolean, default=True)
+    current_status      = Column(SAEnum(MachineStatus, native_enum=False), default=MachineStatus.running)
+    current_operator    = Column(String(200), nullable=True)
+    current_shift       = Column(SAEnum(AlertShift, native_enum=False), nullable=True)
+    last_maintenance_at = Column(DateTime(timezone=True), nullable=True)
+    page_slug           = Column(String(200), unique=True, nullable=True)
+    created_at          = Column(DateTime(timezone=True), server_default=func.now())
 
     alerts  = relationship("MaintenanceAlert", back_populates="machine")
     tickets = relationship("MaintenanceTicket", back_populates="machine")
@@ -583,6 +595,11 @@ class MaintenanceTicket(Base):
     total_intervention_minutes = Column(Integer)
     current_escalation_level   = Column(Integer, default=0)
     last_updated_at            = Column(DateTime(timezone=True), onupdate=func.now())
+    problem_type               = Column(SAEnum(AlertProblemType, native_enum=False), nullable=True)
+    description                = Column(Text, nullable=True)
+    machine_page_source        = Column(Boolean, default=False)
+    opened_by_technician_at    = Column(DateTime(timezone=True), nullable=True)
+    closed_by_technician_at    = Column(DateTime(timezone=True), nullable=True)
 
     machine     = relationship("Machine", back_populates="tickets")
     assigned_to = relationship("User", foreign_keys=[assigned_to_id])

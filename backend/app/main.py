@@ -10,7 +10,7 @@ from app.db.base import Base
 from app.api.routes import (
     auth, plants, equipment, work_orders,
     maintenance_plans, inventory, alerts, iot, users, kpis, technicians,
-    tickets, maintenance_dashboard,
+    tickets, maintenance_dashboard, machines,
 )
 
 
@@ -29,12 +29,25 @@ async def _escalation_loop() -> None:
 async def _run_migrations() -> None:
     """Add new columns to existing tables (idempotent via IF NOT EXISTS)."""
     stmts = [
+        # Phase: ticket-WO integration
         "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS ticket_id UUID",
         "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'manual'",
         "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS scheduled_date DATE",
         "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS scheduled_start_time VARCHAR(10)",
         "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS scheduled_end_time VARCHAR(10)",
         "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS work_order_id UUID REFERENCES work_orders(id)",
+        # Phase: machine page
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS code VARCHAR(50) UNIQUE",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS current_status VARCHAR(20) NOT NULL DEFAULT 'running'",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS current_operator VARCHAR(200)",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS current_shift VARCHAR(20)",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS last_maintenance_at TIMESTAMPTZ",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS page_slug VARCHAR(200) UNIQUE",
+        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS machine_page_source BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS opened_by_technician_at TIMESTAMPTZ",
+        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS closed_by_technician_at TIMESTAMPTZ",
+        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS problem_type VARCHAR(50)",
+        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS description TEXT",
     ]
     async with engine.begin() as conn:
         for stmt in stmts:
@@ -80,6 +93,7 @@ app.include_router(iot.router,                    prefix="/api/iot",           t
 app.include_router(users.router,                  prefix="/api/users",         tags=["Users"])
 app.include_router(kpis.router,                   prefix="/api/kpis",          tags=["KPIs"])
 app.include_router(technicians.router,            prefix="/api/technicians",   tags=["Technicians"])
+app.include_router(machines.router,               prefix="/api/machines",      tags=["Machines"])
 
 
 @app.get("/api/health", tags=["System"])

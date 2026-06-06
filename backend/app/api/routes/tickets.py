@@ -22,7 +22,12 @@ def _ticket_to_dict(ticket: MaintenanceTicket) -> dict:
     cols = {attr.key: getattr(ticket, attr.key)
             for attr in sa_inspect(type(ticket)).mapper.column_attrs}
     cols.update(machine_name=None, assigned_to_name=None, comments=None,
-                work_order_number=None, work_order_status=None)
+                work_order_number=None, work_order_status=None,
+                problem_type=cols.get("problem_type"),
+                description=cols.get("description"),
+                machine_page_source=cols.get("machine_page_source", False),
+                opened_by_technician_at=cols.get("opened_by_technician_at"),
+                closed_by_technician_at=cols.get("closed_by_technician_at"))
     return cols
 
 
@@ -156,6 +161,26 @@ async def add_comment(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return comment
+
+
+@router.patch("/{ticket_id}/open-field", response_model=TicketOut)
+async def open_ticket_field(
+    ticket_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Technician opens ticket on field — no auth required (kiosk mode)."""
+    ticket = await db.get(MaintenanceTicket, ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if not ticket.opened_by_technician_at:
+        ticket.opened_by_technician_at = datetime.now(timezone.utc)
+    if ticket.status == TicketStatus.open or ticket.status == TicketStatus.on_hold_parts or ticket.status == TicketStatus.on_hold_ext:
+        ticket.status = TicketStatus.in_progress
+        if not ticket.started_at:
+            ticket.started_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(ticket)
+    return await _enrich(ticket, db)
 
 
 @router.post("/{ticket_id}/generate-wo", status_code=201)

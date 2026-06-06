@@ -2,6 +2,7 @@ export type WorkOrderStatus = 'open' | 'in_progress' | 'on_hold' | 'completed' |
 export type WorkOrderType = 'corrective' | 'preventive' | 'predictive' | 'inspection' | 'improvement';
 export type Priority = 'low' | 'medium' | 'high' | 'critical';
 export type WorkOrderSource = 'manual' | 'ticket';
+export type MachineStatus = 'running' | 'stopped' | 'maintenance' | 'idle';
 
 export interface User {
   id: string;
@@ -246,12 +247,52 @@ export type AlertProblemType =
   | 'safety_risk' | 'quality_impact' | 'machine_stop' | 'preventive_request' | 'other';
 
 export interface Machine {
-  id:         string;
-  name:       string;
-  department?: string;
-  location?:  string;
-  is_active:  boolean;
-  created_at: string;
+  id:                  string;
+  name:                string;
+  code?:               string;
+  department?:         string;
+  location?:           string;
+  is_active:           boolean;
+  current_status?:     MachineStatus;
+  current_operator?:   string;
+  current_shift?:      string;
+  last_maintenance_at?: string;
+  page_slug?:          string;
+  created_at:          string;
+}
+
+export interface TicketForMachine {
+  id:                      string;
+  ticket_number:           string;
+  status:                  string;
+  priority:                string;
+  problem_type?:           string;
+  description?:            string;
+  assigned_to_name?:       string;
+  opened_at:               string;
+  opened_by_technician_at?: string;
+  work_order_id?:          string;
+  work_order_number?:      string;
+}
+
+export interface MachinePageData extends Machine {
+  open_tickets: TicketForMachine[];
+}
+
+export interface MaintenanceRequestCreate {
+  problem_type:  string;
+  priority:      string;
+  description?:  string;
+  operator_name: string;
+  shift?:        string;
+}
+
+export interface MESData {
+  production_count:       number;
+  target:                 number;
+  oee_pct:                number;
+  downtime_today_minutes: number;
+  is_placeholder:         boolean;
 }
 
 export interface MaintenanceAlert {
@@ -307,6 +348,11 @@ export interface MaintenanceTicket {
   work_order_id?:              string;
   work_order_number?:          string;
   work_order_status?:          string;
+  problem_type?:               AlertProblemType;
+  description?:                string;
+  machine_page_source?:        boolean;
+  opened_by_technician_at?:    string;
+  closed_by_technician_at?:    string;
   opened_at:                   string;
   started_at?:                 string;
   completed_at?:               string;

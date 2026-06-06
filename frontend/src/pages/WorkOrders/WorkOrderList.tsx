@@ -1,21 +1,68 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Plus, Search, Filter, ChevronRight, RefreshCw, ClipboardList } from 'lucide-react';
+import { Plus, Search, Filter, RefreshCw, ClipboardList } from 'lucide-react';
+import { AgGridReact } from 'ag-grid-react';
+import type { ColDef, GridReadyEvent, RowClickedEvent } from 'ag-grid-community';
+import 'ag-grid-community/styles/ag-grid.css';
+import 'ag-grid-community/styles/ag-theme-quartz.css';
 import { fetchWorkOrders } from '../../api/workOrders';
 import type { WorkOrder, WorkOrderStatus, WorkOrderType, Priority } from '../../types';
-import Badge from '../../components/ui/Badge';
 import Spinner from '../../components/ui/Spinner';
 
 const ALL = '';
 
+const PRIORITY_COLORS: Record<string, string> = {
+  critical: 'text-red-400',
+  high: 'text-orange-400',
+  medium: 'text-amber-400',
+  low: 'text-green-400',
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  open: 'bg-blue-500/15 text-blue-400',
+  in_progress: 'bg-amber-500/15 text-amber-400',
+  completed: 'bg-green-500/15 text-green-400',
+  on_hold: 'bg-gray-500/15 text-gray-400',
+  cancelled: 'bg-red-500/15 text-red-400',
+};
+
+function StatusCell({ value }: { value: string }) {
+  return (
+    <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[value] ?? 'text-gray-400'}`}>
+      {value.replace('_', ' ')}
+    </span>
+  );
+}
+
+function PriorityCell({ value }: { value: string }) {
+  return (
+    <span className={`text-xs font-medium capitalize ${PRIORITY_COLORS[value] ?? 'text-gray-400'}`}>
+      {value}
+    </span>
+  );
+}
+
+function WONumberCell({ value }: { value: string }) {
+  return <span className="font-mono text-xs text-blue-400">{value}</span>;
+}
+
+function DateCell({ value }: { value: string | null }) {
+  if (!value) return <span className="text-gray-600">—</span>;
+  return (
+    <span className="text-xs text-gray-400">
+      {new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+    </span>
+  );
+}
+
 const WorkOrderList = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const gridRef = useRef<AgGridReact>(null);
 
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<WorkOrderStatus | ''>(ALL);
   const [typeFilter, setTypeFilter] = useState<WorkOrderType | ''>(ALL);
@@ -27,7 +74,7 @@ const WorkOrderList = () => {
       const data = await fetchWorkOrders();
       setWorkOrders(data);
     } catch {
-      // keep empty list — show CTA instead of error
+      // keep empty
     } finally {
       setIsLoading(false);
     }
@@ -45,25 +92,98 @@ const WorkOrderList = () => {
         return (
           wo.wo_number.toLowerCase().includes(q) ||
           wo.title.toLowerCase().includes(q) ||
-          (wo.equipment_name ?? '').toLowerCase().includes(q) ||
-          (wo.assigned_to_name ?? '').toLowerCase().includes(q)
+          (wo.equipment_name ?? '').toLowerCase().includes(q)
         );
       }
       return true;
     });
   }, [workOrders, search, statusFilter, typeFilter, priorityFilter]);
 
+  const colDefs: ColDef<WorkOrder>[] = useMemo(() => [
+    {
+      field: 'wo_number',
+      headerName: t('workOrders.woNumber'),
+      width: 140,
+      cellRenderer: WONumberCell,
+      sortable: true,
+      filter: false,
+    },
+    {
+      field: 'title',
+      headerName: t('workOrders.titleField'),
+      flex: 2,
+      sortable: true,
+      filter: 'agTextColumnFilter',
+      cellStyle: { color: '#e2e8f0', fontSize: '13px' },
+    },
+    {
+      field: 'equipment_name',
+      headerName: t('workOrders.equipment'),
+      flex: 1,
+      sortable: true,
+      filter: 'agTextColumnFilter',
+      cellStyle: { color: '#94a3b8', fontSize: '13px' },
+    },
+    {
+      field: 'type',
+      headerName: t('common.type'),
+      width: 120,
+      sortable: true,
+      filter: 'agSetColumnFilter',
+      cellStyle: { color: '#94a3b8', fontSize: '13px', textTransform: 'capitalize' },
+    },
+    {
+      field: 'priority',
+      headerName: t('common.priority'),
+      width: 110,
+      sortable: true,
+      filter: 'agSetColumnFilter',
+      cellRenderer: PriorityCell,
+    },
+    {
+      field: 'status',
+      headerName: t('common.status'),
+      width: 130,
+      sortable: true,
+      filter: 'agSetColumnFilter',
+      cellRenderer: StatusCell,
+    },
+    {
+      field: 'due_date',
+      headerName: t('workOrders.dueDate'),
+      width: 130,
+      sortable: true,
+      cellRenderer: DateCell,
+    },
+    {
+      field: 'opened_at',
+      headerName: t('workOrders.openedAt'),
+      width: 130,
+      sortable: true,
+      sort: 'desc',
+      cellRenderer: DateCell,
+    },
+  ], [t]);
+
+  const defaultColDef: ColDef = useMemo(() => ({
+    resizable: true,
+    suppressMovable: false,
+  }), []);
+
+  const onRowClicked = useCallback((event: RowClickedEvent<WorkOrder>) => {
+    if (event.data) navigate(`/work-orders/${event.data.id}`);
+  }, [navigate]);
+
+  const onGridReady = useCallback((params: GridReadyEvent) => {
+    params.api.sizeColumnsToFit();
+  }, []);
+
   const statuses: WorkOrderStatus[] = ['open', 'in_progress', 'completed', 'cancelled', 'on_hold'];
   const types: WorkOrderType[] = ['corrective', 'preventive', 'predictive', 'inspection', 'improvement'];
   const priorities: Priority[] = ['low', 'medium', 'high', 'critical'];
 
-  const formatDate = (d?: string) => {
-    if (!d) return '—';
-    return new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-  };
-
   return (
-    <div className="space-y-5 animate-fade-in">
+    <div className="space-y-4 animate-fade-in p-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
@@ -77,11 +197,10 @@ const WorkOrderList = () => {
       </div>
 
       {/* Filters */}
-      <div className="glass-card p-3 md:p-4">
+      <div className="glass-card p-3">
         <div className="flex flex-wrap gap-2.5 items-center">
-          {/* Search */}
           <div className="relative flex-1 min-w-[180px]">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
             <input
               type="text"
               value={search}
@@ -90,152 +209,78 @@ const WorkOrderList = () => {
               className="input-field pl-8 py-1.5"
             />
           </div>
-
-          <div className="flex items-center gap-1.5 text-gray-600">
-            <Filter size={13} />
-          </div>
-
-          {/* Status filter */}
-          <div className="relative">
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as WorkOrderStatus | '')}
-              className="select-field py-1.5 pr-8 text-xs min-w-[120px]"
-            >
-              <option value={ALL}>{t('common.status')}: {t('common.all')}</option>
-              {statuses.map((s) => (
-                <option key={s} value={s}>{t(`status.${s}`)}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Type filter */}
-          <div className="relative">
-            <select
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value as WorkOrderType | '')}
-              className="select-field py-1.5 pr-8 text-xs min-w-[120px]"
-            >
-              <option value={ALL}>{t('common.type')}: {t('common.all')}</option>
-              {types.map((tp) => (
-                <option key={tp} value={tp}>{t(`type.${tp}`)}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Priority filter */}
-          <div className="relative">
-            <select
-              value={priorityFilter}
-              onChange={(e) => setPriorityFilter(e.target.value as Priority | '')}
-              className="select-field py-1.5 pr-8 text-xs min-w-[120px]"
-            >
-              <option value={ALL}>{t('common.priority')}: {t('common.all')}</option>
-              {priorities.map((p) => (
-                <option key={p} value={p}>{t(`priority.${p}`)}</option>
-              ))}
-            </select>
-          </div>
-
+          <Filter size={13} className="text-gray-600" />
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as WorkOrderStatus | '')}
+            className="select-field py-1.5 pr-8 text-xs min-w-[120px]"
+          >
+            <option value={ALL}>{t('common.status')}: {t('common.all')}</option>
+            {statuses.map((s) => <option key={s} value={s}>{t(`status.${s}`)}</option>)}
+          </select>
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value as WorkOrderType | '')}
+            className="select-field py-1.5 pr-8 text-xs min-w-[120px]"
+          >
+            <option value={ALL}>{t('common.type')}: {t('common.all')}</option>
+            {types.map((tp) => <option key={tp} value={tp}>{t(`type.${tp}`)}</option>)}
+          </select>
+          <select
+            value={priorityFilter}
+            onChange={(e) => setPriorityFilter(e.target.value as Priority | '')}
+            className="select-field py-1.5 pr-8 text-xs min-w-[120px]"
+          >
+            <option value={ALL}>{t('common.priority')}: {t('common.all')}</option>
+            {priorities.map((p) => <option key={p} value={p}>{t(`priority.${p}`)}</option>)}
+          </select>
           <button onClick={load} className="btn-secondary py-1.5 px-2.5 ml-auto">
             <RefreshCw size={13} />
           </button>
         </div>
       </div>
 
-      {/* Table */}
-      <div className="glass-card overflow-hidden">
-        {isLoading ? (
-          <div className="flex items-center justify-center py-16">
-            <Spinner />
+      {/* Grid */}
+      {isLoading ? (
+        <div className="flex items-center justify-center py-16">
+          <Spinner />
+        </div>
+      ) : workOrders.length === 0 ? (
+        <div className="glass-card flex flex-col items-center py-16 gap-3">
+          <ClipboardList size={40} className="text-gray-700" />
+          <p className="text-gray-400 text-sm">{t('workOrders.noResults')}</p>
+          <button onClick={() => navigate('/work-orders/new')} className="btn-primary gap-1.5 py-2 px-4 text-sm">
+            <Plus size={15} />
+            {t('workOrders.createFirst')}
+          </button>
+        </div>
+      ) : (
+        <div>
+          <p className="text-gray-600 text-xs font-mono mb-2 px-1">
+            {filtered.length} / {workOrders.length} orders
+          </p>
+          <div
+            className="ag-theme-quartz-dark rounded-xl overflow-hidden border border-white/[0.06]"
+            style={{ height: 520 }}
+          >
+            <AgGridReact<WorkOrder>
+              ref={gridRef}
+              rowData={filtered}
+              columnDefs={colDefs}
+              defaultColDef={defaultColDef}
+              onRowClicked={onRowClicked}
+              onGridReady={onGridReady}
+              rowClass="cursor-pointer"
+              rowSelection="single"
+              suppressCellFocus={true}
+              animateRows={true}
+              pagination={true}
+              paginationPageSize={20}
+              paginationPageSizeSelector={[10, 20, 50, 100]}
+            />
           </div>
-        ) : workOrders.length === 0 ? (
-          <div className="flex flex-col items-center py-16 gap-3">
-            <ClipboardList size={40} className="text-gray-700" />
-            <p className="text-gray-400 text-sm">{t('workOrders.noResults')}</p>
-            <button onClick={() => navigate('/work-orders/new')} className="btn-primary gap-1.5 py-2 px-4 text-sm">
-              <Plus size={15} />
-              {t('workOrders.createFirst')}
-            </button>
-          </div>
-        ) : (
-          <>
-            {/* Result count */}
-            <div className="px-4 py-2.5 border-b border-white/[0.04]">
-              <p className="text-gray-600 text-xs font-mono">
-                {filtered.length} / {workOrders.length} orders
-              </p>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-white/[0.04]">
-                    <th className="table-header-cell">{t('workOrders.woNumber')}</th>
-                    <th className="table-header-cell">{t('workOrders.titleField')}</th>
-                    <th className="table-header-cell hidden md:table-cell">{t('workOrders.equipment')}</th>
-                    <th className="table-header-cell hidden lg:table-cell">{t('common.type')}</th>
-                    <th className="table-header-cell">{t('common.priority')}</th>
-                    <th className="table-header-cell">{t('common.status')}</th>
-                    <th className="table-header-cell hidden xl:table-cell">{t('workOrders.dueDate')}</th>
-                    <th className="table-header-cell hidden xl:table-cell">{t('workOrders.assignedTo')}</th>
-                    <th className="table-header-cell w-8" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.length === 0 ? (
-                    <tr>
-                      <td colSpan={9} className="text-center py-14">
-                        <p className="text-gray-500 text-sm">{t('workOrders.noResults')}</p>
-                        <p className="text-gray-700 text-xs mt-1.5">{t('workOrders.noResultsHint')}</p>
-                      </td>
-                    </tr>
-                  ) : (
-                    filtered.map((wo) => (
-                      <tr
-                        key={wo.id}
-                        className="table-row cursor-pointer"
-                        onClick={() => navigate(`/work-orders/${wo.id}`)}
-                      >
-                        <td className="table-cell">
-                          <span className="font-mono text-xs text-blue-400">{wo.wo_number}</span>
-                        </td>
-                        <td className="table-cell max-w-[220px]">
-                          <p className="text-gray-200 truncate text-sm">{wo.title}</p>
-                        </td>
-                        <td className="table-cell hidden md:table-cell">
-                          <p className="text-gray-300 text-sm truncate">{wo.equipment_name ?? '—'}</p>
-                          {wo.equipment_location && (
-                            <p className="text-gray-600 text-xs truncate">{wo.equipment_location}</p>
-                          )}
-                        </td>
-                        <td className="table-cell hidden lg:table-cell">
-                          <Badge value={wo.type} variant="type" />
-                        </td>
-                        <td className="table-cell">
-                          <Badge value={wo.priority} variant="priority" />
-                        </td>
-                        <td className="table-cell">
-                          <Badge value={wo.status} variant="status" />
-                        </td>
-                        <td className="table-cell hidden xl:table-cell text-gray-400 text-xs font-mono">
-                          {formatDate(wo.due_date)}
-                        </td>
-                        <td className="table-cell hidden xl:table-cell">
-                          <span className="text-gray-600 italic text-xs">{t('workOrders.unassigned')}</span>
-                        </td>
-                        <td className="table-cell text-gray-600">
-                          <ChevronRight size={14} />
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 };

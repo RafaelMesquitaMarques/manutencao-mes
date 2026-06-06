@@ -37,6 +37,9 @@ class TicketService:
             priority=data.priority,
             assigned_to_id=data.assigned_to_id,
             estimated_downtime_minutes=data.estimated_downtime_minutes,
+            problem_type=getattr(data, "problem_type", None),
+            description=getattr(data, "description", None),
+            machine_page_source=getattr(data, "machine_page_source", False),
         )
         self.db.add(ticket)
         await self.db.commit()

@@ -107,6 +107,13 @@ export const addTicketComment = async (
   return data;
 };
 
+// ── Ticket field actions ──────────────────────────────────────────────────────
+
+export const openTicketField = async (id: string): Promise<MaintenanceTicket> => {
+  const { data } = await api.patch<MaintenanceTicket>(`/api/tickets/${id}/open-field`);
+  return data;
+};
+
 // ── WO generation from ticket ─────────────────────────────────────────────────
 
 export const generateWorkOrder = async (
