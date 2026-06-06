@@ -23,7 +23,7 @@ integration.
 
 | Layer | Technology |
 |---|---|
-| Frontend | React 18 + Vite + TypeScript, Tailwind CSS (dark), Zustand, Axios, Recharts, react-i18next, react-router-dom v6, lucide-react |
+| Frontend | React 18 + Vite + TypeScript, Tailwind CSS (dark), Zustand, Axios, Recharts, echarts-for-react, react-i18next, react-router-dom v6, lucide-react |
 | Backend | FastAPI (Python 3.12), SQLAlchemy async (asyncpg), Pydantic v2 |
 | Database | TimescaleDB (PostgreSQL 15 extension) — hypertable on `sensor_readings` |
 | Cache / Queue | Redis |
@@ -47,8 +47,10 @@ manutencao-mes/
 │       │   ├── equipment.py         # /api/equipment/
 │       │   ├── maintenance_plans.py # /api/plans/
 │       │   ├── inventory.py         # /api/inventory/   ← stub only
-│       │   ├── kpis.py              # /api/kpis/        ← stub only
-│       │   ├── alerts.py            # /api/alerts/
+│       │   ├── kpis.py              # /api/kpis/
+│       │   ├── alerts.py            # /api/alerts/ + /api/alerts/machines
+│       │   ├── tickets.py           # /api/tickets/
+│       │   ├── maintenance_dashboard.py  # /api/maintenance/dashboard
 │       │   ├── iot.py               # /api/iot/
 │       │   ├── users.py             # /api/users/
 │       │   └── plants.py            # /api/plants/
@@ -64,28 +66,42 @@ manutencao-mes/
 │       │   ├── wo_subresources.py   # LaborCreate/Out, WOPartCreate/Out, WOCostCreate/Out, WOActionCreate/Out
 │       │   ├── technician.py        # TechnicianCreate, TechnicianOut, TechnicianListResponse
 │       │   ├── equipment.py         # EquipmentCreate, EquipmentOut, EquipmentListResponse
-│       │   └── user.py              # UserCreate, UserOut, LoginRequest, TokenResponse
-│       ├── services/                # Business logic (mostly stubs)
+│       │   ├── user.py              # UserCreate, UserOut, LoginRequest, TokenResponse
+│       │   └── maintenance.py       # MachineOut, AlertCreate/Out, TicketCreate/Out, CommentCreate/Out
+│       ├── services/
+│       │   ├── alert_service.py     # AlertService: create, assign, convert_to_ticket
+│       │   ├── ticket_service.py    # TicketService: create, close, add_comment
+│       │   ├── escalation_service.py # EscalationService: check_overdue_alerts (SLA enforcement)
+│       │   └── notification_service.py # NotificationService: mock email/SMS/Teams → notification_logs
 │       ├── workers/
 │       │   └── iot_consumer.py      # MQTT → TimescaleDB ingestor
-│       └── main.py                  # FastAPI app, CORS, router registration
+│       └── main.py                  # FastAPI app, CORS, router registration, escalation cron (asyncio)
 ├── frontend/
 │   └── src/
 │       ├── api/
 │       │   ├── axios.ts             # baseURL:'', Bearer interceptor, auto-logout on 401
 │       │   ├── auth.ts              # POST /api/auth/login (JSON body)
-│       │   └── workOrders.ts        # All WO + inventory + equipment API calls
+│       │   ├── workOrders.ts        # All WO + inventory + equipment API calls
+│       │   └── maintenance.ts       # All maintenance module API calls (alerts, tickets, dashboard)
 │       ├── pages/
 │       │   ├── Login.tsx
 │       │   ├── Dashboard.tsx        # KPI cards + recent WOs (Promise.allSettled)
-│       │   └── WorkOrders/
-│       │       ├── WorkOrderList.tsx
-│       │       ├── WorkOrderDetail.tsx
-│       │       └── NewWorkOrder.tsx
+│       │   ├── WorkOrders/
+│       │   │   ├── WorkOrderList.tsx
+│       │   │   ├── WorkOrderDetail.tsx
+│       │   │   └── NewWorkOrder.tsx
+│       │   ├── Alerts/
+│       │   │   ├── AlertList.tsx    # Priority rows, SLA timer, assign/convert, 30s auto-refresh
+│       │   │   └── NewAlert.tsx     # Operator form; ?machineId= param for QR-code flow
+│       │   ├── Tickets/
+│       │   │   ├── TicketList.tsx   # Status tab pills, quick action buttons, SLA display
+│       │   │   └── TicketDetail.tsx # 3-tab detail (Details/Comments/Parts), inline close form
+│       │   └── MaintenanceDashboard/
+│       │       └── MaintenanceDashboard.tsx  # 5 KPI cards + 5 ECharts (bar + donut)
 │       ├── components/
 │       │   ├── ui/                  # Badge, Spinner, etc.
 │       │   ├── charts/              # WOBarChart, WODonutChart (Recharts)
-│       │   └── layout/              # Sidebar, Layout wrapper
+│       │   └── layout/              # Sidebar (4 nav groups), Layout wrapper
 │       ├── store/
 │       │   └── authStore.ts         # Zustand — token in memory ONLY (never localStorage)
 │       ├── i18n/
@@ -204,6 +220,23 @@ All PKs are UUID. TimescaleDB hypertable on `sensor_readings(timestamp)`.
 | `wo_actions` | id, work_order_id(FK), author_id(FK), action_type, content, old_value, new_value | Audit trail: comment\|status_change\|assignment\|attachment |
 | `supplier_orders` | id, work_order_id(FK nullable), supplier_name, po_number, amount, currency, status, ordered_at, expected_at, received_at | status enum: pending\|partial\|received\|cancelled |
 
+### Maintenance Alerts & Tickets tables
+
+| Table | Key fields | Notes |
+|---|---|---|
+| `machines` | id, name, department, location, is_active | Production floor machines (separate from `equipment` asset catalog) |
+| `maintenance_alerts` | id, alert_number(ALT-YYYY-NNNNN), machine_id, problem_type, priority, status, created_by, shift, assigned_to_id, escalation_level, is_overdue | Operator-reported issues; priority: low\|medium\|high\|critical; status: new_alert\|assigned\|in_progress\|resolved\|cancelled |
+| `maintenance_tickets` | id, ticket_number(TKT-YYYY-NNNNN), alert_id(nullable), machine_id, priority, status, assigned_to_id, opened_at, started_at, completed_at, diagnosis, corrective_action, parts_used(JSON), estimated_downtime_minutes, total_intervention_minutes | status: open\|in_progress\|on_hold_parts\|on_hold_ext\|completed\|cancelled |
+| `notification_logs` | id, alert_id(nullable), ticket_id(nullable), notification_type, recipient_role, message, status | Audit log of all escalation notifications sent |
+| `ticket_comments` | id, ticket_id, author, comment, created_at | Freetext comments on tickets |
+
+**SLA thresholds (escalation engine):**
+- Critical → 10 min; High → 30 min; Medium → 2 h; Low → 8 h
+- L1 escalation: Shift Supervisor; L2: Maintenance Director; L3: Plant Manager
+- Background task runs every 60s (`asyncio.create_task` in FastAPI lifespan)
+
+**Note on naming:** `machines` = production floor assets for alerts/tickets. `equipment` = asset catalog linked to work orders and maintenance plans. They are separate models by design.
+
 ### Tables to add (next phase)
 
 | Table | Purpose |
@@ -269,13 +302,49 @@ PATCH  /api/users/{id}             → UserOut
 POST   /api/users/{id}/plants/{plant_id}  → assigns user to plant with role
 ```
 
+### Maintenance Alerts — /api/alerts/
+```
+GET    /api/alerts/machines          → { total, items: MachineOut[] }
+GET    /api/alerts/                  → { total, items: AlertOut[] }   (filter: machine_id, priority, status, overdue_only)
+GET    /api/alerts/{id}              → AlertOut
+POST   /api/alerts/                  → AlertOut (201)  body: AlertCreate
+PATCH  /api/alerts/{id}/assign       → AlertOut  body: { assigned_to_id }
+PATCH  /api/alerts/{id}/convert      → AlertOut  (creates MaintenanceTicket, sets status=in_progress)
+```
+
+AlertOut enriched fields (not DB columns, computed at query time):
+- `machine_name` — joined from `machines` table
+- `assigned_to_name` — joined from `users` table
+- `ticket_id` — subquery on `maintenance_tickets.alert_id`
+
+### Maintenance Tickets — /api/tickets/
+```
+GET    /api/tickets/                 → { total, items: TicketOut[] }   (filter: status, machine_id, assigned_to_id)
+GET    /api/tickets/{id}             → TicketOut (includes comments)
+POST   /api/tickets/                 → TicketOut (201)
+PATCH  /api/tickets/{id}/status      → TicketOut  body: TicketUpdate (status, diagnosis, parts_used, etc.)
+PATCH  /api/tickets/{id}/close       → TicketOut  body: TicketClose (diagnosis, corrective_action, total_intervention_minutes required)
+POST   /api/tickets/{id}/comments    → CommentOut (201)  body: { author, comment }
+```
+
+**Async lazy-load gotcha:** `TicketOut` has a `comments` field. Route's `_enrich()` must build a dict
+from `sa_inspect(type(ticket)).mapper.column_attrs` (column values only) before calling
+`TicketOut.model_validate(d)` — otherwise Pydantic with `from_attributes=True` triggers a lazy
+relationship load and raises `MissingGreenlet`.
+
+### Maintenance Dashboard — /api/maintenance/
+```
+GET    /api/maintenance/dashboard    → { open_alerts, open_tickets, critical_tickets, overdue_alerts,
+                                         avg_resolution_hours, by_machine[], by_problem_type[],
+                                         by_technician[], by_escalation[], by_ticket_status[] }
+```
+
 ### Other active routes
 ```
 GET /api/plants/     ← stub, returns []
-GET /api/alerts/     ← stub, returns []
-GET /api/plans/      ← stub, returns []
+GET /api/plans/      ← real endpoints: GET list (with equipment_name), POST create
 GET /api/inventory/  ← stub, returns []
-GET /api/kpis/       ← stub, returns []
+GET /api/kpis/       ← real endpoints: /summary, /backlog, /mttr, /cost
 GET /api/iot/        ← stub
 GET /api/health
 ```
@@ -430,17 +499,32 @@ Phase 1 — CMMS Core (current)
   ✅ WO actions/audit trail (/api/wo/{id}/actions)
   ✅ Supplier orders table
   ✅ Full codebase translation to English (all vars, columns, functions, comments)
+  ✅ KPI backend endpoints (MTTR, backlog, PM compliance, cost by type) — /api/kpis/*
+  ✅ Maintenance plans API expanded (GET list with equipment name, POST create) — /api/plans/
+  ✅ Frontend: Equipment list + detail page (/equipment, /equipment/:id) — tabs: overview/WOs/plans
+  ✅ Frontend: KPI Dashboard with ECharts (/kpis) — 4 KPI cards + 3 charts
+  ✅ Frontend: PM Calendar with FullCalendar (/pm-calendar) — plans + preventive WOs as events
+  ✅ Frontend: Labor Scheduler with @dnd-kit (/schedule) — drag WOs to technician columns
+  ✅ Frontend: Work Orders upgraded to AG Grid (/work-orders) — sortable, filterable, paginated
+  ✅ Sidebar reorganized into 4 groups (Core / Maintenance / Planning / Analytics)
+  ✅ executor_id added to WorkOrderUpdate schema (used by labor scheduler)
+  ✅ Maintenance Alerts module — /alerts + /alerts/new (operator form, QR-ready)
+  ✅ Maintenance Tickets module — /tickets + /tickets/:id (3-tab detail: Details/Comments/Parts)
+  ✅ Maintenance Dashboard — /maintenance/dashboard (5 KPI cards + 5 ECharts)
+  ✅ SLA escalation engine — 60s background task, Critical=10min, High=30min, Medium=2h, Low=8h
+  ✅ New DB tables: machines, maintenance_alerts, maintenance_tickets, notification_logs, ticket_comments
+  ✅ New roles: operator, maintenance_director
+  ✅ i18n: alertStatus, ticketStatus, problemType, alerts, tickets, maintenanceDash keys in en/fr/es
   ⬜ Inventory management UI (stub backend exists)
-  ⬜ KPI calculations (stub backend exists)
   ⬜ Machine stop tracking (machine_stops table)
 
 Phase 2 — Full Maintenance + IoT (3-6 months)
   ⬜ machine_stops table + stop registration flow
   ⬜ Auto-corrective WO from IoT alert
-  ⬜ MTBF / MTTR / Availability KPI endpoints
-  ⬜ PM compliance and backlog reports
+  ⬜ MTBF / Availability KPI endpoints (needs machine_stops table)
   ⬜ Stock movements + low-stock alerts
-  ⬜ Frontend: KPI dashboard, inventory module
+  ⬜ Frontend: Inventory module UI
+  ⬜ Equipment create/edit form
 
 Phase 3 — MES + Predictive (12+ months)
   ⬜ OEE calculation (needs production counters)
@@ -466,6 +550,11 @@ Phase 3 — MES + Predictive (12+ months)
 | TimescaleDB hypertable on sensor_readings | IoT time-series queries need time-bucketing and compression — native TimescaleDB feature |
 | `docker compose up -d` not `restart` | `restart` reuses existing container config; `command:` overrides only take effect on `up` |
 | All code in English | Codebase fully translated from Portuguese in session 2026-06-06 — all vars, columns, functions, routes, comments |
+| `machines` vs `equipment` as separate models | `equipment` = asset catalog for WOs/plans/IoT. `machines` = simpler lookup for alert/ticket creation. Operator on floor selects a machine; technician manages a work order against equipment. |
+| `SAEnum(native_enum=False)` on all new enums | Stores as VARCHAR — adding new enum values never requires a DB migration |
+| `_ticket_to_dict()` in tickets route | Pydantic `from_attributes=True` eagerly accesses SQLAlchemy relationships; extracting column attrs via `sa_inspect` before `model_validate()` prevents `MissingGreenlet` on async sessions |
+| Escalation loop as `asyncio.create_task` in lifespan | No Celery/Beat dependency; single-process, cancels cleanly on shutdown |
+| `notification_logs` table for mock notifications | Tracks all escalation events even before real email/SMS is wired; UI can display notification history |
 
 ---
 
@@ -537,3 +626,47 @@ MQTT_PORT=1883
 - Fixed WO start/complete endpoints: `/iniciar` → `/start`, `/concluir` → `/complete`
 - Zero Portuguese words remain in `.py` and `.tsx` files (grep confirmed)
 - **Pending:** DB reset required — run manually: `docker exec mes_db psql -U mesadmin -d manutencao -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"` then `docker compose up --build --no-deps -d backend` then seed
+
+### Session 2026-06-06 — Maintenance Alerts & Tickets Module
+
+**Completed:**
+- New DB tables: `machines`, `maintenance_alerts`, `maintenance_tickets`, `notification_logs`, `ticket_comments`
+- New enums: `AlertPriority`, `AlertStatus`, `AlertProblemType`, `AlertShift`, `TicketStatus`; all with `SAEnum(native_enum=False)`
+- New roles added to `UserRole`: `operator`, `maintenance_director`
+- New schema file: `backend/app/schemas/maintenance.py` — MachineOut, AlertCreate/Out/Update, TicketCreate/Out/Update/Close, CommentCreate/Out
+- New service: `alert_service.py` — AlertService (create, assign, convert_to_ticket)
+- New service: `ticket_service.py` — TicketService (create, close, add_comment, number generator TKT-YYYY-NNNNN)
+- New service: `escalation_service.py` — EscalationService.check_overdue_alerts() — marks is_overdue, increments escalation_level, calls NotificationService
+- New service: `notification_service.py` — mock email/SMS/Teams, logs to notification_logs table
+- Replaced stub `alerts.py` with full implementation including `/api/alerts/machines` sub-route
+- New route: `tickets.py` — full CRUD + close + comments
+- New route: `maintenance_dashboard.py` — aggregated KPI response
+- `main.py` updated: escalation `asyncio.create_task` in lifespan, 3 new routers registered
+- `seed.py` updated: seeds 5 machines + 3 alerts (ALT-2026-00001/00002/00003) + 2 tickets (TKT-2026-00001/00002)
+- Bug fixed: `MissingGreenlet` on `GET /api/tickets/` — `_ticket_to_dict()` extracts column attrs via `sa_inspect` before `TicketOut.model_validate()`
+- New frontend API file: `api/maintenance.ts`
+- New pages: `Alerts/AlertList.tsx`, `Alerts/NewAlert.tsx`, `Tickets/TicketList.tsx`, `Tickets/TicketDetail.tsx`, `MaintenanceDashboard/MaintenanceDashboard.tsx`
+- `App.tsx`: 5 new routes — `/alerts`, `/alerts/new`, `/tickets`, `/tickets/:id`, `/maintenance/dashboard`
+- `Sidebar.tsx`: new "Maintenance" nav group (Bell/Ticket/Activity icons); v0.3.0
+- `types/index.ts`: Machine, MaintenanceAlert, MaintenanceTicket, TicketComment, MaintenanceDashboardData interfaces
+- i18n: `alertStatus`, `ticketStatus`, `problemType`, `alerts`, `tickets`, `maintenanceDash` sections in en/fr/es
+- Commit: `f7f7117`
+
+### Session 2026-06-06 — Full Maintenance Module UI
+
+**Completed:**
+- New npm packages: `@dnd-kit/core|sortable|utilities`, `@fullcalendar/react|daygrid|timegrid|interaction|core`, `ag-grid-community`, `ag-grid-react`, `echarts`, `echarts-for-react`
+- Backend: Expanded `kpis.py` — `GET /api/kpis/summary`, `/backlog`, `/mttr`, `/cost` (all query-param driven, real SQL)
+- Backend: Expanded `maintenance_plans.py` — `GET /api/plans/` with equipment_name join, `POST /api/plans/`
+- Backend: Added `executor_id: Optional[UUID]` to `WorkOrderUpdate` schema
+- Frontend `types/index.ts`: Added `MaintenancePlan`, `KPISummary`, `BacklogData`, `MTTRItem`, `CostItem`
+- Frontend `api/workOrders.ts`: Added `fetchEquipmentById`, `fetchMaintenancePlans`, `createMaintenancePlan`, `fetchKPISummary`, `fetchBacklog`, `fetchMTTR`, `fetchCostByType`, `updateWorkOrder`
+- New page: `pages/KPIs/KPIDashboard.tsx` — ECharts charts (backlog bar, MTTR bar, PM compliance gauge, cost donut)
+- New page: `pages/Equipment/EquipmentList.tsx` — equipment card grid with status/criticality
+- New page: `pages/Equipment/EquipmentDetail.tsx` — tabs: Overview specs | WO history table | PM plans list
+- New page: `pages/PMCalendar/PMCalendar.tsx` — FullCalendar month/week view, plans + preventive WOs as events
+- New page: `pages/Schedule/LaborScheduler.tsx` — @dnd-kit drag-and-drop board, unassigned column + per-technician columns, PATCH executor_id on drop
+- Upgraded: `pages/WorkOrders/WorkOrderList.tsx` — AG Grid community with custom cell renderers, sorting, filtering, pagination
+- Updated: `App.tsx` — 5 new routes (`/kpis`, `/equipment`, `/equipment/:id`, `/pm-calendar`, `/schedule`)
+- Updated: `Sidebar.tsx` — 3 nav groups (Core / Planning / Analytics), all new links active
+- Updated: `en.json`, `fr.json`, `es.json` — new keys for `equipment.*`, `kpis.*`, `schedule.*`, `pmCalendar.*`, `nav.kpis|schedule|pmCalendar`
