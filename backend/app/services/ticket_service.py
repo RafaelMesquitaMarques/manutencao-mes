@@ -7,7 +7,7 @@ from app.models.models import (
     MaintenanceTicket, TicketComment, TicketStatus, Machine,
     WorkOrder, WorkOrderType, WorkOrderStatus, WorkOrderPriority, WorkOrderSource,
     Equipment, Technician, User,
-    MaintenanceAlert, AlertStatus,
+    MaintenanceAlert, AlertStatus, AlertProblemType,
 )
 from app.schemas.maintenance import TicketCreate, TicketClose, CommentCreate
 
@@ -19,6 +19,25 @@ _TICKET_TO_ALERT_STATUS: dict = {
     TicketStatus.completed:      AlertStatus.resolved,
     TicketStatus.cancelled:      AlertStatus.cancelled,
 }
+
+_BACKFILL_STATUS_MAP: dict = {
+    TicketStatus.open:           AlertStatus.new_alert,
+    TicketStatus.in_progress:    AlertStatus.in_progress,
+    TicketStatus.on_hold_parts:  AlertStatus.in_progress,
+    TicketStatus.on_hold_ext:    AlertStatus.in_progress,
+    TicketStatus.completed:      AlertStatus.resolved,
+    TicketStatus.cancelled:      AlertStatus.cancelled,
+}
+
+
+async def _next_alert_number(db: AsyncSession) -> str:
+    year = datetime.now(timezone.utc).year
+    r = await db.execute(
+        select(func.count(MaintenanceAlert.id)).where(
+            func.extract("year", MaintenanceAlert.created_at) == year
+        )
+    )
+    return f"ALT-{year}-{(r.scalar() + 1):05d}"
 
 
 async def sync_alert_from_ticket(ticket: MaintenanceTicket, db: AsyncSession) -> None:
@@ -47,14 +66,30 @@ class TicketService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def create_ticket(self, data: TicketCreate) -> MaintenanceTicket:
+    async def create_ticket(self, data: TicketCreate, created_by: str = "") -> MaintenanceTicket:
         machine = await self.db.get(Machine, data.machine_id)
         if not machine:
             raise ValueError("Machine not found")
 
+        alert_id = data.alert_id
+        if not alert_id:
+            alert = MaintenanceAlert(
+                alert_number=await _next_alert_number(self.db),
+                machine_id=data.machine_id,
+                department=machine.department,
+                problem_type=data.problem_type or AlertProblemType.other,
+                priority=data.priority,
+                description=data.description,
+                created_by=created_by,
+                status=AlertStatus.new_alert,
+            )
+            self.db.add(alert)
+            await self.db.flush()
+            alert_id = alert.id
+
         ticket = MaintenanceTicket(
             ticket_number=await _next_ticket_number(self.db),
-            alert_id=data.alert_id,
+            alert_id=alert_id,
             machine_id=data.machine_id,
             priority=data.priority,
             assigned_to_id=data.assigned_to_id,
@@ -286,3 +321,32 @@ class TicketService:
         if end.tzinfo is None:
             end = end.replace(tzinfo=timezone.utc)
         return int((end - started).total_seconds() / 60)
+
+
+async def backfill_missing_alerts(db: AsyncSession) -> int:
+    """Create a MaintenanceAlert for every ticket that has no linked alert. Returns count created."""
+    r = await db.execute(
+        select(MaintenanceTicket).where(MaintenanceTicket.alert_id == None)
+    )
+    tickets = r.scalars().all()
+    created = 0
+    for ticket in tickets:
+        machine = await db.get(Machine, ticket.machine_id)
+        alert_status = _BACKFILL_STATUS_MAP.get(ticket.status, AlertStatus.new_alert)
+        alert = MaintenanceAlert(
+            alert_number=await _next_alert_number(db),
+            machine_id=ticket.machine_id,
+            department=machine.department if machine else None,
+            problem_type=ticket.problem_type or AlertProblemType.other,
+            priority=ticket.priority,
+            description=ticket.description,
+            created_by="",
+            status=alert_status,
+        )
+        db.add(alert)
+        await db.flush()
+        ticket.alert_id = alert.id
+        created += 1
+    if created:
+        await db.commit()
+    return created

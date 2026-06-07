@@ -14,7 +14,7 @@ from app.schemas.maintenance import (
     TicketOut, TicketListResponse, CommentOut,
 )
 from app.schemas.work_order import WorkOrderOut
-from app.services.ticket_service import TicketService, sync_alert_from_ticket
+from app.services.ticket_service import TicketService, sync_alert_from_ticket, backfill_missing_alerts
 from app.core.security import get_current_user
 
 
@@ -69,7 +69,7 @@ async def create_ticket(
 ):
     svc = TicketService(db)
     try:
-        ticket = await svc.create_ticket(data)
+        ticket = await svc.create_ticket(data, created_by=current_user.name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return await _enrich(ticket, db)
@@ -102,6 +102,16 @@ async def list_tickets(
 
     items = [await _enrich(t, db) for t in tickets]
     return TicketListResponse(total=total, items=items)
+
+
+@router.post("/backfill-alerts", status_code=200)
+async def run_backfill_alerts(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create missing MaintenanceAlert records for tickets that have none."""
+    count = await backfill_missing_alerts(db)
+    return {"created": count}
 
 
 @router.get("/{ticket_id}", response_model=TicketOut)
