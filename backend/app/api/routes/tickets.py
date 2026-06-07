@@ -14,7 +14,7 @@ from app.schemas.maintenance import (
     TicketOut, TicketListResponse, CommentOut,
 )
 from app.schemas.work_order import WorkOrderOut
-from app.services.ticket_service import TicketService
+from app.services.ticket_service import TicketService, sync_alert_from_ticket
 from app.core.security import get_current_user
 
 
@@ -134,6 +134,9 @@ async def update_ticket(
     if updates.get("status") == TicketStatus.in_progress and not ticket.started_at:
         ticket.started_at = datetime.now(timezone.utc)
 
+    if "status" in updates:
+        await sync_alert_from_ticket(ticket, db)
+
     await db.commit()
     await db.refresh(ticket)
     return await _enrich(ticket, db)
@@ -210,6 +213,7 @@ async def open_ticket_field(
         ticket.status = TicketStatus.in_progress
         if not ticket.started_at:
             ticket.started_at = datetime.now(timezone.utc)
+    await sync_alert_from_ticket(ticket, db)
     await db.commit()
     await db.refresh(ticket)
     return await _enrich(ticket, db)

@@ -7,8 +7,30 @@ from app.models.models import (
     MaintenanceTicket, TicketComment, TicketStatus, Machine,
     WorkOrder, WorkOrderType, WorkOrderStatus, WorkOrderPriority, WorkOrderSource,
     Equipment, Technician, User,
+    MaintenanceAlert, AlertStatus,
 )
 from app.schemas.maintenance import TicketCreate, TicketClose, CommentCreate
+
+_TICKET_TO_ALERT_STATUS: dict = {
+    TicketStatus.open:           AlertStatus.assigned,
+    TicketStatus.in_progress:    AlertStatus.in_progress,
+    TicketStatus.on_hold_parts:  AlertStatus.in_progress,
+    TicketStatus.on_hold_ext:    AlertStatus.in_progress,
+    TicketStatus.completed:      AlertStatus.resolved,
+    TicketStatus.cancelled:      AlertStatus.cancelled,
+}
+
+
+async def sync_alert_from_ticket(ticket: MaintenanceTicket, db: AsyncSession) -> None:
+    """Sync linked alert status whenever ticket status changes."""
+    if not ticket.alert_id:
+        return
+    alert = await db.get(MaintenanceAlert, ticket.alert_id)
+    if not alert:
+        return
+    new_status = _TICKET_TO_ALERT_STATUS.get(ticket.status)
+    if new_status and alert.status != new_status:
+        alert.status = new_status
 
 
 async def _next_ticket_number(db: AsyncSession) -> str:
@@ -59,6 +81,7 @@ class TicketService:
             ticket.parts_used = data.parts_used
         if data.estimated_downtime_minutes is not None:
             ticket.estimated_downtime_minutes = data.estimated_downtime_minutes
+        await sync_alert_from_ticket(ticket, self.db)
         await self.db.commit()
         await self.db.refresh(ticket)
         return ticket
@@ -147,6 +170,7 @@ class TicketService:
         ticket.work_order_id = wo.id
         ticket.status = TicketStatus.in_progress
 
+        await sync_alert_from_ticket(ticket, self.db)
         await self.db.commit()
         await self.db.refresh(ticket)
         await self.db.refresh(wo)
@@ -239,6 +263,7 @@ class TicketService:
         if not ticket.started_at:
             ticket.started_at = datetime.now(timezone.utc)
 
+        await sync_alert_from_ticket(ticket, self.db)
         await self.db.commit()
         await self.db.refresh(ticket)
         await self.db.refresh(wo)

@@ -1,13 +1,14 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Bell, Plus, RefreshCw, AlertTriangle, Clock,
-  UserPlus, ArrowRightCircle, Filter,
+  UserPlus, ArrowRightCircle, Filter, Eye,
 } from 'lucide-react';
 import { fetchAlerts, fetchMachines, assignAlert, convertAlertToTicket } from '../../api/maintenance';
 import type { MaintenanceAlert, Machine, AlertPriority, AlertStatus } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 const SLA_MINUTES: Record<AlertPriority, number> = {
   critical: 10, high: 30, medium: 120, low: 480,
@@ -50,48 +51,47 @@ function slaColor(priority: AlertPriority, createdAt: string): string {
   return 'text-green-400';
 }
 
+const isResolved = (a: MaintenanceAlert) =>
+  a.status === 'resolved' || a.status === 'cancelled';
+
 export default function AlertList() {
   const { t }    = useTranslation();
   const navigate = useNavigate();
 
-  const [alerts, setAlerts]       = useState<MaintenanceAlert[]>([]);
-  const [machines, setMachines]   = useState<Machine[]>([]);
-  const [total, setTotal]         = useState(0);
-  const [loading, setLoading]     = useState(true);
-  const [actionId, setActionId]   = useState<string | null>(null);
+  const [alerts, setAlerts]         = useState<MaintenanceAlert[]>([]);
+  const [machines, setMachines]     = useState<Machine[]>([]);
+  const [total, setTotal]           = useState(0);
+  const [loading, setLoading]       = useState(true);
+  const [actionId, setActionId]     = useState<string | null>(null);
+  const [showResolved, setShowResolved] = useState(false);
 
   // Filters
-  const [fMachine, setFMachine]     = useState('');
-  const [fPriority, setFPriority]   = useState('');
-  const [fStatus, setFStatus]       = useState('');
-  const [fOverdue, setFOverdue]     = useState(false);
-
-  const timerRef = useRef<ReturnType<typeof setInterval>>();
+  const [fMachine, setFMachine]   = useState('');
+  const [fPriority, setFPriority] = useState('');
+  const [fStatus, setFStatus]     = useState('');
+  const [fOverdue, setFOverdue]   = useState(false);
 
   const load = useCallback(async () => {
     const params: Record<string, string | boolean> = {};
-    if (fMachine)  params.machine_id    = fMachine;
-    if (fPriority) params.priority      = fPriority;
-    if (fStatus)   params.status        = fStatus;
-    if (fOverdue)  params.overdue_only  = true;
+    if (fMachine)      params.machine_id      = fMachine;
+    if (fPriority)     params.priority        = fPriority;
+    if (fStatus)       params.status          = fStatus;
+    if (fOverdue)      params.overdue_only    = true;
+    if (showResolved)  params.include_resolved = true;
 
     const { total: tot, items } = await fetchAlerts(params);
     setAlerts(items);
     setTotal(tot);
     setLoading(false);
-  }, [fMachine, fPriority, fStatus, fOverdue]);
+  }, [fMachine, fPriority, fStatus, fOverdue, showResolved]);
 
   useEffect(() => {
     setLoading(true);
     load();
     fetchMachines().then(setMachines);
-  }, [fMachine, fPriority, fStatus, fOverdue]);
+  }, [fMachine, fPriority, fStatus, fOverdue, showResolved]);
 
-  // Auto-refresh every 30s
-  useEffect(() => {
-    timerRef.current = setInterval(() => load(), 30_000);
-    return () => clearInterval(timerRef.current);
-  }, [load]);
+  const { lastUpdatedAt, isRefreshing, hasError, manualRefresh } = useAutoRefresh(load);
 
   const handleAssign = async (id: string) => {
     setActionId(id);
@@ -106,12 +106,21 @@ export default function AlertList() {
   const handleConvert = async (id: string) => {
     setActionId(id);
     try {
-      const { ticket_id } = await convertAlertToTicket(id);
-      navigate(`/tickets/${ticket_id}`);
+      await convertAlertToTicket(id);
+      await load(); // refresh list — alert now has ticket_id
     } finally {
       setActionId(null);
     }
   };
+
+  // Sort: non-resolved first, resolved/cancelled at bottom
+  const sorted = showResolved
+    ? [...alerts].sort((a, b) => {
+        const aR = isResolved(a) ? 1 : 0;
+        const bR = isResolved(b) ? 1 : 0;
+        return aR - bR;
+      })
+    : alerts;
 
   return (
     <div className="p-6 space-y-4 animate-fade-in">
@@ -125,9 +134,27 @@ export default function AlertList() {
           <p className="text-gray-500 text-sm mt-0.5">{t('alerts.subtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={load} className="btn-secondary py-1.5 px-3">
-            <RefreshCw size={14} />
+          {hasError && (
+            <span className="text-xs text-amber-500 hidden sm:inline">⚠ Last update failed</span>
+          )}
+          {lastUpdatedAt && !hasError && (
+            <span className="text-xs text-gray-600 font-mono hidden sm:inline">
+              {lastUpdatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </span>
+          )}
+          <button onClick={manualRefresh} disabled={isRefreshing} className="btn-secondary py-1.5 px-3">
+            <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
           </button>
+          <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer select-none border border-white/10 rounded px-2 py-1.5 hover:border-white/20 transition-colors">
+            <Eye size={13} />
+            <input
+              type="checkbox"
+              checked={showResolved}
+              onChange={(e) => setShowResolved(e.target.checked)}
+              className="rounded border-white/20 bg-transparent"
+            />
+            {t('alerts.showResolved', 'Resolved')}
+          </label>
           <Link to="/alerts/new" className="btn-primary">
             <Plus size={15} />
             {t('alerts.newAlert')}
@@ -189,7 +216,7 @@ export default function AlertList() {
           <div className="flex items-center justify-center h-48">
             <Spinner size="lg" />
           </div>
-        ) : alerts.length === 0 ? (
+        ) : sorted.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-48 gap-3">
             <Bell size={36} className="text-gray-700" />
             <p className="text-gray-500 text-sm">{t('alerts.noAlerts')}</p>
@@ -211,89 +238,97 @@ export default function AlertList() {
                 </tr>
               </thead>
               <tbody>
-                {alerts.map((alert) => (
-                  <tr
-                    key={alert.id}
-                    className={`table-row ${PRIORITY_ROW[alert.priority] ?? ''} ${alert.is_overdue ? 'outline outline-1 outline-amber-500/20' : ''}`}
-                  >
-                    <td className="table-cell">
-                      <Link to={`/alerts/${alert.id}`} className="font-mono text-amber-400 text-xs hover:text-amber-300 hover:underline underline-offset-2">
-                        {alert.alert_number}
-                      </Link>
-                    </td>
-                    <td className="table-cell font-medium text-gray-200">
-                      {alert.machine_name ?? '—'}
-                    </td>
-                    <td className="table-cell hidden md:table-cell text-gray-400 text-xs">
-                      {alert.department ?? '—'}
-                    </td>
-                    <td className="table-cell hidden lg:table-cell">
-                      <span className="text-xs text-gray-400">
-                        {t(`problemType.${alert.problem_type}`, alert.problem_type)}
-                      </span>
-                    </td>
-                    <td className="table-cell">
-                      <span className={`inline-flex items-center px-2 py-0.5 text-xs font-mono font-medium border rounded ${PRIORITY_BADGE[alert.priority]}`}>
-                        {t(`priority.${alert.priority}`)}
-                      </span>
-                    </td>
-                    <td className="table-cell">
-                      <span className={`inline-flex items-center px-2 py-0.5 text-xs font-mono font-medium border rounded ${STATUS_BADGE[alert.status]}`}>
-                        {t(`alertStatus.${alert.status}`, alert.status)}
-                      </span>
-                    </td>
-                    <td className="table-cell hidden xl:table-cell">
-                      <span className={`font-mono text-xs ${slaColor(alert.priority, alert.created_at)}`}>
-                        {timeOpen(alert.created_at)}
-                      </span>
-                      {alert.is_overdue && (
-                        <AlertTriangle size={11} className="inline ml-1 text-amber-400" />
-                      )}
-                    </td>
-                    <td className="table-cell hidden xl:table-cell">
-                      {alert.escalation_level > 0 ? (
-                        <span className="text-xs text-red-400 font-mono">L{alert.escalation_level}</span>
-                      ) : (
-                        <span className="text-xs text-gray-700">—</span>
-                      )}
-                    </td>
-                    <td className="table-cell">
-                      <div className="flex items-center gap-1.5">
-                        {alert.status === 'new_alert' && (
-                          <button
-                            onClick={() => handleAssign(alert.id)}
-                            disabled={actionId === alert.id}
-                            title={t('alerts.assignToMe')}
-                            className="btn-secondary py-1 px-2 text-xs gap-1"
-                          >
-                            <UserPlus size={12} />
-                            <span className="hidden sm:inline">{t('alerts.assignToMe')}</span>
-                          </button>
+                {sorted.map((alert) => {
+                  const resolved = isResolved(alert);
+                  return (
+                    <tr
+                      key={alert.id}
+                      className={`table-row ${resolved ? 'opacity-50' : PRIORITY_ROW[alert.priority] ?? ''} ${!resolved && alert.is_overdue ? 'outline outline-1 outline-amber-500/20' : ''}`}
+                    >
+                      <td className="table-cell">
+                        <Link to={`/alerts/${alert.id}`} className="font-mono text-amber-400 text-xs hover:text-amber-300 hover:underline underline-offset-2">
+                          {alert.alert_number}
+                        </Link>
+                      </td>
+                      <td className="table-cell font-medium text-gray-200">
+                        {alert.machine_name ?? '—'}
+                      </td>
+                      <td className="table-cell hidden md:table-cell text-gray-400 text-xs">
+                        {alert.department ?? '—'}
+                      </td>
+                      <td className="table-cell hidden lg:table-cell">
+                        <span className="text-xs text-gray-400">
+                          {t(`problemType.${alert.problem_type}`, alert.problem_type)}
+                        </span>
+                      </td>
+                      <td className="table-cell">
+                        <span className={`inline-flex items-center px-2 py-0.5 text-xs font-mono font-medium border rounded ${PRIORITY_BADGE[alert.priority]}`}>
+                          {t(`priority.${alert.priority}`)}
+                        </span>
+                      </td>
+                      <td className="table-cell">
+                        <span className={`inline-flex items-center px-2 py-0.5 text-xs font-mono font-medium border rounded ${STATUS_BADGE[alert.status]}`}>
+                          {t(`alertStatus.${alert.status}`, alert.status)}
+                        </span>
+                      </td>
+                      <td className="table-cell hidden xl:table-cell">
+                        <span className={`font-mono text-xs ${slaColor(alert.priority, alert.created_at)}`}>
+                          {timeOpen(alert.created_at)}
+                        </span>
+                        {!resolved && alert.is_overdue && (
+                          <AlertTriangle size={11} className="inline ml-1 text-amber-400" />
                         )}
-                        {!alert.ticket_id && alert.status !== 'cancelled' && alert.status !== 'resolved' && (
-                          <button
-                            onClick={() => handleConvert(alert.id)}
-                            disabled={actionId === alert.id}
-                            title={t('alerts.convertToTicket')}
-                            className="btn-warning py-1 px-2 text-xs gap-1"
-                          >
-                            <ArrowRightCircle size={12} />
-                            <span className="hidden sm:inline">{t('alerts.convertToTicket')}</span>
-                          </button>
+                      </td>
+                      <td className="table-cell hidden xl:table-cell">
+                        {alert.escalation_level > 0 ? (
+                          <span className="text-xs text-red-400 font-mono">L{alert.escalation_level}</span>
+                        ) : (
+                          <span className="text-xs text-gray-700">—</span>
                         )}
-                        {alert.ticket_id && (
-                          <button
-                            onClick={() => navigate(`/tickets/${alert.ticket_id}`)}
-                            className="btn-secondary py-1 px-2 text-xs gap-1"
-                          >
-                            <Clock size={12} />
-                            <span className="hidden sm:inline">{t('alerts.viewTicket')}</span>
-                          </button>
+                      </td>
+                      <td className="table-cell">
+                        {resolved ? (
+                          <span className="text-xs text-gray-600 font-mono">
+                            {alert.status === 'resolved' ? '✓ Resolved' : 'Cancelled'}
+                          </span>
+                        ) : (
+                          <div className="flex items-center gap-1.5">
+                            {alert.status === 'new_alert' && !alert.ticket_id && (
+                              <button
+                                onClick={() => handleAssign(alert.id)}
+                                disabled={actionId === alert.id}
+                                title={t('alerts.assignToMe')}
+                                className="btn-secondary py-1 px-2 text-xs gap-1"
+                              >
+                                <UserPlus size={12} />
+                                <span className="hidden sm:inline">{t('alerts.assignToMe')}</span>
+                              </button>
+                            )}
+                            {alert.ticket_id ? (
+                              <button
+                                onClick={() => navigate(`/tickets/${alert.ticket_id}`)}
+                                className="btn-secondary py-1 px-2 text-xs gap-1"
+                              >
+                                <Clock size={12} />
+                                <span className="hidden sm:inline">{t('alerts.viewTicket')}</span>
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleConvert(alert.id)}
+                                disabled={actionId === alert.id}
+                                title={t('alerts.convertToTicket')}
+                                className="btn-warning py-1 px-2 text-xs gap-1"
+                              >
+                                <ArrowRightCircle size={12} />
+                                <span className="hidden sm:inline">{t('alerts.convertToTicket')}</span>
+                              </button>
+                            )}
+                          </div>
                         )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

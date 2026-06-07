@@ -9,6 +9,7 @@ import 'ag-grid-community/styles/ag-theme-quartz.css';
 import { fetchWorkOrders } from '../../api/workOrders';
 import type { WorkOrder, WorkOrderStatus, WorkOrderType, Priority } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 const ALL = '';
 
@@ -68,19 +69,23 @@ const WorkOrderList = () => {
   const [typeFilter, setTypeFilter] = useState<WorkOrderType | ''>(ALL);
   const [priorityFilter, setPriorityFilter] = useState<Priority | ''>(ALL);
 
-  const load = async () => {
-    setIsLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setIsLoading(true);
     try {
       const data = await fetchWorkOrders();
       setWorkOrders(data);
     } catch {
       // keep empty
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const { lastUpdatedAt, isRefreshing, hasError, manualRefresh } = useAutoRefresh(
+    () => load(true),
+  );
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -234,8 +239,16 @@ const WorkOrderList = () => {
             <option value={ALL}>{t('common.priority')}: {t('common.all')}</option>
             {priorities.map((p) => <option key={p} value={p}>{t(`priority.${p}`)}</option>)}
           </select>
-          <button onClick={load} className="btn-secondary py-1.5 px-2.5 ml-auto">
-            <RefreshCw size={13} />
+          {hasError && (
+            <span className="text-xs text-amber-500 hidden sm:inline">⚠ Last update failed</span>
+          )}
+          {lastUpdatedAt && !hasError && (
+            <span className="text-xs text-gray-600 font-mono hidden sm:inline">
+              {lastUpdatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </span>
+          )}
+          <button onClick={manualRefresh} disabled={isRefreshing} className="btn-secondary py-1.5 px-2.5 ml-auto">
+            <RefreshCw size={13} className={isRefreshing ? 'animate-spin' : ''} />
           </button>
         </div>
       </div>

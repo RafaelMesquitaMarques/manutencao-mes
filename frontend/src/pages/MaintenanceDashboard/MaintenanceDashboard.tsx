@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Bell, Ticket, AlertTriangle, Clock, RefreshCw, BarChart2 } from 'lucide-react';
 import ReactECharts from 'echarts-for-react';
 import { fetchMaintenanceDashboard } from '../../api/maintenance';
 import type { MaintenanceDashboardData } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 const CHART_TEXT   = '#9ca3af';
 const CHART_LINE   = 'rgba(255,255,255,0.05)';
@@ -73,17 +74,21 @@ export default function MaintenanceDashboard() {
   const [data, setData]       = useState<MaintenanceDashboardData | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const load = async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const d = await fetchMaintenanceDashboard();
       setData(d);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const { lastUpdatedAt, isRefreshing, hasError, manualRefresh } = useAutoRefresh(
+    () => load(true),
+  );
 
   if (loading || !data) {
     return (
@@ -115,9 +120,17 @@ export default function MaintenanceDashboard() {
           </h1>
           <p className="text-gray-500 text-sm mt-0.5">{t('maintenanceDash.subtitle')}</p>
         </div>
-        <button onClick={load} className="btn-secondary py-1.5 px-3">
-          <RefreshCw size={14} />
-        </button>
+        <div className="flex items-center gap-2">
+          {hasError && <span className="text-xs text-amber-500 hidden sm:inline">⚠ Last update failed</span>}
+          {lastUpdatedAt && !hasError && (
+            <span className="text-xs text-gray-600 font-mono hidden sm:inline">
+              {lastUpdatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </span>
+          )}
+          <button onClick={manualRefresh} disabled={isRefreshing} className="btn-secondary py-1.5 px-3">
+            <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
 
       {/* KPI cards */}

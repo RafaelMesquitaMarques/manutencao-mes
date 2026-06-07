@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -8,6 +8,7 @@ import {
 import { fetchTickets, updateTicketStatus } from '../../api/maintenance';
 import type { MaintenanceTicket, AlertPriority, TicketStatus } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 const SLA_MINUTES: Record<AlertPriority, number> = {
   critical: 10, high: 30, medium: 120, low: 480,
@@ -60,8 +61,6 @@ export default function TicketList() {
   const [actionId, setActionId] = useState<string | null>(null);
   const [fStatus, setFStatus]   = useState('');
 
-  const timerRef = useRef<ReturnType<typeof setInterval>>();
-
   const load = useCallback(async () => {
     const params: Record<string, string> = {};
     if (fStatus) params.status = fStatus;
@@ -74,12 +73,9 @@ export default function TicketList() {
   useEffect(() => {
     setLoading(true);
     load();
-  }, [fStatus]);
+  }, [fStatus, load]);
 
-  useEffect(() => {
-    timerRef.current = setInterval(() => load(), 30_000);
-    return () => clearInterval(timerRef.current);
-  }, [load]);
+  const { lastUpdatedAt, isRefreshing, hasError, manualRefresh } = useAutoRefresh(load);
 
   const quickAction = async (id: string, status: TicketStatus) => {
     setActionId(id);
@@ -103,8 +99,16 @@ export default function TicketList() {
           <p className="text-gray-500 text-sm mt-0.5">{t('tickets.subtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={load} className="btn-secondary py-1.5 px-3">
-            <RefreshCw size={14} />
+          {hasError && (
+            <span className="text-xs text-amber-500 hidden sm:inline">⚠ Last update failed</span>
+          )}
+          {lastUpdatedAt && !hasError && (
+            <span className="text-xs text-gray-600 font-mono hidden sm:inline">
+              {lastUpdatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </span>
+          )}
+          <button onClick={manualRefresh} disabled={isRefreshing} className="btn-secondary py-1.5 px-3">
+            <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
           </button>
           <Link to="/tickets/new" className="btn-primary py-1.5 px-3 flex items-center gap-1.5 text-sm">
             <Plus size={14} /> New Ticket

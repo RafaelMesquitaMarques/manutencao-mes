@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Briefcase, Play, CheckCircle2, Clock, AlertTriangle,
@@ -7,6 +7,7 @@ import {
 import { fetchMyWorkOrders, startWorkOrder, holdWorkOrder, resumeWorkOrder, completeWorkOrderFull } from '../../api/workOrders';
 import type { WorkOrder, Priority, WorkOrderStatus } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 const PRIORITY_BADGE: Record<Priority, string> = {
   critical: 'bg-red-500/15 text-red-400 border-red-500/30',
@@ -46,23 +47,27 @@ export default function MyWorkPage() {
   const [formErr, setFormErr]   = useState('');
   const [tick, setTick]         = useState(0);
 
-  const load = async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const items = await fetchMyWorkOrders();
       setWOs(items.filter((w) => w.status !== 'completed' && w.status !== 'cancelled'));
     } catch {
-      setWOs([]);
+      if (!silent) setWOs([]);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 30_000);
     return () => clearInterval(t);
   }, []);
+
+  const { lastUpdatedAt, isRefreshing, hasError, manualRefresh } = useAutoRefresh(
+    () => load(true),
+  );
 
   const handleStart = async (id: string) => {
     setActionId(id);
@@ -127,9 +132,17 @@ export default function MyWorkPage() {
           <Briefcase size={22} className="text-blue-400" />
           My Work
         </h1>
-        <button onClick={load} disabled={loading} className="btn-secondary py-1.5 px-3">
-          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-        </button>
+        <div className="flex items-center gap-2">
+          {hasError && <span className="text-xs text-amber-500">⚠ Retry</span>}
+          {lastUpdatedAt && !hasError && (
+            <span className="text-xs text-gray-600 font-mono hidden sm:inline">
+              {lastUpdatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </span>
+          )}
+          <button onClick={manualRefresh} disabled={loading || isRefreshing} className="btn-secondary py-1.5 px-3">
+            <RefreshCw size={14} className={(loading || isRefreshing) ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
 
       {loading ? (

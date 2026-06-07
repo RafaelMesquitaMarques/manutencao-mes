@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -10,6 +10,7 @@ import { fetchWorkOrders } from '../../api/workOrders';
 import { fetchTechniciansFull } from '../../api/workOrders';
 import type { MaintenanceTicket, WorkOrder, TechnicianFull } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 const PRIORITY_DOT: Record<string, string> = {
   critical: 'bg-red-500',
@@ -193,8 +194,8 @@ export default function SupervisorDashboard() {
   const [techs, setTechs] = useState<TechnicianFull[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const load = async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const [ticketRes, woRes, techRes] = await Promise.allSettled([
         fetchTickets({ status: 'open' }),
@@ -205,15 +206,15 @@ export default function SupervisorDashboard() {
       if (woRes.status === 'fulfilled') setWos(woRes.value);
       if (techRes.status === 'fulfilled') setTechs(techRes.value);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    load();
-    const timer = setInterval(load, 60_000);
-    return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const { lastUpdatedAt, isRefreshing, hasError, manualRefresh } = useAutoRefresh(
+    () => load(true),
+  );
 
   const unassignedTickets = tickets.filter((t) => !t.work_order_id);
   const assignedTickets = tickets.filter((t) => t.work_order_id);
@@ -227,10 +228,18 @@ export default function SupervisorDashboard() {
           <h1 className="text-2xl font-bold text-white">{t('supervisor.title', 'Supervisor Dashboard')}</h1>
           <p className="text-gray-500 text-sm mt-0.5">Assign technicians to tickets — work orders are created automatically</p>
         </div>
-        <button onClick={load} disabled={loading} className="btn-secondary py-1.5 px-3 flex items-center gap-1.5">
-          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          {hasError && <span className="text-xs text-amber-500 hidden sm:inline">⚠ Last update failed</span>}
+          {lastUpdatedAt && !hasError && (
+            <span className="text-xs text-gray-600 font-mono hidden sm:inline">
+              {lastUpdatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </span>
+          )}
+          <button onClick={manualRefresh} disabled={loading || isRefreshing} className="btn-secondary py-1.5 px-3 flex items-center gap-1.5">
+            <RefreshCw size={14} className={(loading || isRefreshing) ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -241,7 +250,7 @@ export default function SupervisorDashboard() {
           <div className="glass-card overflow-hidden flex flex-col">
             <PanelHeader
               icon={Ticket}
-              title="Open Tickets"
+              title="Tickets"
               count={tickets.length}
               color="bg-blue-600/30"
             />

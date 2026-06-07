@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -16,6 +16,7 @@ import Badge from '../components/ui/Badge';
 import Spinner from '../components/ui/Spinner';
 import WOBarChart from '../components/charts/WOBarChart';
 import WODonutChart from '../components/charts/WODonutChart';
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
 
 interface KPICardProps {
   title: string;
@@ -47,18 +48,22 @@ const Dashboard = () => {
   const [recentWOs, setRecentWOs] = useState<WorkOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const load = async () => {
-    setIsLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setIsLoading(true);
     const [statsResult, wosResult] = await Promise.allSettled([
       fetchDashboardStats(),
       fetchWorkOrders({ limit: '5' }),
     ]);
     if (statsResult.status === 'fulfilled') setStats(statsResult.value);
     if (wosResult.status === 'fulfilled') setRecentWOs(wosResult.value);
-    setIsLoading(false);
-  };
+    if (!silent) setIsLoading(false);
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const { lastUpdatedAt, isRefreshing, hasError, manualRefresh } = useAutoRefresh(
+    () => load(true),
+  );
 
   if (isLoading) {
     return (
@@ -79,9 +84,17 @@ const Dashboard = () => {
           <h1 className="text-2xl font-bold text-white">{t('dashboard.title')}</h1>
           <p className="text-gray-500 text-sm mt-1">{t('dashboard.subtitle')}</p>
         </div>
-        <button onClick={load} className="btn-secondary py-1.5 px-3 hidden sm:flex">
-          <RefreshCw size={14} />
-        </button>
+        <div className="hidden sm:flex items-center gap-2">
+          {hasError && <span className="text-xs text-amber-500">⚠ Last update failed</span>}
+          {lastUpdatedAt && !hasError && (
+            <span className="text-xs text-gray-600 font-mono">
+              {lastUpdatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </span>
+          )}
+          <button onClick={manualRefresh} disabled={isRefreshing} className="btn-secondary py-1.5 px-3">
+            <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
 
       {/* KPI cards */}

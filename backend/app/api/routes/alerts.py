@@ -66,14 +66,15 @@ async def create_alert(
 
 @router.get("/", response_model=AlertListResponse)
 async def list_alerts(
-    machine_id:     Optional[UUID]        = None,
-    priority:       Optional[AlertPriority] = None,
-    status:         Optional[AlertStatus]  = None,
-    assigned_to_id: Optional[UUID]        = None,
-    department:     Optional[str]         = None,
-    overdue_only:   bool                  = False,
-    skip:           int                   = Query(0, ge=0),
-    limit:          int                   = Query(100, le=500),
+    machine_id:       Optional[UUID]          = None,
+    priority:         Optional[AlertPriority] = None,
+    status:           Optional[AlertStatus]   = None,
+    assigned_to_id:   Optional[UUID]          = None,
+    department:       Optional[str]           = None,
+    overdue_only:     bool                    = False,
+    include_resolved: bool                    = False,
+    skip:             int                     = Query(0, ge=0),
+    limit:            int                     = Query(100, le=500),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -85,6 +86,7 @@ async def list_alerts(
         assigned_to_id=assigned_to_id,
         department=department,
         overdue_only=overdue_only,
+        include_resolved=include_resolved,
     )
     total = len(rows)
     page  = rows[skip : skip + limit]

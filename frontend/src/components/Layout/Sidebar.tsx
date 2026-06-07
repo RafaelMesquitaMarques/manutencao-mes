@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import type { UserRole } from '../../types';
+import { useLiveBadges } from '../../hooks/useLiveBadges';
 
 type NavRole = UserRole | 'all';
 
@@ -80,10 +81,17 @@ interface SidebarProps {
   onClose?: () => void;
 }
 
+const BADGE_NAV_KEYS: Record<string, 'alertCount' | 'ticketCount' | 'myWorkCount'> = {
+  alerts:  'alertCount',
+  tickets: 'ticketCount',
+  myWork:  'myWorkCount',
+};
+
 const Sidebar = ({ onClose }: SidebarProps) => {
   const { t } = useTranslation();
   const { user, isAdmin } = useAuthStore();
   const role = (user?.role ?? 'operator') as UserRole;
+  const badges = useLiveBadges();
 
   const canView = (roles?: NavRole[]): boolean => {
     if (!roles || roles.length === 0) return true;
@@ -153,6 +161,17 @@ const Sidebar = ({ onClose }: SidebarProps) => {
                   >
                     <Icon size={18} className="flex-shrink-0" />
                     <span>{t(`nav.${key}`)}</span>
+                    {(() => {
+                      const badgeKey = BADGE_NAV_KEYS[key];
+                      const count = badgeKey ? badges[badgeKey] : 0;
+                      if (!count) return null;
+                      const red = badges.hasCritical;
+                      return (
+                        <span className={`ml-auto text-[10px] font-mono min-w-[18px] text-center px-1.5 py-0.5 rounded-full ${red ? 'bg-red-500/20 text-red-400' : 'bg-blue-500/20 text-blue-400'}`}>
+                          {count > 99 ? '99+' : count}
+                        </span>
+                      );
+                    })()}
                   </NavLink>
                 )
               )}
@@ -163,7 +182,7 @@ const Sidebar = ({ onClose }: SidebarProps) => {
 
       {/* Bottom version */}
       <div className="px-4 py-3 border-t border-white/[0.06]">
-        <p className="text-gray-700 text-[10px] font-mono">v0.4.0 · 2026</p>
+        <p className="text-gray-700 text-[10px] font-mono">v0.5.0 · 2026</p>
       </div>
     </aside>
   );

@@ -49,8 +49,13 @@ class AlertService:
         assigned_to_id=None,
         department=None,
         overdue_only=False,
+        include_resolved=False,
     ):
         q = select(MaintenanceAlert)
+        if not status and not include_resolved:
+            q = q.where(
+                MaintenanceAlert.status.not_in([AlertStatus.resolved, AlertStatus.cancelled])
+            )
         if machine_id:
             q = q.where(MaintenanceAlert.machine_id == machine_id)
         if priority:
