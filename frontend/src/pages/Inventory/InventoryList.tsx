@@ -1,457 +1,445 @@
-import { useState, useEffect } from 'react';
+// frontend/src/pages/Inventory/InventoryList.tsx
+import 'ag-grid-community/styles/ag-grid.css';
+import 'ag-grid-community/styles/ag-theme-alpine.css';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { AgGridReact } from 'ag-grid-react';
+import type { ColDef, ICellRendererParams } from 'ag-grid-community';
 import {
-  Package, Search, Plus, AlertTriangle, ArrowUp, ArrowDown,
-  RefreshCw, X, Edit3, History,
+  Package, AlertTriangle, Search, Filter, Plus,
+  RefreshCw, Download, ChevronDown, X, Boxes,
+  TrendingDown, CircleAlert,
 } from 'lucide-react';
-import { fetchInventory, createStockItem, updateStockItem, deleteStockItem, addStock, adjustStock, fetchMovements } from '../../api/inventory';
-import type { StockItem, InventoryMovement } from '../../types';
-import Spinner from '../../components/ui/Spinner';
-import { useAuthStore } from '../../store/authStore';
+import { useTranslation } from 'react-i18next';
+import {
+  fetchStockItems,
+  fetchInventoryCategories,
+  fetchInventoryDashboard,
+  type StockItemFilters,
+} from '../../api/inventory';
+import type { StockItem, InventoryDashboard } from '../../types';
+
+// ── Cell renderers ────────────────────────────────────────────────────────────
+
+function QuantityCellRenderer({ data }: ICellRendererParams<StockItem>) {
+  if (!data) return null;
+  const qty = data.quantity;
+  const isLow = data.is_low_stock;
+  const isZero = qty <= 0;
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 font-mono font-semibold text-sm ${
+        isZero
+          ? 'text-red-400'
+          : isLow
+          ? 'text-amber-400'
+          : 'text-emerald-400'
+      }`}
+    >
+      {isZero && <CircleAlert size={13} />}
+      {!isZero && isLow && <AlertTriangle size={13} />}
+      {qty.toFixed(qty % 1 === 0 ? 0 : 2)} {data.unit !== 'Unitaire' ? data.unit : ''}
+    </span>
+  );
+}
+
+function CategoryCellRenderer({ value }: ICellRendererParams) {
+  if (!value) return <span className="text-gray-500 text-xs italic">—</span>;
+  const colorMap: Record<string, string> = {
+    mecanique:    'bg-blue-900/50 text-blue-300 border-blue-700',
+    electrique:   'bg-yellow-900/50 text-yellow-300 border-yellow-700',
+    pneumatique:  'bg-cyan-900/50 text-cyan-300 border-cyan-700',
+    electronique: 'bg-purple-900/50 text-purple-300 border-purple-700',
+    hydraulique:  'bg-orange-900/50 text-orange-300 border-orange-700',
+    valve:        'bg-pink-900/50 text-pink-300 border-pink-700',
+  };
+  const key = value.toLowerCase().split(' ')[0];
+  const cls = colorMap[key] ?? 'bg-gray-800 text-gray-300 border-gray-600';
+  return (
+    <span className={`px-2 py-0.5 rounded border text-xs font-medium ${cls}`}>
+      {value}
+    </span>
+  );
+}
+
+function LocationCellRenderer({ data }: ICellRendererParams<StockItem>) {
+  if (!data) return null;
+  const parts = [data.warehouse, data.location].filter(Boolean);
+  if (!parts.length) return <span className="text-gray-500 text-xs italic">—</span>;
+  return (
+    <span className="font-mono text-xs text-gray-300">
+      {parts.join(' › ')}
+    </span>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 
 export default function InventoryList() {
-  const { user } = useAuthStore();
-  const [items, setItems]     = useState<StockItem[]>([]);
-  const [total, setTotal]     = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch]   = useState('');
-  const [lowStock, setLowStock] = useState(false);
-  const [showCreate, setShowCreate] = useState(false);
-  const [editItem, setEditItem]     = useState<StockItem | null>(null);
-  const [movItem, setMovItem]       = useState<StockItem | null>(null);
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const gridRef = useRef<AgGridReact<StockItem>>(null);
 
-  const load = async () => {
+  const [items, setItems] = useState<StockItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [lowStockCount, setLowStockCount] = useState(0);
+  const [dashboard, setDashboard] = useState<InventoryDashboard | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [categories, setCategories] = useState<string[]>([]);
+  const [warehouses, setWarehouses] = useState<string[]>([]);
+  const [showFilters, setShowFilters] = useState(false);
+
+  const [filters, setFilters] = useState<StockItemFilters>({
+    search: '',
+    category: '',
+    warehouse: '',
+    low_stock_only: false,
+    limit: 5500,
+    skip: 0,
+  });
+
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetchInventory({
-        search: search || undefined,
-        low_stock: lowStock || undefined,
-      });
-      setItems(res.items);
-      setTotal(res.total);
+      const [res, dash, cats] = await Promise.allSettled([
+        fetchStockItems(filters),
+        fetchInventoryDashboard(),
+        fetchInventoryCategories(),
+      ]);
+
+      if (res.status === 'fulfilled') {
+        setItems(res.value.items);
+        setTotal(res.value.total);
+        setLowStockCount(res.value.low_stock_count);
+      }
+      if (dash.status === 'fulfilled') setDashboard(dash.value);
+      if (cats.status === 'fulfilled') {
+        setCategories(cats.value.categories);
+        setWarehouses(cats.value.warehouses);
+      }
     } finally {
       setLoading(false);
     }
+  }, [filters]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const colDefs = useMemo<ColDef<StockItem>[]>(() => [
+    {
+      field: 'code',
+      headerName: t('inventory.code', 'Part No.'),
+      width: 145,
+      pinned: 'left',
+      cellClass: 'font-mono text-xs text-indigo-300 font-semibold',
+      filter: 'agTextColumnFilter',
+    },
+    {
+      field: 'description',
+      headerName: t('inventory.description', 'Description'),
+      flex: 3,
+      minWidth: 300,
+      filter: 'agTextColumnFilter',
+      cellClass: 'text-sm text-gray-200',
+    },
+    {
+      field: 'category',
+      headerName: t('inventory.category', 'Category'),
+      width: 160,
+      cellRenderer: CategoryCellRenderer,
+      filter: 'agTextColumnFilter',
+    },
+    {
+      field: 'part_class',
+      headerName: t('inventory.partClass', 'Part Class'),
+      width: 160,
+      cellClass: 'text-xs text-gray-400',
+      filter: 'agTextColumnFilter',
+    },
+    {
+      field: 'quantity',
+      headerName: t('inventory.quantity', 'Qty in stock'),
+      width: 145,
+      cellRenderer: QuantityCellRenderer,
+      sort: 'asc',
+      comparator: (a, b) => a - b,
+    },
+    {
+      field: 'min_quantity',
+      headerName: t('inventory.minQty', 'Min qty'),
+      width: 100,
+      cellClass: 'text-xs font-mono text-gray-400',
+      valueFormatter: ({ value }) => (value != null ? String(value) : '—'),
+    },
+    {
+      field: 'unit',
+      headerName: t('inventory.unit', 'Unit'),
+      width: 90,
+      cellClass: 'text-xs text-gray-500',
+    },
+    {
+      colId: 'location',
+      headerName: t('inventory.location', 'Location'),
+      width: 160,
+      cellRenderer: LocationCellRenderer,
+    },
+    {
+      field: 'unit_cost',
+      headerName: t('inventory.cost', 'Unit cost'),
+      width: 110,
+      cellClass: 'text-xs font-mono text-gray-400',
+      valueFormatter: ({ value }) =>
+        value != null ? `$${Number(value).toFixed(2)}` : '—',
+    },
+  ], [t]);
+
+  const defaultColDef = useMemo<ColDef>(() => ({
+    sortable: true,
+    resizable: true,
+  }), []);
+
+  const onRowClicked = ({ data }: { data?: StockItem }) => {
+    if (data) navigate(`/inventory/${data.id}`);
   };
 
-  useEffect(() => { load(); }, [search, lowStock]);
+  const exportCSV = () => gridRef.current?.api.exportDataAsCsv();
 
-  const plantId = user?.id ?? '';
+  const clearFilters = () =>
+    setFilters({ search: '', category: '', warehouse: '', low_stock_only: false, limit: 5500, skip: 0 });
+
+  const activeFilterCount = [
+    filters.search, filters.category, filters.warehouse,
+  ].filter(Boolean).length + (filters.low_stock_only ? 1 : 0);
 
   return (
-    <div className="p-6 space-y-5 animate-fade-in">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-            <Package size={22} className="text-green-400" />
-            Inventory
-          </h1>
-          <p className="text-gray-500 text-sm mt-0.5">{total} items · Spare parts and consumables</p>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={load} disabled={loading} className="btn-secondary py-1.5 px-3">
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-          </button>
-          <button onClick={() => setShowCreate(true)} className="btn-primary py-1.5 px-3 flex items-center gap-1.5">
-            <Plus size={14} /> Add Item
-          </button>
-        </div>
-      </div>
+    <div className="flex flex-col h-full bg-gray-950 text-gray-100">
 
-      {/* Filters */}
-      <div className="flex gap-3 flex-wrap">
-        <div className="relative flex-1 min-w-48">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-          <input
-            value={search} onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search parts, codes…"
-            className="input-field pl-9 w-full text-sm"
+      {/* ── Header ── */}
+      <div className="px-6 pt-6 pb-4 border-b border-gray-800">
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-indigo-600/20 rounded-lg border border-indigo-500/30">
+              <Boxes size={22} className="text-indigo-400" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold text-white tracking-tight">
+                {t('nav.inventory', 'Inventory')}
+              </h1>
+              <p className="text-sm text-gray-400 mt-0.5">
+                {t('inventory.subtitle', 'Parts & materials · Saint-Jérôme')}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={exportCSV}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
+            >
+              <Download size={14} /> Export CSV
+            </button>
+            <button
+              onClick={() => navigate('/inventory/new')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors"
+            >
+              <Plus size={14} /> {t('inventory.newItem', 'New item')}
+            </button>
+          </div>
+        </div>
+
+        {/* ── KPI cards ── */}
+        <div className="grid grid-cols-4 gap-3 mb-5">
+          <KpiCard
+            icon={<Package size={16} className="text-indigo-400" />}
+            label={t('inventory.totalItems', 'Total items')}
+            value={total.toLocaleString()}
+            color="indigo"
           />
-          {search && (
-            <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-600 hover:text-gray-300">
-              <X size={14} />
+          <KpiCard
+            icon={<AlertTriangle size={16} className="text-amber-400" />}
+            label={t('inventory.lowStock', 'Low stock')}
+            value={lowStockCount.toLocaleString()}
+            color="amber"
+            alert={lowStockCount > 0}
+            onClick={() => setFilters(f => ({ ...f, low_stock_only: !f.low_stock_only }))}
+            active={filters.low_stock_only}
+          />
+          <KpiCard
+            icon={<TrendingDown size={16} className="text-red-400" />}
+            label={t('inventory.zeroStock', 'Out of stock')}
+            value={dashboard?.zero_stock_count?.toLocaleString() ?? '—'}
+            color="red"
+          />
+          <KpiCard
+            icon={<Boxes size={16} className="text-emerald-400" />}
+            label={t('inventory.categories', 'Categories')}
+            value={categories.length.toLocaleString()}
+            color="emerald"
+          />
+        </div>
+
+        {/* ── Search + filter bar ── */}
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1 max-w-md">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+            <input
+              className="w-full pl-9 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors"
+              placeholder={t('inventory.searchPlaceholder', 'Search by code, description…')}
+              value={filters.search}
+              onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
+            />
+          </div>
+
+          <button
+            onClick={() => setShowFilters(v => !v)}
+            className={`flex items-center gap-1.5 px-3 py-2 text-sm border rounded-lg transition-colors ${
+              showFilters || activeFilterCount > 0
+                ? 'bg-indigo-600/20 border-indigo-500/50 text-indigo-300'
+                : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
+            }`}
+          >
+            <Filter size={14} />
+            {t('common.filter', 'Filters')}
+            {activeFilterCount > 0 && (
+              <span className="ml-1 bg-indigo-500 text-white text-xs px-1.5 py-0.5 rounded-full">
+                {activeFilterCount}
+              </span>
+            )}
+            <ChevronDown size={12} className={`transition-transform ${showFilters ? 'rotate-180' : ''}`} />
+          </button>
+
+          {activeFilterCount > 0 && (
+            <button
+              onClick={clearFilters}
+              className="flex items-center gap-1 px-2 py-2 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+            >
+              <X size={13} /> Clear
             </button>
           )}
+
+          <button
+            onClick={load}
+            className="p-2 text-gray-400 hover:text-gray-200 hover:bg-gray-800 rounded-lg transition-colors"
+          >
+            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+          </button>
+
+          <span className="ml-auto text-xs text-gray-500">
+            {total.toLocaleString()} {t('inventory.results', 'results')}
+          </span>
         </div>
-        <button
-          onClick={() => setLowStock(!lowStock)}
-          className={`px-3 py-2 text-sm rounded flex items-center gap-1.5 border transition-colors ${
-            lowStock
-              ? 'bg-amber-500/20 text-amber-400 border-amber-500/40'
-              : 'border-white/10 text-gray-500 hover:text-gray-300'
-          }`}
-        >
-          <AlertTriangle size={13} /> Low Stock
-        </button>
+
+        {/* ── Expanded filters ── */}
+        {showFilters && (
+          <div className="mt-3 flex items-center gap-3 pt-3 border-t border-gray-800">
+            <FilterSelect
+              label={t('inventory.category', 'Category')}
+              value={filters.category ?? ''}
+              options={categories}
+              onChange={v => setFilters(f => ({ ...f, category: v }))}
+            />
+            <FilterSelect
+              label={t('inventory.warehouse', 'Warehouse')}
+              value={filters.warehouse ?? ''}
+              options={warehouses}
+              onChange={v => setFilters(f => ({ ...f, warehouse: v }))}
+            />
+            <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={filters.low_stock_only ?? false}
+                onChange={e => setFilters(f => ({ ...f, low_stock_only: e.target.checked }))}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-indigo-500 focus:ring-indigo-500"
+              />
+              {t('inventory.lowStockOnly', 'Low stock only')}
+            </label>
+          </div>
+        )}
       </div>
 
-      {loading ? (
-        <div className="flex items-center justify-center h-48"><Spinner size="lg" /></div>
-      ) : items.length === 0 ? (
-        <div className="glass-card p-12 text-center space-y-3">
-          <Package size={40} className="text-gray-700 mx-auto opacity-50" />
-          <p className="text-gray-500">{search ? 'No items match your search' : 'No inventory items yet'}</p>
-          {!search && (
-            <button onClick={() => setShowCreate(true)} className="btn-primary px-4 py-2 text-sm">
-              Add First Item
-            </button>
-          )}
-        </div>
-      ) : (
-        <div className="glass-card overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-white/[0.06]">
-                <th className="text-left p-3 text-xs text-gray-600 uppercase tracking-wider">Item</th>
-                <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">Stock</th>
-                <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider hidden md:table-cell">Min</th>
-                <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider hidden lg:table-cell">Unit Cost</th>
-                <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item) => {
-                const isLow = item.quantity <= item.min_quantity;
-                return (
-                  <tr key={item.id} className="border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02]">
-                    <td className="p-3">
-                      <div className="flex items-center gap-2">
-                        {isLow && <AlertTriangle size={12} className="text-amber-400 flex-shrink-0" />}
-                        <div>
-                          <p className="text-gray-200 font-medium">{item.name}</p>
-                          <div className="flex gap-2 mt-0.5">
-                            {item.code && <span className="text-xs text-gray-600 font-mono">{item.code}</span>}
-                            {item.location && <span className="text-xs text-gray-700">{item.location}</span>}
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="p-3 text-right">
-                      <span className={`font-semibold ${isLow ? 'text-amber-400' : 'text-gray-300'}`}>
-                        {item.quantity}
-                      </span>
-                      {item.unit && <span className="text-gray-600 ml-1">{item.unit}</span>}
-                    </td>
-                    <td className="p-3 text-right text-gray-600 hidden md:table-cell">{item.min_quantity}</td>
-                    <td className="p-3 text-right text-gray-500 hidden lg:table-cell">
-                      {item.unit_cost != null ? `$${item.unit_cost.toFixed(2)}` : '—'}
-                    </td>
-                    <td className="p-3 text-right">
-                      <div className="flex justify-end gap-1">
-                        <button
-                          onClick={() => setMovItem(item)}
-                          title="Movement history"
-                          className="p-1.5 text-gray-600 hover:text-gray-300 transition-colors"
-                        >
-                          <History size={14} />
-                        </button>
-                        <button
-                          onClick={() => setEditItem(item)}
-                          title="Edit"
-                          className="p-1.5 text-gray-600 hover:text-gray-300 transition-colors"
-                        >
-                          <Edit3 size={14} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {showCreate && (
-        <CreateItemModal
-          plantId={plantId}
-          onClose={() => setShowCreate(false)}
-          onCreated={() => { setShowCreate(false); load(); }}
+      {/* ── AG Grid ── */}
+      <div className="flex-1 ag-theme-alpine-dark overflow-hidden" style={{ minHeight: 0 }}>
+        <AgGridReact<StockItem>
+          ref={gridRef}
+          rowData={items}
+          columnDefs={colDefs}
+          defaultColDef={defaultColDef}
+          animateRows
+          rowSelection="single"
+          onRowClicked={onRowClicked}
+          rowClass="cursor-pointer"
+          rowClassRules={{
+            'ag-row-low-stock': (params) => params.data?.is_low_stock ?? false,
+          }}
+          overlayLoadingTemplate='<span class="text-gray-400 text-sm">Loading…</span>'
+          overlayNoRowsTemplate='<span class="text-gray-500 text-sm">No items found</span>'
+          loading={loading}
+          suppressCellFocus
+          getRowId={({ data }) => data.id}
+          pagination
+          paginationPageSize={100}
+          paginationPageSizeSelector={[50, 100, 200, 500]}
         />
-      )}
-
-      {editItem && (
-        <EditItemModal
-          item={editItem}
-          onClose={() => setEditItem(null)}
-          onSaved={() => { setEditItem(null); load(); }}
-          onDeleted={() => { setEditItem(null); load(); }}
-        />
-      )}
-
-      {movItem && (
-        <MovementsModal item={movItem} onClose={() => setMovItem(null)} />
-      )}
+      </div>
     </div>
   );
 }
 
-// ── Create Modal ──────────────────────────────────────────────────────────────
+// ── Sub-components ────────────────────────────────────────────────────────────
 
-function CreateItemModal({ plantId, onClose, onCreated }: {
-  plantId: string; onClose: () => void; onCreated: () => void;
+function KpiCard({
+  icon, label, value, color, alert, onClick, active,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  color: 'indigo' | 'amber' | 'red' | 'emerald';
+  alert?: boolean;
+  onClick?: () => void;
+  active?: boolean;
 }) {
-  const { user } = useAuthStore();
-  const [form, setForm] = useState({ name: '', code: '', description: '', unit: 'un', quantity: '0', min_quantity: '0', location: '', unit_cost: '', supplier: '' });
-  const [saving, setSaving] = useState(false);
-  const [err, setErr]       = useState('');
-
-  const save = async () => {
-    if (!form.name.trim()) { setErr('Name is required'); return; }
-    setSaving(true); setErr('');
-    try {
-      await createStockItem({
-        plant_id: plantId || user?.id || '',
-        name: form.name,
-        code: form.code || undefined,
-        description: form.description || undefined,
-        unit: form.unit || undefined,
-        quantity: parseFloat(form.quantity) || 0,
-        min_quantity: parseFloat(form.min_quantity) || 0,
-        location: form.location || undefined,
-        unit_cost: parseFloat(form.unit_cost) || undefined,
-        supplier: form.supplier || undefined,
-      });
-      onCreated();
-    } catch (e: unknown) {
-      setErr((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Error');
-    } finally { setSaving(false); }
+  const colorMap = {
+    indigo:  'border-indigo-800  bg-indigo-950/40',
+    amber:   'border-amber-800   bg-amber-950/40',
+    red:     'border-red-800     bg-red-950/40',
+    emerald: 'border-emerald-800 bg-emerald-950/40',
   };
-
   return (
-    <ModalWrapper title="Add Inventory Item" onClose={onClose}>
-      <div className="space-y-3">
-        <div className="grid grid-cols-2 gap-3">
-          <div className="col-span-2">
-            <label className="label">Name *</label>
-            <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} className="input-field w-full" />
-          </div>
-          <div>
-            <label className="label">Code / Part #</label>
-            <input value={form.code} onChange={(e) => setForm((f) => ({ ...f, code: e.target.value }))} className="input-field w-full" />
-          </div>
-          <div>
-            <label className="label">Unit</label>
-            <input value={form.unit} onChange={(e) => setForm((f) => ({ ...f, unit: e.target.value }))} className="input-field w-full" />
-          </div>
-          <div>
-            <label className="label">Current Stock</label>
-            <input type="number" value={form.quantity} onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} className="input-field w-full" />
-          </div>
-          <div>
-            <label className="label">Minimum Stock</label>
-            <input type="number" value={form.min_quantity} onChange={(e) => setForm((f) => ({ ...f, min_quantity: e.target.value }))} className="input-field w-full" />
-          </div>
-          <div>
-            <label className="label">Unit Cost ($)</label>
-            <input type="number" step="0.01" value={form.unit_cost} onChange={(e) => setForm((f) => ({ ...f, unit_cost: e.target.value }))} className="input-field w-full" />
-          </div>
-          <div>
-            <label className="label">Location</label>
-            <input value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} className="input-field w-full" />
-          </div>
-          <div className="col-span-2">
-            <label className="label">Supplier</label>
-            <input value={form.supplier} onChange={(e) => setForm((f) => ({ ...f, supplier: e.target.value }))} className="input-field w-full" />
-          </div>
-        </div>
-        {err && <p className="text-red-400 text-sm">{err}</p>}
-        <div className="flex gap-2 pt-2">
-          <button onClick={onClose} className="btn-secondary flex-1 py-2">Cancel</button>
-          <button onClick={save} disabled={saving} className="btn-primary flex-1 py-2 font-semibold">
-            {saving ? 'Saving…' : 'Add Item'}
-          </button>
-        </div>
+    <div
+      onClick={onClick}
+      className={`p-4 rounded-xl border transition-all ${colorMap[color]} ${
+        onClick ? 'cursor-pointer hover:scale-[1.02]' : ''
+      } ${active ? 'ring-1 ring-amber-500' : ''} ${alert && !active ? 'animate-pulse-subtle' : ''}`}
+    >
+      <div className="flex items-center gap-2 mb-1">
+        {icon}
+        <span className="text-xs text-gray-400">{label}</span>
       </div>
-    </ModalWrapper>
+      <span className="text-2xl font-bold tracking-tight text-white">{value}</span>
+    </div>
   );
 }
 
-// ── Edit Modal ────────────────────────────────────────────────────────────────
-
-function EditItemModal({ item, onClose, onSaved, onDeleted }: {
-  item: StockItem; onClose: () => void; onSaved: () => void; onDeleted: () => void;
+function FilterSelect({
+  label, value, options, onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  onChange: (v: string) => void;
 }) {
-  const [tab, setTab] = useState<'edit' | 'stock'>('edit');
-  const [form, setForm] = useState({
-    name: item.name, code: item.code ?? '', unit: item.unit ?? 'un',
-    min_quantity: String(item.min_quantity), unit_cost: String(item.unit_cost ?? ''),
-    location: item.location ?? '', supplier: item.supplier ?? '',
-  });
-  const [adjQty, setAdjQty]   = useState('');
-  const [adjNotes, setAdjNotes] = useState('');
-  const [saving, setSaving]   = useState(false);
-  const [err, setErr]         = useState('');
-
-  const saveEdit = async () => {
-    setSaving(true); setErr('');
-    try {
-      await updateStockItem(item.id, {
-        name: form.name, code: form.code || undefined,
-        unit: form.unit || undefined, min_quantity: parseFloat(form.min_quantity) || 0,
-        unit_cost: parseFloat(form.unit_cost) || undefined,
-        location: form.location || undefined, supplier: form.supplier || undefined,
-      });
-      onSaved();
-    } catch (e: unknown) {
-      setErr((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Error');
-    } finally { setSaving(false); }
-  };
-
-  const doAddStock = async () => {
-    const qty = parseFloat(adjQty);
-    if (!qty || qty <= 0) { setErr('Enter a valid quantity'); return; }
-    setSaving(true); setErr('');
-    try {
-      await addStock(item.id, qty, adjNotes || undefined);
-      onSaved();
-    } catch { setErr('Error updating stock'); } finally { setSaving(false); }
-  };
-
-  const doAdjust = async () => {
-    const qty = parseFloat(adjQty);
-    if (qty == null || isNaN(qty)) { setErr('Enter a quantity'); return; }
-    setSaving(true); setErr('');
-    try {
-      await adjustStock(item.id, qty, adjNotes || undefined);
-      onSaved();
-    } catch { setErr('Error adjusting stock'); } finally { setSaving(false); }
-  };
-
-  const doDelete = async () => {
-    if (!confirm(`Delete "${item.name}"?`)) return;
-    try { await deleteStockItem(item.id); onDeleted(); } catch { setErr('Error deleting'); }
-  };
-
   return (
-    <ModalWrapper title={`Edit: ${item.name}`} onClose={onClose}>
-      <div className="flex gap-2 mb-4 border-b border-white/[0.08]">
-        <button onClick={() => setTab('edit')} className={`pb-2 px-2 text-sm border-b-2 transition-colors ${tab === 'edit' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500'}`}>Details</button>
-        <button onClick={() => setTab('stock')} className={`pb-2 px-2 text-sm border-b-2 transition-colors ${tab === 'stock' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500'}`}>
-          Update Stock (current: {item.quantity} {item.unit})
-        </button>
-      </div>
-
-      {tab === 'edit' && (
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2">
-              <label className="label">Name</label>
-              <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} className="input-field w-full" />
-            </div>
-            <div>
-              <label className="label">Code</label>
-              <input value={form.code} onChange={(e) => setForm((f) => ({ ...f, code: e.target.value }))} className="input-field w-full" />
-            </div>
-            <div>
-              <label className="label">Unit</label>
-              <input value={form.unit} onChange={(e) => setForm((f) => ({ ...f, unit: e.target.value }))} className="input-field w-full" />
-            </div>
-            <div>
-              <label className="label">Min Stock</label>
-              <input type="number" value={form.min_quantity} onChange={(e) => setForm((f) => ({ ...f, min_quantity: e.target.value }))} className="input-field w-full" />
-            </div>
-            <div>
-              <label className="label">Unit Cost ($)</label>
-              <input type="number" step="0.01" value={form.unit_cost} onChange={(e) => setForm((f) => ({ ...f, unit_cost: e.target.value }))} className="input-field w-full" />
-            </div>
-          </div>
-          {err && <p className="text-red-400 text-sm">{err}</p>}
-          <div className="flex gap-2 pt-1">
-            <button onClick={doDelete} className="btn-secondary py-2 px-3 text-red-400 hover:text-red-300">Delete</button>
-            <button onClick={onClose} className="btn-secondary flex-1 py-2">Cancel</button>
-            <button onClick={saveEdit} disabled={saving} className="btn-primary flex-1 py-2 font-semibold">
-              {saving ? 'Saving…' : 'Save'}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {tab === 'stock' && (
-        <div className="space-y-3">
-          <div>
-            <label className="label">Quantity</label>
-            <input type="number" step="0.01" placeholder="e.g. 5" value={adjQty}
-              onChange={(e) => setAdjQty(e.target.value)} className="input-field w-full" />
-          </div>
-          <div>
-            <label className="label">Notes</label>
-            <input value={adjNotes} onChange={(e) => setAdjNotes(e.target.value)} className="input-field w-full" placeholder="Reason for change…" />
-          </div>
-          {err && <p className="text-red-400 text-sm">{err}</p>}
-          <div className="flex gap-2 pt-1">
-            <button onClick={doAddStock} disabled={saving} className="btn-primary flex-1 py-2 flex items-center justify-center gap-1 text-sm">
-              <ArrowUp size={14} /> Add Stock
-            </button>
-            <button onClick={doAdjust} disabled={saving} className="btn-secondary flex-1 py-2 flex items-center justify-center gap-1 text-sm">
-              <ArrowDown size={14} /> Set Exact
-            </button>
-          </div>
-        </div>
-      )}
-    </ModalWrapper>
-  );
-}
-
-// ── Movements Modal ───────────────────────────────────────────────────────────
-
-function MovementsModal({ item, onClose }: { item: StockItem; onClose: () => void }) {
-  const [movements, setMovements] = useState<InventoryMovement[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    fetchMovements(item.id).then((r) => setMovements(r.items)).catch(() => {}).finally(() => setLoading(false));
-  }, [item.id]);
-
-  const mtCls: Record<string, string> = {
-    deduction:  'text-red-400',
-    addition:   'text-green-400',
-    adjustment: 'text-blue-400',
-  };
-
-  return (
-    <ModalWrapper title={`Movements: ${item.name}`} onClose={onClose}>
-      {loading ? (
-        <div className="flex items-center justify-center h-24"><Spinner size="lg" /></div>
-      ) : movements.length === 0 ? (
-        <p className="text-gray-500 text-sm text-center py-6">No movements recorded</p>
-      ) : (
-        <div className="space-y-2 max-h-80 overflow-y-auto">
-          {movements.map((m) => (
-            <div key={m.id} className="flex items-center justify-between py-1.5 border-b border-white/[0.04]">
-              <div>
-                <span className={`text-xs font-medium ${mtCls[m.movement_type] ?? 'text-gray-400'}`}>
-                  {m.movement_type}
-                </span>
-                {m.notes && <p className="text-xs text-gray-600">{m.notes}</p>}
-                <p className="text-xs text-gray-700">{new Date(m.created_at).toLocaleString()}</p>
-              </div>
-              <div className="text-right">
-                <p className={`text-sm font-semibold ${m.quantity >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {m.quantity >= 0 ? '+' : ''}{m.quantity}
-                </p>
-                <p className="text-xs text-gray-600">{m.quantity_before} → {m.quantity_after}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      <button onClick={onClose} className="btn-secondary w-full mt-4 py-2">Close</button>
-    </ModalWrapper>
-  );
-}
-
-// ── Shared Modal Wrapper ──────────────────────────────────────────────────────
-
-function ModalWrapper({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 p-4">
-      <div className="bg-[#0d1421] border border-white/10 rounded-2xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-white font-bold text-lg">{title}</h2>
-          <button onClick={onClose} className="text-gray-600 hover:text-gray-300"><X size={18} /></button>
-        </div>
-        {children}
-      </div>
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-gray-500 whitespace-nowrap">{label}:</span>
+      <select
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        className="bg-gray-800 border border-gray-700 text-sm text-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:border-indigo-500"
+      >
+        <option value="">All</option>
+        {options.map(o => (
+          <option key={o} value={o}>{o}</option>
+        ))}
+      </select>
     </div>
   );
 }
