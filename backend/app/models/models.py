@@ -288,7 +288,7 @@ class Equipment(Base):
     criticality        = Column(String(20), default="medium")
     hour_meter         = Column(Float, default=0)
     specifications     = Column(JSON, default={})
-    qr_code            = Column(String(500))
+    qr_code            = Column(Text)
     active             = Column(Boolean, default=True)
     created_at         = Column(DateTime(timezone=True), server_default=func.now())
 
