@@ -10,7 +10,7 @@ from sqlalchemy import select, func
 
 from app.db.session import get_db
 from app.models.models import (
-    Machine, MaintenanceTicket, TicketStatus, WorkOrder,
+    Machine, Equipment, MaintenanceTicket, TicketStatus, WorkOrder,
     User, MachineStatus, AlertPriority,
     MachineStop, MachineOperator, StopCategory, StopSubcategory,
     RejectCategory, RejectSubcategory, RejectLog,
@@ -44,6 +44,23 @@ _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 async def _get_machine(ref: str, db: AsyncSession) -> Machine:
     if _UUID_RE.match(ref):
         m = await db.get(Machine, ref)
+        if m:
+            return m
+        # Ref is a UUID but no Machine found — check if it's an Equipment UUID
+        eq = await db.get(Equipment, ref)
+        if eq:
+            # If a machine already exists with the same code, return that
+            if eq.code:
+                existing = await db.execute(select(Machine).where(Machine.code == eq.code))
+                m = existing.scalar_one_or_none()
+                if m:
+                    return m
+            # Auto-provision a Machine record with the equipment's UUID
+            m = Machine(id=eq.id, name=eq.name, code=eq.code, is_active=True)
+            db.add(m)
+            await db.commit()
+            await db.refresh(m)
+            return m
     else:
         r = await db.execute(select(Machine).where(Machine.page_slug == ref))
         m = r.scalar_one_or_none()

@@ -684,9 +684,28 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
   const [allMachines, setAllMachines] = useState<Machine[]>([]);
   const [searched, setSearched] = useState(false);
   const [configTab, setConfigTab] = useState<ConfigTab>('general');
-  const [form, setForm] = useState<MachineConfigUpdate>({});
+  const [form, setForm] = useState<MachineConfigUpdate>({
+    display_name:            equipment.name || '',
+    page_language:           'fr',
+    custom_color:            '',
+    target_availability_pct: 70,
+    target_count:            0,
+    target_count_per_shift:  0,
+    hourly_rate_currency:    'CAD',
+    show_production_panel:   true,
+    show_reject_panel:       true,
+    show_availability_gauge: true,
+    show_job_number:         true,
+  });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  // The ref used for all /api/machines/:ref/... calls.
+  // When a linked Machine is found by code match, use its slug/id.
+  // Otherwise, fall back to the equipment UUID — the backend will
+  // auto-provision a Machine record on first write.
+  const machineRef = machine?.page_slug || machine?.id || equipment.id;
+  const machineId  = machine?.id || equipment.id;
 
   useEffect(() => {
     fetchMachinesAll().then((machines) => {
@@ -711,15 +730,14 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
       }
       setSearched(true);
     });
-  }, [equipment.code]);
+  }, [equipment.code, equipment.id, equipment.name]);
 
   const set = <K extends keyof MachineConfigUpdate>(key: K, val: MachineConfigUpdate[K]) =>
     setForm((f) => ({ ...f, [key]: val }));
 
   const save = async () => {
-    if (!machine) return;
     setSaving(true);
-    await updateMachineConfig(machine.id, form);
+    await updateMachineConfig(machineId, form);
     setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -733,24 +751,21 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
     );
   }
 
-  if (!machine) {
-    return (
-      <div className="flex flex-col items-center justify-center py-16 text-center">
-        <Settings size={36} className="text-gray-700 mb-3" />
-        <p className="text-gray-500 text-sm font-medium">No MES machine linked</p>
-        <p className="text-gray-700 text-xs mt-1 max-w-xs">
-          No machine with code <span className="font-mono text-gray-500">{equipment.code}</span> found in the production system.
-          Create a machine with the same code to enable configuration.
-        </p>
-      </div>
-    );
-  }
-
-  const machineRef = machine.page_slug || machine.id;
   const showSave = configTab === 'general' || configTab === 'parameters';
 
   return (
     <div className="space-y-4">
+      {/* MES integration info banner — shown when no linked machine */}
+      {!machine && (
+        <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-blue-500/20 bg-blue-500/5 text-sm">
+          <Settings size={15} className="text-blue-400 flex-shrink-0" />
+          <span className="text-blue-300">
+            MES kiosk integration coming soon. Configuration is saved and will activate when a kiosk machine with code{' '}
+            <span className="font-mono text-white">{equipment.code}</span> is linked.
+          </span>
+        </div>
+      )}
+
       {/* Config sub-tab header */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1 overflow-x-auto pb-1">
@@ -770,7 +785,7 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
           ))}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          {machine.page_slug && (
+          {machine?.page_slug && (
             <Link
               to={`/machines/${machine.page_slug}`}
               target="_blank"
@@ -798,7 +813,7 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
               <div>
                 <label className="block text-sm text-gray-500 mb-1.5">Display Name (override)</label>
                 <input type="text" value={form.display_name || ''} onChange={(e) => set('display_name', e.target.value)}
-                  placeholder={machine.name}
+                  placeholder={machine?.name || equipment.name}
                   className="w-full bg-[#0b1120] border border-white/10 rounded-xl px-4 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500" />
               </div>
               <div>
@@ -832,10 +847,10 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
             </div>
           </div>
         )}
-        {configTab === 'stop' && <StopCategoriesTab slug={machineRef} allMachines={allMachines} machineId={machine.id} />}
-        {configTab === 'reject' && <RejectCategoriesTab slug={machineRef} allMachines={allMachines} machineId={machine.id} />}
+        {configTab === 'stop' && <StopCategoriesTab slug={machineRef} allMachines={allMachines} machineId={machineId} />}
+        {configTab === 'reject' && <RejectCategoriesTab slug={machineRef} allMachines={allMachines} machineId={machineId} />}
         {configTab === 'operators' && <OperatorsTab machineRef={machineRef} />}
-        {configTab === 'shifts' && <WorkShiftsTab machineId={String(machine.id)} savedConfig={machine.shifts_config} />}
+        {configTab === 'shifts' && <WorkShiftsTab machineId={machineId} savedConfig={machine?.shifts_config} />}
         {configTab === 'parameters' && <ParametersTab form={form} set={set} />}
         {configTab === 'indicators' && (
           <div className="flex flex-col items-center justify-center py-24 text-center">
