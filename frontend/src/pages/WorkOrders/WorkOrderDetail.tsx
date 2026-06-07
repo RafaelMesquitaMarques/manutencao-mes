@@ -600,11 +600,13 @@ const CostsTab = ({
   woId,
   costs,
   summary,
+  laborRecords,
   onAdded,
 }: {
   woId: string;
   costs: WOCost[];
   summary: WOCostSummary | null;
+  laborRecords: LaborRecord[];
   onAdded: (c: WOCost) => void;
 }) => {
   const { t } = useTranslation();
@@ -649,19 +651,29 @@ const CostsTab = ({
     <div className="space-y-4">
       {/* Summary cards */}
       {summary && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          {[
-            { label: t('workOrders.laborTotal'), val: summary.labor_total, color: 'text-blue-400' },
-            { label: t('workOrders.partsTotal'), val: summary.parts_total, color: 'text-purple-400' },
-            { label: t('workOrders.otherTotal'), val: summary.other_total, color: 'text-amber-400' },
-            { label: t('workOrders.grandTotal'), val: summary.grand_total, color: 'text-green-400' },
-          ].map(({ label, val, color }) => (
-            <div key={label} className="glass-card p-4">
-              <p className="text-gray-600 text-[11px] uppercase tracking-wide mb-1">{label}</p>
-              <p className={`font-mono font-semibold text-lg ${color}`}>{fmtMoney(val)}</p>
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {[
+              { label: t('workOrders.laborTotal'), val: summary.labor_total, color: 'text-blue-400' },
+              { label: t('workOrders.partsTotal'), val: summary.parts_total, color: 'text-purple-400' },
+              { label: t('workOrders.otherTotal'), val: summary.other_total, color: 'text-amber-400' },
+              { label: t('workOrders.grandTotal'), val: summary.grand_total, color: 'text-green-400' },
+            ].map(({ label, val, color }) => (
+              <div key={label} className="glass-card p-4">
+                <p className="text-gray-600 text-[11px] uppercase tracking-wide mb-1">{label}</p>
+                <p className={`font-mono font-semibold text-lg ${color}`}>{fmtMoney(val)}</p>
+              </div>
+            ))}
+          </div>
+          {summary.labor_total === 0 && laborRecords.length > 0 && (
+            <div className="flex items-center gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+              <AlertCircle size={14} className="text-amber-400 flex-shrink-0" />
+              <p className="text-amber-300 text-xs">
+                Labor records exist but have no rate. Configure hourly rates in the <strong>Technicians</strong> page.
+              </p>
             </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
 
       <div className="flex justify-end">
@@ -1106,6 +1118,7 @@ const WorkOrderDetail = () => {
             woId={wo.id}
             costs={costs}
             summary={costSummary}
+            laborRecords={labor}
             onAdded={(c) => setCosts((prev) => [...prev, c])}
           />
         )}

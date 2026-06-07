@@ -40,6 +40,18 @@ async def _sync_ticket_from_wo(wo: WorkOrder, db: AsyncSession) -> None:
     # open/assigned → keep ticket as assigned
 
 
+async def _resolve_tech_for_labor(wo: WorkOrder, current_user: User, db: AsyncSession) -> Optional[Technician]:
+    """Return the best technician to attribute a labor record to.
+    Priority: current user's own profile → wo.executor_id technician."""
+    r = await db.execute(select(Technician).where(Technician.user_id == current_user.id))
+    tech = r.scalar_one_or_none()
+    if tech:
+        return tech
+    if wo.executor_id:
+        return await db.get(Technician, wo.executor_id)
+    return None
+
+
 async def _close_open_labor_records(work_order_id: UUID, db: AsyncSession) -> None:
     """Stamp stopped_at on any in-flight labor records and compute hours_worked."""
     now = datetime.now(timezone.utc)
@@ -253,12 +265,7 @@ async def get_work_order(
     wo = result.scalar_one_or_none()
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
-    wo_data = WorkOrderOut.model_validate(wo)
-    equip = await db.get(Equipment, wo.equipment_id)
-    if equip:
-        wo_data.equipment_name = equip.name
-        wo_data.equipment_location = equip.location
-    return wo_data
+    return await _enrich_wo(wo, db)
 
 
 @router.post("/", response_model=WorkOrderOut, status_code=201)
@@ -395,9 +402,7 @@ async def start_work_order(
     wo.started_at = now
     wo.assigned_to_id = current_user.id
 
-    # Create an open labor record for automatic time tracking
-    r = await db.execute(select(Technician).where(Technician.user_id == current_user.id))
-    tech = r.scalar_one_or_none()
+    tech = await _resolve_tech_for_labor(wo, current_user, db)
     if tech:
         db.add(LaborRecord(
             work_order_id=work_order_id,
@@ -431,9 +436,7 @@ async def resume_work_order(
     wo.status = WorkOrderStatus.in_progress
     wo.assigned_to_id = current_user.id
 
-    # Create a new open labor record for this resumed segment
-    r = await db.execute(select(Technician).where(Technician.user_id == current_user.id))
-    tech = r.scalar_one_or_none()
+    tech = await _resolve_tech_for_labor(wo, current_user, db)
     if tech:
         db.add(LaborRecord(
             work_order_id=work_order_id,
@@ -481,25 +484,33 @@ async def complete_work_order(
     # Close any in-flight labor records
     await _close_open_labor_records(work_order_id, db)
 
+    # Sum all labor records (open ones were just closed above)
+    labor_result = await db.execute(
+        select(LaborRecord).where(LaborRecord.work_order_id == work_order_id)
+    )
+    labor_records = labor_result.scalars().all()
+
     if repair_hours:
         wo.repair_hours = repair_hours
         wo.total_minutes = int(repair_hours * 60)
     else:
-        # Sum all labor records
-        labor_result = await db.execute(
-            select(LaborRecord).where(LaborRecord.work_order_id == work_order_id)
-        )
-        labor_records = labor_result.scalars().all()
         computed_minutes = int(sum(r.hours_worked for r in labor_records) * 60)
         if computed_minutes > 0:
             wo.total_minutes = computed_minutes
             wo.repair_hours = round(computed_minutes / 60.0, 4)
         elif wo.started_at:
-            # Fallback: elapsed wall-clock time
             elapsed_minutes = int((now - wo.started_at).total_seconds() / 60)
             if elapsed_minutes > 0:
                 wo.total_minutes = elapsed_minutes
                 wo.repair_hours = round(elapsed_minutes / 60.0, 4)
+
+    # Roll up total_cost = labor + parts
+    labor_cost_total = sum(r.labor_cost or 0.0 for r in labor_records)
+    parts_result = await db.execute(
+        select(WOPart).where(WOPart.work_order_id == work_order_id)
+    )
+    parts_cost_total = sum(p.total_cost or 0.0 for p in parts_result.scalars().all())
+    wo.total_cost = round(labor_cost_total + parts_cost_total, 2) or None
 
     await db.commit()
     await db.refresh(wo)
