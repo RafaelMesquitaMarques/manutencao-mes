@@ -1,17 +1,18 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, User, Shield, Building2, Activity, CheckCircle, AlertCircle, Plus, Trash2, type LucideIcon } from 'lucide-react';
-import { fetchUser, updateUser, fetchUserPermissions, setUserPermissions, fetchUserPlants, assignUserToPlant, removeUserFromPlant } from '../../api/users';
+import { ArrowLeft, User, Shield, Building2, Activity, CheckCircle, AlertCircle, Plus, Trash2, KeyRound, type LucideIcon } from 'lucide-react';
+import { fetchUser, updateUser, fetchUserPermissions, setUserPermissions, fetchUserPlants, assignUserToPlant, removeUserFromPlant, adminResetPassword } from '../../api/users';
 import api from '../../api/axios';
 import type { User as UserType, UserPermission, UserRole } from '../../types';
 
-type Tab = 'profile' | 'permissions' | 'plants' | 'activity';
+type Tab = 'profile' | 'permissions' | 'plants' | 'activity' | 'security';
 
 const TABS: { id: Tab; label: string; Icon: LucideIcon }[] = [
   { id: 'profile', label: 'Profile', Icon: User },
   { id: 'permissions', label: 'Permissions', Icon: Shield },
   { id: 'plants', label: 'Plant Access', Icon: Building2 },
   { id: 'activity', label: 'Activity', Icon: Activity },
+  { id: 'security', label: 'Security', Icon: KeyRound },
 ];
 
 const ALL_ROLES: UserRole[] = [
@@ -334,6 +335,204 @@ function PlantAccessTab({ userId }: { userId: string }) {
   );
 }
 
+// ─── Security Tab ────────────────────────────────────────────────────────────
+
+function SecurityTab({ user }: { user: UserType }) {
+  const [resetMode, setResetMode] = useState<'idle' | 'choose' | 'generate' | 'manual' | 'done_generate'>('idle');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [showPw, setShowPw] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [tempPassword, setTempPassword] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [successMsg, setSuccessMsg] = useState('');
+
+  const handleGenerate = async () => {
+    setLoading(true); setError('');
+    try {
+      const res = await adminResetPassword(user.id, 'generate');
+      setTempPassword(res.temp_password ?? '');
+      setResetMode('done_generate');
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setError(msg ?? 'Failed to reset password.');
+    } finally { setLoading(false); }
+  };
+
+  const handleManual = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password !== confirm) { setError('Passwords do not match.'); return; }
+    setLoading(true); setError('');
+    try {
+      await adminResetPassword(user.id, 'manual', password);
+      setSuccessMsg('Password updated. User will be required to change it on next login.');
+      setResetMode('idle');
+      setPassword(''); setConfirm('');
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setError(msg ?? 'Failed to reset password.');
+    } finally { setLoading(false); }
+  };
+
+  const copyTemp = () => {
+    navigator.clipboard.writeText(tempPassword);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Status info */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="p-4 rounded-xl border border-white/[0.06] bg-white/[0.02]">
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1.5">Last Login</p>
+          <p className="text-sm text-gray-200">
+            {user.last_login_at ? new Date(user.last_login_at).toLocaleString() : 'Never'}
+          </p>
+        </div>
+        <div className="p-4 rounded-xl border border-white/[0.06] bg-white/[0.02]">
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1.5">Password Change</p>
+          {user.must_change_password ? (
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-1 rounded-full">
+              <AlertCircle size={11} /> Required on next login
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-green-400 bg-green-500/10 border border-green-500/20 px-2 py-1 rounded-full">
+              <CheckCircle size={11} /> Not required
+            </span>
+          )}
+        </div>
+      </div>
+
+      {successMsg && (
+        <div className="flex items-center gap-2.5 p-3 bg-green-500/10 border border-green-500/25 rounded-lg">
+          <CheckCircle size={14} className="text-green-400" />
+          <p className="text-green-400 text-sm">{successMsg}</p>
+        </div>
+      )}
+
+      {error && (
+        <div className="flex items-start gap-2.5 p-3 bg-red-500/10 border border-red-500/25 rounded-lg">
+          <AlertCircle size={14} className="text-red-400 flex-shrink-0 mt-0.5" />
+          <p className="text-red-400 text-sm">{error}</p>
+        </div>
+      )}
+
+      {/* Reset password section */}
+      <div>
+        <h3 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
+          <KeyRound size={14} className="text-gray-500" /> Reset Password
+        </h3>
+
+        {resetMode === 'idle' && (
+          <button
+            onClick={() => setResetMode('choose')}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-amber-400 border border-amber-500/30 hover:bg-amber-500/10 transition-all"
+          >
+            <KeyRound size={14} /> Reset password for this user
+          </button>
+        )}
+
+        {resetMode === 'choose' && (
+          <div className="space-y-3">
+            <button
+              onClick={() => setResetMode('generate')}
+              className="w-full p-4 rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] hover:border-blue-500/30 transition-all text-left"
+            >
+              <p className="text-white font-medium text-sm">Generate temporary password</p>
+              <p className="text-gray-500 text-xs mt-0.5">System creates a random 8-character password</p>
+            </button>
+            <button
+              onClick={() => setResetMode('manual')}
+              className="w-full p-4 rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] hover:border-blue-500/30 transition-all text-left"
+            >
+              <p className="text-white font-medium text-sm">Set password manually</p>
+              <p className="text-gray-500 text-xs mt-0.5">You choose a new password for this user</p>
+            </button>
+            <button onClick={() => setResetMode('idle')} className="text-xs text-gray-500 hover:text-gray-300 transition-colors">Cancel</button>
+          </div>
+        )}
+
+        {resetMode === 'generate' && (
+          <div className="space-y-3">
+            <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+              <p className="text-amber-400 text-sm">A random password will be generated. You must communicate it to the user — it will only be shown once.</p>
+            </div>
+            <div className="flex gap-3">
+              <button onClick={handleGenerate} disabled={loading} className="btn-primary py-2 px-5 text-sm">
+                {loading ? <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : 'Generate & show'}
+              </button>
+              <button onClick={() => setResetMode('choose')} className="btn-secondary py-2 px-4 text-sm">Back</button>
+            </div>
+          </div>
+        )}
+
+        {resetMode === 'done_generate' && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/25 rounded-lg">
+              <CheckCircle size={14} className="text-green-400 flex-shrink-0" />
+              <p className="text-green-400 text-sm">Password reset. Share it with the user.</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 mb-1.5">Temporary password (shown once):</p>
+              <div className="flex items-center gap-2 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5">
+                <span className="font-mono text-lg text-white tracking-widest flex-1 select-all">{tempPassword}</span>
+                <button onClick={copyTemp} className="text-gray-400 hover:text-white transition-colors" title="Copy">
+                  {copied
+                    ? <CheckCircle size={16} className="text-green-400" />
+                    : <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                  }
+                </button>
+              </div>
+              <p className="text-amber-400 text-xs mt-2">⚠ This password will not be shown again.</p>
+            </div>
+            <button onClick={() => setResetMode('idle')} className="btn-secondary py-2 px-4 text-sm">Done</button>
+          </div>
+        )}
+
+        {resetMode === 'manual' && (
+          <form onSubmit={handleManual} className="space-y-3">
+            <div>
+              <label className="label">New password</label>
+              <div className="relative">
+                <input
+                  type={showPw ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Min. 8 characters"
+                  className="input-field pr-10"
+                  autoFocus required disabled={loading}
+                />
+                <button type="button" onClick={() => setShowPw((v) => !v)} tabIndex={-1}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors">
+                  {showPw
+                    ? <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>
+                    : <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                  }
+                </button>
+              </div>
+              {password.length > 0 && password.length < 8 && <p className="text-red-400 text-xs mt-1">Must be at least 8 characters</p>}
+            </div>
+            <div>
+              <label className="label">Confirm password</label>
+              <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)}
+                placeholder="Repeat password" className="input-field" required disabled={loading} />
+              {confirm.length > 0 && password !== confirm && <p className="text-red-400 text-xs mt-1">Passwords do not match</p>}
+            </div>
+            <div className="flex gap-3 pt-1">
+              <button type="submit" disabled={loading || password.length < 8 || password !== confirm} className="btn-primary py-2 px-5 text-sm">
+                {loading ? <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : 'Set password'}
+              </button>
+              <button type="button" onClick={() => setResetMode('choose')} className="btn-secondary py-2 px-4 text-sm">Back</button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function UserDetail() {
@@ -399,6 +598,7 @@ export default function UserDetail() {
         {tab === 'profile' && <ProfileTab user={user} />}
         {tab === 'permissions' && <PermissionsTab userId={user.id} />}
         {tab === 'plants' && <PlantAccessTab userId={user.id} />}
+        {tab === 'security' && <SecurityTab user={user} />}
         {tab === 'activity' && (
           <div className="space-y-2">
             {user.last_login_at ? (

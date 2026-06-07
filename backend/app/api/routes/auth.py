@@ -10,6 +10,7 @@ from app.schemas.user import (
     LoginRequest, TokenResponse, UserCreate, UserOut, UserMeUpdate,
     InviteRequest, InviteOut, AcceptInviteRequest,
     ForgotPasswordRequest, ResetPasswordRequest, ChangePasswordRequest,
+    ForceChangePasswordRequest,
 )
 from app.core.security import verify_password, hash_password, create_access_token, get_current_user
 from app.core.permissions import require_admin
@@ -41,6 +42,7 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
         name=user.name,
         language=user.language or "en",
         role=user.role,
+        must_change_password=user.must_change_password,
     )
 
 
@@ -229,6 +231,24 @@ async def change_password(
 ):
     if not verify_password(data.old_password, current_user.password_hash):
         raise HTTPException(status_code=400, detail="Incorrect current password")
+
+    current_user.password_hash = hash_password(data.new_password)
+    current_user.must_change_password = False
+    await db.commit()
+    return {"message": "Password changed successfully"}
+
+
+@router.patch("/change-password", status_code=200)
+async def force_change_password(
+    data: ForceChangePasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Forced password change — no old password required. Only valid when must_change_password=True."""
+    if not current_user.must_change_password:
+        raise HTTPException(status_code=403, detail="No forced password change pending")
+    if len(data.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
 
     current_user.password_hash = hash_password(data.new_password)
     current_user.must_change_password = False

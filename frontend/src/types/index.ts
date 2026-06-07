@@ -244,6 +244,7 @@ export interface LoginResponse {
   name: string;
   language?: string;
   role?: UserRole;
+  must_change_password?: boolean;
 }
 
 export interface LoginCredentials {

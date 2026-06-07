@@ -55,6 +55,7 @@ interface AuthState {
   token: string | null;
   isAuthenticated: boolean;
   setAuth: (user: User, token: string) => void;
+  patchUser: (patch: Partial<User>) => void;
   logout: () => void;
   can: (resource: string, action?: string) => boolean;
   hasRole: (...roles: UserRole[]) => boolean;
@@ -66,6 +67,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   token: null,
   isAuthenticated: false,
   setAuth: (user, token) => set({ user, token, isAuthenticated: true }),
+  patchUser: (patch) => set((state) => ({ user: state.user ? { ...state.user, ...patch } : null })),
   logout: () => set({ user: null, token: null, isAuthenticated: false }),
   can: (resource: string, action = 'view') => {
     const { user } = get();

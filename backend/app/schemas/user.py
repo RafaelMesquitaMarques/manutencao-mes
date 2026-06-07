@@ -17,6 +17,7 @@ class TokenResponse(BaseModel):
     name: str
     language: str
     role: UserRole = UserRole.operator
+    must_change_password: bool = False
 
 
 class UserCreate(BaseModel):
@@ -137,3 +138,12 @@ class ResetPasswordRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     old_password: str
     new_password: str
+
+
+class ForceChangePasswordRequest(BaseModel):
+    new_password: str
+
+
+class AdminPasswordResetRequest(BaseModel):
+    mode: str  # 'generate' | 'manual'
+    password: Optional[str] = None

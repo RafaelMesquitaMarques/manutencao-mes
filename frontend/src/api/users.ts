@@ -64,3 +64,12 @@ export const assignUserToPlant = async (
 export const removeUserFromPlant = async (userId: string, plantId: string): Promise<void> => {
   await api.delete(`/api/users/${userId}/plants/${plantId}`);
 };
+
+export const adminResetPassword = async (
+  userId: string,
+  mode: 'generate' | 'manual',
+  password?: string,
+): Promise<{ success: boolean; temp_password?: string }> => {
+  const { data } = await api.post(`/api/users/${userId}/reset-password`, { mode, password });
+  return data;
+};

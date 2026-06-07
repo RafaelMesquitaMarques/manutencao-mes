@@ -43,9 +43,10 @@ const Login = () => {
         active: true,
         role: result.role,
         language: result.language,
+        must_change_password: result.must_change_password,
       };
       setAuth(user, result.access_token);
-      navigate('/dashboard', { replace: true });
+      navigate(result.must_change_password ? '/force-change-password' : '/dashboard', { replace: true });
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status;
       setError(status === 401 ? t('auth.invalidCredentials') : t('auth.loginError'));

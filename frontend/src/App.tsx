@@ -32,6 +32,7 @@ import UsersSetup from './pages/Settings/UsersSetup';
 import UserDetail from './pages/Settings/UserDetail';
 import MyProfile from './pages/Settings/MyProfile';
 import ChangePassword from './pages/Settings/ChangePassword';
+import ForcedChangePassword from './pages/Settings/ForcedChangePassword';
 import AcceptInvite from './pages/AcceptInvite';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
@@ -40,6 +41,14 @@ const App = () => (
   <BrowserRouter>
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route
+        path="/force-change-password"
+        element={
+          <ProtectedRoute>
+            <ForcedChangePassword />
+          </ProtectedRoute>
+        }
+      />
       <Route path="/machines/:slug" element={<MachinePage />} />
       <Route path="/accept-invite" element={<AcceptInvite />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />

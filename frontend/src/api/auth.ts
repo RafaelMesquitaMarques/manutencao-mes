@@ -39,6 +39,10 @@ export const changePassword = async (oldPassword: string, newPassword: string): 
   });
 };
 
+export const forcedChangePassword = async (newPassword: string): Promise<void> => {
+  await api.patch('/api/auth/change-password', { new_password: newPassword });
+};
+
 export const getInvitation = async (token: string): Promise<{ email: string; role: string }> => {
   const { data } = await api.get<{ email: string; role: string }>(`/api/auth/invite/${token}`);
   return data;

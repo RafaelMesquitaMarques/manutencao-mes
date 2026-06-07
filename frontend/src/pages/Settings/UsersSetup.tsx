@@ -1,10 +1,10 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
   UserPlus, UserCheck, Mail, Settings, CheckCircle, XCircle,
-  AlertCircle, X, Eye, EyeOff,
+  AlertCircle, X, Eye, EyeOff, KeyRound, Copy, Check,
 } from 'lucide-react';
-import { fetchUsers, deleteUser, createUser } from '../../api/users';
+import { fetchUsers, deleteUser, createUser, adminResetPassword } from '../../api/users';
 import { inviteUser } from '../../api/auth';
 import type { User, UserRole } from '../../types';
 
@@ -407,6 +407,200 @@ function CreateUserModal({ onClose, onSuccess }: CreateUserModalProps) {
   );
 }
 
+// ─── Reset Password Modal ─────────────────────────────────────────────────────
+
+interface ResetPasswordModalProps {
+  user: User;
+  onClose: () => void;
+  onSuccess: (msg: string) => void;
+}
+
+function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProps) {
+  const [mode, setMode] = useState<'choose' | 'generate' | 'manual' | 'done_generate' | 'done_manual'>('choose');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [showPw, setShowPw] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [tempPassword, setTempPassword] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  const handleGenerate = async () => {
+    setLoading(true); setError('');
+    try {
+      const res = await adminResetPassword(user.id, 'generate');
+      setTempPassword(res.temp_password ?? '');
+      setMode('done_generate');
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setError(msg ?? 'Failed to reset password.');
+    } finally { setLoading(false); }
+  };
+
+  const handleManual = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password !== confirm) { setError('Passwords do not match.'); return; }
+    if (password.length < 8) { setError('Password must be at least 8 characters.'); return; }
+    setLoading(true); setError('');
+    try {
+      await adminResetPassword(user.id, 'manual', password);
+      setMode('done_manual');
+      onSuccess(`Password updated for ${user.name}`);
+      onClose();
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setError(msg ?? 'Failed to reset password.');
+    } finally { setLoading(false); }
+  };
+
+  const copyTemp = useCallback(() => {
+    navigator.clipboard.writeText(tempPassword);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [tempPassword]);
+
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-[#0d1421] border border-white/[0.08] rounded-2xl w-full max-w-md shadow-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
+          <div className="flex items-center gap-2.5">
+            <KeyRound size={16} className="text-amber-400" />
+            <h3 className="text-white font-bold">Reset Password</h3>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-300 transition-colors p-1 rounded">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="p-6">
+          <p className="text-gray-400 text-sm mb-5">
+            Resetting password for <span className="text-white font-medium">{user.name}</span>.
+            The user will be required to change it on next login.
+          </p>
+
+          {error && (
+            <div className="mb-4 flex items-start gap-2.5 p-3 bg-red-500/10 border border-red-500/25 rounded-lg">
+              <AlertCircle size={14} className="text-red-400 flex-shrink-0 mt-0.5" />
+              <p className="text-red-400 text-sm">{error}</p>
+            </div>
+          )}
+
+          {/* Choice screen */}
+          {mode === 'choose' && (
+            <div className="space-y-3">
+              <button
+                onClick={() => setMode('generate')}
+                className="w-full p-4 rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] hover:border-blue-500/30 transition-all text-left"
+              >
+                <p className="text-white font-medium text-sm">Generate temporary password</p>
+                <p className="text-gray-500 text-xs mt-0.5">System creates a random 8-character password to share with the user</p>
+              </button>
+              <button
+                onClick={() => setMode('manual')}
+                className="w-full p-4 rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] hover:border-blue-500/30 transition-all text-left"
+              >
+                <p className="text-white font-medium text-sm">Set password manually</p>
+                <p className="text-gray-500 text-xs mt-0.5">You choose a new password for this user</p>
+              </button>
+            </div>
+          )}
+
+          {/* Confirm generate */}
+          {mode === 'generate' && (
+            <div className="space-y-4">
+              <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+                <p className="text-amber-400 text-sm">
+                  A random 8-character password will be generated. You must communicate it to the user — it will only be shown once.
+                </p>
+              </div>
+              <div className="flex gap-3">
+                <button onClick={handleGenerate} disabled={loading} className="btn-primary py-2 px-5 text-sm">
+                  {loading ? <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : 'Generate & show'}
+                </button>
+                <button onClick={() => setMode('choose')} className="btn-secondary py-2 px-4 text-sm">Back</button>
+              </div>
+            </div>
+          )}
+
+          {/* Show generated temp password */}
+          {mode === 'done_generate' && (
+            <div className="space-y-4">
+              <div className="p-3 bg-green-500/10 border border-green-500/25 rounded-lg flex items-center gap-2">
+                <CheckCircle size={14} className="text-green-400 flex-shrink-0" />
+                <p className="text-green-400 text-sm">Password reset. Share it with the user.</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 mb-1.5">Temporary password (shown once):</p>
+                <div className="flex items-center gap-2 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5">
+                  <span className="font-mono text-lg text-white tracking-widest flex-1 select-all">{tempPassword}</span>
+                  <button
+                    onClick={copyTemp}
+                    className="text-gray-400 hover:text-white transition-colors flex-shrink-0"
+                    title="Copy to clipboard"
+                  >
+                    {copied ? <Check size={16} className="text-green-400" /> : <Copy size={16} />}
+                  </button>
+                </div>
+                <p className="text-amber-400 text-xs mt-2">⚠ This password will not be shown again after you close this dialog.</p>
+              </div>
+              <button onClick={onClose} className="btn-primary py-2 px-5 text-sm">Done</button>
+            </div>
+          )}
+
+          {/* Manual form */}
+          {mode === 'manual' && (
+            <form onSubmit={handleManual} className="space-y-4">
+              <div>
+                <label className="label">New password</label>
+                <div className="relative">
+                  <input
+                    type={showPw ? 'text' : 'password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Min. 8 characters"
+                    className="input-field pr-10"
+                    autoFocus
+                    required
+                    disabled={loading}
+                  />
+                  <button type="button" onClick={() => setShowPw((v) => !v)} tabIndex={-1}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors">
+                    {showPw ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
+                {password.length > 0 && password.length < 8 && (
+                  <p className="text-red-400 text-xs mt-1">Must be at least 8 characters</p>
+                )}
+              </div>
+              <div>
+                <label className="label">Confirm password</label>
+                <input
+                  type="password"
+                  value={confirm}
+                  onChange={(e) => setConfirm(e.target.value)}
+                  placeholder="Repeat password"
+                  className="input-field"
+                  required
+                  disabled={loading}
+                />
+                {confirm.length > 0 && password !== confirm && (
+                  <p className="text-red-400 text-xs mt-1">Passwords do not match</p>
+                )}
+              </div>
+              <div className="flex gap-3 pt-1">
+                <button type="submit" disabled={loading || password.length < 8 || password !== confirm} className="btn-primary py-2 px-5 text-sm">
+                  {loading ? <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : 'Set password'}
+                </button>
+                <button type="button" onClick={() => setMode('choose')} className="btn-secondary py-2 px-4 text-sm">Back</button>
+              </div>
+            </form>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function UsersSetup() {
@@ -415,6 +609,7 @@ export default function UsersSetup() {
   const [showInvite, setShowInvite] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [deactivating, setDeactivating] = useState<string | null>(null);
+  const [resetTarget, setResetTarget] = useState<User | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   const load = () => {
@@ -451,6 +646,13 @@ export default function UsersSetup() {
       )}
       {showCreate && (
         <CreateUserModal onClose={() => setShowCreate(false)} onSuccess={handleCreated} />
+      )}
+      {resetTarget && (
+        <ResetPasswordModal
+          user={resetTarget}
+          onClose={() => setResetTarget(null)}
+          onSuccess={(msg) => { setToast(msg); setResetTarget(null); load(); }}
+        />
       )}
 
       <div className="flex items-center justify-between mb-8">
@@ -532,6 +734,13 @@ export default function UsersSetup() {
                   >
                     <Settings size={12} /> Manage
                   </Link>
+                  <button
+                    onClick={() => setResetTarget(u)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-amber-400 border border-amber-500/30 hover:bg-amber-500/10 transition-all"
+                    title="Reset password"
+                  >
+                    <KeyRound size={12} /> Reset pw
+                  </button>
                   {u.active && (
                     <button
                       onClick={() => handleDeactivate(u)}
