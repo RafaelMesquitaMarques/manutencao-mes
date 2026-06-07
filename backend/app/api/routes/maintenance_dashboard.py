@@ -153,7 +153,7 @@ async def supervisor_overview(
     pending_tickets = []
     for t in raw_tickets:
         m = await db.get(Machine, t.machine_id)
-        ptype = t.problem_type.value if hasattr(t.problem_type, "value") else str(t.problem_type)
+        ptype = t.problem_type.value if t.problem_type else ""
         pending_tickets.append(TicketSummary(
             id=t.id,
             ticket_number=t.ticket_number,
@@ -162,7 +162,7 @@ async def supervisor_overview(
             problem_type=ptype,
             status=t.status.value if hasattr(t.status, "value") else str(t.status),
             opened_at=t.opened_at,
-            is_overdue=t.is_overdue,
+            is_overdue=False,
             current_escalation_level=t.current_escalation_level,
             work_order_id=t.work_order_id,
         ))

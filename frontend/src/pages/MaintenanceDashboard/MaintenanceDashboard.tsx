@@ -85,7 +85,7 @@ export default function MaintenanceDashboard() {
 
   useEffect(() => { load(); }, []);
 
-  if (loading) {
+  if (loading || !data) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="flex flex-col items-center gap-3">
@@ -96,7 +96,7 @@ export default function MaintenanceDashboard() {
     );
   }
 
-  const d = data!;
+  const d = data;
 
   const byMachineData   = d.by_machine.map((x) => ({ label: x.machine, count: x.count }));
   const byTechData      = d.by_technician.map((x) => ({ label: x.technician, count: x.count }));

@@ -41,12 +41,31 @@ class MachineOut(BaseModel):
     hourly_rate:             Optional[float] = None
     hourly_rate_currency:    Optional[str] = "CAD"
     target_count_per_shift:  Optional[int] = None
+    shifts_config:           Optional[dict] = None
     created_at:              datetime
 
 
 class MachineListResponse(BaseModel):
     total: int
     items: List[MachineOut]
+
+
+class MachineCreate(BaseModel):
+    name: str
+    code: Optional[str] = None
+    department: Optional[str] = None
+    location: Optional[str] = None
+    page_slug: Optional[str] = None
+
+
+class MachinePatch(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    department: Optional[str] = None
+    location: Optional[str] = None
+    is_active: Optional[bool] = None
+    page_slug: Optional[str] = None
+    shifts_config: Optional[dict] = None
 
 
 # ── Machine page ───────────────────────────────────────────────────────────────

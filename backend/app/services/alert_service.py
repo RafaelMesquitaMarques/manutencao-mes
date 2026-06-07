@@ -98,6 +98,8 @@ class AlertService:
             machine_id=alert.machine_id,
             priority=alert.priority,
             assigned_to_id=user_id,
+            problem_type=alert.problem_type,
+            description=alert.description,
         ))
         alert.status = AlertStatus.in_progress
         await self.db.commit()

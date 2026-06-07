@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Plus, Users, RefreshCw, CheckCircle2 } from 'lucide-react';
 import { fetchTechniciansFull } from '../../api/workOrders';
@@ -84,10 +84,10 @@ const TechnicianList = () => {
                 {technicians.map((tech) => (
                   <tr key={tech.id} className="table-row">
                     <td className="table-cell">
-                      <div>
-                        <p className="text-gray-200 font-medium">{tech.full_name ?? '—'}</p>
+                      <Link to={`/technicians/${tech.id}`} className="group">
+                        <p className="text-gray-200 font-medium group-hover:text-blue-400 transition-colors">{tech.full_name ?? '—'}</p>
                         <p className="text-gray-500 text-xs">{tech.email ?? ''}</p>
-                      </div>
+                      </Link>
                     </td>
                     <td className="table-cell font-mono text-gray-400 text-xs">
                       {tech.employee_number ?? '—'}

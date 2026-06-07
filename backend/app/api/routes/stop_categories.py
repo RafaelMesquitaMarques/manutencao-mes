@@ -55,29 +55,8 @@ async def create_category(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    cat = StopCategory(**data.model_dump())
+    cat = StopCategory(is_global=True, **data.model_dump())
     db.add(cat)
-    await db.commit()
-    await db.refresh(cat)
-    return StopCategoryOut(
-        id=cat.id, name=cat.name, type=cat.type, icon=cat.icon,
-        color=cat.color, is_active=cat.is_active, sort_order=cat.sort_order,
-        subcategories=[],
-    )
-
-
-@router.patch("/{cat_id}", response_model=StopCategoryOut)
-async def update_category(
-    cat_id: UUID,
-    data: StopCategoryUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    cat = await db.get(StopCategory, cat_id)
-    if not cat:
-        raise HTTPException(404, "Category not found")
-    for k, v in data.model_dump(exclude_none=True).items():
-        setattr(cat, k, v)
     await db.commit()
     await db.refresh(cat)
     return StopCategoryOut(
@@ -99,6 +78,27 @@ async def reorder_categories(
             cat.sort_order = item.sort_order
     await db.commit()
     return await list_categories(db)
+
+
+@router.patch("/{cat_id}", response_model=StopCategoryOut)
+async def update_category(
+    cat_id: UUID,
+    data: StopCategoryUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cat = await db.get(StopCategory, cat_id)
+    if not cat:
+        raise HTTPException(404, "Category not found")
+    for k, v in data.model_dump(exclude_none=True).items():
+        setattr(cat, k, v)
+    await db.commit()
+    await db.refresh(cat)
+    return StopCategoryOut(
+        id=cat.id, name=cat.name, type=cat.type, icon=cat.icon,
+        color=cat.color, is_active=cat.is_active, sort_order=cat.sort_order,
+        subcategories=[],
+    )
 
 
 @router.get("/{cat_id}/subcategories", response_model=List[StopSubcategoryOut])
@@ -136,6 +136,24 @@ async def create_subcategory(
     )
 
 
+@router.patch("/subcategories/reorder", response_model=List[StopSubcategoryOut])
+async def reorder_subcategories(
+    items: List[SortOrderItem],
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cat_id = None
+    for item in items:
+        sub = await db.get(StopSubcategory, item.id)
+        if sub:
+            sub.sort_order = item.sort_order
+            cat_id = sub.category_id
+    await db.commit()
+    if cat_id:
+        return await list_subcategories(cat_id, db)
+    return []
+
+
 @router.patch("/subcategories/{sub_id}", response_model=StopSubcategoryOut)
 async def update_subcategory(
     sub_id: UUID,
@@ -155,21 +173,3 @@ async def update_subcategory(
         color=sub.color, triggers_maintenance=sub.triggers_maintenance,
         is_active=sub.is_active, sort_order=sub.sort_order,
     )
-
-
-@router.patch("/subcategories/reorder", response_model=List[StopSubcategoryOut])
-async def reorder_subcategories(
-    items: List[SortOrderItem],
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    cat_id = None
-    for item in items:
-        sub = await db.get(StopSubcategory, item.id)
-        if sub:
-            sub.sort_order = item.sort_order
-            cat_id = sub.category_id
-    await db.commit()
-    if cat_id:
-        return await list_subcategories(cat_id, db)
-    return []

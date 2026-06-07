@@ -134,6 +134,8 @@ export interface WorkOrderCreate {
   due_date?: string;
   assigned_to_id?: string;
   executor_id?: string;
+  estimated_hours?: number;
+  notes?: string;
 }
 
 export interface DashboardStats {
@@ -316,6 +318,7 @@ export interface Machine {
   target_availability_pct?: number;
   target_count?:            number;
   target_count_per_shift?:  number;
+  shifts_config?:           Record<string, { start: string; end: string }> | null;
   hourly_rate?:             number;
   hourly_rate_currency?:    HourlyRateCurrency;
   show_production_panel?:   boolean;

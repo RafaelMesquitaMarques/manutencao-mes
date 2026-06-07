@@ -82,3 +82,57 @@ async def create_maintenance_plan(
     await db.commit()
     await db.refresh(plan)
     return _plan_dict(plan, eq.name)
+
+
+class PlanUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    trigger_type: Optional[str] = None
+    interval_days: Optional[int] = None
+    interval_hours: Optional[float] = None
+    next_execution_at: Optional[datetime] = None
+    active: Optional[bool] = None
+
+
+@router.get("/{plan_id}")
+async def get_maintenance_plan(
+    plan_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    plan = await db.get(MaintenancePlan, plan_id)
+    if not plan or not plan.active:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    eq = await db.get(Equipment, plan.equipment_id)
+    return _plan_dict(plan, eq.name if eq else None)
+
+
+@router.patch("/{plan_id}")
+async def update_maintenance_plan(
+    plan_id: UUID,
+    data: PlanUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    plan = await db.get(MaintenancePlan, plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    for field, value in data.model_dump(exclude_none=True).items():
+        setattr(plan, field, value)
+    await db.commit()
+    await db.refresh(plan)
+    eq = await db.get(Equipment, plan.equipment_id)
+    return _plan_dict(plan, eq.name if eq else None)
+
+
+@router.delete("/{plan_id}", status_code=204)
+async def delete_maintenance_plan(
+    plan_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    plan = await db.get(MaintenancePlan, plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    plan.active = False
+    await db.commit()

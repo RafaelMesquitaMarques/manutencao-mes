@@ -5,6 +5,7 @@ import { ArrowLeft, Bell, AlertTriangle } from 'lucide-react';
 import { fetchMachines, createAlert } from '../../api/maintenance';
 import type { Machine, AlertProblemType, AlertPriority, AlertShift } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import { useAuthStore } from '../../store/authStore';
 
 const PROBLEM_TYPES: AlertProblemType[] = [
   'mechanical', 'electrical', 'pneumatic', 'sensor',
@@ -24,6 +25,7 @@ export default function NewAlert() {
   const { t }          = useTranslation();
   const navigate       = useNavigate();
   const [params]       = useSearchParams();
+  const user           = useAuthStore((s) => s.user);
 
   const [machines, setMachines]       = useState<Machine[]>([]);
   const [loading, setLoading]         = useState(true);
@@ -35,7 +37,7 @@ export default function NewAlert() {
   const [problemType, setProblemType] = useState<AlertProblemType>('mechanical');
   const [priority, setPriority]       = useState<AlertPriority>('medium');
   const [description, setDescription] = useState('');
-  const [createdBy, setCreatedBy]     = useState('');
+  const [createdBy, setCreatedBy]     = useState(user?.name ?? '');
   const [shift, setShift]             = useState<AlertShift>('morning');
 
   useEffect(() => {

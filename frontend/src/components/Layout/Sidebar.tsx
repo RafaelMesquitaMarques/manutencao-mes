@@ -6,18 +6,26 @@ import {
   Activity, Shield, Briefcase, X, UserCog, type LucideIcon,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
+import type { UserRole } from '../../types';
+
+type NavRole = UserRole | 'all';
 
 interface NavItem {
   to: string;
   icon: LucideIcon;
   key: string;
   disabled?: boolean;
+  roles?: NavRole[];
 }
 
 interface NavGroup {
   label: string;
   items: NavItem[];
+  roles?: NavRole[];
 }
+
+const SUPERVISOR_UP: NavRole[] = ['supervisor', 'maintenance_director', 'plant_manager', 'director', 'admin'];
+const TECH_UP: NavRole[] = ['technician', 'supervisor', 'maintenance_director', 'plant_manager', 'director', 'admin'];
 
 const CORE_GROUPS: NavGroup[] = [
   {
@@ -25,8 +33,8 @@ const CORE_GROUPS: NavGroup[] = [
     items: [
       { to: '/dashboard',   icon: LayoutDashboard, key: 'dashboard' },
       { to: '/work-orders', icon: ClipboardList,   key: 'workOrders' },
-      { to: '/technicians', icon: Users,            key: 'technicians' },
-      { to: '/equipment',   icon: Wrench,           key: 'equipment' },
+      { to: '/technicians', icon: Users,            key: 'technicians', roles: SUPERVISOR_UP },
+      { to: '/equipment',   icon: Wrench,           key: 'equipment',   roles: TECH_UP },
       { to: '/my-work',     icon: Briefcase,        key: 'myWork' },
     ],
   },
@@ -34,9 +42,9 @@ const CORE_GROUPS: NavGroup[] = [
     label: 'Maintenance',
     items: [
       { to: '/alerts',                  icon: Bell,     key: 'alerts' },
-      { to: '/tickets',                 icon: Ticket,   key: 'tickets' },
-      { to: '/maintenance/dashboard',   icon: Activity, key: 'maintenanceDashboard' },
-      { to: '/maintenance/supervisor',  icon: Shield,   key: 'supervisorView' },
+      { to: '/tickets',                 icon: Ticket,   key: 'tickets',              roles: TECH_UP },
+      { to: '/maintenance/dashboard',   icon: Activity, key: 'maintenanceDashboard', roles: TECH_UP },
+      { to: '/maintenance/supervisor',  icon: Shield,   key: 'supervisorView',       roles: SUPERVISOR_UP },
     ],
   },
   {
@@ -48,14 +56,14 @@ const CORE_GROUPS: NavGroup[] = [
   {
     label: 'Planning',
     items: [
-      { to: '/schedule',    icon: CalendarDays,  key: 'schedule' },
-      { to: '/pm-calendar', icon: CalendarCheck, key: 'pmCalendar' },
+      { to: '/schedule',    icon: CalendarDays,  key: 'schedule',   roles: TECH_UP },
+      { to: '/pm-calendar', icon: CalendarCheck, key: 'pmCalendar', roles: TECH_UP },
     ],
   },
   {
     label: 'Analytics',
     items: [
-      { to: '/kpis', icon: BarChart3, key: 'kpis' },
+      { to: '/kpis', icon: BarChart3, key: 'kpis', roles: SUPERVISOR_UP },
     ],
   },
 ];
@@ -66,12 +74,17 @@ interface SidebarProps {
 
 const Sidebar = ({ onClose }: SidebarProps) => {
   const { t } = useTranslation();
-  const isAdmin = useAuthStore((s) => s.isAdmin());
+  const { user, isAdmin } = useAuthStore();
+  const role = (user?.role ?? 'operator') as UserRole;
+
+  const canView = (roles?: NavRole[]): boolean => {
+    if (!roles || roles.length === 0) return true;
+    return roles.includes(role as NavRole);
+  };
 
   const settingsItems: NavItem[] = [
-    { to: '/settings/machines',        icon: Factory,  key: 'machinesSetup' },
-    { to: '/settings/stop-categories', icon: Settings, key: 'stopCategories' },
-    ...(isAdmin ? [{ to: '/settings/users', icon: UserCog, key: 'userManagement' }] : []),
+    { to: '/settings/stop-categories', icon: Settings, key: 'stopCategories', roles: TECH_UP },
+    ...(isAdmin() ? [{ to: '/settings/users', icon: UserCog, key: 'userManagement' }] : []),
   ];
 
   const navGroups: NavGroup[] = [
@@ -110,7 +123,7 @@ const Sidebar = ({ onClose }: SidebarProps) => {
               {group.label}
             </p>
             <div className="space-y-0.5">
-              {group.items.map(({ to, icon: Icon, key, disabled }) =>
+              {group.items.filter((item) => canView(item.roles)).map(({ to, icon: Icon, key, disabled }) =>
                 disabled ? (
                   <div
                     key={to}

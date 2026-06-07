@@ -17,6 +17,9 @@ export const createUser = async (payload: {
   password: string;
   language?: string;
   role?: string;
+  job_title?: string;
+  phone?: string;
+  must_change_password?: boolean;
 }): Promise<User> => {
   const { data } = await api.post<User>('/api/users/', payload);
   return data;
@@ -41,6 +44,11 @@ export const setUserPermissions = async (
   permissions: Array<{ resource: string; action: string; granted: boolean; plant_id?: string }>,
 ): Promise<void> => {
   await api.put(`/api/users/${userId}/permissions`, { permissions });
+};
+
+export const fetchUserPlants = async (userId: string): Promise<Array<{ plant_id: string; role: string }>> => {
+  const { data } = await api.get(`/api/users/${userId}/plants`);
+  return data;
 };
 
 export const assignUserToPlant = async (

@@ -127,7 +127,7 @@ class TicketService:
             "low":      WorkOrderPriority.low,
         }
         pval = ticket.priority.value if hasattr(ticket.priority, "value") else str(ticket.priority)
-        tval = ticket.problem_type.value if hasattr(ticket.problem_type, "value") else str(ticket.problem_type)
+        tval = ticket.problem_type.value if ticket.problem_type else "Maintenance"
 
         wo = WorkOrder(
             wo_number=wo_number,
@@ -145,7 +145,7 @@ class TicketService:
         await self.db.flush()
 
         ticket.work_order_id = wo.id
-        ticket.status = TicketStatus.assigned
+        ticket.status = TicketStatus.in_progress
 
         await self.db.commit()
         await self.db.refresh(ticket)

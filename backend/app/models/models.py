@@ -331,8 +331,10 @@ class WorkOrder(Base):
 
     downtime_hours   = Column(Float)
     repair_hours     = Column(Float)
+    estimated_hours  = Column(Float)
     downtime_minutes = Column(Integer)
     total_cost       = Column(Float)
+    notes            = Column(Text)
     completion_ratio = Column(Float, default=0)
 
     # Execution details
@@ -641,6 +643,7 @@ class Machine(Base):
     hourly_rate              = Column(Float, nullable=True)
     hourly_rate_currency     = Column(SAEnum(HourlyRateCurrency, native_enum=False), default=HourlyRateCurrency.CAD)
     target_count_per_shift   = Column(Integer, nullable=True)
+    shifts_config            = Column(JSON, nullable=True)
     created_at               = Column(DateTime(timezone=True), server_default=func.now())
 
     alerts             = relationship("MaintenanceAlert", back_populates="machine")

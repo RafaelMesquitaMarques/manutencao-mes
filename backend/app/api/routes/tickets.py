@@ -192,14 +192,16 @@ async def generate_work_order(
     svc = TicketService(db)
     try:
         ticket, wo = await svc.generate_work_order(ticket_id, current_user.id)
+        ticket_out = await _enrich(ticket, db)
+        wo_out = WorkOrderOut.model_validate(wo)
+        equip = await db.get(Equipment, wo.equipment_id)
+        if equip:
+            wo_out.equipment_name = equip.name
+        return {"ticket": ticket_out, "work_order": wo_out}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    ticket_out = await _enrich(ticket, db)
-    wo_out = WorkOrderOut.model_validate(wo)
-    equip = await db.get(Equipment, wo.equipment_id)
-    if equip:
-        wo_out.equipment_name = equip.name
-    return {"ticket": ticket_out, "work_order": wo_out}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{ticket_id}/work-order", response_model=WorkOrderOut)

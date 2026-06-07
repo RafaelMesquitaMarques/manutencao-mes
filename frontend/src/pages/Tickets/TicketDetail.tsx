@@ -10,6 +10,7 @@ import {
 } from '../../api/maintenance';
 import type { MaintenanceTicket, TicketComment, TicketStatus, PartUsed } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import { useAuthStore } from '../../store/authStore';
 
 type Tab = 'details' | 'comments' | 'parts' | 'workorder';
 
@@ -41,6 +42,7 @@ export default function TicketDetail() {
   const { t }    = useTranslation();
   const { id }   = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const user     = useAuthStore((s) => s.user);
 
   const [ticket, setTicket]     = useState<MaintenanceTicket | null>(null);
   const [loading, setLoading]   = useState(true);
@@ -57,7 +59,7 @@ export default function TicketDetail() {
 
   // Comment state
   const [commentText, setCommentText]     = useState('');
-  const [commentAuthor, setCommentAuthor] = useState('');
+  const [commentAuthor, setCommentAuthor] = useState(user?.name ?? '');
   const [postingComment, setPostingComment] = useState(false);
 
   // Parts state

@@ -51,7 +51,9 @@ async def create_user(
         password_hash=hash_password(data.password),
         language=data.language,
         role=data.role,
-        must_change_password=True,
+        job_title=data.job_title,
+        phone=data.phone,
+        must_change_password=data.must_change_password,
     )
     db.add(user)
     await db.commit()
@@ -130,6 +132,19 @@ async def set_user_permissions(
     return {"message": "Permissions updated"}
 
 
+@router.get("/{user_id}/plants")
+async def get_user_plants(
+    user_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    result = await db.execute(
+        select(UserPlant).where(UserPlant.user_id == user_id)
+    )
+    links = result.scalars().all()
+    return [{"plant_id": str(lnk.plant_id), "role": lnk.role} for lnk in links]
+
+
 @router.post("/{user_id}/plants/{plant_id}")
 async def assign_plant(
     user_id: UUID,
@@ -138,6 +153,14 @@ async def assign_plant(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_admin),
 ):
+    existing = await db.execute(
+        select(UserPlant).where(
+            UserPlant.user_id == user_id,
+            UserPlant.plant_id == plant_id,
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="User already assigned to this plant")
     link = UserPlant(user_id=user_id, plant_id=plant_id, role=role)
     db.add(link)
     await db.commit()

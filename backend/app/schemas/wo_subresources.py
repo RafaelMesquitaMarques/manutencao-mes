@@ -20,6 +20,7 @@ class LaborOut(BaseModel):
     id: UUID
     work_order_id: UUID
     technician_id: UUID
+    technician_name: Optional[str] = None
     date: date
     hours_worked: float
     hourly_rate: Optional[float] = None

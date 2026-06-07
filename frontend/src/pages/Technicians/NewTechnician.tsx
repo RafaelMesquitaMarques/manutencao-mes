@@ -31,6 +31,7 @@ const NewTechnician = () => {
     specialty: '',
     shift: '',
     hourly_rate: '',
+    certifications: '',
   });
 
   useEffect(() => {
@@ -54,6 +55,9 @@ const NewTechnician = () => {
         specialty: form.specialty || undefined,
         shift: form.shift || undefined,
         hourly_rate: form.hourly_rate ? Number(form.hourly_rate) : undefined,
+        certifications: form.certifications
+          ? form.certifications.split(',').map((c) => c.trim()).filter(Boolean)
+          : [],
       });
       navigate('/technicians');
     } catch {
@@ -152,6 +156,19 @@ const NewTechnician = () => {
             value={form.hourly_rate}
             onChange={(e) => setForm({ ...form, hourly_rate: e.target.value })}
           />
+        </div>
+
+        {/* Certifications */}
+        <div>
+          <label className="label">{t('technicians.certifications', 'Certifications')}</label>
+          <input
+            type="text"
+            className="input-field"
+            placeholder="NR-10, NR-12, CREA"
+            value={form.certifications}
+            onChange={(e) => setForm({ ...form, certifications: e.target.value })}
+          />
+          <p className="text-xs text-gray-600 mt-1">Comma-separated</p>
         </div>
 
         {formError && (

@@ -1,36 +1,71 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  UserPlus, Mail, Settings, CheckCircle, XCircle, AlertCircle, X,
+  UserPlus, UserCheck, Mail, Settings, CheckCircle, XCircle,
+  AlertCircle, X, Eye, EyeOff,
 } from 'lucide-react';
-import { fetchUsers, deleteUser } from '../../api/users';
+import { fetchUsers, deleteUser, createUser } from '../../api/users';
 import { inviteUser } from '../../api/auth';
 import type { User, UserRole } from '../../types';
 
 const ROLE_LABELS: Record<string, string> = {
-  operator: 'Operator',
-  technician: 'Technician',
-  supervisor: 'Supervisor',
+  operator:             'Operator',
+  technician:           'Technician',
+  supervisor:           'Supervisor',
   maintenance_director: 'Maint. Director',
-  plant_manager: 'Plant Manager',
-  director: 'Director',
-  admin: 'Admin',
+  plant_manager:        'Plant Manager',
+  director:             'Director',
+  admin:                'Admin',
 };
 
 const ROLE_COLORS: Record<string, string> = {
-  operator: 'text-gray-400 bg-gray-500/15 border-gray-600/30',
-  technician: 'text-blue-400 bg-blue-500/15 border-blue-500/30',
-  supervisor: 'text-purple-400 bg-purple-500/15 border-purple-500/30',
+  operator:             'text-gray-400 bg-gray-500/15 border-gray-600/30',
+  technician:           'text-blue-400 bg-blue-500/15 border-blue-500/30',
+  supervisor:           'text-purple-400 bg-purple-500/15 border-purple-500/30',
   maintenance_director: 'text-amber-400 bg-amber-500/15 border-amber-500/30',
-  plant_manager: 'text-green-400 bg-green-500/15 border-green-500/30',
-  director: 'text-cyan-400 bg-cyan-500/15 border-cyan-500/30',
-  admin: 'text-red-400 bg-red-500/15 border-red-500/30',
+  plant_manager:        'text-green-400 bg-green-500/15 border-green-500/30',
+  director:             'text-cyan-400 bg-cyan-500/15 border-cyan-500/30',
+  admin:                'text-red-400 bg-red-500/15 border-red-500/30',
 };
 
 const ALL_ROLES: UserRole[] = [
   'operator', 'technician', 'supervisor', 'maintenance_director',
   'plant_manager', 'director', 'admin',
 ];
+
+const LANGUAGES = [
+  { code: 'en', label: 'English' },
+  { code: 'fr', label: 'Français' },
+  { code: 'es', label: 'Español' },
+];
+
+// ─── Toast ─────────────────────────────────────────────────────────────────────
+
+interface ToastProps {
+  message: string;
+  onDone: () => void;
+}
+
+function Toast({ message, onDone }: ToastProps) {
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    timerRef.current = setTimeout(onDone, 3000);
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, [onDone]);
+
+  return (
+    <div className="fixed bottom-6 right-6 z-[100] flex items-center gap-2.5 px-4 py-3 bg-green-600 text-white rounded-xl shadow-2xl shadow-green-600/20 animate-slide-in">
+      <CheckCircle size={16} className="flex-shrink-0" />
+      <span className="text-sm font-medium">{message}</span>
+      <button onClick={onDone} className="ml-2 opacity-70 hover:opacity-100 transition-opacity">
+        <X size={14} />
+      </button>
+    </div>
+  );
+}
+
+// ─── Invite Modal ──────────────────────────────────────────────────────────────
 
 interface InviteModalProps {
   onClose: () => void;
@@ -83,7 +118,7 @@ function InviteModal({ onClose, onSuccess }: InviteModalProps) {
               <p className="text-gray-600 text-xs mt-2">
                 They can use this at: <span className="text-gray-400">/accept-invite?token=…</span>
               </p>
-              <div className="mt-5 flex gap-3">
+              <div className="mt-5">
                 <button onClick={() => { onSuccess(); onClose(); }} className="btn-primary py-2 px-4 text-sm">
                   Done
                 </button>
@@ -144,11 +179,243 @@ function InviteModal({ onClose, onSuccess }: InviteModalProps) {
   );
 }
 
+// ─── Create User Modal ─────────────────────────────────────────────────────────
+
+interface CreateUserModalProps {
+  onClose: () => void;
+  onSuccess: (name: string) => void;
+}
+
+function CreateUserModal({ onClose, onSuccess }: CreateUserModalProps) {
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [role, setRole] = useState<UserRole>('technician');
+  const [jobTitle, setJobTitle] = useState('');
+  const [phone, setPhone] = useState('');
+  const [language, setLanguage] = useState('en');
+  const [mustChangePw, setMustChangePw] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const canSubmit = name.trim() && email.trim() && password.length >= 8;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password.length < 8) { setError('Password must be at least 8 characters.'); return; }
+    setError('');
+    setLoading(true);
+    try {
+      await createUser({
+        name: name.trim(),
+        email: email.trim(),
+        password,
+        role,
+        language,
+        job_title: jobTitle.trim() || undefined,
+        phone: phone.trim() || undefined,
+        must_change_password: mustChangePw,
+      });
+      onSuccess(name.trim());
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setError(msg ?? 'Failed to create user.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-[#0d1421] border border-white/[0.08] rounded-2xl w-full max-w-lg shadow-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
+          <h3 className="text-white font-bold">Create User</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-300 transition-colors p-1 rounded">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="p-6 max-h-[80vh] overflow-y-auto">
+          {error && (
+            <div className="mb-5 flex items-start gap-2.5 p-3 bg-red-500/10 border border-red-500/25 rounded-lg">
+              <AlertCircle size={15} className="text-red-400 flex-shrink-0 mt-0.5" />
+              <p className="text-red-400 text-sm">{error}</p>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Row 1: name + email */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label">
+                  Full name <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Jane Smith"
+                  className="input-field"
+                  required
+                  disabled={loading}
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="label">
+                  Email <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="jane@foliot.com"
+                  className="input-field"
+                  required
+                  disabled={loading}
+                />
+              </div>
+            </div>
+
+            {/* Password */}
+            <div>
+              <label className="label">
+                Password <span className="text-red-400">*</span>
+              </label>
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Min. 8 characters"
+                  className="input-field pr-10"
+                  required
+                  disabled={loading}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors"
+                  tabIndex={-1}
+                >
+                  {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
+              </div>
+              {password.length > 0 && password.length < 8 && (
+                <p className="text-red-400 text-xs mt-1">Must be at least 8 characters</p>
+              )}
+            </div>
+
+            {/* Row 2: role + language */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label">Role</label>
+                <select
+                  value={role}
+                  onChange={(e) => setRole(e.target.value as UserRole)}
+                  className="input-field"
+                  disabled={loading}
+                >
+                  {ALL_ROLES.map((r) => (
+                    <option key={r} value={r}>{ROLE_LABELS[r]}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label">Language</label>
+                <select
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value)}
+                  className="input-field"
+                  disabled={loading}
+                >
+                  {LANGUAGES.map((l) => (
+                    <option key={l.code} value={l.code}>{l.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Row 3: job title + phone */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label">Job title <span className="text-gray-600 text-[10px] font-normal">optional</span></label>
+                <input
+                  type="text"
+                  value={jobTitle}
+                  onChange={(e) => setJobTitle(e.target.value)}
+                  placeholder="Maintenance Tech"
+                  className="input-field"
+                  disabled={loading}
+                />
+              </div>
+              <div>
+                <label className="label">Phone <span className="text-gray-600 text-[10px] font-normal">optional</span></label>
+                <input
+                  type="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="+1 (555) 000-0000"
+                  className="input-field"
+                  disabled={loading}
+                />
+              </div>
+            </div>
+
+            {/* Must change password toggle */}
+            <label className="flex items-center gap-3 cursor-pointer select-none py-1">
+              <div
+                onClick={() => setMustChangePw((v) => !v)}
+                className={`relative w-9 h-5 rounded-full transition-colors flex-shrink-0 ${
+                  mustChangePw ? 'bg-blue-600' : 'bg-gray-700'
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                    mustChangePw ? 'translate-x-4' : 'translate-x-0'
+                  }`}
+                />
+              </div>
+              <span className="text-sm text-gray-300">Must change password on first login</span>
+            </label>
+
+            {/* Actions */}
+            <div className="flex gap-3 pt-1 border-t border-white/[0.06]">
+              <button
+                type="submit"
+                disabled={loading || !canSubmit}
+                className="btn-primary py-2 px-5 text-sm"
+              >
+                {loading ? (
+                  <>
+                    <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  'Create User'
+                )}
+              </button>
+              <button type="button" onClick={onClose} className="btn-secondary py-2 px-4 text-sm">
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Page ─────────────────────────────────────────────────────────────────
+
 export default function UsersSetup() {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [showInvite, setShowInvite] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
   const [deactivating, setDeactivating] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -170,10 +437,20 @@ export default function UsersSetup() {
     }
   };
 
+  const handleCreated = (name: string) => {
+    setShowCreate(false);
+    setToast(`${name} created successfully`);
+    load();
+  };
+
   return (
     <div className="min-h-screen bg-[#060c17] text-white p-6 max-w-4xl mx-auto">
+      {toast && <Toast message={toast} onDone={() => setToast(null)} />}
       {showInvite && (
         <InviteModal onClose={() => setShowInvite(false)} onSuccess={load} />
+      )}
+      {showCreate && (
+        <CreateUserModal onClose={() => setShowCreate(false)} onSuccess={handleCreated} />
       )}
 
       <div className="flex items-center justify-between mb-8">
@@ -181,13 +458,22 @@ export default function UsersSetup() {
           <h1 className="text-2xl font-black text-white">User Management</h1>
           <p className="text-sm text-gray-600 mt-1">Manage user accounts and access levels</p>
         </div>
-        <button
-          onClick={() => setShowInvite(true)}
-          className="btn-primary py-2 px-4 text-sm"
-        >
-          <UserPlus size={14} />
-          Invite User
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-1.5 py-2 px-4 rounded-lg text-sm font-medium bg-white/[0.06] text-gray-300 border border-white/[0.10] hover:bg-white/[0.10] hover:text-white transition-all"
+          >
+            <UserCheck size={14} />
+            Create User
+          </button>
+          <button
+            onClick={() => setShowInvite(true)}
+            className="btn-primary py-2 px-4 text-sm"
+          >
+            <UserPlus size={14} />
+            Invite User
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -215,6 +501,11 @@ export default function UsersSetup() {
                   <div className="flex items-center gap-2 mt-0.5">
                     <Mail size={11} className="text-gray-600" />
                     <span className="text-xs text-gray-600 truncate">{u.email}</span>
+                    {u.must_change_password && (
+                      <span className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded-full">
+                        pw change required
+                      </span>
+                    )}
                   </div>
                 </div>
 

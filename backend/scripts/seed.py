@@ -14,7 +14,7 @@ from sqlalchemy import select, func
 from datetime import datetime, timezone, timedelta
 
 from app.models.models import (
-    Plant, Equipment, User,
+    Plant, Equipment, User, UserRole,
     Machine, MaintenanceAlert, MaintenanceTicket,
     AlertProblemType, AlertPriority, AlertShift, AlertStatus, TicketStatus,
 )
@@ -62,6 +62,7 @@ async def main() -> None:
                 email="admin@foliot.com",
                 password_hash=hash_password("admin123"),
                 language="en",
+                role=UserRole.admin,
             )
             db.add(admin)
             await db.flush()

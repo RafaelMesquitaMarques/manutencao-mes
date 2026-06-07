@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, Link } from 'react-router-dom';
 import { Menu, Globe, ChevronDown, LogOut, User as UserIcon, Lock, Shield } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
+import { updateMe } from '../../api/auth';
 import type { UserRole } from '../../types';
 import i18n from '../../i18n';
 
@@ -97,7 +98,11 @@ const Header = ({ onMenuToggle }: HeaderProps) => {
               {LANGUAGES.map((lang) => (
                 <button
                   key={lang.code}
-                  onClick={() => { i18n.changeLanguage(lang.code); setLangOpen(false); }}
+                  onClick={() => {
+                    i18n.changeLanguage(lang.code);
+                    updateMe({ language: lang.code }).catch(() => {});
+                    setLangOpen(false);
+                  }}
                   className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-sm transition-colors
                     ${currentLang.code === lang.code
                       ? 'text-blue-400 bg-blue-500/10'

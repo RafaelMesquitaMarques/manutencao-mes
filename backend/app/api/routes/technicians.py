@@ -2,11 +2,21 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from uuid import UUID
+from typing import Optional, List
+from pydantic import BaseModel
 
 from app.db.session import get_db
-from app.models.models import Technician, User
+from app.models.models import Technician, User, TechnicianSpecialty, TechnicianShift
 from app.schemas.technician import TechnicianCreate, TechnicianOut, TechnicianListResponse
 from app.core.security import get_current_user
+
+
+class TechnicianUpdate(BaseModel):
+    employee_number: Optional[str] = None
+    specialty: Optional[TechnicianSpecialty] = None
+    shift: Optional[TechnicianShift] = None
+    hourly_rate: Optional[float] = None
+    certifications: Optional[List[str]] = None
 
 router = APIRouter()
 
@@ -95,3 +105,38 @@ async def create_technician(
     out.full_name = user.name
     out.email = user.email
     return out
+
+
+@router.patch("/{technician_id}", response_model=TechnicianOut)
+async def update_technician(
+    technician_id: UUID,
+    data: TechnicianUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    t = await db.get(Technician, technician_id)
+    if not t or not t.active:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    for field, value in data.model_dump(exclude_none=True).items():
+        setattr(t, field, value)
+    await db.commit()
+    await db.refresh(t)
+    out = TechnicianOut.model_validate(t)
+    user = await db.get(User, t.user_id)
+    if user:
+        out.full_name = user.name
+        out.email = user.email
+    return out
+
+
+@router.delete("/{technician_id}", status_code=204)
+async def delete_technician(
+    technician_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    t = await db.get(Technician, technician_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    t.active = False
+    await db.commit()

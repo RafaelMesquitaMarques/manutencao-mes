@@ -8,13 +8,16 @@ import WorkOrderDetail from './pages/WorkOrders/WorkOrderDetail';
 import NewWorkOrder from './pages/WorkOrders/NewWorkOrder';
 import TechnicianList from './pages/Technicians/TechnicianList';
 import NewTechnician from './pages/Technicians/NewTechnician';
+import TechnicianDetail from './pages/Technicians/TechnicianDetail';
 import KPIDashboard from './pages/KPIs/KPIDashboard';
 import EquipmentList from './pages/Equipment/EquipmentList';
 import EquipmentDetail from './pages/Equipment/EquipmentDetail';
+import NewEquipment from './pages/Equipment/NewEquipment';
 import PMCalendar from './pages/PMCalendar/PMCalendar';
 import LaborScheduler from './pages/Schedule/LaborScheduler';
 import AlertList from './pages/Alerts/AlertList';
 import NewAlert from './pages/Alerts/NewAlert';
+import AlertDetail from './pages/Alerts/AlertDetail';
 import TicketList from './pages/Tickets/TicketList';
 import TicketDetail from './pages/Tickets/TicketDetail';
 import MaintenanceDashboard from './pages/MaintenanceDashboard/MaintenanceDashboard';
@@ -23,10 +26,6 @@ import MachineList from './pages/Machines/MachineList';
 import MachinePage from './pages/Machines/MachinePage';
 import MyWorkPage from './pages/MyWork/MyWorkPage';
 import StopCategoriesPage from './pages/Settings/StopCategories';
-import MachinesSetup from './pages/Settings/MachinesSetup';
-import MachineConfig from './pages/Settings/MachineConfig';
-import MachineOperators from './pages/Settings/MachineOperators';
-import MachineSettings from './pages/Settings/MachineSettings';
 import UsersSetup from './pages/Settings/UsersSetup';
 import UserDetail from './pages/Settings/UserDetail';
 import MyProfile from './pages/Settings/MyProfile';
@@ -58,24 +57,26 @@ const App = () => (
         <Route path="work-orders/:id"       element={<WorkOrderDetail />} />
         <Route path="technicians"           element={<TechnicianList />} />
         <Route path="technicians/new"       element={<NewTechnician />} />
+        <Route path="technicians/:id"       element={<TechnicianDetail />} />
         <Route path="kpis"                  element={<KPIDashboard />} />
         <Route path="equipment"             element={<EquipmentList />} />
+        <Route path="equipment/new"         element={<NewEquipment />} />
         <Route path="equipment/:id"         element={<EquipmentDetail />} />
         <Route path="pm-calendar"           element={<PMCalendar />} />
         <Route path="schedule"              element={<LaborScheduler />} />
         <Route path="alerts"               element={<AlertList />} />
         <Route path="alerts/new"            element={<NewAlert />} />
+        <Route path="alerts/:id"            element={<AlertDetail />} />
         <Route path="tickets"              element={<TicketList />} />
         <Route path="tickets/:id"          element={<TicketDetail />} />
         <Route path="maintenance/dashboard"  element={<MaintenanceDashboard />} />
         <Route path="maintenance/supervisor" element={<SupervisorDashboard />} />
         <Route path="machines"              element={<MachineList />} />
         <Route path="my-work"               element={<MyWorkPage />} />
-        <Route path="settings/machines"                       element={<MachinesSetup />} />
-        <Route path="settings/machines/:id"                   element={<MachineSettings />} />
-        <Route path="settings/machines/:id/config"            element={<MachineConfig />} />
-        <Route path="settings/machines/:id/operators"         element={<MachineOperators />} />
-        <Route path="settings/stop-categories"                element={<StopCategoriesPage />} />
+        <Route path="settings/machines"           element={<Navigate to="/equipment" replace />} />
+        <Route path="settings/machines/:id"       element={<Navigate to="/equipment" replace />} />
+        <Route path="settings/machines/:id/*"     element={<Navigate to="/equipment" replace />} />
+        <Route path="settings/stop-categories"    element={<StopCategoriesPage />} />
         <Route path="settings/users"                          element={<UsersSetup />} />
         <Route path="settings/users/:id"                      element={<UserDetail />} />
         <Route path="settings/profile"                        element={<MyProfile />} />

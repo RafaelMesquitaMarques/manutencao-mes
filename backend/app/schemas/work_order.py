@@ -22,6 +22,8 @@ class WorkOrderCreate(BaseModel):
     component: Optional[str] = None
     project_number: Optional[str] = None
     cost_center: Optional[str] = None
+    estimated_hours: Optional[float] = None
+    notes: Optional[str] = None
 
 
 class WorkOrderUpdate(BaseModel):
@@ -95,6 +97,8 @@ class WorkOrderOut(BaseModel):
     counter_close: Optional[float] = None
     project_number: Optional[str] = None
     cost_center: Optional[str] = None
+    estimated_hours: Optional[float] = None
+    notes: Optional[str] = None
     from_iot: bool = False
     ticket_id: Optional[UUID] = None
     ticket_number: Optional[str] = None

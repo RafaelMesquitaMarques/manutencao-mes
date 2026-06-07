@@ -217,7 +217,9 @@ export default function AlertList() {
                     className={`table-row ${PRIORITY_ROW[alert.priority] ?? ''} ${alert.is_overdue ? 'outline outline-1 outline-amber-500/20' : ''}`}
                   >
                     <td className="table-cell">
-                      <span className="font-mono text-amber-400 text-xs">{alert.alert_number}</span>
+                      <Link to={`/alerts/${alert.id}`} className="font-mono text-amber-400 text-xs hover:text-amber-300 hover:underline underline-offset-2">
+                        {alert.alert_number}
+                      </Link>
                     </td>
                     <td className="table-cell font-medium text-gray-200">
                       {alert.machine_name ?? '—'}

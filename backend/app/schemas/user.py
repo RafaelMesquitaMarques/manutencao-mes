@@ -25,6 +25,9 @@ class UserCreate(BaseModel):
     password: str
     language: str = "en"
     role: UserRole = UserRole.operator
+    job_title: Optional[str] = None
+    phone: Optional[str] = None
+    must_change_password: bool = True
 
 
 class UserMeUpdate(BaseModel):

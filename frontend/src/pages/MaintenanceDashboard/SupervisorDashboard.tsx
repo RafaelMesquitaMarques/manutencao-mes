@@ -302,7 +302,11 @@ export default function SupervisorDashboard() {
     });
   };
 
-  useEffect(load, []);
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, 60_000);
+    return () => clearInterval(timer);
+  }, []);
 
   return (
     <div className="p-6 space-y-5 animate-fade-in">

@@ -4,6 +4,7 @@ from uuid import UUID
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
@@ -13,7 +14,7 @@ from app.models.models import (
     User, MachineStatus, AlertPriority,
     MachineStop, MachineOperator, StopCategory, StopSubcategory,
     RejectCategory, RejectSubcategory, RejectLog,
-    AlertShift, JobOrder, JobOrderSource,
+    AlertShift, JobOrder, JobOrderSource, MachineProductionLog,
 )
 from app.schemas.maintenance import (
     MachineOut, MachineListResponse, MachinePageData, TicketForMachine,
@@ -22,7 +23,7 @@ from app.schemas.maintenance import (
     MachineRejectUpdate, MachineStopCreate, MachineStopClose,
     MachineStopOut, StopCategoryMini, StopSubcategoryMini,
     MachineOperatorOut, MachineOperatorCreate, MachineOperatorUpdate as OperatorPatch,
-    MESDataExtended,
+    MESDataExtended, MachineCreate, MachinePatch,
     StopCategoryOut, StopCategoryCreate, StopCategoryUpdate,
     StopSubcategoryOut, StopSubcategoryCreate, StopSubcategoryUpdate,
     RejectCategoryOut, RejectCategoryCreate, RejectCategoryUpdate,
@@ -83,7 +84,7 @@ def _machine_to_page_data(machine: Machine, open_tickets: list) -> MachinePageDa
     )
 
 
-# ── List machines (auth required) ─────────────────────────────────────────────
+# ── List / Create machines ────────────────────────────────────────────────────
 
 @router.get("/", response_model=MachineListResponse)
 async def list_machines(
@@ -93,6 +94,49 @@ async def list_machines(
     r = await db.execute(select(Machine).order_by(Machine.name))
     items = r.scalars().all()
     return MachineListResponse(total=len(items), items=items)
+
+
+@router.post("/", response_model=MachineOut, status_code=201)
+async def create_machine(
+    data: MachineCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    machine = Machine(**data.model_dump(exclude_none=True))
+    db.add(machine)
+    await db.commit()
+    await db.refresh(machine)
+    return machine
+
+
+@router.patch("/{machine_id}", response_model=MachineOut)
+async def update_machine(
+    machine_id: UUID,
+    data: MachinePatch,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    machine = await db.get(Machine, machine_id)
+    if not machine:
+        raise HTTPException(404, "Machine not found")
+    for k, v in data.model_dump(exclude_none=True).items():
+        setattr(machine, k, v)
+    await db.commit()
+    await db.refresh(machine)
+    return machine
+
+
+@router.delete("/{machine_id}", status_code=204)
+async def delete_machine(
+    machine_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    machine = await db.get(Machine, machine_id)
+    if not machine:
+        raise HTTPException(404, "Machine not found")
+    machine.is_active = False
+    await db.commit()
 
 
 # ── Machine page (no auth — kiosk mode) ───────────────────────────────────────
@@ -260,6 +304,49 @@ async def today_rejects(ref: str, db: AsyncSession = Depends(get_db)):
         cat_id = str(l.reject_category_id) if l.reject_category_id else "uncategorized"
         by_cat[cat_id] = by_cat.get(cat_id, 0) + l.quantity
     return {"total": total, "by_category": by_cat, "logs": [{"id": str(l.id), "quantity": l.quantity, "category_id": str(l.reject_category_id) if l.reject_category_id else None} for l in logs]}
+
+
+# ── Production counter ────────────────────────────────────────────────────────
+
+class ProductionUpdate(BaseModel):
+    delta: int = 1
+
+
+@router.post("/{ref}/production")
+async def add_production(
+    ref: str,
+    data: ProductionUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Increment production count for the current shift."""
+    machine = await _get_machine(ref, db)
+    shift_str = machine.current_shift.value if machine.current_shift and hasattr(machine.current_shift, "value") else "morning"
+    try:
+        shift_enum = AlertShift(shift_str)
+    except ValueError:
+        shift_enum = AlertShift.morning
+
+    today = date.today()
+    r = await db.execute(
+        select(MachineProductionLog).where(
+            MachineProductionLog.machine_id == machine.id,
+            MachineProductionLog.date == today,
+            MachineProductionLog.shift == shift_enum,
+        )
+    )
+    log = r.scalar_one_or_none()
+    if not log:
+        log = MachineProductionLog(
+            machine_id=machine.id,
+            date=today,
+            shift=shift_enum,
+            actual_count=0,
+        )
+        db.add(log)
+    log.actual_count = max(0, (log.actual_count or 0) + data.delta)
+    await db.commit()
+    await db.refresh(log)
+    return {"status": "ok", "production_count": log.actual_count}
 
 
 # ── Machine stops ─────────────────────────────────────────────────────────────
@@ -609,6 +696,20 @@ async def create_machine_stop_category(
                            subcategories=[])
 
 
+@router.patch("/{ref}/stop-categories/reorder")
+async def reorder_machine_stop_categories(
+    ref: str, items: List[SortOrderItem],
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    for item in items:
+        cat = await db.get(StopCategory, item.id)
+        if cat:
+            cat.sort_order = item.sort_order
+    await db.commit()
+    return {"status": "ok"}
+
+
 @router.patch("/{ref}/stop-categories/{cat_id}", response_model=StopCategoryOut)
 async def update_machine_stop_category(
     ref: str, cat_id: UUID, data: StopCategoryUpdate,
@@ -649,20 +750,6 @@ async def delete_machine_stop_category(
         raise HTTPException(404, "Category not found")
     await db.delete(cat)
     await db.commit()
-
-
-@router.patch("/{ref}/stop-categories/reorder")
-async def reorder_machine_stop_categories(
-    ref: str, items: List[SortOrderItem],
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    for item in items:
-        cat = await db.get(StopCategory, item.id)
-        if cat:
-            cat.sort_order = item.sort_order
-    await db.commit()
-    return {"status": "ok"}
 
 
 @router.post("/{ref}/stop-categories/{cat_id}/subcategories", response_model=StopSubcategoryOut, status_code=201)
@@ -770,6 +857,20 @@ async def create_machine_reject_category(
                              subcategories=[])
 
 
+@router.patch("/{ref}/reject-categories/reorder")
+async def reorder_machine_reject_categories(
+    ref: str, items: List[SortOrderItem],
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    for item in items:
+        cat = await db.get(RejectCategory, item.id)
+        if cat:
+            cat.sort_order = item.sort_order
+    await db.commit()
+    return {"status": "ok"}
+
+
 @router.patch("/{ref}/reject-categories/{cat_id}", response_model=RejectCategoryOut)
 async def update_machine_reject_category(
     ref: str, cat_id: UUID, data: RejectCategoryUpdate,
@@ -809,20 +910,6 @@ async def delete_machine_reject_category(
         raise HTTPException(404, "Reject category not found")
     await db.delete(cat)
     await db.commit()
-
-
-@router.patch("/{ref}/reject-categories/reorder")
-async def reorder_machine_reject_categories(
-    ref: str, items: List[SortOrderItem],
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    for item in items:
-        cat = await db.get(RejectCategory, item.id)
-        if cat:
-            cat.sort_order = item.sort_order
-    await db.commit()
-    return {"status": "ok"}
 
 
 @router.post("/{ref}/reject-categories/{cat_id}/subcategories", response_model=RejectSubcategoryOut, status_code=201)

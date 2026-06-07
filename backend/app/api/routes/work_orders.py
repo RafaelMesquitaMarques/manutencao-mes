@@ -73,9 +73,11 @@ async def list_work_orders(
     plant_id: Optional[UUID] = None,
     equipment_id: Optional[UUID] = None,
     status: Optional[WorkOrderStatus] = None,
+    status_not: Optional[str] = None,
     type: Optional[WorkOrderType] = None,
     priority: Optional[WorkOrderPriority] = None,
     assigned_to_id: Optional[UUID] = None,
+    executor_id: Optional[UUID] = None,
     from_iot: Optional[bool] = None,
     search: Optional[str] = None,
     skip: int = Query(0, ge=0),
@@ -89,12 +91,18 @@ async def list_work_orders(
         query = query.where(WorkOrder.equipment_id == equipment_id)
     if status:
         query = query.where(WorkOrder.status == status)
+    if status_not:
+        excluded = [s.strip() for s in status_not.split(",") if s.strip()]
+        if excluded:
+            query = query.where(WorkOrder.status.not_in(excluded))
     if type:
         query = query.where(WorkOrder.type == type)
     if priority:
         query = query.where(WorkOrder.priority == priority)
     if assigned_to_id:
         query = query.where(WorkOrder.assigned_to_id == assigned_to_id)
+    if executor_id:
+        query = query.where(WorkOrder.executor_id == executor_id)
     if from_iot is not None:
         query = query.where(WorkOrder.from_iot == from_iot)
     if search:
@@ -260,7 +268,7 @@ async def update_work_order(
         await _sync_ticket_from_wo(wo, db)
         await db.commit()
 
-    return wo
+    return await _enrich_wo(wo, db)
 
 
 @router.patch("/{work_order_id}/assign", response_model=WorkOrderOut)
@@ -320,7 +328,7 @@ async def start_work_order(
     wo.assigned_to_id = current_user.id
     await db.commit()
     await db.refresh(wo)
-    return wo
+    return await _enrich_wo(wo, db)
 
 
 @router.post("/{work_order_id}/complete", response_model=WorkOrderOut)
@@ -351,7 +359,7 @@ async def complete_work_order(
 
     await db.commit()
     await db.refresh(wo)
-    return wo
+    return await _enrich_wo(wo, db)
 
 
 # ─── Labor sub-resource ───────────────────────────────────────────────────────
@@ -396,7 +404,16 @@ async def list_labor(
     result = await db.execute(
         select(LaborRecord).where(LaborRecord.work_order_id == work_order_id)
     )
-    items = result.scalars().all()
+    records = result.scalars().all()
+    items = []
+    for rec in records:
+        out = LaborOut.model_validate(rec)
+        tech = await db.get(Technician, rec.technician_id)
+        if tech:
+            user = await db.get(User, tech.user_id)
+            if user:
+                out.technician_name = user.name
+        items.append(out)
     return LaborListResponse(total=len(items), items=items)
 
 

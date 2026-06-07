@@ -95,6 +95,8 @@ const NewWorkOrder = () => {
         description: form.description.trim() || undefined,
         due_date: form.due_date || undefined,
         assigned_to_id: form.assigned_to_id || undefined,
+        estimated_hours: form.estimated_hours ? Number(form.estimated_hours) : undefined,
+        notes: form.notes.trim() || undefined,
       });
       navigate(`/work-orders/${wo.id}`);
     } catch {

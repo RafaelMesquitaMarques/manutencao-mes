@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, User, Shield, Building2, Activity, CheckCircle, AlertCircle, type LucideIcon } from 'lucide-react';
-import { fetchUser, updateUser, fetchUserPermissions, setUserPermissions } from '../../api/users';
+import { ArrowLeft, User, Shield, Building2, Activity, CheckCircle, AlertCircle, Plus, Trash2, type LucideIcon } from 'lucide-react';
+import { fetchUser, updateUser, fetchUserPermissions, setUserPermissions, fetchUserPlants, assignUserToPlant, removeUserFromPlant } from '../../api/users';
+import api from '../../api/axios';
 import type { User as UserType, UserPermission, UserRole } from '../../types';
 
 type Tab = 'profile' | 'permissions' | 'plants' | 'activity';
@@ -221,6 +222,118 @@ function PermissionsTab({ userId }: { userId: string }) {
   );
 }
 
+// ─── Plant Access Tab ─────────────────────────────────────────────────────────
+
+interface PlantItem { id: string; code: string; name: string }
+
+function PlantAccessTab({ userId }: { userId: string }) {
+  const [allPlants, setAllPlants]           = useState<PlantItem[]>([]);
+  const [assignedIds, setAssignedIds]       = useState<Set<string>>(new Set());
+  const [loading, setLoading]               = useState(true);
+  const [actionId, setActionId]             = useState<string | null>(null);
+  const [selectedRole, setSelectedRole]     = useState<UserRole>('technician');
+  const [error, setError]                   = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const [plants, userPlants] = await Promise.all([
+      api.get<PlantItem[]>('/api/plants/').then((r) => r.data).catch(() => []),
+      fetchUserPlants(userId).catch(() => []),
+    ]);
+    setAllPlants(plants);
+    setAssignedIds(new Set(userPlants.map((p) => p.plant_id)));
+    setLoading(false);
+  }, [userId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleAssign = async (plantId: string) => {
+    setActionId(plantId);
+    setError('');
+    try {
+      await assignUserToPlant(userId, plantId, selectedRole);
+      setAssignedIds((prev) => new Set([...prev, plantId]));
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setError(detail ?? 'Failed to assign plant.');
+    } finally {
+      setActionId(null);
+    }
+  };
+
+  const handleRemove = async (plantId: string) => {
+    setActionId(plantId);
+    setError('');
+    try {
+      await removeUserFromPlant(userId, plantId);
+      setAssignedIds((prev) => { const s = new Set(prev); s.delete(plantId); return s; });
+    } catch {
+      setError('Failed to remove plant.');
+    } finally {
+      setActionId(null);
+    }
+  };
+
+  if (loading) return <div className="py-8 flex justify-center"><div className="w-6 h-6 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" /></div>;
+
+  return (
+    <div className="space-y-4">
+      {error && (
+        <div className="flex items-center gap-2.5 p-3 bg-red-500/10 border border-red-500/25 rounded-lg">
+          <AlertCircle size={14} className="text-red-400 flex-shrink-0" />
+          <p className="text-red-400 text-sm">{error}</p>
+        </div>
+      )}
+      <div className="flex items-center gap-3 mb-2">
+        <label className="text-xs text-gray-500">Role when assigning:</label>
+        <select
+          value={selectedRole}
+          onChange={(e) => setSelectedRole(e.target.value as UserRole)}
+          className="input-field py-1 text-xs w-auto"
+        >
+          {(['operator','technician','supervisor','maintenance_director','plant_manager'] as UserRole[]).map((r) => (
+            <option key={r} value={r}>{r}</option>
+          ))}
+        </select>
+      </div>
+      {allPlants.length === 0 ? (
+        <p className="text-gray-600 text-sm text-center py-4">No plants configured.</p>
+      ) : (
+        <div className="space-y-2">
+          {allPlants.map((plant) => {
+            const assigned = assignedIds.has(plant.id);
+            return (
+              <div key={plant.id} className="flex items-center justify-between p-3 rounded-lg border border-white/[0.06] bg-white/[0.02]">
+                <div>
+                  <p className="text-gray-200 text-sm font-medium">{plant.name}</p>
+                  <p className="text-gray-600 text-xs font-mono">{plant.code}</p>
+                </div>
+                {assigned ? (
+                  <button
+                    onClick={() => handleRemove(plant.id)}
+                    disabled={actionId === plant.id}
+                    className="btn-danger py-1 px-3 text-xs gap-1"
+                  >
+                    <Trash2 size={12} /> Remove
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => handleAssign(plant.id)}
+                    disabled={actionId === plant.id}
+                    className="btn-secondary py-1 px-3 text-xs gap-1"
+                  >
+                    <Plus size={12} /> Assign
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function UserDetail() {
@@ -285,11 +398,7 @@ export default function UserDetail() {
       <div className="bg-[#0d1421] rounded-2xl border border-white/[0.06] p-6">
         {tab === 'profile' && <ProfileTab user={user} />}
         {tab === 'permissions' && <PermissionsTab userId={user.id} />}
-        {tab === 'plants' && (
-          <div className="text-gray-500 text-sm py-4 text-center">
-            Plant assignment management coming soon.
-          </div>
-        )}
+        {tab === 'plants' && <PlantAccessTab userId={user.id} />}
         {tab === 'activity' && (
           <div className="space-y-2">
             {user.last_login_at ? (

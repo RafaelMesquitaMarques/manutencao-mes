@@ -62,10 +62,14 @@ async def _run_migrations() -> None:
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS show_job_number BOOLEAN NOT NULL DEFAULT TRUE",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS custom_color VARCHAR(20)",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS display_name VARCHAR(200)",
+        # Phase: work order extra fields
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS estimated_hours FLOAT",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS notes TEXT",
         # Phase: MES panel + per-machine categories
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS hourly_rate FLOAT",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS hourly_rate_currency VARCHAR(10) NOT NULL DEFAULT 'CAD'",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS target_count_per_shift INT",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS shifts_config JSONB",
         "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS machine_id UUID REFERENCES machines(id) ON DELETE CASCADE",
         "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS name_en VARCHAR(200)",
         "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS name_fr VARCHAR(200)",
@@ -167,16 +171,28 @@ async def _run_migrations() -> None:
         CREATE TABLE IF NOT EXISTS reject_logs (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             machine_id UUID NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
-            category_id UUID REFERENCES reject_categories(id) ON DELETE SET NULL,
-            subcategory_id UUID REFERENCES reject_subcategories(id) ON DELETE SET NULL,
+            reject_category_id UUID REFERENCES reject_categories(id) ON DELETE SET NULL,
+            reject_subcategory_id UUID REFERENCES reject_subcategories(id) ON DELETE SET NULL,
             quantity INT NOT NULL DEFAULT 1,
             operator_id UUID REFERENCES machine_operators(id) ON DELETE SET NULL,
+            date DATE NOT NULL DEFAULT CURRENT_DATE,
             shift VARCHAR(20),
             job_number VARCHAR(100),
-            comment TEXT,
-            logged_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            comments TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ
         )
         """,
+        # Rename reject_logs columns if they exist with old names
+        """DO $$ BEGIN ALTER TABLE reject_logs RENAME COLUMN category_id TO reject_category_id;
+           EXCEPTION WHEN others THEN NULL; END $$""",
+        """DO $$ BEGIN ALTER TABLE reject_logs RENAME COLUMN subcategory_id TO reject_subcategory_id;
+           EXCEPTION WHEN others THEN NULL; END $$""",
+        """DO $$ BEGIN ALTER TABLE reject_logs RENAME COLUMN comment TO comments;
+           EXCEPTION WHEN others THEN NULL; END $$""",
+        "ALTER TABLE reject_logs ADD COLUMN IF NOT EXISTS date DATE NOT NULL DEFAULT CURRENT_DATE",
+        "ALTER TABLE reject_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        "ALTER TABLE reject_logs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ",
         """
         CREATE TABLE IF NOT EXISTS job_orders (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

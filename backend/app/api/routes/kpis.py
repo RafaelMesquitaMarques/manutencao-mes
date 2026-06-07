@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.db.session import get_db
 from app.models.models import (
@@ -19,7 +19,7 @@ async def get_kpi_summary(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    since = datetime.utcnow() - timedelta(days=period_days)
+    since = datetime.now(timezone.utc) - timedelta(days=period_days)
 
     mttr_r = await db.execute(
         select(func.avg(WorkOrder.repair_hours)).where(
@@ -81,7 +81,7 @@ async def get_backlog(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     result = await db.execute(
         select(WorkOrder.id, WorkOrder.opened_at).where(
             WorkOrder.status.in_([WorkOrderStatus.open, WorkOrderStatus.in_progress])
@@ -115,7 +115,7 @@ async def get_mttr_by_equipment(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    since = datetime.utcnow() - timedelta(days=period_days)
+    since = datetime.now(timezone.utc) - timedelta(days=period_days)
     result = await db.execute(
         select(
             Equipment.name,
@@ -153,7 +153,7 @@ async def get_cost_by_type(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    since = datetime.utcnow() - timedelta(days=period_days)
+    since = datetime.now(timezone.utc) - timedelta(days=period_days)
     result = await db.execute(
         select(WOCost.transaction_type, func.sum(WOCost.amount).label("total"))
         .where(WOCost.date >= since.date())
