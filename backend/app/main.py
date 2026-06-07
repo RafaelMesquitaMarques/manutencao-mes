@@ -27,6 +27,18 @@ async def _escalation_loop() -> None:
             print(f"[EscalationService] {exc}")
 
 
+async def _backfill_ticket_alerts() -> None:
+    """Create missing MaintenanceAlert records for tickets that have alert_id = NULL."""
+    from app.services.ticket_service import backfill_missing_alerts
+    try:
+        async with AsyncSessionLocal() as db:
+            count = await backfill_missing_alerts(db)
+            if count:
+                print(f"[Startup] Backfill: created {count} missing alert(s) for existing tickets")
+    except Exception as exc:
+        print(f"[Startup] Backfill failed: {exc}")
+
+
 async def _run_migrations() -> None:
     """Add new columns to existing tables (idempotent via IF NOT EXISTS)."""
     stmts = [
@@ -390,6 +402,7 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await _run_migrations()
+    await _backfill_ticket_alerts()
     task = asyncio.create_task(_escalation_loop())
     yield
     task.cancel()
