@@ -73,16 +73,17 @@ export const completeWorkOrderFull = async (
   payload: {
     root_cause?: string;
     solution_applied?: string;
-    repair_hours?: number;
-    downtime_hours?: number;
   }
 ): Promise<WorkOrder> => {
   const params: Record<string, string> = {};
   if (payload.root_cause) params.root_cause = payload.root_cause;
   if (payload.solution_applied) params.solution_applied = payload.solution_applied;
-  if (payload.repair_hours != null) params.repair_hours = String(payload.repair_hours);
-  if (payload.downtime_hours != null) params.downtime_hours = String(payload.downtime_hours);
   const { data } = await api.post<WorkOrder>(`/api/wo/${id}/complete`, null, { params });
+  return data;
+};
+
+export const resumeWorkOrder = async (id: string): Promise<WorkOrder> => {
+  const { data } = await api.post<WorkOrder>(`/api/wo/${id}/resume`);
   return data;
 };
 

@@ -4,7 +4,7 @@ import {
   Briefcase, Play, CheckCircle2, Clock, AlertTriangle,
   ChevronRight, RefreshCw, PauseCircle,
 } from 'lucide-react';
-import { fetchMyWorkOrders, startWorkOrder, holdWorkOrder, completeWorkOrderFull } from '../../api/workOrders';
+import { fetchMyWorkOrders, startWorkOrder, holdWorkOrder, resumeWorkOrder, completeWorkOrderFull } from '../../api/workOrders';
 import type { WorkOrder, Priority, WorkOrderStatus } from '../../types';
 import Spinner from '../../components/ui/Spinner';
 
@@ -33,16 +33,14 @@ function elapsedStr(startedAt?: string): string {
 interface CompleteForm {
   root_cause: string;
   solution_applied: string;
-  repair_hours: string;
-  downtime_hours: string;
 }
 
-const EMPTY_FORM: CompleteForm = { root_cause: '', solution_applied: '', repair_hours: '', downtime_hours: '' };
+const EMPTY_FORM: CompleteForm = { root_cause: '', solution_applied: '' };
 
 export default function MyWorkPage() {
   const [wos, setWOs]           = useState<WorkOrder[]>([]);
   const [loading, setLoading]   = useState(true);
-  const [actionId, setActionId] = useState<string | null>(null);
+  const [actionId, setActionId]     = useState<string | null>(null);
   const [completeId, setCompleteId] = useState<string | null>(null);
   const [form, setForm]         = useState<CompleteForm>(EMPTY_FORM);
   const [formErr, setFormErr]   = useState('');
@@ -86,6 +84,16 @@ export default function MyWorkPage() {
     }
   };
 
+  const handleResume = async (id: string) => {
+    setActionId(id);
+    try {
+      const updated = await resumeWorkOrder(id);
+      setWOs((prev) => prev.map((w) => (w.id === id ? updated : w)));
+    } finally {
+      setActionId(null);
+    }
+  };
+
   const handleComplete = async () => {
     if (!completeId) return;
     if (!form.root_cause.trim() || !form.solution_applied.trim()) {
@@ -98,8 +106,6 @@ export default function MyWorkPage() {
       await completeWorkOrderFull(completeId, {
         root_cause: form.root_cause,
         solution_applied: form.solution_applied,
-        repair_hours: parseFloat(form.repair_hours) || undefined,
-        downtime_hours: parseFloat(form.downtime_hours) || undefined,
       });
       setWOs((prev) => prev.filter((w) => w.id !== completeId));
       setCompleteId(null);
@@ -141,6 +147,7 @@ export default function MyWorkPage() {
             wos={inProgress}
             onStart={handleStart}
             onHold={handleHold}
+            onResume={handleResume}
             onComplete={(id) => { setCompleteId(id); setForm(EMPTY_FORM); setFormErr(''); }}
             actionId={actionId}
             tick={tick}
@@ -150,6 +157,7 @@ export default function MyWorkPage() {
             wos={openWOs}
             onStart={handleStart}
             onHold={handleHold}
+            onResume={handleResume}
             onComplete={(id) => { setCompleteId(id); setForm(EMPTY_FORM); setFormErr(''); }}
             actionId={actionId}
             tick={tick}
@@ -159,6 +167,7 @@ export default function MyWorkPage() {
             wos={onHold}
             onStart={handleStart}
             onHold={handleHold}
+            onResume={handleResume}
             onComplete={(id) => { setCompleteId(id); setForm(EMPTY_FORM); setFormErr(''); }}
             actionId={actionId}
             tick={tick}
@@ -188,26 +197,6 @@ export default function MyWorkPage() {
                   value={form.solution_applied}
                   onChange={(e) => setForm((f) => ({ ...f, solution_applied: e.target.value }))}
                 />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="label">Repair Hours</label>
-                  <input
-                    type="number" min="0" step="0.25" className="input-field w-full"
-                    placeholder="e.g. 2.5"
-                    value={form.repair_hours}
-                    onChange={(e) => setForm((f) => ({ ...f, repair_hours: e.target.value }))}
-                  />
-                </div>
-                <div>
-                  <label className="label">Downtime Hours</label>
-                  <input
-                    type="number" min="0" step="0.25" className="input-field w-full"
-                    placeholder="e.g. 1.0"
-                    value={form.downtime_hours}
-                    onChange={(e) => setForm((f) => ({ ...f, downtime_hours: e.target.value }))}
-                  />
-                </div>
               </div>
             </div>
             {formErr && <p className="text-red-400 text-sm">{formErr}</p>}
@@ -239,18 +228,19 @@ interface WOGroupProps {
   wos: WorkOrder[];
   onStart: (id: string) => void;
   onHold: (id: string) => void;
+  onResume: (id: string) => void;
   onComplete: (id: string) => void;
   actionId: string | null;
   tick: number;
 }
 
-function WOGroup({ title, wos, onStart, onHold, onComplete, actionId, tick }: WOGroupProps) {
+function WOGroup({ title, wos, onStart, onHold, onResume, onComplete, actionId, tick }: WOGroupProps) {
   if (wos.length === 0) return null;
   return (
     <section className="space-y-3">
       <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-600 px-1">{title}</h2>
       {wos.map((wo) => (
-        <WOCard key={wo.id} wo={wo} onStart={onStart} onHold={onHold} onComplete={onComplete} actionId={actionId} tick={tick} />
+        <WOCard key={wo.id} wo={wo} onStart={onStart} onHold={onHold} onResume={onResume} onComplete={onComplete} actionId={actionId} tick={tick} />
       ))}
     </section>
   );
@@ -260,12 +250,13 @@ interface WOCardProps {
   wo: WorkOrder;
   onStart: (id: string) => void;
   onHold: (id: string) => void;
+  onResume: (id: string) => void;
   onComplete: (id: string) => void;
   actionId: string | null;
   tick: number;
 }
 
-function WOCard({ wo, onStart, onHold, onComplete, actionId, tick: _tick }: WOCardProps) {
+function WOCard({ wo, onStart, onHold, onResume, onComplete, actionId, tick: _tick }: WOCardProps) {
   const busy = actionId === wo.id;
 
   return (
@@ -344,7 +335,7 @@ function WOCard({ wo, onStart, onHold, onComplete, actionId, tick: _tick }: WOCa
         )}
         {wo.status === 'on_hold' && (
           <button
-            onClick={() => onStart(wo.id)}
+            onClick={() => onResume(wo.id)}
             disabled={busy}
             className="btn-success flex-1 py-3 text-sm font-semibold flex items-center justify-center gap-2"
           >

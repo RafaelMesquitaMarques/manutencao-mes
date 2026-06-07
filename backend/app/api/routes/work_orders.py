@@ -370,6 +370,28 @@ async def start_work_order(
     return await _enrich_wo(wo, db)
 
 
+@router.post("/{work_order_id}/resume", response_model=WorkOrderOut)
+async def resume_work_order(
+    work_order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(WorkOrder).where(WorkOrder.id == work_order_id))
+    wo = result.scalar_one_or_none()
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    if wo.status != WorkOrderStatus.on_hold:
+        raise HTTPException(status_code=400, detail="Work order is not on hold")
+
+    wo.status = WorkOrderStatus.in_progress
+    wo.assigned_to_id = current_user.id
+    await db.commit()
+    await db.refresh(wo)
+    await _sync_ticket_from_wo(wo, db)
+    await db.commit()
+    return await _enrich_wo(wo, db)
+
+
 @router.post("/{work_order_id}/complete", response_model=WorkOrderOut)
 async def complete_work_order(
     work_order_id: UUID,
@@ -394,6 +416,16 @@ async def complete_work_order(
     if repair_hours:
         wo.repair_hours = repair_hours
         wo.total_minutes = int(repair_hours * 60)
+    else:
+        # Auto-calculate from labor records
+        labor_result = await db.execute(
+            select(LaborRecord).where(LaborRecord.work_order_id == work_order_id)
+        )
+        labor_records = labor_result.scalars().all()
+        computed_minutes = int(sum(r.hours_worked for r in labor_records) * 60)
+        if computed_minutes > 0:
+            wo.total_minutes = computed_minutes
+            wo.repair_hours = computed_minutes / 60.0
     if downtime_hours:
         wo.downtime_hours = downtime_hours
         wo.actual_downtime_minutes = int(downtime_hours * 60)
