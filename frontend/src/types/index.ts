@@ -121,6 +121,8 @@ export interface WorkOrder {
   project_number?: string;
   cost_center?: string;
   from_iot: boolean;
+  total_minutes?: number;
+  actual_downtime_minutes?: number;
   created_at?: string;
   updated_at?: string;
 }
@@ -182,12 +184,15 @@ export interface LaborRecord {
   id: string;
   work_order_id: string;
   technician_id: string;
+  technician_name?: string;
   date: string;
   hours_worked: number;
   hourly_rate?: number;
   labor_cost?: number;
   activity?: string;
   notes?: string;
+  started_at?: string;
+  stopped_at?: string;
   created_at: string;
 }
 

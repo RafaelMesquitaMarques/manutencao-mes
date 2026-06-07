@@ -40,6 +40,27 @@ async def _sync_ticket_from_wo(wo: WorkOrder, db: AsyncSession) -> None:
     # open/assigned → keep ticket as assigned
 
 
+async def _close_open_labor_records(work_order_id: UUID, db: AsyncSession) -> None:
+    """Stamp stopped_at on any in-flight labor records and compute hours_worked."""
+    now = datetime.now(timezone.utc)
+    result = await db.execute(
+        select(LaborRecord).where(
+            LaborRecord.work_order_id == work_order_id,
+            LaborRecord.stopped_at.is_(None),
+        )
+    )
+    for rec in result.scalars().all():
+        rec.stopped_at = now
+        if rec.started_at:
+            elapsed = (now - rec.started_at).total_seconds() / 3600
+            rec.hours_worked = round(elapsed, 4)
+            tech = await db.get(Technician, rec.technician_id)
+            rate = rec.hourly_rate or (tech.hourly_rate if tech else None)
+            if rate:
+                rec.hourly_rate = rate
+                rec.labor_cost = round(rate * rec.hours_worked, 2)
+
+
 async def _enrich_wo(wo: WorkOrder, db: AsyncSession) -> WorkOrderOut:
     out = WorkOrderOut.model_validate(wo)
     equip = await db.get(Equipment, wo.equipment_id)
@@ -50,6 +71,10 @@ async def _enrich_wo(wo: WorkOrder, db: AsyncSession) -> WorkOrderOut:
         ticket = await db.get(MaintenanceTicket, wo.ticket_id)
         if ticket:
             out.ticket_number = ticket.ticket_number
+    if wo.assigned_to_id:
+        user = await db.get(User, wo.assigned_to_id)
+        if user:
+            out.assigned_to_name = user.name
     if wo.executor_id:
         tech = await db.get(Technician, wo.executor_id)
         if tech:
@@ -292,10 +317,13 @@ async def update_work_order(
     update_data = data.model_dump(exclude_none=True)
 
     if "status" in update_data:
-        if update_data["status"] == WorkOrderStatus.in_progress and not wo.started_at:
+        new_status = update_data["status"]
+        if new_status == WorkOrderStatus.in_progress and not wo.started_at:
             update_data["started_at"] = datetime.now(timezone.utc)
-        elif update_data["status"] == WorkOrderStatus.completed and not wo.completed_at:
+        elif new_status == WorkOrderStatus.completed and not wo.completed_at:
             update_data["completed_at"] = datetime.now(timezone.utc)
+        elif new_status == WorkOrderStatus.on_hold:
+            await _close_open_labor_records(work_order_id, db)
 
     for field, value in update_data.items():
         setattr(wo, field, value)
@@ -362,9 +390,25 @@ async def start_work_order(
     if wo.status != WorkOrderStatus.open:
         raise HTTPException(status_code=400, detail="Work order is not open")
 
+    now = datetime.now(timezone.utc)
     wo.status = WorkOrderStatus.in_progress
-    wo.started_at = datetime.now(timezone.utc)
+    wo.started_at = now
     wo.assigned_to_id = current_user.id
+
+    # Create an open labor record for automatic time tracking
+    r = await db.execute(select(Technician).where(Technician.user_id == current_user.id))
+    tech = r.scalar_one_or_none()
+    if tech:
+        db.add(LaborRecord(
+            work_order_id=work_order_id,
+            technician_id=tech.id,
+            date=now.date(),
+            hours_worked=0.0,
+            hourly_rate=tech.hourly_rate,
+            started_at=now,
+            activity="Repair",
+        ))
+
     await db.commit()
     await db.refresh(wo)
     return await _enrich_wo(wo, db)
@@ -383,8 +427,24 @@ async def resume_work_order(
     if wo.status != WorkOrderStatus.on_hold:
         raise HTTPException(status_code=400, detail="Work order is not on hold")
 
+    now = datetime.now(timezone.utc)
     wo.status = WorkOrderStatus.in_progress
     wo.assigned_to_id = current_user.id
+
+    # Create a new open labor record for this resumed segment
+    r = await db.execute(select(Technician).where(Technician.user_id == current_user.id))
+    tech = r.scalar_one_or_none()
+    if tech:
+        db.add(LaborRecord(
+            work_order_id=work_order_id,
+            technician_id=tech.id,
+            date=now.date(),
+            hours_worked=0.0,
+            hourly_rate=tech.hourly_rate,
+            started_at=now,
+            activity="Resumed repair",
+        ))
+
     await db.commit()
     await db.refresh(wo)
     await _sync_ticket_from_wo(wo, db)
@@ -407,17 +467,25 @@ async def complete_work_order(
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
 
+    now = datetime.now(timezone.utc)
     wo.status = WorkOrderStatus.completed
-    wo.completed_at = datetime.now(timezone.utc)
+    wo.completed_at = now
     if root_cause:
         wo.root_cause = root_cause
     if solution_applied:
         wo.solution_applied = solution_applied
+    if downtime_hours:
+        wo.downtime_hours = downtime_hours
+        wo.actual_downtime_minutes = int(downtime_hours * 60)
+
+    # Close any in-flight labor records
+    await _close_open_labor_records(work_order_id, db)
+
     if repair_hours:
         wo.repair_hours = repair_hours
         wo.total_minutes = int(repair_hours * 60)
     else:
-        # Auto-calculate from labor records
+        # Sum all labor records
         labor_result = await db.execute(
             select(LaborRecord).where(LaborRecord.work_order_id == work_order_id)
         )
@@ -425,10 +493,13 @@ async def complete_work_order(
         computed_minutes = int(sum(r.hours_worked for r in labor_records) * 60)
         if computed_minutes > 0:
             wo.total_minutes = computed_minutes
-            wo.repair_hours = computed_minutes / 60.0
-    if downtime_hours:
-        wo.downtime_hours = downtime_hours
-        wo.actual_downtime_minutes = int(downtime_hours * 60)
+            wo.repair_hours = round(computed_minutes / 60.0, 4)
+        elif wo.started_at:
+            # Fallback: elapsed wall-clock time
+            elapsed_minutes = int((now - wo.started_at).total_seconds() / 60)
+            if elapsed_minutes > 0:
+                wo.total_minutes = elapsed_minutes
+                wo.repair_hours = round(elapsed_minutes / 60.0, 4)
 
     await db.commit()
     await db.refresh(wo)

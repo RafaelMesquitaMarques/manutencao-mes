@@ -27,6 +27,8 @@ class LaborOut(BaseModel):
     labor_cost: Optional[float] = None
     activity: Optional[str] = None
     notes: Optional[str] = None
+    started_at: Optional[datetime] = None
+    stopped_at: Optional[datetime] = None
     created_at: datetime
 
 

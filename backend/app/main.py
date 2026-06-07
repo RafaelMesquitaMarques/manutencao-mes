@@ -316,6 +316,9 @@ async def _run_migrations() -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """,
+        # Phase: labor record time tracking
+        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
+        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS stopped_at TIMESTAMPTZ",
         # Phase: cost audit log table
         """
         CREATE TABLE IF NOT EXISTS cost_audit_log (

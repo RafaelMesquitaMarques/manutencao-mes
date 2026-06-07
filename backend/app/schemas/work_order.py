@@ -108,6 +108,8 @@ class WorkOrderOut(BaseModel):
     scheduled_date: Optional[date] = None
     scheduled_start_time: Optional[str] = None
     scheduled_end_time: Optional[str] = None
+    total_minutes: Optional[int] = None
+    actual_downtime_minutes: Optional[int] = None
 
 
 class WorkOrderListResponse(BaseModel):

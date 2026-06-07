@@ -28,6 +28,7 @@ import {
   fetchWorkOrder,
   startWorkOrder,
   completeWorkOrder,
+  resumeWorkOrder,
   updateWorkOrderStatus,
   fetchWOLabor,
   addWOLabor,
@@ -82,6 +83,25 @@ const fmtDate = (d?: string | null) => {
 const fmtMoney = (n?: number | null, currency = 'CAD') => {
   if (n == null) return '—';
   return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(n);
+};
+
+const fmtDuration = (wo: WorkOrder): string | null => {
+  if (wo.total_minutes != null && wo.total_minutes > 0) {
+    const h = Math.floor(wo.total_minutes / 60);
+    const m = wo.total_minutes % 60;
+    return `${h}h ${m}m`;
+  }
+  if (wo.repair_hours != null && wo.repair_hours > 0) {
+    const mins = Math.round(wo.repair_hours * 60);
+    return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+  }
+  if (wo.started_at && wo.completed_at) {
+    const mins = Math.floor(
+      (new Date(wo.completed_at).getTime() - new Date(wo.started_at).getTime()) / 60000
+    );
+    if (mins > 0) return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+  }
+  return null;
 };
 
 const FieldRow = ({ label, value }: { label: string; value: React.ReactNode }) => (
@@ -169,11 +189,18 @@ const OverviewTab = ({ wo }: { wo: WorkOrder }) => {
 
         <SectionCard icon={Clock} title={t('workOrders.hoursWorked')}>
           <div className="space-y-3">
-            {wo.repair_hours != null && (
-              <FieldRow label={t('workOrders.repairHours')} value={
-                <span className="font-mono text-blue-400 font-semibold">{wo.repair_hours} {t('common.hours')}</span>
-              } />
-            )}
+            {(() => {
+              const dur = fmtDuration(wo);
+              return dur ? (
+                <FieldRow label={t('workOrders.repairHours')} value={
+                  <span className="font-mono text-blue-400 font-semibold text-base">{dur}</span>
+                } />
+              ) : (
+                <p className="text-gray-600 text-sm italic">
+                  {wo.status === 'in_progress' ? 'In progress…' : 'No time recorded'}
+                </p>
+              );
+            })()}
             {wo.total_cost != null && (
               <FieldRow label={t('workOrders.totalCost')} value={
                 <span className="font-mono text-green-400 font-semibold">{fmtMoney(wo.total_cost)}</span>
@@ -361,8 +388,9 @@ const LaborTab = ({
             <table className="w-full">
               <thead>
                 <tr className="border-b border-white/[0.04]">
-                  <th className="table-header-cell">{t('common.date')}</th>
                   <th className="table-header-cell">{t('workOrders.technicianLabel')}</th>
+                  <th className="table-header-cell">Start</th>
+                  <th className="table-header-cell">End</th>
                   <th className="table-header-cell text-right">{t('workOrders.hoursWorked')}</th>
                   <th className="table-header-cell text-right">{t('workOrders.rateLabel')}</th>
                   <th className="table-header-cell text-right">{t('workOrders.totalCost')}</th>
@@ -370,20 +398,35 @@ const LaborTab = ({
                 </tr>
               </thead>
               <tbody>
-                {records.map((r) => (
-                  <tr key={r.id} className="table-row">
-                    <td className="table-cell font-mono text-xs text-gray-400">{fmtDate(r.date)}</td>
-                    <td className="table-cell text-gray-200">{r.technician_id.slice(0, 8)}…</td>
-                    <td className="table-cell text-right font-mono text-blue-400">{r.hours_worked}h</td>
-                    <td className="table-cell text-right font-mono text-gray-400 text-xs">
-                      {r.hourly_rate ? `$${r.hourly_rate}/h` : '—'}
-                    </td>
-                    <td className="table-cell text-right font-mono text-green-400">
-                      {r.labor_cost ? fmtMoney(r.labor_cost) : '—'}
-                    </td>
-                    <td className="table-cell text-gray-400 text-xs">{r.activity ?? '—'}</td>
-                  </tr>
-                ))}
+                {records.map((r) => {
+                  const durMins = r.started_at && r.stopped_at
+                    ? Math.round((new Date(r.stopped_at).getTime() - new Date(r.started_at).getTime()) / 60000)
+                    : null;
+                  const durStr = durMins != null
+                    ? `${Math.floor(durMins / 60)}h ${durMins % 60}m`
+                    : r.hours_worked > 0 ? `${r.hours_worked.toFixed(2)}h` : '…';
+                  return (
+                    <tr key={r.id} className="table-row">
+                      <td className="table-cell text-gray-200">
+                        {r.technician_name ?? `${r.technician_id.slice(0, 8)}…`}
+                      </td>
+                      <td className="table-cell font-mono text-xs text-gray-400">
+                        {r.started_at ? fmt(r.started_at) : fmtDate(r.date)}
+                      </td>
+                      <td className="table-cell font-mono text-xs text-gray-400">
+                        {r.stopped_at ? fmt(r.stopped_at) : <span className="text-amber-400">In progress</span>}
+                      </td>
+                      <td className="table-cell text-right font-mono text-blue-400">{durStr}</td>
+                      <td className="table-cell text-right font-mono text-gray-400 text-xs">
+                        {r.hourly_rate ? `$${r.hourly_rate}/h` : '—'}
+                      </td>
+                      <td className="table-cell text-right font-mono text-green-400">
+                        {r.labor_cost ? fmtMoney(r.labor_cost) : '—'}
+                      </td>
+                      <td className="table-cell text-gray-400 text-xs">{r.activity ?? '—'}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -839,7 +882,6 @@ const WorkOrderDetail = () => {
   const [error, setError] = useState<string | null>(null);
 
   const [showCompleteModal, setShowCompleteModal] = useState(false);
-  const [actualHours, setActualHours] = useState('');
 
   const load = async () => {
     if (!id) return;
@@ -867,16 +909,20 @@ const WorkOrderDetail = () => {
 
   useEffect(() => { load(); }, [id]);
 
-  const handleAction = async (status: string, hours?: number) => {
+  const handleAction = async (status: string) => {
     if (!wo) return;
     setIsActioning(true);
     setActionError(null);
     try {
       let updated: WorkOrder;
       if (status === 'in_progress') {
-        updated = await startWorkOrder(wo.id);
+        updated = wo.status === 'on_hold' ? await resumeWorkOrder(wo.id) : await startWorkOrder(wo.id);
       } else if (status === 'completed') {
-        updated = await completeWorkOrder(wo.id, hours);
+        updated = await completeWorkOrder(wo.id);
+        await load(); // refresh labor records
+        setIsActioning(false);
+        setShowCompleteModal(false);
+        return;
       } else {
         updated = await updateWorkOrderStatus(wo.id, status);
       }
@@ -886,7 +932,6 @@ const WorkOrderDetail = () => {
     } finally {
       setIsActioning(false);
       setShowCompleteModal(false);
-      setActualHours('');
     }
   };
 
@@ -997,10 +1042,12 @@ const WorkOrderDetail = () => {
             <span>{wo.equipment_name}</span>
           </div>
         )}
-        {wo.assigned_to_id && (
+        {(wo.assigned_to_name || wo.executor_name || wo.assigned_to_id) && (
           <div className="flex items-center gap-2 text-gray-400">
             <User size={13} className="text-gray-600" />
-            <span>{t('workOrders.assignedTo')}: {wo.assigned_to_id.slice(0, 8)}…</span>
+            <span>
+              {t('workOrders.assignedTo')}: {wo.assigned_to_name ?? wo.executor_name ?? `${wo.assigned_to_id!.slice(0, 8)}…`}
+            </span>
           </div>
         )}
         {wo.cost_center && (
@@ -1081,29 +1128,19 @@ const WorkOrderDetail = () => {
               </div>
               <h3 className="text-white font-semibold">{t('workOrders.confirmComplete')}</h3>
             </div>
-            <div className="mb-5">
-              <label className="label">{t('workOrders.enterHours')}</label>
-              <input
-                type="number"
-                min="0"
-                step="0.5"
-                value={actualHours}
-                onChange={(e) => setActualHours(e.target.value)}
-                placeholder={t('workOrders.hoursPlaceholder')}
-                className="input-field"
-                autoFocus
-              />
-            </div>
+            <p className="text-gray-400 text-sm mb-5">
+              Work time will be calculated automatically from labor records.
+            </p>
             <div className="flex gap-2 justify-end">
               <button
-                onClick={() => { setShowCompleteModal(false); setActualHours(''); }}
+                onClick={() => setShowCompleteModal(false)}
                 className="btn-secondary"
                 disabled={isActioning}
               >
                 {t('common.cancel')}
               </button>
               <button
-                onClick={() => handleAction('completed', actualHours ? Number(actualHours) : undefined)}
+                onClick={() => handleAction('completed')}
                 className="btn-success"
                 disabled={isActioning}
               >
