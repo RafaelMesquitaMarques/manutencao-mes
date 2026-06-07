@@ -16,7 +16,6 @@ export interface StockItemFilters {
   part_class?: string;
   warehouse?: string;
   low_stock_only?: boolean;
-  supplier_id?: string;
   skip?: number;
   limit?: number;
 }
@@ -30,7 +29,6 @@ export async function fetchStockItems(
   if (filters.part_class)    params.set('part_class', filters.part_class);
   if (filters.warehouse)     params.set('warehouse', filters.warehouse);
   if (filters.low_stock_only) params.set('low_stock_only', 'true');
-  if (filters.supplier_id)   params.set('supplier_id', filters.supplier_id);
   if (filters.skip != null)  params.set('skip', String(filters.skip));
   if (filters.limit != null) params.set('limit', String(filters.limit));
 

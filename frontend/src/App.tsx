@@ -21,7 +21,14 @@ import AlertDetail from './pages/Alerts/AlertDetail';
 import TicketList from './pages/Tickets/TicketList';
 import TicketDetail from './pages/Tickets/TicketDetail';
 import NewTicket from './pages/Tickets/NewTicket';
-import InventoryList from './pages/Inventory/InventoryList';
+import InventoryList    from './pages/Inventory/InventoryList';
+import InventoryDetail  from './pages/Inventory/InventoryDetail';
+import NewInventoryItem from './pages/Inventory/NewInventoryItem';
+import SupplierList     from './pages/Suppliers/SupplierList';
+import SupplierDetail   from './pages/Suppliers/SupplierDetail';
+import NewSupplier      from './pages/Suppliers/NewSupplier';
+import PurchaseOrderList from './pages/PurchaseOrders/PurchaseOrderList';
+import NewPurchaseOrder  from './pages/PurchaseOrders/NewPurchaseOrder';
 import MaintenanceDashboard from './pages/MaintenanceDashboard/MaintenanceDashboard';
 import SupervisorDashboard from './pages/MaintenanceDashboard/SupervisorDashboard';
 import MachineList from './pages/Machines/MachineList';
@@ -82,6 +89,13 @@ const App = () => (
         <Route path="tickets/new"          element={<NewTicket />} />
         <Route path="tickets/:id"          element={<TicketDetail />} />
         <Route path="inventory"            element={<InventoryList />} />
+        <Route path="inventory/new"        element={<NewInventoryItem />} />
+        <Route path="inventory/:id"        element={<InventoryDetail />} />
+        <Route path="suppliers"            element={<SupplierList />} />
+        <Route path="suppliers/new"        element={<NewSupplier />} />
+        <Route path="suppliers/:id"        element={<SupplierDetail />} />
+        <Route path="supplier-orders"      element={<PurchaseOrderList />} />
+        <Route path="supplier-orders/new"  element={<NewPurchaseOrder />} />
         <Route path="maintenance/dashboard"  element={<MaintenanceDashboard />} />
         <Route path="maintenance/supervisor" element={<SupervisorDashboard />} />
         <Route path="machines"              element={<MachineList />} />

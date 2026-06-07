@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import {
   LayoutDashboard, ClipboardList, Wrench, Users, BarChart3,
   Settings, Factory, CalendarDays, CalendarCheck, Bell, Ticket,
-  Activity, Shield, Briefcase, X, UserCog, Package, type LucideIcon,
+  Activity, Shield, Briefcase, X, UserCog, Package, Building2, ShoppingCart, type LucideIcon,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import type { UserRole } from '../../types';
@@ -56,7 +56,9 @@ const CORE_GROUPS: NavGroup[] = [
   {
     label: 'Inventory',
     items: [
-      { to: '/inventory', icon: Package, key: 'inventory', roles: TECH_UP },
+      { to: '/inventory',        icon: Package,       key: 'inventory',       roles: TECH_UP },
+      { to: '/suppliers',        icon: Building2,     key: 'suppliers',       roles: SUPERVISOR_UP },
+      { to: '/supplier-orders',  icon: ShoppingCart,  key: 'purchaseOrders',  roles: SUPERVISOR_UP },
     ],
   },
   {

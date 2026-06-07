@@ -11,6 +11,7 @@ from app.api.routes import (
     auth, plants, equipment, work_orders,
     maintenance_plans, inventory, alerts, iot, users, kpis, technicians,
     tickets, maintenance_dashboard, machines, stop_categories, job_orders,
+    suppliers as suppliers_module,
 )
 
 
@@ -214,6 +215,70 @@ async def _run_migrations() -> None:
         "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS total_minutes INTEGER",
         "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS estimated_downtime_minutes INTEGER",
         "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS actual_downtime_minutes INTEGER",
+        # Phase: inventory module — suppliers table + stock_items new columns
+        """
+        CREATE TABLE IF NOT EXISTS suppliers (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            code VARCHAR(50),
+            name VARCHAR(300) NOT NULL,
+            phone VARCHAR(100),
+            email VARCHAR(200),
+            fax VARCHAR(100),
+            website VARCHAR(300),
+            currency VARCHAR(10) DEFAULT 'CAD',
+            notes TEXT,
+            is_active BOOLEAN DEFAULT TRUE
+        )
+        """,
+        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS category VARCHAR(200)",
+        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS part_class VARCHAR(200)",
+        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS warehouse VARCHAR(100)",
+        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS supplier_id UUID REFERENCES suppliers(id) ON DELETE SET NULL",
+        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS interal_product_id VARCHAR(50)",
+        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS notes TEXT",
+        # Phase: supplier management module
+        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS contact_name VARCHAR(200)",
+        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS address TEXT",
+        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS city VARCHAR(100)",
+        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS country VARCHAR(100)",
+        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS category VARCHAR(100)",
+        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS payment_terms VARCHAR(100)",
+        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS lead_time_days INTEGER",
+        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS rating INTEGER",
+        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ",
+        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS supplier_code VARCHAR(100)",
+        """
+        CREATE TABLE IF NOT EXISTS purchase_orders (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            order_number VARCHAR(50) NOT NULL UNIQUE,
+            supplier_id UUID NOT NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
+            status VARCHAR(20) NOT NULL DEFAULT 'draft',
+            order_date DATE NOT NULL,
+            expected_date DATE,
+            received_date DATE,
+            total_amount FLOAT,
+            currency VARCHAR(10) DEFAULT 'CAD',
+            notes TEXT,
+            created_by_id UUID REFERENCES users(id) ON DELETE SET NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS purchase_order_items (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            order_id UUID NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+            stock_item_id UUID REFERENCES stock_items(id) ON DELETE SET NULL,
+            description VARCHAR(500) NOT NULL,
+            quantity FLOAT NOT NULL,
+            unit_cost FLOAT NOT NULL,
+            total_cost FLOAT NOT NULL,
+            received_quantity FLOAT NOT NULL DEFAULT 0,
+            notes VARCHAR(500),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
         # Phase: inventory movements table
         """
         CREATE TABLE IF NOT EXISTS inventory_movements (
@@ -273,6 +338,21 @@ async def _run_migrations() -> None:
             "UPDATE stop_categories SET is_global = TRUE WHERE machine_id IS NULL AND is_global = FALSE"
         ))
         await _seed_stop_categories(conn)
+        await _seed_suppliers(conn)
+
+
+async def _seed_suppliers(conn) -> None:
+    result = await conn.execute(text("SELECT COUNT(*) FROM suppliers WHERE code LIKE 'SUP-%'"))
+    if result.scalar() > 0:
+        return
+    await conn.execute(text("""
+        INSERT INTO suppliers (id, code, name, contact_name, email, phone, category, currency, payment_terms, lead_time_days, rating, is_active)
+        VALUES
+        (gen_random_uuid(), 'SUP-001', 'MSC Industrial Supply',  'Jean Tremblay',   'jtremblay@msci.com',      '514-555-0101', 'Parts', 'CAD', 'Net 30', 5, 4, TRUE),
+        (gen_random_uuid(), 'SUP-002', 'Grainger Canada',        'Marie Dupont',    'mdupont@grainger.ca',     '450-555-0202', 'Tools', 'CAD', 'Net 30', 3, 5, TRUE),
+        (gen_random_uuid(), 'SUP-003', 'Fastenal Canada',        'Robert Martin',   'rmartin@fastenal.ca',     '514-555-0303', 'Parts', 'CAD', 'Net 60', 7, 3, TRUE)
+        ON CONFLICT DO NOTHING
+    """))
 
 
 async def _seed_stop_categories(conn) -> None:
@@ -344,6 +424,8 @@ app.include_router(technicians.router,            prefix="/api/technicians",   t
 app.include_router(machines.router,               prefix="/api/machines",      tags=["Machines"])
 app.include_router(stop_categories.router,        prefix="/api/stop-categories", tags=["Stop Categories"])
 app.include_router(job_orders.router,             prefix="/api/job-orders",      tags=["Job Orders"])
+app.include_router(suppliers_module.supplier_router, prefix="/api/suppliers",       tags=["Suppliers"])
+app.include_router(suppliers_module.po_router,       prefix="/api/supplier-orders", tags=["Purchase Orders"])
 
 
 @app.get("/api/health", tags=["System"])

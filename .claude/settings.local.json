@@ -54,7 +54,19 @@
       "Bash(Select-Object Name)",
       "Bash(timeout 15 docker logs mes_backend --tail=30)",
       "Bash(curl -s -X POST http://localhost/api/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"admin@foliot.com\",\"password\":\"admin123\"}')",
-      "Bash(python -m json.tool)"
+      "Bash(python -m json.tool)",
+      "Bash(Get-ChildItem -Path \"Z:\\\\manutencao-mes\\\\manutencao-mes\\\\frontend\\\\src\" -Recurse -Directory)",
+      "Bash(Select-Object FullName)",
+      "PowerShell($ip = docker inspect mes_frontend --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'; Invoke-WebRequest -Uri \"http://${ip}:3000/\" -UseBasicParsing -TimeoutSec 5 | Select-Object -ExpandProperty StatusCode)",
+      "Bash(xargs grep -l \"supervisor\\\\|supervisor_overview\\\\|pending_ticket\")",
+      "Bash(xargs grep -l \"generate.wo\\\\|generate_wo\\\\|generate_work_order\")",
+      "PowerShell(docker compose *)",
+      "Bash(git commit *)",
+      "Bash(copy *)",
+      "PowerShell(Copy-Item *)",
+      "Bash(curl *)",
+      "PowerShell($login = Invoke-RestMethod -Method Post -Uri \"http://localhost/api/auth/login\" -ContentType \"application/json\" -Body '{\"email\":\"admin@foliot.com\",\"password\":\"admin123\"}'; $token = $login.access_token; $headers = @{Authorization = \"Bearer $token\"}; Write-Host \"=== /items ===\"; Invoke-RestMethod -Uri \"http://localhost/api/inventory/items?limit=3\" -Headers $headers | ConvertTo-Json -Depth 3; Write-Host \"=== /dashboard ===\"; Invoke-RestMethod -Uri \"http://localhost/api/inventory/dashboard\" -Headers $headers | ConvertTo-Json; Write-Host \"=== /suppliers ===\"; Invoke-RestMethod -Uri \"http://localhost/api/inventory/suppliers?limit=3\" -Headers $headers | ConvertTo-Json)",
+      "PowerShell($login = Invoke-RestMethod -Method Post -Uri \"http://localhost/api/auth/login\" -ContentType \"application/json\" -Body '{\"email\":\"admin@foliot.com\",\"password\":\"admin123\"}'; $headers = @{Authorization = \"Bearer $\\($login.access_token\\)\"}; $dash = Invoke-RestMethod -Uri \"http://localhost/api/inventory/dashboard\" -Headers $headers; Write-Host \"total_items: $\\($dash.total_items\\)  low_stock: $\\($dash.low_stock_count\\)  zero_stock: $\\($dash.zero_stock_count\\)  categories: $\\($dash.by_category.Count\\)\"; $cats = Invoke-RestMethod -Uri \"http://localhost/api/inventory/items/categories\" -Headers $headers; Write-Host \"Distinct categories: $\\($cats.categories -join ', '\\)\"; Write-Host \"Warehouses: $\\($cats.warehouses -join ', '\\)\")"
     ]
   }
 }

@@ -1,6 +1,4 @@
 // frontend/src/pages/Inventory/InventoryList.tsx
-import 'ag-grid-community/styles/ag-grid.css';
-import 'ag-grid-community/styles/ag-theme-alpine.css';
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AgGridReact } from 'ag-grid-react';
@@ -17,14 +15,14 @@ import {
   fetchInventoryDashboard,
   type StockItemFilters,
 } from '../../api/inventory';
-import { fetchSupplierList } from '../../api/suppliers';
-import type { StockItem, InventoryDashboard, Supplier } from '../../types';
+import type { StockItem, InventoryDashboard } from '../../types';
 
 // ── Cell renderers ────────────────────────────────────────────────────────────
 
 function QuantityCellRenderer({ data }: ICellRendererParams<StockItem>) {
   if (!data) return null;
   const qty = data.quantity;
+  const min = data.min_quantity;
   const isLow = data.is_low_stock;
   const isZero = qty <= 0;
 
@@ -89,27 +87,24 @@ export default function InventoryList() {
   const [loading, setLoading] = useState(true);
   const [categories, setCategories] = useState<string[]>([]);
   const [warehouses, setWarehouses] = useState<string[]>([]);
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [showFilters, setShowFilters] = useState(false);
 
   const [filters, setFilters] = useState<StockItemFilters>({
     search: '',
     category: '',
     warehouse: '',
-    supplier_id: '',
     low_stock_only: false,
-    limit: 5500,
+    limit: 500,
     skip: 0,
   });
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [res, dash, cats, sups] = await Promise.allSettled([
+      const [res, dash, cats] = await Promise.allSettled([
         fetchStockItems(filters),
         fetchInventoryDashboard(),
         fetchInventoryCategories(),
-        fetchSupplierList({ active_only: true, limit: 200 }),
       ]);
 
       if (res.status === 'fulfilled') {
@@ -122,7 +117,6 @@ export default function InventoryList() {
         setCategories(cats.value.categories);
         setWarehouses(cats.value.warehouses);
       }
-      if (sups.status === 'fulfilled') setSuppliers(sups.value.items);
     } finally {
       setLoading(false);
     }
@@ -133,7 +127,7 @@ export default function InventoryList() {
   const colDefs = useMemo<ColDef<StockItem>[]>(() => [
     {
       field: 'code',
-      headerName: t('inventory.code', 'Part No.'),
+      headerName: t('inventory.code', 'N° Pièce'),
       width: 145,
       pinned: 'left',
       cellClass: 'font-mono text-xs text-indigo-300 font-semibold',
@@ -149,21 +143,21 @@ export default function InventoryList() {
     },
     {
       field: 'category',
-      headerName: t('inventory.category', 'Category'),
+      headerName: t('inventory.category', 'Catégorie'),
       width: 160,
       cellRenderer: CategoryCellRenderer,
       filter: 'agTextColumnFilter',
     },
     {
       field: 'part_class',
-      headerName: t('inventory.partClass', 'Part Class'),
+      headerName: t('inventory.partClass', 'Classe'),
       width: 160,
       cellClass: 'text-xs text-gray-400',
       filter: 'agTextColumnFilter',
     },
     {
       field: 'quantity',
-      headerName: t('inventory.quantity', 'Qty in stock'),
+      headerName: t('inventory.quantity', 'Qté en stock'),
       width: 145,
       cellRenderer: QuantityCellRenderer,
       sort: 'asc',
@@ -171,38 +165,30 @@ export default function InventoryList() {
     },
     {
       field: 'min_quantity',
-      headerName: t('inventory.minQty', 'Min qty'),
+      headerName: t('inventory.minQty', 'Qté min'),
       width: 100,
       cellClass: 'text-xs font-mono text-gray-400',
       valueFormatter: ({ value }) => (value != null ? String(value) : '—'),
     },
     {
       field: 'unit',
-      headerName: t('inventory.unit', 'Unit'),
+      headerName: t('inventory.unit', 'Unité'),
       width: 90,
       cellClass: 'text-xs text-gray-500',
     },
     {
       colId: 'location',
-      headerName: t('inventory.location', 'Location'),
+      headerName: t('inventory.location', 'Emplacement'),
       width: 160,
       cellRenderer: LocationCellRenderer,
     },
     {
       field: 'unit_cost',
-      headerName: t('inventory.cost', 'Unit cost'),
+      headerName: t('inventory.cost', 'Coût unit.'),
       width: 110,
       cellClass: 'text-xs font-mono text-gray-400',
       valueFormatter: ({ value }) =>
         value != null ? `$${Number(value).toFixed(2)}` : '—',
-    },
-    {
-      field: 'supplier_name',
-      headerName: t('inventory.supplier', 'Supplier'),
-      width: 160,
-      cellClass: 'text-xs text-gray-400',
-      valueFormatter: ({ value }) => value ?? '—',
-      filter: 'agTextColumnFilter',
     },
   ], [t]);
 
@@ -218,14 +204,14 @@ export default function InventoryList() {
   const exportCSV = () => gridRef.current?.api.exportDataAsCsv();
 
   const clearFilters = () =>
-    setFilters({ search: '', category: '', warehouse: '', supplier_id: '', low_stock_only: false, limit: 5500, skip: 0 });
+    setFilters({ search: '', category: '', warehouse: '', low_stock_only: false, limit: 500, skip: 0 });
 
   const activeFilterCount = [
-    filters.search, filters.category, filters.warehouse, filters.supplier_id,
+    filters.search, filters.category, filters.warehouse,
   ].filter(Boolean).length + (filters.low_stock_only ? 1 : 0);
 
   return (
-    <div className="flex flex-col bg-gray-950 text-gray-100">
+    <div className="flex flex-col h-full bg-gray-950 text-gray-100">
 
       {/* ── Header ── */}
       <div className="px-6 pt-6 pb-4 border-b border-gray-800">
@@ -236,10 +222,10 @@ export default function InventoryList() {
             </div>
             <div>
               <h1 className="text-xl font-bold text-white tracking-tight">
-                {t('nav.inventory', 'Inventory')}
+                {t('nav.inventory', 'Inventaire')}
               </h1>
               <p className="text-sm text-gray-400 mt-0.5">
-                {t('inventory.subtitle', 'Parts & materials · Saint-Jérôme')}
+                {t('inventory.subtitle', 'Pièces & matériaux · Saint-Jérôme')}
               </p>
             </div>
           </div>
@@ -254,7 +240,7 @@ export default function InventoryList() {
               onClick={() => navigate('/inventory/new')}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors"
             >
-              <Plus size={14} /> {t('inventory.newItem', 'New item')}
+              <Plus size={14} /> {t('inventory.newItem', 'Nouvelle pièce')}
             </button>
           </div>
         </div>
@@ -263,14 +249,14 @@ export default function InventoryList() {
         <div className="grid grid-cols-4 gap-3 mb-5">
           <KpiCard
             icon={<Package size={16} className="text-indigo-400" />}
-            label={t('inventory.totalItems', 'Total items')}
-            value={total.toLocaleString()}
+            label={t('inventory.totalItems', 'Total articles')}
+            value={total.toLocaleString('fr-CA')}
             color="indigo"
           />
           <KpiCard
             icon={<AlertTriangle size={16} className="text-amber-400" />}
-            label={t('inventory.lowStock', 'Low stock')}
-            value={lowStockCount.toLocaleString()}
+            label={t('inventory.lowStock', 'Stock faible')}
+            value={lowStockCount.toLocaleString('fr-CA')}
             color="amber"
             alert={lowStockCount > 0}
             onClick={() => setFilters(f => ({ ...f, low_stock_only: !f.low_stock_only }))}
@@ -278,14 +264,14 @@ export default function InventoryList() {
           />
           <KpiCard
             icon={<TrendingDown size={16} className="text-red-400" />}
-            label={t('inventory.zeroStock', 'Out of stock')}
-            value={dashboard?.zero_stock_count?.toLocaleString() ?? '—'}
+            label={t('inventory.zeroStock', 'Rupture de stock')}
+            value={dashboard?.zero_stock_count?.toLocaleString('fr-CA') ?? '—'}
             color="red"
           />
           <KpiCard
             icon={<Boxes size={16} className="text-emerald-400" />}
-            label={t('inventory.categories', 'Categories')}
-            value={categories.length.toLocaleString()}
+            label={t('inventory.categories', 'Catégories')}
+            value={categories.length.toLocaleString('fr-CA')}
             color="emerald"
           />
         </div>
@@ -296,7 +282,7 @@ export default function InventoryList() {
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
             <input
               className="w-full pl-9 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors"
-              placeholder={t('inventory.searchPlaceholder', 'Search by code, description…')}
+              placeholder={t('inventory.searchPlaceholder', 'Rechercher par code, description…')}
               value={filters.search}
               onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
             />
@@ -311,7 +297,7 @@ export default function InventoryList() {
             }`}
           >
             <Filter size={14} />
-            {t('common.filter', 'Filters')}
+            {t('common.filters', 'Filtres')}
             {activeFilterCount > 0 && (
               <span className="ml-1 bg-indigo-500 text-white text-xs px-1.5 py-0.5 rounded-full">
                 {activeFilterCount}
@@ -325,7 +311,7 @@ export default function InventoryList() {
               onClick={clearFilters}
               className="flex items-center gap-1 px-2 py-2 text-xs text-gray-400 hover:text-gray-200 transition-colors"
             >
-              <X size={13} /> Clear
+              <X size={13} /> Effacer
             </button>
           )}
 
@@ -337,7 +323,7 @@ export default function InventoryList() {
           </button>
 
           <span className="ml-auto text-xs text-gray-500">
-            {total.toLocaleString()} {t('inventory.results', 'results')}
+            {total.toLocaleString('fr-CA')} {t('inventory.results', 'résultats')}
           </span>
         </div>
 
@@ -345,28 +331,17 @@ export default function InventoryList() {
         {showFilters && (
           <div className="mt-3 flex items-center gap-3 pt-3 border-t border-gray-800">
             <FilterSelect
-              label={t('inventory.category', 'Category')}
+              label={t('inventory.category', 'Catégorie')}
               value={filters.category ?? ''}
               options={categories}
               onChange={v => setFilters(f => ({ ...f, category: v }))}
             />
             <FilterSelect
-              label={t('inventory.warehouse', 'Warehouse')}
+              label={t('inventory.warehouse', 'Entrepôt')}
               value={filters.warehouse ?? ''}
               options={warehouses}
               onChange={v => setFilters(f => ({ ...f, warehouse: v }))}
             />
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500 whitespace-nowrap">{t('inventory.supplier', 'Supplier')}:</span>
-              <select
-                value={filters.supplier_id ?? ''}
-                onChange={e => setFilters(f => ({ ...f, supplier_id: e.target.value }))}
-                className="bg-gray-800 border border-gray-700 text-sm text-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:border-indigo-500"
-              >
-                <option value="">All</option>
-                {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-            </div>
             <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
               <input
                 type="checkbox"
@@ -374,20 +349,19 @@ export default function InventoryList() {
                 onChange={e => setFilters(f => ({ ...f, low_stock_only: e.target.checked }))}
                 className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-indigo-500 focus:ring-indigo-500"
               />
-              {t('inventory.lowStockOnly', 'Low stock only')}
+              {t('inventory.lowStockOnly', 'Stock faible uniquement')}
             </label>
           </div>
         )}
       </div>
 
       {/* ── AG Grid ── */}
-      <div className="ag-theme-alpine-dark w-full">
+      <div className="flex-1 ag-theme-alpine-dark overflow-hidden" style={{ minHeight: 0 }}>
         <AgGridReact<StockItem>
           ref={gridRef}
           rowData={items}
           columnDefs={colDefs}
           defaultColDef={defaultColDef}
-          domLayout="autoHeight"
           animateRows
           rowSelection="single"
           onRowClicked={onRowClicked}
@@ -395,8 +369,8 @@ export default function InventoryList() {
           rowClassRules={{
             'ag-row-low-stock': (params) => params.data?.is_low_stock ?? false,
           }}
-          overlayLoadingTemplate='<span class="text-gray-400 text-sm">Loading…</span>'
-          overlayNoRowsTemplate='<span class="text-gray-500 text-sm">No items found</span>'
+          overlayLoadingTemplate='<span class="text-gray-400 text-sm">Chargement…</span>'
+          overlayNoRowsTemplate='<span class="text-gray-500 text-sm">Aucune pièce trouvée</span>'
           loading={loading}
           suppressCellFocus
           getRowId={({ data }) => data.id}
@@ -460,7 +434,7 @@ function FilterSelect({
         onChange={e => onChange(e.target.value)}
         className="bg-gray-800 border border-gray-700 text-sm text-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:border-indigo-500"
       >
-        <option value="">All</option>
+        <option value="">Tous</option>
         {options.map(o => (
           <option key={o} value={o}>{o}</option>
         ))}

@@ -14,7 +14,7 @@ from app.db.session import get_db
 from app.core.security import get_current_user
 from app.models.models import StockItem, Supplier, User
 
-router = APIRouter()
+router = APIRouter(prefix="/api/inventory", tags=["inventory"])
 
 
 # ─── SUPPLIERS ────────────────────────────────────────────────────────────────
@@ -121,10 +121,9 @@ async def list_stock_items(
     category: Optional[str] = None,
     part_class: Optional[str] = None,
     warehouse: Optional[str] = None,
-    supplier_id: Optional[uuid.UUID] = None,
     low_stock_only: bool = False,
     skip: int = 0,
-    limit: int = Query(default=50, le=6000),
+    limit: int = Query(default=50, le=500),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -147,31 +146,23 @@ async def list_stock_items(
         filters.append(StockItem.warehouse.ilike(f"%{warehouse}%"))
     if low_stock_only:
         filters.append(
-            or_(
-                StockItem.quantity <= 0,
-                and_(
-                    StockItem.min_quantity.isnot(None),
-                    StockItem.quantity <= StockItem.min_quantity,
-                ),
+            and_(
+                StockItem.min_quantity.isnot(None),
+                StockItem.quantity <= StockItem.min_quantity,
             )
         )
-    if supplier_id:
-        filters.append(StockItem.supplier_id == supplier_id)
     if filters:
         q = q.where(and_(*filters))
 
     total_q = select(func.count()).select_from(q.subquery())
     total = (await db.execute(total_q)).scalar_one()
 
-    # Low stock count: quantity <= 0 OR (min set AND quantity <= min)
+    # Low stock count for dashboard badge
     low_q = select(func.count()).select_from(
         select(StockItem).where(
-            or_(
-                StockItem.quantity <= 0,
-                and_(
-                    StockItem.min_quantity.isnot(None),
-                    StockItem.quantity <= StockItem.min_quantity,
-                ),
+            and_(
+                StockItem.min_quantity.isnot(None),
+                StockItem.quantity <= StockItem.min_quantity,
             )
         ).subquery()
     )
@@ -183,17 +174,10 @@ async def list_stock_items(
         )
     ).scalars().all()
 
-    # Batch-load supplier names
-    sup_ids = [i.supplier_id for i in items if i.supplier_id]
-    sup_map: dict = {}
-    if sup_ids:
-        sup_rows = (await db.execute(select(Supplier).where(Supplier.id.in_(sup_ids)))).scalars().all()
-        sup_map = {str(s.id): s.name for s in sup_rows}
-
     return {
         "total": total,
         "low_stock_count": low_count,
-        "items": [_item_out(i, sup_map.get(str(i.supplier_id)) if i.supplier_id else None) for i in items],
+        "items": [_item_out(i) for i in items],
     }
 
 
@@ -227,11 +211,7 @@ async def get_stock_item(
     item = await db.get(StockItem, item_id)
     if not item:
         raise HTTPException(404, "Item not found")
-    supplier_name = None
-    if item.supplier_id:
-        sup = await db.get(Supplier, item.supplier_id)
-        supplier_name = sup.name if sup else None
-    return _item_out(item, supplier_name)
+    return _item_out(item)
 
 
 @router.post("/items", status_code=201)
@@ -278,7 +258,7 @@ async def update_stock_item(
     updatable = [
         "name", "description", "category", "part_class", "unit",
         "quantity", "min_quantity", "unit_cost", "warehouse", "location",
-        "notes", "interal_product_id", "supplier_code",
+        "notes", "interal_product_id",
     ]
     for field in updatable:
         if field in body:
@@ -339,10 +319,7 @@ async def inventory_dashboard(
     low_stock = (await db.execute(
         select(func.count()).select_from(
             select(StockItem).where(
-                or_(
-                    StockItem.quantity <= 0,
-                    and_(StockItem.min_quantity.isnot(None), StockItem.quantity <= StockItem.min_quantity),
-                )
+                and_(StockItem.min_quantity.isnot(None), StockItem.quantity <= StockItem.min_quantity)
             ).subquery()
         )
     )).scalar_one()
@@ -371,10 +348,11 @@ async def inventory_dashboard(
     }
 
 
-def _item_out(i: StockItem, supplier_name: Optional[str] = None) -> dict:
-    qty = float(i.quantity) if i.quantity is not None else 0.0
-    is_low = qty <= 0 or (
-        i.min_quantity is not None and qty <= float(i.min_quantity)
+def _item_out(i: StockItem) -> dict:
+    is_low = (
+        i.min_quantity is not None
+        and i.quantity is not None
+        and i.quantity <= i.min_quantity
     )
     return {
         "id": str(i.id),
@@ -385,14 +363,12 @@ def _item_out(i: StockItem, supplier_name: Optional[str] = None) -> dict:
         "category": i.category or "",
         "part_class": i.part_class or "",
         "unit": i.unit or "Unitaire",
-        "quantity": qty,
+        "quantity": float(i.quantity) if i.quantity is not None else 0.0,
         "min_quantity": float(i.min_quantity) if i.min_quantity is not None else None,
         "unit_cost": float(i.unit_cost) if i.unit_cost is not None else None,
         "warehouse": i.warehouse or "",
         "location": i.location or "",
         "supplier_id": str(i.supplier_id) if i.supplier_id else None,
-        "supplier_name": supplier_name,
-        "supplier_code": i.supplier_code if hasattr(i, "supplier_code") else None,
         "interal_product_id": i.interal_product_id,
         "notes": i.notes or "",
         "is_low_stock": is_low,

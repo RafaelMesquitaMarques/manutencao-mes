@@ -423,6 +423,28 @@
     "generateButton":    "Generar OT",
     "viewWO":            "Ver OT"
   },
+  "inventory": {
+    "code":              "N° Pieza",
+    "description":       "Descripción",
+    "category":          "Categoría",
+    "partClass":         "Clase de pieza",
+    "quantity":          "Cant. en stock",
+    "minQty":            "Cant. mín",
+    "unit":              "Unidad",
+    "location":          "Ubicación",
+    "warehouse":         "Almacén",
+    "cost":              "Costo unit.",
+    "subtitle":          "Piezas y materiales · Saint-Jérôme",
+    "totalItems":        "Total artículos",
+    "lowStock":          "Stock bajo",
+    "zeroStock":         "Sin stock",
+    "categories":        "Categorías",
+    "lowStockOnly":      "Solo stock bajo",
+    "newItem":           "Nueva pieza",
+    "searchPlaceholder": "Buscar por código, descripción…",
+    "results":           "resultados",
+    "adjustQty":         "Ajustar stock"
+  },
   "maintenanceDash": {
     "title":                "Panel de mantenimiento",
     "subtitle":             "KPIs y métricas del módulo de mantenimiento",

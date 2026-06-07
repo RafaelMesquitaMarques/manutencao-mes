@@ -641,18 +641,112 @@ export interface SupervisorOverview {
 }
 
 export interface StockItem {
-  id:           string;
-  plant_id:     string;
-  code?:        string;
-  name:         string;
-  description?: string;
-  unit?:        string;
-  quantity:     number;
-  min_quantity: number;
-  location?:    string;
-  unit_cost?:   number;
-  supplier?:    string;
-  created_at:   string;
+  id:                   string;
+  plant_id:             string | null;
+  code:                 string;
+  name:                 string;
+  description:          string;
+  category:             string;
+  part_class:           string;
+  unit:                 string;
+  quantity:             number;
+  min_quantity:         number | null;
+  unit_cost:            number | null;
+  warehouse:            string;
+  location:             string;
+  supplier_id:          string | null;
+  supplier_name:        string | null;
+  supplier_code:        string | null;
+  interal_product_id:   string | null;
+  notes:                string;
+  is_low_stock:         boolean;
+}
+
+export interface StockItemListResponse {
+  total:           number;
+  low_stock_count: number;
+  items:           StockItem[];
+}
+
+export interface Supplier {
+  id:            string;
+  code:          string;
+  name:          string;
+  contact_name:  string | null;
+  email:         string | null;
+  phone:         string | null;
+  fax:           string | null;
+  website:       string | null;
+  address:       string | null;
+  city:          string | null;
+  country:       string | null;
+  category:      string | null;
+  payment_terms: string | null;
+  currency:      string;
+  lead_time_days: number | null;
+  rating:        number | null;
+  notes:         string | null;
+  is_active:     boolean;
+  created_at:    string | null;
+  updated_at:    string | null;
+  item_count?:   number;
+  order_count?:  number;
+  open_order_count?: number;
+}
+
+export type PurchaseOrderStatus = 'draft' | 'sent' | 'confirmed' | 'received' | 'cancelled';
+
+export interface PurchaseOrderItem {
+  id:                string;
+  order_id:          string;
+  stock_item_id:     string | null;
+  description:       string;
+  quantity:          number;
+  unit_cost:         number;
+  total_cost:        number;
+  received_quantity: number;
+  notes:             string | null;
+}
+
+export interface PurchaseOrder {
+  id:            string;
+  order_number:  string;
+  supplier_id:   string;
+  supplier_name: string | null;
+  supplier_code: string | null;
+  status:        PurchaseOrderStatus;
+  order_date:    string;
+  expected_date: string | null;
+  received_date: string | null;
+  total_amount:  number | null;
+  currency:      string;
+  notes:         string | null;
+  created_by_id: string | null;
+  created_at:    string;
+  updated_at:    string | null;
+  item_count:    number;
+  items?:        PurchaseOrderItem[];
+}
+
+export interface SupplierDashboard {
+  total_suppliers:         number;
+  active_suppliers:        number;
+  open_purchase_orders:    number;
+  low_stock_with_supplier: number;
+  by_category:             { category: string; count: number }[];
+}
+
+export interface InventoryCategories {
+  categories:  string[];
+  part_classes: string[];
+  warehouses:  string[];
+}
+
+export interface InventoryDashboard {
+  total_items:      number;
+  low_stock_count:  number;
+  zero_stock_count: number;
+  by_category:      { category: string; count: number }[];
 }
 
 export interface InventoryMovement {

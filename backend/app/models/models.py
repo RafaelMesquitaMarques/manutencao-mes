@@ -151,6 +151,13 @@ class SupplierOrderStatus(str, enum.Enum):
     received  = "received"
     cancelled = "cancelled"
 
+class PurchaseOrderStatus(str, enum.Enum):
+    draft     = "draft"
+    sent      = "sent"
+    confirmed = "confirmed"
+    received  = "received"
+    cancelled = "cancelled"
+
 class WorkOrderSource(str, enum.Enum):
     manual = "manual"
     ticket = "ticket"
@@ -408,24 +415,59 @@ class MaintenancePlan(Base):
 
 # ─── Inventory ─────────────────────────────────────────────────────────────────
 
+class Supplier(Base):
+    __tablename__ = "suppliers"
+
+    id             = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code           = Column(String(50),  nullable=True)
+    name           = Column(String(300), nullable=False)
+    contact_name   = Column(String(200), nullable=True)
+    email          = Column(String(200), nullable=True)
+    phone          = Column(String(100), nullable=True)
+    fax            = Column(String(100), nullable=True)
+    website        = Column(String(300), nullable=True)
+    address        = Column(Text,        nullable=True)
+    city           = Column(String(100), nullable=True)
+    country        = Column(String(100), nullable=True)
+    category       = Column(String(100), nullable=True)
+    payment_terms  = Column(String(100), nullable=True)
+    currency       = Column(String(10),  default="CAD")
+    lead_time_days = Column(Integer,     nullable=True)
+    rating         = Column(Integer,     nullable=True)
+    notes          = Column(Text,        nullable=True)
+    is_active      = Column(Boolean,     default=True)
+    created_at     = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at     = Column(DateTime(timezone=True), onupdate=func.now())
+
+    purchase_orders = relationship("PurchaseOrder", back_populates="supplier")
+
+
 class StockItem(Base):
     __tablename__ = "stock_items"
 
     id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    plant_id     = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False)
+    plant_id     = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
     code         = Column(String(100))
-    name         = Column(String(300), nullable=False)
+    name         = Column(String(300), nullable=True)
     description  = Column(Text)
-    unit         = Column(String(20))
+    category     = Column(String(200), nullable=True)
+    part_class   = Column(String(200), nullable=True)
+    unit         = Column(String(50),  default="Unitaire")
     quantity     = Column(Float, default=0)
-    min_quantity = Column(Float, default=0)
-    location     = Column(String(200))
+    min_quantity = Column(Float, nullable=True)
     unit_cost    = Column(Float)
+    warehouse    = Column(String(100), nullable=True)
+    location     = Column(String(200))
+    supplier_id  = Column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=True)
     supplier     = Column(String(300))
+    supplier_code      = Column(String(100), nullable=True)
+    interal_product_id = Column(String(50),  nullable=True)
+    notes        = Column(Text, nullable=True)
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
 
     work_order_items = relationship("WorkOrderStockItem", back_populates="stock_item")
     movements        = relationship("InventoryMovement", back_populates="stock_item")
+    supplier_ref     = relationship("Supplier", foreign_keys=[supplier_id])
 
 
 class WorkOrderStockItem(Base):
@@ -929,6 +971,48 @@ class JobOrder(Base):
     erp_reference   = Column(String(200), nullable=True)
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
     updated_at      = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+# ─── Purchase Orders ───────────────────────────────────────────────────────────
+
+class PurchaseOrder(Base):
+    __tablename__ = "purchase_orders"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_number  = Column(String(50), unique=True, nullable=False)
+    supplier_id   = Column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=False)
+    status        = Column(SAEnum(PurchaseOrderStatus, native_enum=False), default=PurchaseOrderStatus.draft)
+    order_date    = Column(Date, nullable=False)
+    expected_date = Column(Date, nullable=True)
+    received_date = Column(Date, nullable=True)
+    total_amount  = Column(Float, nullable=True)
+    currency      = Column(String(10), default="CAD")
+    notes         = Column(Text, nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at    = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at    = Column(DateTime(timezone=True), onupdate=func.now())
+
+    supplier   = relationship("Supplier", back_populates="purchase_orders")
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    items      = relationship("PurchaseOrderItem", back_populates="order", cascade="all, delete-orphan")
+
+
+class PurchaseOrderItem(Base):
+    __tablename__ = "purchase_order_items"
+
+    id                = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id          = Column(UUID(as_uuid=True), ForeignKey("purchase_orders.id"), nullable=False)
+    stock_item_id     = Column(UUID(as_uuid=True), ForeignKey("stock_items.id"), nullable=True)
+    description       = Column(String(500), nullable=False)
+    quantity          = Column(Float, nullable=False)
+    unit_cost         = Column(Float, nullable=False)
+    total_cost        = Column(Float, nullable=False)
+    received_quantity = Column(Float, default=0)
+    notes             = Column(String(500), nullable=True)
+    created_at        = Column(DateTime(timezone=True), server_default=func.now())
+
+    order      = relationship("PurchaseOrder", back_populates="items")
+    stock_item = relationship("StockItem")
 
 
 # ─── Inventory Movements ───────────────────────────────────────────────────────
