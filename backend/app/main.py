@@ -207,6 +207,63 @@ async def _run_migrations() -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """,
+        # Phase: ticket-WO redesign — new columns on existing tables
+        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS suggested_technician_id UUID REFERENCES users(id)",
+        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS reported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS machine_id UUID",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS total_minutes INTEGER",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS estimated_downtime_minutes INTEGER",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS actual_downtime_minutes INTEGER",
+        # Phase: inventory movements table
+        """
+        CREATE TABLE IF NOT EXISTS inventory_movements (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            stock_item_id UUID NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+            work_order_id UUID,
+            movement_type VARCHAR(20) NOT NULL,
+            quantity FLOAT NOT NULL,
+            quantity_before FLOAT NOT NULL,
+            quantity_after FLOAT NOT NULL,
+            unit_cost FLOAT,
+            notes VARCHAR(500),
+            created_by_id UUID REFERENCES users(id) ON DELETE SET NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        # Phase: machine history table
+        """
+        CREATE TABLE IF NOT EXISTS machine_history (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            machine_id UUID NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+            work_order_id UUID,
+            ticket_id UUID,
+            event_type VARCHAR(30) NOT NULL,
+            problem_type VARCHAR(50),
+            description TEXT,
+            diagnosis TEXT,
+            corrective_action TEXT,
+            parts_used JSONB DEFAULT '[]',
+            technician_id UUID REFERENCES technicians(id) ON DELETE SET NULL,
+            downtime_minutes INTEGER,
+            total_minutes INTEGER,
+            occurred_at TIMESTAMPTZ NOT NULL,
+            completed_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        # Phase: cost audit log table
+        """
+        CREATE TABLE IF NOT EXISTS cost_audit_log (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            work_order_id UUID,
+            changed_by_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            field_changed VARCHAR(100) NOT NULL,
+            old_value VARCHAR(500),
+            new_value VARCHAR(500),
+            reason TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
     ]
     async with engine.begin() as conn:
         for stmt in stmts:

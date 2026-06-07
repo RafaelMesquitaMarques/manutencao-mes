@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Ticket, RefreshCw, Play, PauseCircle, CheckCircle2,
-  XCircle, MessageSquare, Package, ChevronRight,
+  XCircle, MessageSquare, Package, ChevronRight, Plus,
 } from 'lucide-react';
 import { fetchTickets, updateTicketStatus } from '../../api/maintenance';
 import type { MaintenanceTicket, AlertPriority, TicketStatus } from '../../types';
@@ -106,6 +106,9 @@ export default function TicketList() {
           <button onClick={load} className="btn-secondary py-1.5 px-3">
             <RefreshCw size={14} />
           </button>
+          <Link to="/tickets/new" className="btn-primary py-1.5 px-3 flex items-center gap-1.5 text-sm">
+            <Plus size={14} /> New Ticket
+          </Link>
         </div>
       </div>
 

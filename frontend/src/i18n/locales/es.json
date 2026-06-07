@@ -47,6 +47,7 @@
     "supervisorView":       "Vista supervisor",
     "machines":             "Todas las máquinas",
     "myWork":               "Mi trabajo",
+    "inventory":            "Inventario",
     "machinesSetup":        "Config máquinas",
     "stopCategories":       "Categorías de parada",
     "userManagement":       "Gestión de usuarios"

@@ -362,6 +362,12 @@ class WorkOrder(Base):
     scheduled_start_time = Column(String(10), nullable=True)
     scheduled_end_time   = Column(String(10), nullable=True)
 
+    # Machine reference (soft — parallel to equipment_id for MES machines)
+    machine_id                 = Column(UUID(as_uuid=True), nullable=True)
+    total_minutes              = Column(Integer, nullable=True)
+    estimated_downtime_minutes = Column(Integer, nullable=True)
+    actual_downtime_minutes    = Column(Integer, nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -419,6 +425,7 @@ class StockItem(Base):
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
 
     work_order_items = relationship("WorkOrderStockItem", back_populates="stock_item")
+    movements        = relationship("InventoryMovement", back_populates="stock_item")
 
 
 class WorkOrderStockItem(Base):
@@ -809,6 +816,8 @@ class MaintenanceTicket(Base):
     machine_page_source        = Column(Boolean, default=False)
     opened_by_technician_at    = Column(DateTime(timezone=True), nullable=True)
     closed_by_technician_at    = Column(DateTime(timezone=True), nullable=True)
+    suggested_technician_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    reported_at                = Column(DateTime(timezone=True), server_default=func.now())
 
     machine     = relationship("Machine", back_populates="tickets")
     assigned_to = relationship("User", foreign_keys=[assigned_to_id])
@@ -920,3 +929,67 @@ class JobOrder(Base):
     erp_reference   = Column(String(200), nullable=True)
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
     updated_at      = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+# ─── Inventory Movements ───────────────────────────────────────────────────────
+
+class InventoryMovement(Base):
+    __tablename__ = "inventory_movements"
+
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    stock_item_id    = Column(UUID(as_uuid=True), ForeignKey("stock_items.id"), nullable=False)
+    work_order_id    = Column(UUID(as_uuid=True), nullable=True)  # soft ref
+    movement_type    = Column(String(20), nullable=False)  # deduction | addition | adjustment
+    quantity         = Column(Float, nullable=False)
+    quantity_before  = Column(Float, nullable=False)
+    quantity_after   = Column(Float, nullable=False)
+    unit_cost        = Column(Float)
+    notes            = Column(String(500))
+    created_by_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
+
+    stock_item = relationship("StockItem", back_populates="movements")
+    created_by = relationship("User")
+
+
+# ─── Machine History ───────────────────────────────────────────────────────────
+
+class MachineHistory(Base):
+    __tablename__ = "machine_history"
+
+    id                = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    machine_id        = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    work_order_id     = Column(UUID(as_uuid=True), nullable=True)  # soft ref
+    ticket_id         = Column(UUID(as_uuid=True), nullable=True)  # soft ref
+    event_type        = Column(String(30), nullable=False)  # corrective | preventive | inspection
+    problem_type      = Column(String(50))
+    description       = Column(Text)
+    diagnosis         = Column(Text)
+    corrective_action = Column(Text)
+    parts_used        = Column(JSON, default=[])
+    technician_id     = Column(UUID(as_uuid=True), ForeignKey("technicians.id"), nullable=True)
+    downtime_minutes  = Column(Integer)
+    total_minutes     = Column(Integer)
+    occurred_at       = Column(DateTime(timezone=True), nullable=False)
+    completed_at      = Column(DateTime(timezone=True))
+    created_at        = Column(DateTime(timezone=True), server_default=func.now())
+
+    machine    = relationship("Machine")
+    technician = relationship("Technician")
+
+
+# ─── Cost Audit Log ───────────────────────────────────────────────────────────
+
+class CostAuditLog(Base):
+    __tablename__ = "cost_audit_log"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    work_order_id = Column(UUID(as_uuid=True), nullable=True)  # soft ref
+    changed_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    field_changed = Column(String(100), nullable=False)
+    old_value     = Column(String(500))
+    new_value     = Column(String(500))
+    reason        = Column(Text)
+    created_at    = Column(DateTime(timezone=True), server_default=func.now())
+
+    changed_by = relationship("User")

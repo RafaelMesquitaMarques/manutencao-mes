@@ -20,6 +20,8 @@ import NewAlert from './pages/Alerts/NewAlert';
 import AlertDetail from './pages/Alerts/AlertDetail';
 import TicketList from './pages/Tickets/TicketList';
 import TicketDetail from './pages/Tickets/TicketDetail';
+import NewTicket from './pages/Tickets/NewTicket';
+import InventoryList from './pages/Inventory/InventoryList';
 import MaintenanceDashboard from './pages/MaintenanceDashboard/MaintenanceDashboard';
 import SupervisorDashboard from './pages/MaintenanceDashboard/SupervisorDashboard';
 import MachineList from './pages/Machines/MachineList';
@@ -68,7 +70,9 @@ const App = () => (
         <Route path="alerts/new"            element={<NewAlert />} />
         <Route path="alerts/:id"            element={<AlertDetail />} />
         <Route path="tickets"              element={<TicketList />} />
+        <Route path="tickets/new"          element={<NewTicket />} />
         <Route path="tickets/:id"          element={<TicketDetail />} />
+        <Route path="inventory"            element={<InventoryList />} />
         <Route path="maintenance/dashboard"  element={<MaintenanceDashboard />} />
         <Route path="maintenance/supervisor" element={<SupervisorDashboard />} />
         <Route path="machines"              element={<MachineList />} />

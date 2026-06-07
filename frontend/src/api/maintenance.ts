@@ -125,6 +125,28 @@ export const generateWorkOrder = async (
   return data;
 };
 
+export const assignTicket = async (
+  ticketId: string,
+  technicianId: string
+): Promise<{ ticket: MaintenanceTicket; work_order: WorkOrder }> => {
+  const { data } = await api.patch<{ ticket: MaintenanceTicket; work_order: WorkOrder }>(
+    `/api/tickets/${ticketId}/assign`,
+    { technician_id: technicianId }
+  );
+  return data;
+};
+
+export const createTicket = async (payload: {
+  machine_id: string;
+  priority: string;
+  problem_type?: string;
+  description?: string;
+  estimated_downtime_minutes?: number;
+}): Promise<MaintenanceTicket> => {
+  const { data } = await api.post<MaintenanceTicket>('/api/tickets/', payload);
+  return data;
+};
+
 export const fetchTicketWorkOrder = async (ticketId: string): Promise<WorkOrder> => {
   const { data } = await api.get<WorkOrder>(`/api/tickets/${ticketId}/work-order`);
   return data;

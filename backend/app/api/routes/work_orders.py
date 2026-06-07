@@ -20,6 +20,8 @@ from app.schemas.wo_subresources import (
     WOCostSummary,
 )
 from app.core.security import get_current_user
+from app.services.inventory_service import InventoryService
+from app.services.machine_history_service import MachineHistoryService
 
 router = APIRouter()
 
@@ -68,10 +70,45 @@ async def _generate_work_order_number(db: AsyncSession) -> str:
     return f"WO-{year}-{count:05d}"
 
 
+@router.get("/my", response_model=WorkOrderListResponse)
+async def my_work_orders(
+    status: Optional[WorkOrderStatus] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Returns WOs where current user is the assigned executor."""
+    # Find technician profile for this user
+    from sqlalchemy import select as _sel
+    r = await db.execute(
+        _sel(Technician).where(Technician.user_id == current_user.id)
+    )
+    tech = r.scalar_one_or_none()
+
+    query = _sel(WorkOrder).where(WorkOrder.assigned_to_id == current_user.id)
+    if tech:
+        query = _sel(WorkOrder).where(
+            (WorkOrder.assigned_to_id == current_user.id) |
+            (WorkOrder.executor_id == tech.id)
+        )
+    if status:
+        query = query.where(WorkOrder.status == status)
+    query = query.order_by(WorkOrder.opened_at.desc())
+
+    result = await db.execute(query)
+    items = result.scalars().all()
+
+    wo_list = []
+    for wo in items:
+        wo_list.append(await _enrich_wo(wo, db))
+
+    return WorkOrderListResponse(total=len(wo_list), items=wo_list)
+
+
 @router.get("/", response_model=WorkOrderListResponse)
 async def list_work_orders(
     plant_id: Optional[UUID] = None,
     equipment_id: Optional[UUID] = None,
+    machine_id: Optional[UUID] = None,
     status: Optional[WorkOrderStatus] = None,
     status_not: Optional[str] = None,
     type: Optional[WorkOrderType] = None,
@@ -89,6 +126,8 @@ async def list_work_orders(
 
     if equipment_id:
         query = query.where(WorkOrder.equipment_id == equipment_id)
+    if machine_id:
+        query = query.where(WorkOrder.machine_id == machine_id)
     if status:
         query = query.where(WorkOrder.status == status)
     if status_not:
@@ -354,11 +393,26 @@ async def complete_work_order(
         wo.solution_applied = solution_applied
     if repair_hours:
         wo.repair_hours = repair_hours
+        wo.total_minutes = int(repair_hours * 60)
     if downtime_hours:
         wo.downtime_hours = downtime_hours
+        wo.actual_downtime_minutes = int(downtime_hours * 60)
 
     await db.commit()
     await db.refresh(wo)
+
+    # Record machine history
+    try:
+        svc = MachineHistoryService(db)
+        await svc.record_from_wo(wo)
+        await db.commit()
+    except Exception:
+        pass  # Don't fail the WO completion if history fails
+
+    # Sync ticket
+    await _sync_ticket_from_wo(wo, db)
+    await db.commit()
+
     return await _enrich_wo(wo, db)
 
 
@@ -430,7 +484,25 @@ async def add_part(
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
 
-    total_cost = (data.unit_cost * data.quantity) if data.unit_cost else None
+    # If linked to a stock item, fetch unit cost and deduct inventory
+    unit_cost = data.unit_cost
+    if data.stock_item_id:
+        try:
+            inv_svc = InventoryService(db)
+            await inv_svc.deduct_stock(
+                data.stock_item_id, data.quantity,
+                work_order_id=work_order_id,
+                user_id=current_user.id,
+                notes=f"Used in WO {wo.wo_number}",
+            )
+            from app.models.models import StockItem
+            item = await db.get(StockItem, data.stock_item_id)
+            if item and not unit_cost:
+                unit_cost = item.unit_cost
+        except Exception:
+            pass  # Don't fail part creation if deduction fails
+
+    total_cost = (unit_cost * data.quantity) if unit_cost else None
     part = WOPart(
         work_order_id=work_order_id,
         stock_item_id=data.stock_item_id,
@@ -438,7 +510,7 @@ async def add_part(
         description=data.description,
         quantity=data.quantity,
         unit=data.unit,
-        unit_cost=data.unit_cost,
+        unit_cost=unit_cost,
         total_cost=total_cost,
         supplier=data.supplier,
         notes=data.notes,

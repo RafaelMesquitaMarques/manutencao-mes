@@ -8,8 +8,9 @@ import Spinner from '../../components/ui/Spinner';
 const STATUS_STYLE: Record<MachineStatus, { label: string; dot: string; text: string }> = {
   running:     { label: 'Running',     dot: 'bg-green-400',  text: 'text-green-400'  },
   stopped:     { label: 'Stopped',     dot: 'bg-red-400',    text: 'text-red-400'    },
-  maintenance: { label: 'Maintenance', dot: 'bg-amber-400',  text: 'text-amber-400'  },
-  idle:        { label: 'Idle',        dot: 'bg-gray-500',   text: 'text-gray-400'   },
+  maintenance:  { label: 'Maintenance',  dot: 'bg-amber-400',  text: 'text-amber-400'  },
+  idle:         { label: 'Idle',         dot: 'bg-gray-500',   text: 'text-gray-400'   },
+  planned_stop: { label: 'Planned Stop', dot: 'bg-purple-400', text: 'text-purple-400' },
 };
 
 export default function MachineList() {

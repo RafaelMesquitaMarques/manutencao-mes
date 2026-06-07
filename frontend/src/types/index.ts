@@ -152,6 +152,7 @@ export interface Technician {
   id: string;
   full_name: string;
   email: string;
+  specialty?: string;
 }
 
 export interface TechnicianFull {
@@ -573,6 +574,8 @@ export interface MaintenanceTicket {
   status:                      TicketStatus;
   assigned_to_id?:             string;
   assigned_to_name?:           string;
+  suggested_technician_id?:    string;
+  reported_at?:                string;
   work_order_id?:              string;
   work_order_number?:          string;
   work_order_status?:          string;
@@ -634,6 +637,51 @@ export interface SupervisorOverview {
   pending_tickets: TicketSummary[];
   unassigned_wos:  WOSummary[];
   unscheduled_wos: WOSummary[];
+}
+
+export interface StockItem {
+  id:           string;
+  plant_id:     string;
+  code?:        string;
+  name:         string;
+  description?: string;
+  unit?:        string;
+  quantity:     number;
+  min_quantity: number;
+  location?:    string;
+  unit_cost?:   number;
+  supplier?:    string;
+  created_at:   string;
+}
+
+export interface InventoryMovement {
+  id:              string;
+  stock_item_id:   string;
+  work_order_id?:  string;
+  movement_type:   'deduction' | 'addition' | 'adjustment';
+  quantity:        number;
+  quantity_before: number;
+  quantity_after:  number;
+  unit_cost?:      number;
+  notes?:          string;
+  created_at:      string;
+}
+
+export interface MachineHistoryEntry {
+  id:                string;
+  event_type:        string;
+  problem_type?:     string;
+  description?:      string;
+  diagnosis?:        string;
+  corrective_action?: string;
+  parts_used:        PartUsed[];
+  technician_name?:  string;
+  downtime_minutes?: number;
+  total_minutes?:    number;
+  occurred_at:       string;
+  completed_at?:     string;
+  work_order_id?:    string;
+  ticket_id?:        string;
 }
 
 export interface MaintenanceDashboardData {

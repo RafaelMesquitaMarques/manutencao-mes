@@ -6,7 +6,7 @@ from sqlalchemy import select, func
 from app.models.models import (
     MaintenanceTicket, TicketComment, TicketStatus, Machine,
     WorkOrder, WorkOrderType, WorkOrderStatus, WorkOrderPriority, WorkOrderSource,
-    Equipment,
+    Equipment, Technician, User,
 )
 from app.schemas.maintenance import TicketCreate, TicketClose, CommentCreate
 
@@ -146,6 +146,98 @@ class TicketService:
 
         ticket.work_order_id = wo.id
         ticket.status = TicketStatus.in_progress
+
+        await self.db.commit()
+        await self.db.refresh(ticket)
+        await self.db.refresh(wo)
+        return ticket, wo
+
+    async def assign_ticket(
+        self,
+        ticket_id: UUID,
+        technician_id: UUID,
+        assigned_by_id: UUID,
+    ) -> tuple[MaintenanceTicket, WorkOrder]:
+        """Assign a technician to a ticket and auto-create a linked work order."""
+        ticket = await self.db.get(MaintenanceTicket, ticket_id)
+        if not ticket:
+            raise ValueError("Ticket not found")
+
+        tech = await self.db.get(Technician, technician_id)
+        if not tech:
+            raise ValueError("Technician not found")
+        user = await self.db.get(User, tech.user_id)
+        if not user:
+            raise ValueError("Technician user not found")
+
+        machine = await self.db.get(Machine, ticket.machine_id)
+        machine_name = machine.name if machine else "Unknown Machine"
+
+        # Find equipment to satisfy non-null FK on work_orders
+        equip = None
+        if machine:
+            r = await self.db.execute(
+                select(Equipment)
+                .where(Equipment.name.ilike(f"%{machine.name}%"), Equipment.active == True)
+                .limit(1)
+            )
+            equip = r.scalar_one_or_none()
+        if not equip and machine and machine.location:
+            r = await self.db.execute(
+                select(Equipment)
+                .where(Equipment.location.ilike(f"%{machine.location}%"), Equipment.active == True)
+                .limit(1)
+            )
+            equip = r.scalar_one_or_none()
+        if not equip:
+            r = await self.db.execute(
+                select(Equipment).where(Equipment.active == True).limit(1)
+            )
+            equip = r.scalar_one_or_none()
+        if not equip:
+            raise ValueError("No active equipment found to link work order")
+
+        year = datetime.now(timezone.utc).year
+        r = await self.db.execute(
+            select(func.count(WorkOrder.id)).where(
+                func.extract("year", WorkOrder.opened_at) == year
+            )
+        )
+        wo_number = f"WO-{year}-{(r.scalar() + 1):05d}"
+
+        priority_map = {
+            "critical": WorkOrderPriority.critical,
+            "high":     WorkOrderPriority.high,
+            "medium":   WorkOrderPriority.medium,
+            "low":      WorkOrderPriority.low,
+        }
+        pval = ticket.priority.value if hasattr(ticket.priority, "value") else str(ticket.priority)
+        tval = ticket.problem_type.value if ticket.problem_type else "Maintenance"
+
+        wo = WorkOrder(
+            wo_number=wo_number,
+            equipment_id=equip.id,
+            machine_id=ticket.machine_id,
+            created_by_id=assigned_by_id,
+            assigned_to_id=tech.user_id,
+            executor_id=tech.id,
+            type=WorkOrderType.corrective,
+            priority=priority_map.get(pval, WorkOrderPriority.medium),
+            status=WorkOrderStatus.open,
+            title=f"[{ticket.ticket_number}] {machine_name} – {tval.replace('_', ' ').title()}",
+            description=ticket.description or ticket.diagnosis,
+            ticket_id=ticket.id,
+            source=WorkOrderSource.ticket,
+            estimated_downtime_minutes=ticket.estimated_downtime_minutes,
+        )
+        self.db.add(wo)
+        await self.db.flush()
+
+        ticket.work_order_id = wo.id
+        ticket.assigned_to_id = tech.user_id
+        ticket.status = TicketStatus.in_progress
+        if not ticket.started_at:
+            ticket.started_at = datetime.now(timezone.utc)
 
         await self.db.commit()
         await self.db.refresh(ticket)

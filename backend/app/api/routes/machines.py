@@ -15,6 +15,7 @@ from app.models.models import (
     MachineStop, MachineOperator, StopCategory, StopSubcategory,
     RejectCategory, RejectSubcategory, RejectLog,
     AlertShift, JobOrder, JobOrderSource, MachineProductionLog,
+    MachineHistory, Technician,
 )
 from app.schemas.maintenance import (
     MachineOut, MachineListResponse, MachinePageData, TicketForMachine,
@@ -1050,3 +1051,69 @@ async def clone_categories(
 
     await db.commit()
     return {"status": "ok", "cloned_to": len(data.target_machine_ids)}
+
+
+# ── Machine History ───────────────────────────────────────────────────────────
+
+@router.get("/{ref}/history")
+async def get_machine_history(
+    ref: str,
+    skip: int = 0,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    machine = await _get_machine(ref, db)
+    r = await db.execute(
+        select(MachineHistory)
+        .where(MachineHistory.machine_id == machine.id)
+        .order_by(MachineHistory.occurred_at.desc())
+        .offset(skip).limit(limit)
+    )
+    entries = r.scalars().all()
+
+    result = []
+    for e in entries:
+        row = {
+            "id": str(e.id),
+            "event_type": e.event_type,
+            "problem_type": e.problem_type,
+            "description": e.description,
+            "diagnosis": e.diagnosis,
+            "corrective_action": e.corrective_action,
+            "parts_used": e.parts_used,
+            "downtime_minutes": e.downtime_minutes,
+            "total_minutes": e.total_minutes,
+            "occurred_at": e.occurred_at.isoformat() if e.occurred_at else None,
+            "completed_at": e.completed_at.isoformat() if e.completed_at else None,
+            "work_order_id": str(e.work_order_id) if e.work_order_id else None,
+            "ticket_id": str(e.ticket_id) if e.ticket_id else None,
+            "technician_name": None,
+        }
+        if e.technician_id:
+            tech = await db.get(Technician, e.technician_id)
+            if tech:
+                user = await db.get(User, tech.user_id)
+                if user:
+                    row["technician_name"] = user.name
+        result.append(row)
+
+    total_r = await db.execute(
+        select(func.count(MachineHistory.id)).where(MachineHistory.machine_id == machine.id)
+    )
+    return {"total": total_r.scalar(), "items": result}
+
+
+@router.get("/{ref}/metrics")
+async def get_machine_metrics(
+    ref: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    machine = await _get_machine(ref, db)
+    from app.services.machine_history_service import MachineHistoryService
+    svc = MachineHistoryService(db)
+    metrics = await svc.get_machine_metrics(machine.id)
+    metrics["machine_id"] = str(machine.id)
+    metrics["machine_name"] = machine.name
+    return metrics

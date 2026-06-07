@@ -7,8 +7,9 @@ from uuid import UUID
 from datetime import datetime
 
 from app.db.session import get_db
-from app.models.models import StockItem, User
+from app.models.models import StockItem, InventoryMovement, User
 from app.core.security import get_current_user
+from app.services.inventory_service import InventoryService
 
 router = APIRouter()
 
@@ -56,6 +57,30 @@ class StockItemUpdate(BaseModel):
 class StockItemListResponse(BaseModel):
     total: int
     items: List[StockItemOut]
+
+
+class StockAdjust(BaseModel):
+    quantity: float
+    notes: Optional[str] = None
+
+
+class MovementOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    stock_item_id: UUID
+    work_order_id: Optional[UUID] = None
+    movement_type: str
+    quantity: float
+    quantity_before: float
+    quantity_after: float
+    unit_cost: Optional[float] = None
+    notes: Optional[str] = None
+    created_at: datetime
+
+
+class MovementListResponse(BaseModel):
+    total: int
+    items: List[MovementOut]
 
 
 @router.get("/", response_model=StockItemListResponse)
@@ -140,3 +165,59 @@ async def delete_stock_item(
         raise HTTPException(404, "Stock item not found")
     await db.delete(item)
     await db.commit()
+
+
+@router.post("/{item_id}/add", response_model=StockItemOut)
+async def add_stock(
+    item_id: UUID,
+    data: StockAdjust,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    svc = InventoryService(db)
+    try:
+        await svc.add_stock(item_id, data.quantity, user_id=current_user.id, notes=data.notes)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    await db.commit()
+    item = await db.get(StockItem, item_id)
+    return item
+
+
+@router.post("/{item_id}/adjust", response_model=StockItemOut)
+async def adjust_stock(
+    item_id: UUID,
+    data: StockAdjust,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    svc = InventoryService(db)
+    try:
+        await svc.adjust_stock(item_id, data.quantity, user_id=current_user.id, notes=data.notes)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    await db.commit()
+    item = await db.get(StockItem, item_id)
+    return item
+
+
+@router.get("/{item_id}/movements", response_model=MovementListResponse)
+async def list_movements(
+    item_id: UUID,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    item = await db.get(StockItem, item_id)
+    if not item:
+        raise HTTPException(404, "Stock item not found")
+    q = select(InventoryMovement).where(
+        InventoryMovement.stock_item_id == item_id
+    ).order_by(InventoryMovement.created_at.desc()).offset(skip).limit(limit)
+    result = await db.execute(q)
+    items = result.scalars().all()
+    total_r = await db.execute(
+        select(func.count(InventoryMovement.id)).where(InventoryMovement.stock_item_id == item_id)
+    )
+    return MovementListResponse(total=total_r.scalar(), items=items)

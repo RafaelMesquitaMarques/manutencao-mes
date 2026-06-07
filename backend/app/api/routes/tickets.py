@@ -5,6 +5,8 @@ from typing import Optional
 from uuid import UUID
 from datetime import datetime, timezone
 
+from pydantic import BaseModel
+
 from app.db.session import get_db
 from app.models.models import MaintenanceTicket, TicketComment, Machine, User, TicketStatus, WorkOrder, Equipment
 from app.schemas.maintenance import (
@@ -14,6 +16,10 @@ from app.schemas.maintenance import (
 from app.schemas.work_order import WorkOrderOut
 from app.services.ticket_service import TicketService
 from app.core.security import get_current_user
+
+
+class TicketAssign(BaseModel):
+    technician_id: UUID
 
 router = APIRouter()
 
@@ -161,6 +167,32 @@ async def add_comment(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return comment
+
+
+@router.patch("/{ticket_id}/assign", status_code=200)
+async def assign_ticket(
+    ticket_id: UUID,
+    data: TicketAssign,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Assign a technician to a ticket and auto-create a linked work order."""
+    svc = TicketService(db)
+    try:
+        ticket, wo = await svc.assign_ticket(ticket_id, data.technician_id, current_user.id)
+        ticket_out = await _enrich(ticket, db, with_comments=False)
+        wo_out = await _enrich_wo_simple(wo, db)
+        return {"ticket": ticket_out, "work_order": wo_out}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+async def _enrich_wo_simple(wo: WorkOrder, db: AsyncSession) -> WorkOrderOut:
+    out = WorkOrderOut.model_validate(wo)
+    equip = await db.get(Equipment, wo.equipment_id)
+    if equip:
+        out.equipment_name = equip.name
+    return out
 
 
 @router.patch("/{ticket_id}/open-field", response_model=TicketOut)

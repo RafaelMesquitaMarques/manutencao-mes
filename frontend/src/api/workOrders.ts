@@ -32,6 +32,15 @@ export const fetchWorkOrders = async (
   return Array.isArray(data) ? data : (data.items ?? []);
 };
 
+export const fetchMyWorkOrders = async (
+  status?: string
+): Promise<WorkOrder[]> => {
+  const params: Record<string, string> = {};
+  if (status) params.status = status;
+  const { data } = await api.get<PaginatedResponse<WorkOrder>>('/api/wo/my', { params });
+  return data.items ?? [];
+};
+
 export const fetchWorkOrder = async (id: string): Promise<WorkOrder> => {
   const { data } = await api.get<WorkOrder>(`/api/wo/${id}`);
   return data;
@@ -56,6 +65,29 @@ export const completeWorkOrder = async (id: string, repairHours?: number): Promi
   const params: Record<string, string> = {};
   if (repairHours != null) params.repair_hours = String(repairHours);
   const { data } = await api.post<WorkOrder>(`/api/wo/${id}/complete`, null, { params });
+  return data;
+};
+
+export const completeWorkOrderFull = async (
+  id: string,
+  payload: {
+    root_cause?: string;
+    solution_applied?: string;
+    repair_hours?: number;
+    downtime_hours?: number;
+  }
+): Promise<WorkOrder> => {
+  const params: Record<string, string> = {};
+  if (payload.root_cause) params.root_cause = payload.root_cause;
+  if (payload.solution_applied) params.solution_applied = payload.solution_applied;
+  if (payload.repair_hours != null) params.repair_hours = String(payload.repair_hours);
+  if (payload.downtime_hours != null) params.downtime_hours = String(payload.downtime_hours);
+  const { data } = await api.post<WorkOrder>(`/api/wo/${id}/complete`, null, { params });
+  return data;
+};
+
+export const holdWorkOrder = async (id: string): Promise<WorkOrder> => {
+  const { data } = await api.patch<WorkOrder>(`/api/wo/${id}`, { status: 'on_hold' });
   return data;
 };
 

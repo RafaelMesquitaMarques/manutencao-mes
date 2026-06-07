@@ -1,537 +1,476 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useTranslation } from 'react-i18next';
 import {
-  ArrowLeft, Play, CheckCircle2, XCircle, PauseCircle,
-  Package, MessageSquare, Info, Clock, ChevronRight, Wrench,
+  ArrowLeft, Info, Wrench, Package, History, MessageSquare,
+  CheckCircle2, Clock, User, UserCheck, AlertTriangle, ChevronRight,
 } from 'lucide-react';
 import {
-  fetchTicket, updateTicketStatus, closeTicket, addTicketComment, generateWorkOrder,
+  fetchTicket, updateTicketStatus, closeTicket, addTicketComment,
+  assignTicket, fetchTicketWorkOrder,
 } from '../../api/maintenance';
-import type { MaintenanceTicket, TicketComment, TicketStatus, PartUsed } from '../../types';
+import type { MaintenanceTicket, TicketStatus, WorkOrder, MachineHistoryEntry } from '../../types';
+import { fetchTechniciansFull } from '../../api/workOrders';
+import type { TechnicianFull } from '../../types';
+import api from '../../api/axios';
 import Spinner from '../../components/ui/Spinner';
-import { useAuthStore } from '../../store/authStore';
 
-type Tab = 'details' | 'comments' | 'parts' | 'workorder';
-
-const STATUS_BADGE: Record<TicketStatus, string> = {
-  open:          'bg-blue-500/15 text-blue-400 border-blue-500/25',
-  in_progress:   'bg-amber-500/15 text-amber-400 border-amber-500/25',
-  on_hold_parts: 'bg-purple-500/15 text-purple-400 border-purple-500/25',
-  on_hold_ext:   'bg-pink-500/15 text-pink-400 border-pink-500/25',
-  completed:     'bg-green-500/15 text-green-400 border-green-500/25',
-  cancelled:     'bg-gray-500/15 text-gray-400 border-gray-500/25',
-};
+type Tab = 'details' | 'workorder' | 'parts' | 'history';
 
 const PRIORITY_BADGE: Record<string, string> = {
-  critical: 'bg-red-500/15 text-red-400 border-red-500/25',
-  high:     'bg-orange-500/15 text-orange-400 border-orange-500/25',
-  medium:   'bg-sky-500/15 text-sky-400 border-sky-500/25',
-  low:      'bg-gray-500/15 text-gray-400 border-gray-500/25',
+  critical: 'bg-red-500/15 text-red-400 border-red-500/30',
+  high:     'bg-orange-500/15 text-orange-400 border-orange-500/30',
+  medium:   'bg-sky-500/15 text-sky-400 border-sky-500/30',
+  low:      'bg-gray-500/15 text-gray-400 border-gray-500/30',
 };
 
-const fmt = (d?: string | null) => {
-  if (!d) return '—';
-  return new Date(d).toLocaleString(undefined, {
-    month: 'short', day: 'numeric', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-  });
+const STATUS_LABEL: Record<TicketStatus, string> = {
+  open: 'Open', in_progress: 'In Progress', on_hold_parts: 'On Hold (Parts)',
+  on_hold_ext: 'On Hold (External)', completed: 'Completed', cancelled: 'Cancelled',
 };
+
+const fmtDt = (d?: string | null) =>
+  d ? new Date(d).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
 
 export default function TicketDetail() {
-  const { t }    = useTranslation();
-  const { id }   = useParams<{ id: string }>();
+  const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const user     = useAuthStore((s) => s.user);
 
-  const [ticket, setTicket]     = useState<MaintenanceTicket | null>(null);
-  const [loading, setLoading]   = useState(true);
-  const [tab, setTab]           = useState<Tab>('details');
-  const [saving, setSaving]     = useState(false);
-  const [error, setError]       = useState('');
+  const [ticket, setTicket]   = useState<MaintenanceTicket | null>(null);
+  const [wo, setWo]           = useState<WorkOrder | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab]         = useState<Tab>('details');
 
-  // Close form state
-  const [showClose, setShowClose]   = useState(false);
-  const [diagnosis, setDiagnosis]   = useState('');
-  const [corrective, setCorrective] = useState('');
-  const [intMins, setIntMins]       = useState('');
-  const [downMins, setDownMins]     = useState('');
-
-  // Comment state
-  const [commentText, setCommentText]     = useState('');
-  const [commentAuthor, setCommentAuthor] = useState(user?.name ?? '');
-  const [postingComment, setPostingComment] = useState(false);
-
-  // Parts state
-  const [newPartName, setNewPartName] = useState('');
-  const [newPartQty, setNewPartQty]   = useState('1');
-  const [newPartUnit, setNewPartUnit] = useState('');
-  const [newPartNo, setNewPartNo]     = useState('');
-
-  // WO generation state
-  const [generatingWO, setGeneratingWO] = useState(false);
-  const [woError, setWoError]           = useState('');
-
-  useEffect(() => {
+  const load = async () => {
     if (!id) return;
-    fetchTicket(id).then((t) => {
+    setLoading(true);
+    try {
+      const t = await fetchTicket(id);
       setTicket(t);
-      setDiagnosis(t.diagnosis ?? '');
-      setCorrective(t.corrective_action ?? '');
-      setIntMins(String(t.total_intervention_minutes ?? ''));
-      setDownMins(String(t.estimated_downtime_minutes ?? ''));
-    }).finally(() => setLoading(false));
-  }, [id]);
-
-  const doStatus = async (status: TicketStatus) => {
-    if (!ticket || !id) return;
-    setSaving(true);
-    try {
-      const updated = await updateTicketStatus(id, { status });
-      setTicket(updated);
+      if (t.work_order_id) {
+        try { setWo(await fetchTicketWorkOrder(id)); } catch { /* no WO yet */ }
+      }
     } finally {
-      setSaving(false);
+      setLoading(false);
     }
   };
 
-  const doSaveDiagnosis = async () => {
-    if (!id) return;
-    setSaving(true);
-    try {
-      const updated = await updateTicketStatus(id, {
-        diagnosis,
-        corrective_action: corrective,
-        total_intervention_minutes: intMins ? parseInt(intMins) : undefined,
-        estimated_downtime_minutes: downMins ? parseInt(downMins) : undefined,
-      });
-      setTicket(updated);
-    } finally {
-      setSaving(false);
-    }
-  };
+  useEffect(() => { load(); }, [id]);
 
-  const doClose = async () => {
-    if (!id || !diagnosis || !corrective || !intMins) {
-      setError(t('tickets.closeRequiredFields'));
-      return;
-    }
-    setSaving(true);
-    setError('');
-    try {
-      const updated = await closeTicket(id, {
-        diagnosis,
-        corrective_action: corrective,
-        total_intervention_minutes: parseInt(intMins),
-        estimated_downtime_minutes: downMins ? parseInt(downMins) : undefined,
-        parts_used: ticket?.parts_used ?? [],
-      });
-      setTicket(updated);
-      setShowClose(false);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const doAddComment = async () => {
-    if (!id || !commentText || !commentAuthor) return;
-    setPostingComment(true);
-    try {
-      const comment = await addTicketComment(id, { author: commentAuthor, comment: commentText });
-      setTicket((prev) => prev ? {
-        ...prev,
-        comments: [...(prev.comments ?? []), comment],
-      } : prev);
-      setCommentText('');
-    } finally {
-      setPostingComment(false);
-    }
-  };
-
-  const doAddPart = async () => {
-    if (!id || !newPartName) return;
-    const part: PartUsed = {
-      name: newPartName,
-      qty: parseFloat(newPartQty) || 1,
-      unit: newPartUnit || undefined,
-      part_no: newPartNo || undefined,
-    };
-    const currentParts = ticket?.parts_used ?? [];
-    const updated = await updateTicketStatus(id, { parts_used: [...currentParts, part] });
-    setTicket(updated);
-    setNewPartName(''); setNewPartQty('1'); setNewPartUnit(''); setNewPartNo('');
-  };
-
-  const doGenerateWO = async () => {
-    if (!id) return;
-    setGeneratingWO(true);
-    setWoError('');
-    try {
-      const result = await generateWorkOrder(id);
-      setTicket(result.ticket);
-    } catch (e: unknown) {
-      setWoError(e instanceof Error ? e.message : 'Failed to generate work order');
-    } finally {
-      setGeneratingWO(false);
-    }
-  };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Spinner size="lg" />
-      </div>
-    );
-  }
-
-  if (!ticket) {
-    return (
-      <div className="flex flex-col items-center justify-center h-64 gap-3">
-        <p className="text-gray-400">{t('tickets.notFound')}</p>
-        <button onClick={() => navigate('/tickets')} className="btn-secondary">
-          <ArrowLeft size={14} /> {t('common.back')}
-        </button>
-      </div>
-    );
-  }
-
-  const isActive = ticket.status !== 'completed' && ticket.status !== 'cancelled';
+  if (loading) return <div className="flex items-center justify-center h-64"><Spinner size="lg" /></div>;
+  if (!ticket) return <div className="p-6 text-gray-400">Ticket not found.</div>;
 
   return (
-    <div className="p-6 space-y-4 animate-fade-in max-w-4xl mx-auto">
+    <div className="p-4 sm:p-6 max-w-3xl mx-auto space-y-4 animate-fade-in">
       {/* Header */}
-      <div className="flex items-start gap-3 flex-wrap">
-        <button onClick={() => navigate('/tickets')} className="btn-secondary py-1.5 px-3 mt-0.5">
-          <ArrowLeft size={15} />
+      <div className="flex items-center gap-3">
+        <button onClick={() => navigate(-1)} className="text-gray-500 hover:text-gray-200 transition-colors">
+          <ArrowLeft size={20} />
         </button>
         <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-center gap-2 mb-1">
-            <h1 className="text-2xl font-bold text-white font-mono">{ticket.ticket_number}</h1>
-            <span className={`inline-flex items-center px-2 py-0.5 text-xs font-mono font-medium border rounded ${PRIORITY_BADGE[ticket.priority]}`}>
-              {t(`priority.${ticket.priority}`)}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-mono text-blue-400 font-semibold">{ticket.ticket_number}</span>
+            <span className={`text-xs border px-2 py-0.5 rounded ${PRIORITY_BADGE[ticket.priority]}`}>
+              {ticket.priority}
             </span>
-            <span className={`inline-flex items-center px-2 py-0.5 text-xs font-mono font-medium border rounded ${STATUS_BADGE[ticket.status]}`}>
-              {t(`ticketStatus.${ticket.status}`, ticket.status)}
-            </span>
-            {ticket.current_escalation_level > 0 && (
-              <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono font-medium border rounded bg-red-500/15 text-red-400 border-red-500/25">
-                ESC L{ticket.current_escalation_level}
-              </span>
-            )}
+            <span className="text-xs text-gray-500">{STATUS_LABEL[ticket.status]}</span>
           </div>
-          <p className="text-gray-400 text-sm">{ticket.machine_name ?? '—'}</p>
+          <p className="text-white font-medium mt-0.5 text-sm">
+            {ticket.machine_name ?? 'Unknown Machine'}
+            {ticket.problem_type && (
+              <span className="text-gray-500"> · {ticket.problem_type.replace(/_/g, ' ')}</span>
+            )}
+          </p>
         </div>
-
-        {/* Action buttons */}
-        {isActive && (
-          <div className="flex gap-2 flex-wrap">
-            {ticket.status === 'open' && (
-              <button onClick={() => doStatus('in_progress')} disabled={saving} className="btn-success">
-                <Play size={14} /> {t('tickets.start')}
-              </button>
-            )}
-            {(ticket.status === 'on_hold_parts' || ticket.status === 'on_hold_ext') && (
-              <button onClick={() => doStatus('in_progress')} disabled={saving} className="btn-success">
-                <Play size={14} /> {t('tickets.resume')}
-              </button>
-            )}
-            {ticket.status === 'in_progress' && (
-              <>
-                <button onClick={() => doStatus('on_hold_parts')} disabled={saving} className="btn-warning">
-                  <Package size={14} /> {t('tickets.holdParts')}
-                </button>
-                <button onClick={() => doStatus('on_hold_ext')} disabled={saving} className="btn-warning">
-                  <PauseCircle size={14} /> {t('tickets.holdExt')}
-                </button>
-              </>
-            )}
-            <button onClick={() => setShowClose(true)} disabled={saving} className="btn-success">
-              <CheckCircle2 size={14} /> {t('tickets.close')}
-            </button>
-            <button onClick={() => doStatus('cancelled')} disabled={saving} className="btn-danger">
-              <XCircle size={14} /> {t('tickets.cancel')}
-            </button>
-          </div>
-        )}
       </div>
 
-      {/* Close form */}
-      {showClose && (
-        <div className="glass-card p-5 border border-green-500/20 space-y-4">
-          <h3 className="text-white font-semibold flex items-center gap-2">
-            <CheckCircle2 size={16} className="text-green-400" />
-            {t('tickets.closeTicket')}
-          </h3>
-          {error && <p className="text-red-400 text-sm">{error}</p>}
-          <div>
-            <label className="label">{t('tickets.diagnosis')} *</label>
-            <textarea value={diagnosis} onChange={(e) => setDiagnosis(e.target.value)} rows={2} className="input-field resize-none" />
-          </div>
-          <div>
-            <label className="label">{t('tickets.correctiveAction')} *</label>
-            <textarea value={corrective} onChange={(e) => setCorrective(e.target.value)} rows={2} className="input-field resize-none" />
-          </div>
-          <div className="grid sm:grid-cols-2 gap-4">
-            <div>
-              <label className="label">{t('tickets.interventionMinutes')} *</label>
-              <input type="number" value={intMins} onChange={(e) => setIntMins(e.target.value)} className="input-field" min="0" />
-            </div>
-            <div>
-              <label className="label">{t('tickets.downtimeMinutes')}</label>
-              <input type="number" value={downMins} onChange={(e) => setDownMins(e.target.value)} className="input-field" min="0" />
-            </div>
-          </div>
-          <div className="flex gap-2 justify-end">
-            <button onClick={() => setShowClose(false)} className="btn-secondary">{t('common.cancel')}</button>
-            <button onClick={doClose} disabled={saving} className="btn-success">
-              <CheckCircle2 size={14} /> {t('tickets.confirmClose')}
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-white/[0.06]">
+      <div className="flex border-b border-white/[0.08] gap-1">
         {([
-          { id: 'details',   icon: Info,           label: 'tickets.tabDetails' },
-          { id: 'comments',  icon: MessageSquare,  label: 'tickets.tabComments' },
-          { id: 'parts',     icon: Package,        label: 'tickets.tabParts' },
-          { id: 'workorder', icon: Wrench,         label: 'supervisor.tabWorkOrder' },
-        ] as const).map(({ id: tid, icon: Icon, label }) => (
+          { key: 'details',   icon: Info,       label: 'Details' },
+          { key: 'workorder', icon: Wrench,      label: `Work Order${wo ? ' ✓' : ''}` },
+          { key: 'parts',     icon: Package,     label: 'Parts' },
+          { key: 'history',   icon: History,     label: 'Machine History' },
+        ] as { key: Tab; icon: React.ElementType; label: string }[]).map(({ key, icon: Icon, label }) => (
           <button
-            key={tid}
-            onClick={() => setTab(tid)}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-              tab === tid
+            key={key}
+            onClick={() => setTab(key)}
+            className={`px-3 py-2.5 text-sm flex items-center gap-1.5 border-b-2 transition-colors ${
+              tab === key
                 ? 'border-blue-500 text-blue-400'
                 : 'border-transparent text-gray-500 hover:text-gray-300'
             }`}
           >
             <Icon size={14} />
-            {t(label)}
+            <span className="hidden sm:inline">{label}</span>
           </button>
         ))}
       </div>
 
-      {/* Tab: Details */}
-      {tab === 'details' && (
-        <div className="space-y-4">
-          {/* Info grid */}
-          <div className="glass-card p-5 grid sm:grid-cols-2 gap-4">
-            <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">{t('tickets.openedAt')}</p>
-              <p className="text-gray-200 text-sm">{fmt(ticket.opened_at)}</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">{t('tickets.startedAt')}</p>
-              <p className="text-gray-200 text-sm">{fmt(ticket.started_at)}</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">{t('tickets.completedAt')}</p>
-              <p className="text-gray-200 text-sm">{fmt(ticket.completed_at)}</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">{t('tickets.assignedTo')}</p>
-              <p className="text-gray-200 text-sm">{ticket.assigned_to_name ?? '—'}</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">{t('tickets.downtimeMinutes')}</p>
-              <p className="text-gray-200 text-sm font-mono">{ticket.estimated_downtime_minutes ?? '—'}</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">{t('tickets.interventionMinutes')}</p>
-              <p className="text-gray-200 text-sm font-mono">{ticket.total_intervention_minutes ?? '—'}</p>
-            </div>
-          </div>
+      {tab === 'details'   && <DetailsTab ticket={ticket} wo={wo} onRefresh={load} />}
+      {tab === 'workorder' && <WorkOrderTab ticket={ticket} wo={wo} />}
+      {tab === 'parts'     && <PartsTab wo={wo} />}
+      {tab === 'history'   && <MachineHistoryTab machineId={ticket.machine_id} />}
+    </div>
+  );
+}
 
-          {/* Diagnosis / Corrective fields */}
-          {isActive && (
-            <div className="glass-card p-5 space-y-4">
-              <h3 className="text-white text-sm font-semibold">{t('tickets.diagnosis')}</h3>
-              <div>
-                <label className="label">{t('tickets.diagnosis')}</label>
-                <textarea value={diagnosis} onChange={(e) => setDiagnosis(e.target.value)} rows={3} className="input-field resize-none" placeholder={t('tickets.diagnosisPlaceholder')} />
-              </div>
-              <div>
-                <label className="label">{t('tickets.correctiveAction')}</label>
-                <textarea value={corrective} onChange={(e) => setCorrective(e.target.value)} rows={3} className="input-field resize-none" placeholder={t('tickets.correctivePlaceholder')} />
-              </div>
-              <div className="grid sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="label">{t('tickets.interventionMinutes')}</label>
-                  <input type="number" value={intMins} onChange={(e) => setIntMins(e.target.value)} className="input-field" min="0" />
-                </div>
-                <div>
-                  <label className="label">{t('tickets.downtimeMinutes')}</label>
-                  <input type="number" value={downMins} onChange={(e) => setDownMins(e.target.value)} className="input-field" min="0" />
-                </div>
-              </div>
-              <button onClick={doSaveDiagnosis} disabled={saving} className="btn-primary">
-                {saving ? t('tickets.saving') : t('common.save')}
-              </button>
-            </div>
-          )}
+// ── Details Tab ───────────────────────────────────────────────────────────────
 
-          {/* Read-only if completed */}
-          {!isActive && (diagnosis || corrective) && (
-            <div className="glass-card p-5 space-y-3">
-              {diagnosis && (
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">{t('tickets.diagnosis')}</p>
-                  <p className="text-gray-300 text-sm whitespace-pre-wrap">{diagnosis}</p>
-                </div>
-              )}
-              {corrective && (
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">{t('tickets.correctiveAction')}</p>
-                  <p className="text-gray-300 text-sm whitespace-pre-wrap">{corrective}</p>
-                </div>
-              )}
-            </div>
-          )}
+function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket; wo: WorkOrder | null; onRefresh: () => void }) {
+  const [techs, setTechs]         = useState<TechnicianFull[]>([]);
+  const [techId, setTechId]       = useState('');
+  const [assigning, setAssigning] = useState(false);
+  const [showClose, setShowClose] = useState(false);
+  const [closing, setClosing]     = useState(false);
+  const [commentText, setCommentText]     = useState('');
+  const [commentAuthor, setCommentAuthor] = useState('');
+  const [postingComment, setPostingComment] = useState(false);
+  const [closeForm, setCloseForm] = useState({ diagnosis: '', corrective_action: '', total_intervention_minutes: '' });
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    if (!ticket.work_order_id) fetchTechniciansFull().then(setTechs).catch(() => {});
+  }, [ticket.work_order_id]);
+
+  const doAssign = async () => {
+    if (!techId) return;
+    setAssigning(true); setErr('');
+    try {
+      await assignTicket(ticket.id, techId);
+      onRefresh();
+    } catch (e: unknown) {
+      setErr((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Error');
+    } finally { setAssigning(false); }
+  };
+
+  const doClose = async () => {
+    if (!closeForm.diagnosis.trim() || !closeForm.corrective_action.trim()) return;
+    setClosing(true);
+    try {
+      await closeTicket(ticket.id, {
+        diagnosis: closeForm.diagnosis,
+        corrective_action: closeForm.corrective_action,
+        total_intervention_minutes: parseInt(closeForm.total_intervention_minutes) || 0,
+      });
+      onRefresh(); setShowClose(false);
+    } finally { setClosing(false); }
+  };
+
+  const doComment = async () => {
+    if (!commentText.trim()) return;
+    setPostingComment(true);
+    try {
+      await addTicketComment(ticket.id, { author: commentAuthor || 'User', comment: commentText });
+      setCommentText(''); onRefresh();
+    } finally { setPostingComment(false); }
+  };
+
+  // Ticket is not actually used in status updates here — kept simple
+  const _updateStatus = updateTicketStatus;
+
+  return (
+    <div className="space-y-4">
+      <div className="glass-card p-4 grid grid-cols-2 gap-4 text-sm">
+        <Field label="Machine" value={ticket.machine_name ?? '—'} />
+        <Field label="Problem Type" value={ticket.problem_type?.replace(/_/g, ' ') ?? '—'} />
+        <Field label="Priority" value={ticket.priority} />
+        <Field label="Status" value={ticket.status.replace(/_/g, ' ')} />
+        <Field label="Opened" value={fmtDt(ticket.opened_at)} />
+        <Field label="Assigned To" value={ticket.assigned_to_name ?? 'Unassigned'} />
+        {ticket.started_at && <Field label="Started" value={fmtDt(ticket.started_at)} />}
+        {ticket.completed_at && <Field label="Completed" value={fmtDt(ticket.completed_at)} />}
+        {ticket.estimated_downtime_minutes != null && (
+          <Field label="Est. Downtime" value={`${ticket.estimated_downtime_minutes} min`} />
+        )}
+        {ticket.total_intervention_minutes != null && (
+          <Field label="Intervention Time" value={`${ticket.total_intervention_minutes} min`} />
+        )}
+      </div>
+
+      {ticket.description && (
+        <div className="glass-card p-4">
+          <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">Description</p>
+          <p className="text-sm text-gray-300">{ticket.description}</p>
         </div>
       )}
 
-      {/* Tab: Comments */}
-      {tab === 'comments' && (
-        <div className="space-y-3">
-          {(ticket.comments ?? []).length === 0 && (
-            <div className="glass-card p-8 text-center text-gray-600 text-sm">{t('tickets.noComments')}</div>
-          )}
-          {(ticket.comments ?? []).map((c: TicketComment) => (
-            <div key={c.id} className="glass-card p-4">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-sm font-medium text-gray-200">{c.author}</span>
-                <span className="text-xs text-gray-600 font-mono">{fmt(c.created_at)}</span>
-              </div>
-              <p className="text-gray-400 text-sm whitespace-pre-wrap">{c.comment}</p>
-            </div>
-          ))}
-          <div className="glass-card p-4 space-y-3">
-            <div>
-              <label className="label">{t('tickets.yourName')}</label>
-              <input value={commentAuthor} onChange={(e) => setCommentAuthor(e.target.value)} className="input-field" placeholder={t('tickets.namePlaceholder')} />
-            </div>
-            <div>
-              <label className="label">{t('tickets.addComment')}</label>
-              <textarea value={commentText} onChange={(e) => setCommentText(e.target.value)} rows={3} className="input-field resize-none" placeholder={t('tickets.commentPlaceholder')} />
-            </div>
-            <button
-              onClick={doAddComment}
-              disabled={postingComment || !commentText || !commentAuthor}
-              className="btn-primary"
-            >
-              {postingComment ? t('common.posting') : t('common.post')}
+      {!ticket.work_order_id && ticket.status !== 'completed' && ticket.status !== 'cancelled' && (
+        <div className="glass-card p-4 space-y-3">
+          <p className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+            <UserCheck size={15} className="text-blue-400" />
+            Assign Technician — Work Order Created Automatically
+          </p>
+          <div className="flex gap-2">
+            <select value={techId} onChange={(e) => setTechId(e.target.value)} className="input-field flex-1 text-sm">
+              <option value="">Select technician…</option>
+              {techs.map((t) => (
+                <option key={t.id} value={t.id}>{t.full_name ?? t.email}</option>
+              ))}
+            </select>
+            <button onClick={doAssign} disabled={assigning || !techId}
+              className="btn-primary px-4 py-2 text-sm flex items-center gap-1.5">
+              {assigning ? <Spinner size="sm" /> : <UserCheck size={14} />}
+              {assigning ? 'Creating WO…' : 'Assign + WO'}
+            </button>
+          </div>
+          {err && <p className="text-red-400 text-xs">{err}</p>}
+        </div>
+      )}
+
+      {ticket.status === 'in_progress' && !showClose && (
+        <button onClick={() => setShowClose(true)} className="btn-success w-full py-3 flex items-center justify-center gap-2">
+          <CheckCircle2 size={16} /> Mark Ticket Complete
+        </button>
+      )}
+      {showClose && (
+        <div className="glass-card p-4 space-y-3">
+          <p className="text-sm font-semibold text-gray-200">Close Ticket</p>
+          <div>
+            <label className="label">Diagnosis *</label>
+            <textarea className="input-field w-full h-20 resize-none" value={closeForm.diagnosis}
+              onChange={(e) => setCloseForm((f) => ({ ...f, diagnosis: e.target.value }))} />
+          </div>
+          <div>
+            <label className="label">Corrective Action *</label>
+            <textarea className="input-field w-full h-20 resize-none" value={closeForm.corrective_action}
+              onChange={(e) => setCloseForm((f) => ({ ...f, corrective_action: e.target.value }))} />
+          </div>
+          <div>
+            <label className="label">Intervention Time (minutes)</label>
+            <input type="number" className="input-field w-full" value={closeForm.total_intervention_minutes}
+              onChange={(e) => setCloseForm((f) => ({ ...f, total_intervention_minutes: e.target.value }))} />
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => setShowClose(false)} className="btn-secondary flex-1 py-2">Cancel</button>
+            <button onClick={doClose} disabled={closing} className="btn-success flex-1 py-2 font-semibold">
+              {closing ? 'Saving…' : 'Close Ticket'}
             </button>
           </div>
         </div>
       )}
 
-      {/* Tab: Parts */}
-      {tab === 'parts' && (
-        <div className="space-y-3">
-          {(ticket.parts_used ?? []).length === 0 ? (
-            <div className="glass-card p-8 text-center text-gray-600 text-sm">{t('tickets.noParts')}</div>
-          ) : (
-            <div className="glass-card overflow-hidden">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-white/[0.04]">
-                    <th className="table-header-cell">{t('workOrders.partName')}</th>
-                    <th className="table-header-cell">{t('workOrders.partNumber')}</th>
-                    <th className="table-header-cell">{t('workOrders.quantity')}</th>
-                    <th className="table-header-cell">{t('workOrders.unit')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(ticket.parts_used ?? []).map((p, i) => (
-                    <tr key={i} className="table-row">
-                      <td className="table-cell">{p.name}</td>
-                      <td className="table-cell text-gray-500 font-mono text-xs">{p.part_no ?? '—'}</td>
-                      <td className="table-cell font-mono">{p.qty}</td>
-                      <td className="table-cell text-gray-500">{p.unit ?? '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {isActive && (
-            <div className="glass-card p-4 space-y-3">
-              <h3 className="text-sm font-semibold text-gray-300">{t('tickets.addPart')}</h3>
-              <div className="grid sm:grid-cols-4 gap-3">
-                <div className="sm:col-span-2">
-                  <label className="label">{t('workOrders.partName')} *</label>
-                  <input value={newPartName} onChange={(e) => setNewPartName(e.target.value)} className="input-field" />
-                </div>
-                <div>
-                  <label className="label">{t('workOrders.partNumber')}</label>
-                  <input value={newPartNo} onChange={(e) => setNewPartNo(e.target.value)} className="input-field" />
-                </div>
-                <div>
-                  <label className="label">{t('workOrders.quantity')}</label>
-                  <input type="number" value={newPartQty} onChange={(e) => setNewPartQty(e.target.value)} className="input-field" min="0.01" step="0.01" />
-                </div>
-                <div>
-                  <label className="label">{t('workOrders.unit')}</label>
-                  <input value={newPartUnit} onChange={(e) => setNewPartUnit(e.target.value)} className="input-field" placeholder="un" />
-                </div>
-              </div>
-              <button onClick={doAddPart} disabled={!newPartName} className="btn-primary">
-                <Package size={14} /> {t('tickets.addPart')}
-              </button>
-            </div>
-          )}
+      <div className="glass-card p-4 space-y-3">
+        <p className="text-xs text-gray-600 uppercase tracking-wider flex items-center gap-2">
+          <MessageSquare size={12} /> Comments ({ticket.comments?.length ?? 0})
+        </p>
+        {ticket.comments?.map((c) => (
+          <div key={c.id} className="border-l-2 border-white/10 pl-3 py-1">
+            <p className="text-xs text-gray-500">{c.author} · {fmtDt(c.created_at)}</p>
+            <p className="text-sm text-gray-300 mt-0.5">{c.comment}</p>
+          </div>
+        ))}
+        <div className="space-y-2 pt-1">
+          <input placeholder="Your name" value={commentAuthor}
+            onChange={(e) => setCommentAuthor(e.target.value)} className="input-field w-full text-sm" />
+          <div className="flex gap-2">
+            <textarea placeholder="Add a comment…" value={commentText}
+              onChange={(e) => setCommentText(e.target.value)}
+              className="input-field flex-1 h-16 resize-none text-sm" />
+            <button onClick={doComment} disabled={postingComment || !commentText.trim()}
+              className="btn-primary px-3 self-end py-2 text-sm">
+              {postingComment ? '…' : 'Post'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Work Order Tab ────────────────────────────────────────────────────────────
+
+function WorkOrderTab({ ticket, wo }: { ticket: MaintenanceTicket; wo: WorkOrder | null }) {
+  const navigate = useNavigate();
+
+  if (!wo && !ticket.work_order_id) {
+    return (
+      <div className="glass-card p-8 text-center space-y-3">
+        <Wrench size={36} className="text-gray-700 mx-auto" />
+        <p className="text-gray-400 font-medium">No work order yet</p>
+        <p className="text-gray-600 text-sm">Assign a technician from the Details tab to auto-create a work order.</p>
+      </div>
+    );
+  }
+  if (!wo) return <div className="flex items-center justify-center h-24"><Spinner size="lg" /></div>;
+
+  const statusCls: Record<string, string> = {
+    open: 'text-blue-400', in_progress: 'text-amber-400',
+    on_hold: 'text-purple-400', completed: 'text-green-400', cancelled: 'text-gray-500',
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="glass-card p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="font-mono text-blue-400 font-semibold text-lg">{wo.wo_number}</span>
+          <span className={`text-sm font-medium ${statusCls[wo.status] ?? 'text-gray-400'}`}>
+            {wo.status.replace(/_/g, ' ')}
+          </span>
+        </div>
+        <p className="text-white font-medium">{wo.title}</p>
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <Field label="Priority" value={wo.priority} />
+          <Field label="Assigned To" value={wo.executor_name ?? wo.assigned_to_name ?? 'Unassigned'} />
+          {wo.started_at && <Field label="Started" value={fmtDt(wo.started_at)} />}
+          {wo.completed_at && <Field label="Completed" value={fmtDt(wo.completed_at)} />}
+          {wo.repair_hours != null && <Field label="Repair Hours" value={`${wo.repair_hours}h`} />}
+          {wo.downtime_hours != null && <Field label="Downtime Hours" value={`${wo.downtime_hours}h`} />}
+        </div>
+        {wo.root_cause && (
+          <div>
+            <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">Diagnosis</p>
+            <p className="text-sm text-gray-300">{wo.root_cause}</p>
+          </div>
+        )}
+        {wo.solution_applied && (
+          <div>
+            <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">Corrective Action</p>
+            <p className="text-sm text-gray-300">{wo.solution_applied}</p>
+          </div>
+        )}
+        <button onClick={() => navigate(`/work-orders/${wo.id}`)}
+          className="btn-secondary w-full py-2 text-sm flex items-center justify-center gap-2">
+          Open Full WO Detail <ChevronRight size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Parts Tab ─────────────────────────────────────────────────────────────────
+
+function PartsTab({ wo }: { wo: WorkOrder | null }) {
+  const [parts, setParts] = useState<{
+    id: string; description: string; quantity: number; unit: string;
+    part_number?: string; total_cost?: number;
+  }[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!wo) return;
+    setLoading(true);
+    api.get(`/api/wo/${wo.id}/parts`)
+      .then((r) => setParts(r.data.items ?? r.data ?? []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [wo?.id]);
+
+  if (!wo) return (
+    <div className="glass-card p-8 text-center text-gray-600 text-sm">
+      No work order — assign a technician to create one first.
+    </div>
+  );
+
+  return (
+    <div className="space-y-3">
+      {loading ? (
+        <div className="flex items-center justify-center h-24"><Spinner size="lg" /></div>
+      ) : parts.length === 0 ? (
+        <div className="glass-card p-8 text-center">
+          <Package size={32} className="text-gray-700 mx-auto mb-2 opacity-50" />
+          <p className="text-gray-500 text-sm">No parts recorded yet</p>
+          <p className="text-gray-600 text-xs mt-1">Parts are added from the Work Order detail page.</p>
+        </div>
+      ) : (
+        <div className="glass-card overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-white/[0.06]">
+                <th className="text-left p-3 text-xs text-gray-600 uppercase tracking-wider">Part</th>
+                <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">Qty</th>
+                <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {parts.map((p) => (
+                <tr key={p.id} className="border-b border-white/[0.04] last:border-0">
+                  <td className="p-3">
+                    <p className="text-gray-300">{p.description}</p>
+                    {p.part_number && <p className="text-xs text-gray-600">{p.part_number}</p>}
+                  </td>
+                  <td className="p-3 text-right text-gray-400">{p.quantity} {p.unit}</td>
+                  <td className="p-3 text-right text-gray-400">
+                    {p.total_cost != null ? `$${p.total_cost.toFixed(2)}` : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
-      {/* Tab: Work Order */}
-      {tab === 'workorder' && (
-        <div className="space-y-3">
-          {!ticket.work_order_id ? (
-            <div className="glass-card p-8 flex flex-col items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-blue-600/20 flex items-center justify-center">
-                <Wrench size={24} className="text-blue-400" />
-              </div>
-              <p className="text-gray-400 text-sm">{t('supervisor.noWorkOrder')}</p>
-              {woError && <p className="text-red-400 text-xs">{woError}</p>}
-              {isActive && (
-                <button
-                  onClick={doGenerateWO}
-                  disabled={generatingWO}
-                  className="btn-primary"
-                >
-                  <Wrench size={14} />
-                  {generatingWO ? t('supervisor.generating') : t('supervisor.generateButton')}
-                </button>
-              )}
-            </div>
-          ) : (
-            <div className="glass-card p-5 space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-white font-semibold flex items-center gap-2">
-                  <Wrench size={15} className="text-blue-400" />
-                  {t('supervisor.woLinked')}
-                </h3>
-                <button
-                  onClick={() => navigate(`/work-orders/${ticket.work_order_id}`)}
-                  className="btn-secondary py-1.5 px-3 text-xs"
-                >
-                  <ChevronRight size={13} /> {t('supervisor.viewWO')}
-                </button>
-              </div>
-              <div className="grid sm:grid-cols-2 gap-4">
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">WO Number</p>
-                  <p className="text-gray-200 text-sm font-mono">{ticket.work_order_number ?? '—'}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">{t('common.status')}</p>
-                  <p className="text-gray-200 text-sm">{ticket.work_order_status ?? '—'}</p>
-                </div>
-              </div>
-            </div>
-          )}
+    </div>
+  );
+}
+
+// ── Machine History Tab ───────────────────────────────────────────────────────
+
+function MachineHistoryTab({ machineId }: { machineId: string }) {
+  const [history, setHistory] = useState<MachineHistoryEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.get(`/api/machines/${machineId}/history`)
+      .then((r) => setHistory(r.data.items ?? []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [machineId]);
+
+  const eventTypeColors: Record<string, string> = {
+    corrective:  'text-red-400 bg-red-500/10',
+    preventive:  'text-blue-400 bg-blue-500/10',
+    inspection:  'text-purple-400 bg-purple-500/10',
+    improvement: 'text-green-400 bg-green-500/10',
+  };
+
+  return (
+    <div className="space-y-3">
+      {loading ? (
+        <div className="flex items-center justify-center h-24"><Spinner size="lg" /></div>
+      ) : history.length === 0 ? (
+        <div className="glass-card p-8 text-center">
+          <History size={32} className="text-gray-700 mx-auto mb-2 opacity-50" />
+          <p className="text-gray-500 text-sm">No maintenance history recorded yet</p>
         </div>
+      ) : (
+        history.map((h) => (
+          <div key={h.id} className="glass-card p-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className={`text-xs px-2 py-0.5 rounded font-medium ${eventTypeColors[h.event_type] ?? 'text-gray-400 bg-gray-500/10'}`}>
+                {h.event_type}
+              </span>
+              <span className="text-xs text-gray-600">{fmtDt(h.occurred_at)}</span>
+            </div>
+            {h.problem_type && <p className="text-xs text-gray-500">{h.problem_type.replace(/_/g, ' ')}</p>}
+            {h.description && <p className="text-sm text-gray-400">{h.description}</p>}
+            {h.diagnosis && (
+              <div>
+                <p className="text-xs text-gray-600">Diagnosis</p>
+                <p className="text-sm text-gray-300">{h.diagnosis}</p>
+              </div>
+            )}
+            {h.corrective_action && (
+              <div>
+                <p className="text-xs text-gray-600">Corrective Action</p>
+                <p className="text-sm text-gray-300">{h.corrective_action}</p>
+              </div>
+            )}
+            <div className="flex flex-wrap gap-3 text-xs text-gray-600">
+              {h.technician_name && <span className="flex items-center gap-1"><User size={10} />{h.technician_name}</span>}
+              {h.downtime_minutes != null && <span className="flex items-center gap-1"><AlertTriangle size={10} />{h.downtime_minutes} min downtime</span>}
+              {h.total_minutes != null && <span className="flex items-center gap-1"><Clock size={10} />{h.total_minutes} min repair</span>}
+            </div>
+          </div>
+        ))
       )}
+    </div>
+  );
+}
+
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-xs text-gray-600">{label}</p>
+      <p className="text-sm text-gray-300 font-medium">{value}</p>
     </div>
   );
 }

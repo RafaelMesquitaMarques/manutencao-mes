@@ -99,7 +99,7 @@ const WorkOrderList = () => {
     });
   }, [workOrders, search, statusFilter, typeFilter, priorityFilter]);
 
-  const colDefs: ColDef<WorkOrder>[] = useMemo(() => [
+  const colDefs = useMemo(() => ([
     {
       field: 'wo_number',
       headerName: t('workOrders.woNumber'),
@@ -163,7 +163,7 @@ const WorkOrderList = () => {
       sort: 'desc',
       cellRenderer: DateCell,
     },
-  ], [t]);
+  ] as ColDef<WorkOrder>[]), [t]);
 
   const defaultColDef: ColDef = useMemo(() => ({
     resizable: true,
