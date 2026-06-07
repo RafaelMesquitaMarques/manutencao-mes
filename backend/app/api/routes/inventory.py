@@ -146,9 +146,12 @@ async def list_stock_items(
         filters.append(StockItem.warehouse.ilike(f"%{warehouse}%"))
     if low_stock_only:
         filters.append(
-            and_(
-                StockItem.min_quantity.isnot(None),
-                StockItem.quantity <= StockItem.min_quantity,
+            or_(
+                StockItem.quantity <= 0,
+                and_(
+                    StockItem.min_quantity.isnot(None),
+                    StockItem.quantity <= StockItem.min_quantity,
+                ),
             )
         )
     if filters:
@@ -157,12 +160,15 @@ async def list_stock_items(
     total_q = select(func.count()).select_from(q.subquery())
     total = (await db.execute(total_q)).scalar_one()
 
-    # Low stock count for dashboard badge
+    # Low stock count: quantity <= 0 OR (min set AND quantity <= min)
     low_q = select(func.count()).select_from(
         select(StockItem).where(
-            and_(
-                StockItem.min_quantity.isnot(None),
-                StockItem.quantity <= StockItem.min_quantity,
+            or_(
+                StockItem.quantity <= 0,
+                and_(
+                    StockItem.min_quantity.isnot(None),
+                    StockItem.quantity <= StockItem.min_quantity,
+                ),
             )
         ).subquery()
     )
@@ -319,7 +325,10 @@ async def inventory_dashboard(
     low_stock = (await db.execute(
         select(func.count()).select_from(
             select(StockItem).where(
-                and_(StockItem.min_quantity.isnot(None), StockItem.quantity <= StockItem.min_quantity)
+                or_(
+                    StockItem.quantity <= 0,
+                    and_(StockItem.min_quantity.isnot(None), StockItem.quantity <= StockItem.min_quantity),
+                )
             ).subquery()
         )
     )).scalar_one()
@@ -349,10 +358,9 @@ async def inventory_dashboard(
 
 
 def _item_out(i: StockItem) -> dict:
-    is_low = (
-        i.min_quantity is not None
-        and i.quantity is not None
-        and i.quantity <= i.min_quantity
+    qty = float(i.quantity) if i.quantity is not None else 0.0
+    is_low = qty <= 0 or (
+        i.min_quantity is not None and qty <= float(i.min_quantity)
     )
     return {
         "id": str(i.id),
@@ -363,7 +371,7 @@ def _item_out(i: StockItem) -> dict:
         "category": i.category or "",
         "part_class": i.part_class or "",
         "unit": i.unit or "Unitaire",
-        "quantity": float(i.quantity) if i.quantity is not None else 0.0,
+        "quantity": qty,
         "min_quantity": float(i.min_quantity) if i.min_quantity is not None else None,
         "unit_cost": float(i.unit_cost) if i.unit_cost is not None else None,
         "warehouse": i.warehouse or "",

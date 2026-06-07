@@ -212,7 +212,7 @@ export default function InventoryList() {
   ].filter(Boolean).length + (filters.low_stock_only ? 1 : 0);
 
   return (
-    <div className="flex flex-col h-full bg-gray-950 text-gray-100">
+    <div className="flex flex-col bg-gray-950 text-gray-100">
 
       {/* ── Header ── */}
       <div className="px-6 pt-6 pb-4 border-b border-gray-800">
@@ -357,12 +357,13 @@ export default function InventoryList() {
       </div>
 
       {/* ── AG Grid ── */}
-      <div className="flex-1 ag-theme-alpine-dark overflow-hidden" style={{ minHeight: 0 }}>
+      <div className="ag-theme-alpine-dark w-full">
         <AgGridReact<StockItem>
           ref={gridRef}
           rowData={items}
           columnDefs={colDefs}
           defaultColDef={defaultColDef}
+          domLayout="autoHeight"
           animateRows
           rowSelection="single"
           onRowClicked={onRowClicked}
