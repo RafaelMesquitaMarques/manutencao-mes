@@ -330,6 +330,8 @@ async def _run_migrations() -> None:
         """,
         # Phase: alert ↔ ticket direct link
         "ALTER TABLE maintenance_alerts ADD COLUMN IF NOT EXISTS ticket_id UUID REFERENCES maintenance_tickets(id) ON DELETE SET NULL",
+        "ALTER TABLE maintenance_alerts ALTER COLUMN escalation_level SET DEFAULT 0",
+        "ALTER TABLE maintenance_alerts ALTER COLUMN is_overdue SET DEFAULT FALSE",
         # Phase: labor record time tracking
         "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
         "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS stopped_at TIMESTAMPTZ",
