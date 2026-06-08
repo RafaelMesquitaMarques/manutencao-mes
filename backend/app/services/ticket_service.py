@@ -72,8 +72,9 @@ class TicketService:
             raise ValueError("Machine not found")
 
         alert_id = data.alert_id
+        new_alert = None
         if not alert_id:
-            alert = MaintenanceAlert(
+            new_alert = MaintenanceAlert(
                 alert_number=await _next_alert_number(self.db),
                 machine_id=data.machine_id,
                 department=machine.department,
@@ -83,9 +84,9 @@ class TicketService:
                 created_by=created_by,
                 status=AlertStatus.new_alert,
             )
-            self.db.add(alert)
+            self.db.add(new_alert)
             await self.db.flush()
-            alert_id = alert.id
+            alert_id = new_alert.id
 
         ticket = MaintenanceTicket(
             ticket_number=await _next_ticket_number(self.db),
@@ -99,6 +100,11 @@ class TicketService:
             machine_page_source=getattr(data, "machine_page_source", False),
         )
         self.db.add(ticket)
+        await self.db.flush()
+
+        if new_alert is not None:
+            new_alert.ticket_id = ticket.id
+
         await self.db.commit()
         await self.db.refresh(ticket)
         return ticket
@@ -336,6 +342,7 @@ async def backfill_missing_alerts(db: AsyncSession) -> int:
         alert = MaintenanceAlert(
             alert_number=await _next_alert_number(db),
             machine_id=ticket.machine_id,
+            ticket_id=ticket.id,
             department=machine.department if machine else None,
             problem_type=ticket.problem_type or AlertProblemType.other,
             priority=ticket.priority,

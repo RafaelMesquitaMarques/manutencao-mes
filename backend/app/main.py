@@ -328,6 +328,8 @@ async def _run_migrations() -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """,
+        # Phase: alert ↔ ticket direct link
+        "ALTER TABLE maintenance_alerts ADD COLUMN IF NOT EXISTS ticket_id UUID REFERENCES maintenance_tickets(id) ON DELETE SET NULL",
         # Phase: labor record time tracking
         "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
         "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS stopped_at TIMESTAMPTZ",

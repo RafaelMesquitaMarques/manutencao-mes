@@ -816,6 +816,7 @@ class MaintenanceAlert(Base):
     id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     alert_number     = Column(String(30), unique=True, nullable=False)
     machine_id       = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    ticket_id        = Column(UUID(as_uuid=True), ForeignKey("maintenance_tickets.id"), nullable=True)
     department       = Column(String(200))
     problem_type     = Column(SAEnum(AlertProblemType, native_enum=False), nullable=False)
     priority         = Column(SAEnum(AlertPriority, native_enum=False), default=AlertPriority.medium)

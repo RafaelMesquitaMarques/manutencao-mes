@@ -25,12 +25,14 @@ async def _enrich(alert: MaintenanceAlert, db: AsyncSession) -> AlertOut:
         user = await db.get(User, alert.assigned_to_id)
         if user:
             data.assigned_to_name = user.name
-    r = await db.execute(
-        select(MaintenanceTicket.id).where(MaintenanceTicket.alert_id == alert.id)
-    )
-    row = r.scalar_one_or_none()
-    if row:
-        data.ticket_id = row
+    # ticket_id: prefer the direct FK on the alert; fall back to reverse lookup for legacy alerts
+    if not data.ticket_id:
+        r = await db.execute(
+            select(MaintenanceTicket.id).where(MaintenanceTicket.alert_id == alert.id)
+        )
+        row = r.scalar_one_or_none()
+        if row:
+            data.ticket_id = row
     return data
 
 
