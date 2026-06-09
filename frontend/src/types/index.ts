@@ -797,6 +797,16 @@ export interface MaintenanceDashboardData {
   by_ticket_status:     { status: string; count: number }[];
 }
 
+export interface InterventionType {
+  id: string;
+  equipment_id: string | null;
+  name: string;
+  icon: string;
+  color: string;
+  sort_order: number;
+  is_active: boolean;
+}
+
 export interface MachineIntervention {
   id: string;
   machine_id: string | null;
@@ -810,6 +820,7 @@ export interface MachineIntervention {
   started_by_id: string | null;
   operator_note: string | null;
   mechanic_note: string | null;
+  intervention_type_name: string | null;
 }
 
 export interface MachineOperatorState {

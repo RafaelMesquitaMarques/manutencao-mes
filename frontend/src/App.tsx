@@ -38,6 +38,7 @@ import StopCategoriesPage from './pages/Settings/StopCategories';
 import MachinesSetup from './pages/Settings/MachinesSetup';
 import MachineSettings from './pages/Settings/MachineSettings';
 import UsersSetup from './pages/Settings/UsersSetup';
+import InterventionTypeSettings from './pages/Settings/InterventionTypeSettings';
 import UserDetail from './pages/Settings/UserDetail';
 import MyProfile from './pages/Settings/MyProfile';
 import ChangePassword from './pages/Settings/ChangePassword';
@@ -110,6 +111,7 @@ const App = () => (
         <Route path="settings/users/:id"                      element={<UserDetail />} />
         <Route path="settings/profile"                        element={<MyProfile />} />
         <Route path="settings/change-password"                element={<ChangePassword />} />
+        <Route path="settings/intervention-types"             element={<InterventionTypeSettings />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

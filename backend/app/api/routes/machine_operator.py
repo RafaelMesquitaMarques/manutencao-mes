@@ -4,13 +4,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.models.models import (
     Equipment, Machine, MachineIntervention, MaintenanceTicket,
     TicketStatus, AlertPriority, MaintenanceAlert, AlertStatus, AlertProblemType,
+    InterventionType,
 )
 from app.services.ticket_service import _next_ticket_number, _next_alert_number, sync_alert_from_ticket
 
@@ -229,8 +230,36 @@ async def start_intervention(machine_id: str, body: StartBody, db: AsyncSession 
     return {"status": "started", "intervention": _intervention_dict(intervention)}
 
 
+@router.get("/{machine_id}/intervention-types")
+async def get_intervention_types(machine_id: str, db: AsyncSession = Depends(get_db)):
+    machine, equipment = await _resolve(machine_id, db)
+    eq_id = equipment.id if equipment else None
+
+    q = select(InterventionType).where(
+        and_(
+            InterventionType.equipment_id == eq_id,
+            InterventionType.is_active == True,
+        )
+    ).order_by(InterventionType.sort_order)
+
+    types = (await db.execute(q)).scalars().all()
+    return {
+        "items": [
+            {
+                "id":         str(t.id),
+                "name":       t.name,
+                "icon":       t.icon or "🔧",
+                "color":      t.color or "#388bfd",
+                "sort_order": t.sort_order,
+            }
+            for t in types
+        ]
+    }
+
+
 class CompleteBody(BaseModel):
     mechanic_note: Optional[str] = None
+    intervention_type_id: Optional[str] = None
 
 
 @router.post("/{machine_id}/complete")
@@ -248,6 +277,15 @@ async def complete_intervention(machine_id: str, body: CompleteBody, db: AsyncSe
     intervention.completed_at = now
     if body.mechanic_note:
         intervention.mechanic_note = body.mechanic_note
+    if body.intervention_type_id:
+        try:
+            type_uid = UUID(body.intervention_type_id)
+            intervention.intervention_type_id = type_uid
+            itype = await db.get(InterventionType, type_uid)
+            if itype:
+                intervention.intervention_type_name = itype.name
+        except ValueError:
+            pass
 
     if intervention.ticket_id:
         ticket = await db.get(MaintenanceTicket, intervention.ticket_id)

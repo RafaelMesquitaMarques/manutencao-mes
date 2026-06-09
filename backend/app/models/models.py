@@ -1084,20 +1084,37 @@ class CostAuditLog(Base):
 
 # ─── Machine Intervention (operator call flow) ────────────────────────────────
 
+# ─── Intervention Types ───────────────────────────────────────────────────────
+
+class InterventionType(Base):
+    __tablename__ = "intervention_types"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id     = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True)
+    name         = Column(String(200), nullable=False)
+    icon         = Column(String(100), nullable=True)
+    color        = Column(String(20), default="#388bfd")
+    sort_order   = Column(Integer, default=0)
+    is_active    = Column(Boolean, default=True)
+
+
 class MachineIntervention(Base):
     __tablename__ = "machine_interventions"
 
-    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    plant_id        = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
-    machine_id      = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
-    equipment_id    = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True)
-    ticket_id       = Column(UUID(as_uuid=True), ForeignKey("maintenance_tickets.id"), nullable=True)
-    status          = Column(String(30), default="waiting")
-    called_at       = Column(DateTime(timezone=True), server_default=func.now())
-    started_at      = Column(DateTime(timezone=True), nullable=True)
-    completed_at    = Column(DateTime(timezone=True), nullable=True)
-    called_by_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
-    started_by_id   = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
-    completed_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
-    operator_note   = Column(Text, nullable=True)
-    mechanic_note   = Column(Text, nullable=True)
+    id                     = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id               = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    machine_id             = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
+    equipment_id           = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True)
+    ticket_id              = Column(UUID(as_uuid=True), ForeignKey("maintenance_tickets.id"), nullable=True)
+    status                 = Column(String(30), default="waiting")
+    called_at              = Column(DateTime(timezone=True), server_default=func.now())
+    started_at             = Column(DateTime(timezone=True), nullable=True)
+    completed_at           = Column(DateTime(timezone=True), nullable=True)
+    called_by_id           = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    started_by_id          = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    completed_by_id        = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    operator_note          = Column(Text, nullable=True)
+    mechanic_note          = Column(Text, nullable=True)
+    intervention_type_id   = Column(UUID(as_uuid=True), ForeignKey("intervention_types.id"), nullable=True)
+    intervention_type_name = Column(String(200), nullable=True)

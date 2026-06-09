@@ -88,8 +88,9 @@ const Sidebar = ({ onClose }: SidebarProps) => {
   };
 
   const settingsItems: NavItem[] = [
-    { to: '/settings/stop-categories', icon: Settings, key: 'stopCategories',  roles: TECH_UP },
-    { to: '/settings/machines',        icon: Factory,  key: 'machinesSetup',   roles: TECH_UP },
+    { to: '/settings/stop-categories',    icon: Settings, key: 'stopCategories',     roles: TECH_UP },
+    { to: '/settings/machines',           icon: Factory,  key: 'machinesSetup',      roles: TECH_UP },
+    { to: '/settings/intervention-types', icon: Wrench,   key: 'interventionTypes',  roles: TECH_UP },
     ...(isAdmin() ? [{ to: '/settings/users', icon: UserCog, key: 'userManagement' }] : []),
   ];
 

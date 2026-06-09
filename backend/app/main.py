@@ -14,6 +14,7 @@ from app.api.routes import (
     suppliers as suppliers_module,
 )
 from app.api.routes.machine_operator import router as machine_operator_router
+from app.api.routes.intervention_type_settings import router as intervention_types_router
 
 
 async def _escalation_loop() -> None:
@@ -329,6 +330,21 @@ async def _run_migrations() -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """,
+        # Phase: intervention types per machine
+        """
+        CREATE TABLE IF NOT EXISTS intervention_types (
+            id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            plant_id     UUID REFERENCES plants(id) ON DELETE CASCADE,
+            equipment_id UUID REFERENCES equipment(id) ON DELETE CASCADE,
+            name         VARCHAR(200) NOT NULL,
+            icon         VARCHAR(100),
+            color        VARCHAR(20) DEFAULT '#388bfd',
+            sort_order   INTEGER DEFAULT 0,
+            is_active    BOOLEAN DEFAULT TRUE
+        )
+        """,
+        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS intervention_type_id UUID REFERENCES intervention_types(id) ON DELETE SET NULL",
+        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS intervention_type_name VARCHAR(200)",
         # Phase: machine operator call flow
         """
         CREATE TABLE IF NOT EXISTS machine_interventions (
@@ -467,6 +483,7 @@ app.include_router(job_orders.router,             prefix="/api/job-orders",     
 app.include_router(suppliers_module.supplier_router, prefix="/api/suppliers",       tags=["Suppliers"])
 app.include_router(suppliers_module.po_router,       prefix="/api/supplier-orders", tags=["Purchase Orders"])
 app.include_router(machine_operator_router)
+app.include_router(intervention_types_router)
 
 
 @app.get("/api/health", tags=["System"])

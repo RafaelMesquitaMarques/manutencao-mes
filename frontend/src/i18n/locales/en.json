@@ -52,7 +52,8 @@
     "purchaseOrders":       "Purchase Orders",
     "machinesSetup":        "Machine Setup",
     "stopCategories":       "Stop Categories",
-    "userManagement":       "User Management"
+    "userManagement":       "User Management",
+    "interventionTypes":    "Intervention Types"
   },
   "auth": {
     "login": "Login",
