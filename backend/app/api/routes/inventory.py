@@ -371,6 +371,42 @@ async def inventory_dashboard(
     }
 
 
+@router.get("/search")
+async def search_stock_items(
+    q: str = Query("", min_length=0),
+    limit: int = Query(10, le=50),
+    db: AsyncSession = Depends(get_db),
+):
+    """Open endpoint (no auth) — for kiosk parts search during intervention."""
+    filters = []
+    if q:
+        filters.append(
+            or_(
+                StockItem.code.ilike(f"%{q}%"),
+                StockItem.name.ilike(f"%{q}%"),
+                StockItem.description.ilike(f"%{q}%"),
+            )
+        )
+    stmt = select(StockItem)
+    if filters:
+        stmt = stmt.where(and_(*filters))
+    stmt = stmt.order_by(StockItem.code).limit(limit)
+    items = (await db.execute(stmt)).scalars().all()
+    return {
+        "items": [
+            {
+                "id": str(i.id),
+                "code": i.code or "",
+                "name": i.name or "",
+                "description": i.description or "",
+                "unit": i.unit or "",
+                "quantity": float(i.quantity) if i.quantity is not None else 0.0,
+            }
+            for i in items
+        ]
+    }
+
+
 def _item_out(i: StockItem, supplier_name: Optional[str] = None) -> dict:
     qty = float(i.quantity) if i.quantity is not None else 0.0
     is_low = qty <= 0 or (

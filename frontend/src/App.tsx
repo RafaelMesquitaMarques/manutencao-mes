@@ -46,6 +46,7 @@ import ForcedChangePassword from './pages/Settings/ForcedChangePassword';
 import AcceptInvite from './pages/AcceptInvite';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
+import PartsApproval from './pages/Supervisor/PartsApproval';
 
 const App = () => (
   <BrowserRouter>
@@ -100,8 +101,9 @@ const App = () => (
         <Route path="suppliers/:id"        element={<SupplierDetail />} />
         <Route path="supplier-orders"      element={<PurchaseOrderList />} />
         <Route path="supplier-orders/new"  element={<NewPurchaseOrder />} />
-        <Route path="maintenance/dashboard"  element={<MaintenanceDashboard />} />
-        <Route path="maintenance/supervisor" element={<SupervisorDashboard />} />
+        <Route path="maintenance/dashboard"      element={<MaintenanceDashboard />} />
+        <Route path="maintenance/supervisor"     element={<SupervisorDashboard />} />
+        <Route path="maintenance/parts-approval" element={<PartsApproval />} />
         <Route path="machines"              element={<Navigate to="/equipment" replace />} />
         <Route path="my-work"               element={<MyWorkPage />} />
         <Route path="settings/machines"           element={<Navigate to="/equipment" replace />} />

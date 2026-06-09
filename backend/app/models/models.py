@@ -1124,3 +1124,49 @@ class MachineIntervention(Base):
     called_by_name                = Column(String(200), nullable=True)
     started_by_name               = Column(String(200), nullable=True)
     completed_by_name             = Column(String(200), nullable=True)
+
+
+class SafetyChecklist(Base):
+    __tablename__ = "safety_checklists"
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id     = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True)
+    name         = Column(String(200), default="Safety checklist")
+    is_active    = Column(Boolean, default=True)
+
+
+class SafetyChecklistItem(Base):
+    __tablename__ = "safety_checklist_items"
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    checklist_id = Column(UUID(as_uuid=True), ForeignKey("safety_checklists.id"), nullable=True)
+    text         = Column(Text, nullable=False)
+    sort_order   = Column(Integer, default=0)
+    is_required  = Column(Boolean, default=True)
+
+
+class InterventionChecklistResponse(Base):
+    __tablename__ = "intervention_checklist_responses"
+    id                = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    intervention_id   = Column(UUID(as_uuid=True), ForeignKey("machine_interventions.id"), nullable=True)
+    checklist_item_id = Column(UUID(as_uuid=True), ForeignKey("safety_checklist_items.id"), nullable=True)
+    item_text         = Column(Text, nullable=False)
+    checked           = Column(Boolean, default=False)
+    checked_at        = Column(DateTime(timezone=True), nullable=True)
+    checked_by_id     = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+
+class InterventionPart(Base):
+    __tablename__ = "intervention_parts"
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    intervention_id  = Column(UUID(as_uuid=True), ForeignKey("machine_interventions.id"), nullable=True)
+    stock_item_id    = Column(UUID(as_uuid=True), ForeignKey("stock_items.id"), nullable=True)
+    item_code        = Column(String(100), nullable=True)
+    item_description = Column(Text, nullable=True)
+    quantity_used    = Column(Float, default=1.0)
+    unit             = Column(String(50), nullable=True)
+    added_by_id      = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    added_at         = Column(DateTime(timezone=True), server_default=func.now())
+    approval_status  = Column(String(20), default="pending")
+    approved_by_id   = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    approved_at      = Column(DateTime(timezone=True), nullable=True)
+    rejection_reason = Column(Text, nullable=True)

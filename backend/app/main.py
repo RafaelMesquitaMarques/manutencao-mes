@@ -15,6 +15,8 @@ from app.api.routes import (
 )
 from app.api.routes.machine_operator import router as machine_operator_router
 from app.api.routes.intervention_type_settings import router as intervention_types_router
+from app.api.routes.safety_checklist_settings import router as safety_checklist_router
+from app.api.routes.parts_approval import router as parts_approval_router
 
 
 async def _escalation_loop() -> None:
@@ -371,6 +373,53 @@ async def _run_migrations() -> None:
             mechanic_note   TEXT
         )
         """,
+        # Phase: safety checklist + intervention parts
+        """
+        CREATE TABLE IF NOT EXISTS safety_checklists (
+            id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            plant_id     UUID REFERENCES plants(id) ON DELETE SET NULL,
+            equipment_id UUID REFERENCES equipment(id) ON DELETE SET NULL,
+            name         VARCHAR(200) NOT NULL DEFAULT 'Safety checklist',
+            is_active    BOOLEAN NOT NULL DEFAULT TRUE
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS safety_checklist_items (
+            id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            checklist_id UUID REFERENCES safety_checklists(id) ON DELETE CASCADE,
+            text         TEXT NOT NULL,
+            sort_order   INTEGER NOT NULL DEFAULT 0,
+            is_required  BOOLEAN NOT NULL DEFAULT TRUE
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS intervention_checklist_responses (
+            id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            intervention_id   UUID REFERENCES machine_interventions(id) ON DELETE CASCADE,
+            checklist_item_id UUID REFERENCES safety_checklist_items(id) ON DELETE SET NULL,
+            item_text         TEXT NOT NULL,
+            checked           BOOLEAN NOT NULL DEFAULT FALSE,
+            checked_at        TIMESTAMPTZ,
+            checked_by_id     UUID REFERENCES users(id) ON DELETE SET NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS intervention_parts (
+            id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            intervention_id  UUID REFERENCES machine_interventions(id) ON DELETE CASCADE,
+            stock_item_id    UUID REFERENCES stock_items(id) ON DELETE SET NULL,
+            item_code        VARCHAR(100),
+            item_description TEXT,
+            quantity_used    FLOAT NOT NULL DEFAULT 1.0,
+            unit             VARCHAR(50),
+            added_by_id      UUID REFERENCES users(id) ON DELETE SET NULL,
+            added_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            approval_status  VARCHAR(20) NOT NULL DEFAULT 'pending',
+            approved_by_id   UUID REFERENCES users(id) ON DELETE SET NULL,
+            approved_at      TIMESTAMPTZ,
+            rejection_reason TEXT
+        )
+        """,
         # Phase: alert ↔ ticket direct link
         "ALTER TABLE maintenance_alerts ADD COLUMN IF NOT EXISTS ticket_id UUID REFERENCES maintenance_tickets(id) ON DELETE SET NULL",
         "ALTER TABLE maintenance_alerts ALTER COLUMN escalation_level SET DEFAULT 0",
@@ -491,6 +540,8 @@ app.include_router(suppliers_module.supplier_router, prefix="/api/suppliers",   
 app.include_router(suppliers_module.po_router,       prefix="/api/supplier-orders", tags=["Purchase Orders"])
 app.include_router(machine_operator_router)
 app.include_router(intervention_types_router)
+app.include_router(safety_checklist_router)
+app.include_router(parts_approval_router)
 
 
 @app.get("/api/health", tags=["System"])

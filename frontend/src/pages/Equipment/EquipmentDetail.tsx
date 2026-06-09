@@ -5,7 +5,7 @@ import {
   ArrowLeft, Cpu, MapPin, Clock, Gauge, AlertCircle, Calendar,
   Save, Plus, Trash2, Check, X, Copy, ChevronRight, ExternalLink,
   Settings, StopCircle, AlertTriangle, Users, BarChart2, Activity,
-  Zap, Pencil,
+  Zap, Pencil, Shield, Loader2,
   type LucideIcon,
 } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
@@ -60,7 +60,7 @@ type TabId = 'overview' | 'workorders' | 'plans' | 'configuration' | 'history';
 
 // ─── Config sub-tab types ────────────────────────────────────────────────────────
 
-type ConfigTab = 'general' | 'stop' | 'reject' | 'operators' | 'shifts' | 'parameters' | 'indicators' | 'intervention_types';
+type ConfigTab = 'general' | 'stop' | 'reject' | 'operators' | 'shifts' | 'parameters' | 'indicators' | 'intervention_types' | 'safety_checklist';
 
 const CONFIG_TABS: { id: ConfigTab; label: string; Icon: LucideIcon }[] = [
   { id: 'general',    label: 'General',          Icon: Settings     },
@@ -71,6 +71,7 @@ const CONFIG_TABS: { id: ConfigTab; label: string; Icon: LucideIcon }[] = [
   { id: 'parameters', label: 'Parameters',       Icon: BarChart2    },
   { id: 'indicators',          label: 'Indicators',          Icon: Activity },
   { id: 'intervention_types', label: 'Intervention Types',  Icon: Zap      },
+  { id: 'safety_checklist',   label: 'Safety Checklist',    Icon: Shield   },
 ];
 
 const LANG_OPTIONS = [
@@ -893,6 +894,124 @@ function InterventionTypesConfigTab({ equipmentId }: { equipmentId: string }) {
   );
 }
 
+// ─── Safety Checklist Config Tab ─────────────────────────────────────────────────
+
+interface SCItem { id: string; text: string; sort_order: number; is_required: boolean; }
+
+function SafetyChecklistConfigTab({ equipmentId }: { equipmentId: string }) {
+  const [items, setItems] = useState<SCItem[]>([]);
+  const [checklistId, setChecklistId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [newText, setNewText] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await api.get(`/api/settings/safety-checklists/${equipmentId}`);
+      setChecklistId(res.data.checklist?.id ?? null);
+      setItems(res.data.items ?? []);
+    } catch { setItems([]); }
+    finally { setLoading(false); }
+  }, [equipmentId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const addItem = async () => {
+    if (!newText.trim()) return;
+    setSaving(true);
+    try {
+      await api.post(`/api/settings/safety-checklists/${equipmentId}/items`, {
+        text: newText.trim(),
+        sort_order: items.length,
+        is_required: true,
+      });
+      setNewText('');
+      await load();
+    } catch { /* ignore */ }
+    finally { setSaving(false); }
+  };
+
+  const toggleRequired = async (item: SCItem) => {
+    try {
+      await api.patch(`/api/settings/safety-checklists/${equipmentId}/items/${item.id}`, {
+        is_required: !item.is_required,
+      });
+      await load();
+    } catch { /* ignore */ }
+  };
+
+  const deleteItem = async (id: string) => {
+    setDeletingId(id);
+    try {
+      await api.delete(`/api/settings/safety-checklists/${equipmentId}/items/${id}`);
+      await load();
+    } catch { /* ignore */ }
+    finally { setDeletingId(null); }
+  };
+
+  if (loading) return <div className="p-4 text-gray-500 text-sm">Chargement…</div>;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 mb-1">
+        <Shield size={15} className="text-amber-400" />
+        <p className="text-sm font-semibold text-gray-200">Checklist de sécurité</p>
+        {checklistId && <span className="text-xs text-gray-600 font-mono">{checklistId.slice(0, 8)}</span>}
+      </div>
+      <p className="text-xs text-gray-600">
+        Ces éléments seront présentés au mécanicien avant de démarrer chaque intervention.
+      </p>
+
+      {items.length === 0 && (
+        <p className="text-gray-600 text-sm py-2">Aucun élément — ajoutez-en un ci-dessous.</p>
+      )}
+
+      {items.map((item, idx) => (
+        <div key={item.id} className="flex items-center gap-3 py-2 px-3 rounded-lg"
+          style={{ background: '#0d1117', border: '1px solid #21262d' }}>
+          <span className="text-gray-600 text-xs w-5 text-right">{idx + 1}</span>
+          <p className="flex-1 text-sm text-gray-200">{item.text}</p>
+          <button
+            onClick={() => toggleRequired(item)}
+            className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+              item.is_required
+                ? 'text-amber-400 border-amber-500/40 bg-amber-500/10'
+                : 'text-gray-600 border-gray-700/40'
+            }`}>
+            {item.is_required ? 'Obligatoire' : 'Optionnel'}
+          </button>
+          <button
+            onClick={() => deleteItem(item.id)}
+            disabled={deletingId === item.id}
+            className="p-1 text-gray-600 hover:text-red-400 transition-colors disabled:opacity-40">
+            {deletingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+          </button>
+        </div>
+      ))}
+
+      {/* Add new item */}
+      <div className="flex gap-2 items-center">
+        <input
+          value={newText}
+          onChange={(e) => setNewText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') addItem(); }}
+          placeholder="Nouvel élément de vérification…"
+          className="flex-1 bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 outline-none focus:border-blue-500/50"
+        />
+        <button
+          disabled={saving || !newText.trim()}
+          onClick={addItem}
+          className="px-3 py-2 rounded-lg text-sm font-medium text-white transition-all disabled:opacity-40"
+          style={{ background: '#1d4ed8' }}>
+          {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── History tab ──────────────────────────────────────────────────────────────────
 
 interface HistoryItem {
@@ -1195,6 +1314,7 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
           </div>
         )}
         {configTab === 'intervention_types' && <InterventionTypesConfigTab equipmentId={equipment.id} />}
+        {configTab === 'safety_checklist' && <SafetyChecklistConfigTab equipmentId={equipment.id} />}
       </div>
     </div>
   );

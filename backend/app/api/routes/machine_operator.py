@@ -4,14 +4,15 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.models.models import (
     Equipment, Machine, MachineIntervention, MaintenanceTicket,
     TicketStatus, AlertPriority, MaintenanceAlert, AlertStatus, AlertProblemType,
-    InterventionType,
+    InterventionType, SafetyChecklist, SafetyChecklistItem,
+    InterventionChecklistResponse, InterventionPart, StockItem, User,
 )
 from app.services.ticket_service import _next_ticket_number, _next_alert_number, sync_alert_from_ticket
 
@@ -373,3 +374,200 @@ async def get_intervention_history(
         }
 
     return {"total": total, "items": [_fmt(i) for i in items]}
+
+
+# ── Safety Checklist ────────────────────────────────────────────────────────
+
+@router.get("/{machine_id}/checklist")
+async def get_checklist(machine_id: str, db: AsyncSession = Depends(get_db)):
+    _, equipment = await _resolve(machine_id, db)
+    eq_id = equipment.id if equipment else None
+
+    # Prefer equipment-specific checklist, then plant-level, then any active
+    r = await db.execute(
+        select(SafetyChecklist).where(
+            and_(SafetyChecklist.is_active == True),
+            or_(
+                SafetyChecklist.equipment_id == eq_id,
+                SafetyChecklist.equipment_id == None,
+            ),
+        ).order_by(
+            (SafetyChecklist.equipment_id == eq_id).desc(),
+            SafetyChecklist.name,
+        ).limit(1)
+    )
+    checklist = r.scalar_one_or_none()
+    if not checklist:
+        return {"checklist_id": None, "name": None, "items": []}
+
+    items_r = await db.execute(
+        select(SafetyChecklistItem)
+        .where(SafetyChecklistItem.checklist_id == checklist.id)
+        .order_by(SafetyChecklistItem.sort_order)
+    )
+    items = items_r.scalars().all()
+    return {
+        "checklist_id": str(checklist.id),
+        "name": checklist.name,
+        "items": [
+            {
+                "id": str(item.id),
+                "text": item.text,
+                "sort_order": item.sort_order,
+                "is_required": item.is_required,
+            }
+            for item in items
+        ],
+    }
+
+
+class ChecklistSubmitBody(BaseModel):
+    intervention_id: str
+    responses: list[dict]
+
+
+@router.post("/{machine_id}/checklist/submit")
+async def submit_checklist(machine_id: str, body: ChecklistSubmitBody, db: AsyncSession = Depends(get_db)):
+    try:
+        inv_id = UUID(body.intervention_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid intervention_id")
+
+    intervention = await db.get(MachineIntervention, inv_id)
+    if not intervention:
+        raise HTTPException(404, "Intervention not found")
+
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    for resp in body.responses:
+        try:
+            item_id = UUID(resp["item_id"])
+        except (KeyError, ValueError):
+            continue
+        row = InterventionChecklistResponse(
+            intervention_id=inv_id,
+            checklist_item_id=item_id,
+            item_text=resp.get("item_text", ""),
+            checked=bool(resp.get("checked", False)),
+            checked_at=now if resp.get("checked") else None,
+        )
+        db.add(row)
+
+    await db.commit()
+    return {"status": "ok", "saved": len(body.responses)}
+
+
+# ── Parts during intervention ────────────────────────────────────────────────
+
+@router.get("/{machine_id}/parts")
+async def get_intervention_parts(
+    machine_id: str,
+    intervention_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    await _resolve(machine_id, db)
+    try:
+        inv_id = UUID(intervention_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid intervention_id")
+
+    r = await db.execute(
+        select(InterventionPart)
+        .where(InterventionPart.intervention_id == inv_id)
+        .order_by(InterventionPart.added_at)
+    )
+    parts = r.scalars().all()
+    return {
+        "items": [
+            {
+                "id": str(p.id),
+                "intervention_id": str(p.intervention_id),
+                "stock_item_id": str(p.stock_item_id) if p.stock_item_id else None,
+                "item_code": p.item_code,
+                "item_description": p.item_description,
+                "quantity_used": p.quantity_used,
+                "unit": p.unit,
+                "approval_status": p.approval_status,
+                "added_at": p.added_at.isoformat() if p.added_at else None,
+            }
+            for p in parts
+        ]
+    }
+
+
+class AddPartBody(BaseModel):
+    intervention_id: str
+    stock_item_id: Optional[str] = None
+    item_code: Optional[str] = None
+    item_description: Optional[str] = None
+    quantity_used: float = 1.0
+    unit: Optional[str] = None
+
+
+@router.post("/{machine_id}/parts")
+async def add_intervention_part(machine_id: str, body: AddPartBody, db: AsyncSession = Depends(get_db)):
+    await _resolve(machine_id, db)
+    try:
+        inv_id = UUID(body.intervention_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid intervention_id")
+
+    intervention = await db.get(MachineIntervention, inv_id)
+    if not intervention:
+        raise HTTPException(404, "Intervention not found")
+
+    stock_id = None
+    if body.stock_item_id:
+        try:
+            stock_id = UUID(body.stock_item_id)
+        except ValueError:
+            pass
+
+    # If stock_item given, copy its description/code if not supplied
+    item_code = body.item_code
+    item_description = body.item_description
+    unit = body.unit
+    if stock_id:
+        stock = await db.get(StockItem, stock_id)
+        if stock:
+            item_code = item_code or stock.code
+            item_description = item_description or stock.name
+            unit = unit or stock.unit
+
+    part = InterventionPart(
+        intervention_id=inv_id,
+        stock_item_id=stock_id,
+        item_code=item_code,
+        item_description=item_description,
+        quantity_used=body.quantity_used,
+        unit=unit,
+        approval_status="pending",
+    )
+    db.add(part)
+    await db.commit()
+    await db.refresh(part)
+    return {
+        "id": str(part.id),
+        "intervention_id": str(part.intervention_id),
+        "stock_item_id": str(part.stock_item_id) if part.stock_item_id else None,
+        "item_code": part.item_code,
+        "item_description": part.item_description,
+        "quantity_used": part.quantity_used,
+        "unit": part.unit,
+        "approval_status": part.approval_status,
+        "added_at": part.added_at.isoformat() if part.added_at else None,
+    }
+
+
+@router.delete("/{machine_id}/parts/{part_id}", status_code=204)
+async def remove_intervention_part(machine_id: str, part_id: str, db: AsyncSession = Depends(get_db)):
+    await _resolve(machine_id, db)
+    try:
+        pid = UUID(part_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid part_id")
+
+    part = await db.get(InterventionPart, pid)
+    if not part:
+        raise HTTPException(404, "Part not found")
+    await db.delete(part)
+    await db.commit()

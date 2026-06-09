@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { AlertTriangle, Clock, Wrench, CheckCircle, Loader2, Mic, MicOff } from 'lucide-react';
+import { AlertTriangle, Clock, Wrench, CheckCircle, Loader2, Mic, MicOff, Shield, Package, X, Plus, Trash2, Search } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
 import {
   fetchMachineOperatorState,
@@ -8,8 +8,22 @@ import {
   callMaintenance,
   startIntervention,
   completeIntervention,
+  fetchChecklist,
+  submitChecklist,
+  fetchInterventionParts,
+  addInterventionPart,
+  removeInterventionPart,
+  searchInventory,
 } from '../../api/machineOperator';
-import type { MachineOperatorState, InterventionType } from '../../types';
+import type {
+  MachineOperatorState,
+  InterventionType,
+} from '../../types';
+import type {
+  ChecklistItem,
+  InterventionPartItem,
+  InventorySearchItem,
+} from '../../api/machineOperator';
 
 function useClock() {
   const [now, setNow] = useState(new Date());
@@ -35,6 +49,324 @@ function elapsed(from: string) {
   return `${s}s`;
 }
 
+// ── Safety Checklist Modal ────────────────────────────────────────────────────
+
+interface SafetyChecklistModalProps {
+  machineId: string;
+  interventionId: string;
+  items: ChecklistItem[];
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+function SafetyChecklistModal({ machineId, interventionId, items, onConfirm, onCancel }: SafetyChecklistModalProps) {
+  const [checked, setChecked] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(items.map((i) => [i.id, false]))
+  );
+  const [submitting, setSubmitting] = useState(false);
+
+  const toggle = (id: string) => setChecked((prev) => ({ ...prev, [id]: !prev[id] }));
+
+  const requiredIds = items.filter((i) => i.is_required).map((i) => i.id);
+  const allRequiredChecked = requiredIds.every((id) => checked[id]);
+  const checkedCount = Object.values(checked).filter(Boolean).length;
+
+  const handleConfirm = async () => {
+    setSubmitting(true);
+    try {
+      const responses = items.map((item) => ({
+        item_id: item.id,
+        item_text: item.text,
+        checked: checked[item.id] ?? false,
+      }));
+      await submitChecklist(machineId, interventionId, responses);
+    } catch {
+      // non-blocking — checklist submission failure should not block the start
+    }
+    onConfirm();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: 'rgba(0,0,0,0.85)' }}>
+      <div className="w-full max-w-lg mx-4 rounded-2xl overflow-hidden"
+        style={{ background: '#111318', border: '1.5px solid #30363d' }}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4"
+          style={{ background: '#0d1117', borderBottom: '1px solid #21262d' }}>
+          <div className="flex items-center gap-3">
+            <Shield className="text-amber-400" size={22} />
+            <div>
+              <p className="text-white font-semibold">Vérification sécurité</p>
+              <p className="text-gray-500 text-xs mt-0.5">{checkedCount} / {items.length} éléments cochés</p>
+            </div>
+          </div>
+          <button onClick={onCancel} className="text-gray-600 hover:text-gray-300 transition-colors">
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Progress bar */}
+        <div className="w-full h-1" style={{ background: '#21262d' }}>
+          <div
+            className="h-1 transition-all duration-300"
+            style={{ width: `${items.length ? (checkedCount / items.length) * 100 : 0}%`, background: allRequiredChecked ? '#22c55e' : '#f59e0b' }}
+          />
+        </div>
+
+        {/* Items */}
+        <div className="px-6 py-4 space-y-2 max-h-80 overflow-y-auto">
+          {items.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => toggle(item.id)}
+              className="w-full flex items-start gap-4 p-3 rounded-xl text-left transition-colors"
+              style={{
+                background: checked[item.id] ? '#0f2a1a' : '#0d1117',
+                border: `1px solid ${checked[item.id] ? '#22c55e40' : '#21262d'}`,
+              }}>
+              <div className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 mt-0.5 transition-colors"
+                style={{
+                  background: checked[item.id] ? '#22c55e' : '#21262d',
+                  border: `1.5px solid ${checked[item.id] ? '#22c55e' : '#30363d'}`,
+                }}>
+                {checked[item.id] && <CheckCircle size={14} className="text-white" />}
+              </div>
+              <div className="flex-1">
+                <p className={`text-sm ${checked[item.id] ? 'text-gray-400 line-through' : 'text-gray-200'}`}>
+                  {item.text}
+                </p>
+                {item.is_required && !checked[item.id] && (
+                  <span className="text-xs text-amber-500">Obligatoire</span>
+                )}
+              </div>
+            </button>
+          ))}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 flex gap-3" style={{ borderTop: '1px solid #21262d' }}>
+          <button onClick={onCancel}
+            className="flex-1 py-3 rounded-xl text-sm font-medium text-gray-400 hover:text-gray-200 transition-colors"
+            style={{ background: '#21262d', border: '1px solid #30363d' }}>
+            Annuler
+          </button>
+          <button
+            disabled={!allRequiredChecked || submitting}
+            onClick={handleConfirm}
+            className="flex-1 py-3 rounded-xl text-sm font-bold transition-all disabled:opacity-40"
+            style={{ background: allRequiredChecked ? '#166534' : '#21262d', border: `1.5px solid ${allRequiredChecked ? '#22c55e' : '#30363d'}`, color: '#fff' }}>
+            {submitting ? <Loader2 className="animate-spin mx-auto" size={16} /> : '▶ Démarrer l\'intervention'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Parts Panel ───────────────────────────────────────────────────────────────
+
+interface PartsPanelProps {
+  machineId: string;
+  interventionId: string;
+}
+
+function PartsPanel({ machineId, interventionId }: PartsPanelProps) {
+  const [parts, setParts] = useState<InterventionPartItem[]>([]);
+  const [expanded, setExpanded] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<InventorySearchItem[]>([]);
+  const [selected, setSelected] = useState<InventorySearchItem | null>(null);
+  const [quantity, setQuantity] = useState('1');
+  const [freeText, setFreeText] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loadParts = useCallback(async () => {
+    try {
+      const res = await fetchInterventionParts(machineId, interventionId);
+      setParts(res.items);
+    } catch {
+      // ignore
+    }
+  }, [machineId, interventionId]);
+
+  useEffect(() => { loadParts(); }, [loadParts]);
+
+  const handleSearch = (q: string) => {
+    setQuery(q);
+    setSelected(null);
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (!q.trim()) { setResults([]); return; }
+    searchTimer.current = setTimeout(async () => {
+      try {
+        const res = await searchInventory(q, 10);
+        setResults(res.items);
+      } catch {
+        setResults([]);
+      }
+    }, 300);
+  };
+
+  const handleAdd = async () => {
+    setAdding(true);
+    try {
+      await addInterventionPart(machineId, {
+        intervention_id: interventionId,
+        stock_item_id: selected?.id,
+        item_code: selected?.code || undefined,
+        item_description: selected ? selected.name : freeText || undefined,
+        quantity_used: parseFloat(quantity) || 1,
+        unit: selected?.unit || undefined,
+      });
+      setShowAdd(false);
+      setQuery('');
+      setResults([]);
+      setSelected(null);
+      setQuantity('1');
+      setFreeText('');
+      await loadParts();
+    } catch {
+      // ignore
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const handleRemove = async (partId: string) => {
+    setRemoving(partId);
+    try {
+      await removeInterventionPart(machineId, partId);
+      await loadParts();
+    } catch {
+      // ignore
+    } finally {
+      setRemoving(null);
+    }
+  };
+
+  return (
+    <div className="w-full rounded-2xl overflow-hidden" style={{ background: '#0d1117', border: '1px solid #21262d' }}>
+      {/* Header */}
+      <button
+        className="w-full flex items-center justify-between px-4 py-3 text-left"
+        onClick={() => setExpanded(!expanded)}>
+        <div className="flex items-center gap-2">
+          <Package size={16} className="text-blue-400" />
+          <span className="text-sm font-medium text-gray-300">Pièces utilisées</span>
+          {parts.length > 0 && (
+            <span className="text-xs px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-400 font-mono">{parts.length}</span>
+          )}
+        </div>
+        <span className="text-gray-600 text-xs">{expanded ? '▲' : '▼'}</span>
+      </button>
+
+      {expanded && (
+        <div className="px-4 pb-4 space-y-2">
+          {parts.length === 0 && !showAdd && (
+            <p className="text-gray-600 text-xs text-center py-2">Aucune pièce enregistrée</p>
+          )}
+          {parts.map((p) => (
+            <div key={p.id} className="flex items-center gap-2 py-1.5">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-gray-200 truncate">{p.item_description || p.item_code || '—'}</p>
+                <p className="text-xs text-gray-600">{p.item_code} · {p.quantity_used} {p.unit || 'un'} · <span className={p.approval_status === 'approved' ? 'text-green-500' : p.approval_status === 'rejected' ? 'text-red-400' : 'text-amber-400'}>{p.approval_status}</span></p>
+              </div>
+              <button
+                onClick={() => handleRemove(p.id)}
+                disabled={removing === p.id}
+                className="p-1.5 rounded-lg text-gray-600 hover:text-red-400 transition-colors disabled:opacity-40">
+                {removing === p.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+              </button>
+            </div>
+          ))}
+
+          {showAdd ? (
+            <div className="space-y-2 mt-2 pt-2" style={{ borderTop: '1px solid #21262d' }}>
+              {/* Search */}
+              <div className="relative">
+                <div className="flex items-center gap-2 bg-[#111318] border border-[#30363d] rounded-lg px-3 py-2">
+                  <Search size={14} className="text-gray-500 flex-shrink-0" />
+                  <input
+                    autoFocus
+                    value={query}
+                    onChange={(e) => handleSearch(e.target.value)}
+                    placeholder="Rechercher dans l'inventaire…"
+                    className="flex-1 bg-transparent text-sm text-gray-200 placeholder-gray-600 outline-none"
+                  />
+                </div>
+                {results.length > 0 && !selected && (
+                  <div className="absolute z-10 w-full mt-1 rounded-lg overflow-hidden shadow-xl"
+                    style={{ background: '#161b22', border: '1px solid #30363d' }}>
+                    {results.map((r) => (
+                      <button
+                        key={r.id}
+                        onClick={() => { setSelected(r); setQuery(r.name); setResults([]); }}
+                        className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-white/5 transition-colors">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-gray-200 truncate">{r.name}</p>
+                          <p className="text-xs text-gray-600">{r.code} · Stock: {r.quantity} {r.unit}</p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {/* Free description if no inventory match */}
+              {!selected && (
+                <input
+                  value={freeText}
+                  onChange={(e) => setFreeText(e.target.value)}
+                  placeholder="Description libre (si hors inventaire)"
+                  className="w-full bg-[#111318] border border-[#30363d] rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 outline-none"
+                />
+              )}
+              {/* Quantity */}
+              <div className="flex gap-2 items-center">
+                <label className="text-xs text-gray-500 w-16">Quantité</label>
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={quantity}
+                  onChange={(e) => setQuantity(e.target.value)}
+                  className="w-24 bg-[#111318] border border-[#30363d] rounded-lg px-3 py-1.5 text-sm text-gray-200 outline-none"
+                />
+                {selected && <span className="text-xs text-gray-500">{selected.unit}</span>}
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => { setShowAdd(false); setQuery(''); setResults([]); setSelected(null); setFreeText(''); }}
+                  className="flex-1 py-2 rounded-lg text-xs text-gray-500 hover:text-gray-300 transition-colors"
+                  style={{ background: '#21262d' }}>
+                  Annuler
+                </button>
+                <button
+                  disabled={adding || (!selected && !freeText.trim())}
+                  onClick={handleAdd}
+                  className="flex-1 py-2 rounded-lg text-xs font-semibold text-white transition-all disabled:opacity-40"
+                  style={{ background: '#1d4ed8' }}>
+                  {adding ? <Loader2 size={14} className="animate-spin mx-auto" /> : 'Ajouter'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowAdd(true)}
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs text-blue-400 hover:text-blue-300 transition-colors mt-1"
+              style={{ background: '#0a1628', border: '1px dashed #1d4ed8' }}>
+              <Plus size={13} /> Ajouter une pièce
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
+
 export default function MachineOperatorPage() {
   const { machine_id } = useParams<{ machine_id: string }>();
   const [state, setState] = useState<MachineOperatorState | null>(null);
@@ -51,6 +383,11 @@ export default function MachineOperatorPage() {
   type CompletionStep = 'idle' | 'select_type' | 'add_note';
   const [completionStep, setCompletionStep] = useState<CompletionStep>('idle');
   const [mechNote, setMechNote] = useState('');
+
+  // Safety checklist
+  const [checklistItems, setChecklistItems] = useState<ChecklistItem[]>([]);
+  const [showChecklist, setShowChecklist] = useState(false);
+  const [pendingInterventionId, setPendingInterventionId] = useState<string | null>(null);
 
   // Voice transcription
   const [isRecording, setIsRecording] = useState(false);
@@ -100,6 +437,41 @@ export default function MachineOperatorPage() {
       setSelectedTypeName('');
       setSelectedTypeIcon('');
       setCompletionStep('idle');
+    } catch {
+      setError('Action échouée');
+    } finally {
+      setActing(false);
+    }
+  };
+
+  // Start intervention: fetch checklist first, show modal if items exist
+  const handleStartIntervention = async () => {
+    if (!machine_id) return;
+    setActing(true);
+    try {
+      const checklist = await fetchChecklist(machine_id);
+      if (checklist.items.length > 0) {
+        // Need to call the backend to create the intervention first (status=waiting→in_progress)
+        // Actually: start creates the intervention. We show modal BEFORE starting.
+        // We'll call start, get the intervention_id, then show modal.
+        const result = await startIntervention(machine_id, note || undefined);
+        const interventionId: string = result?.intervention?.id;
+        if (interventionId) {
+          setChecklistItems(checklist.items);
+          setPendingInterventionId(interventionId);
+          setShowChecklist(true);
+          await load();
+          setNote('');
+        } else {
+          await load();
+          setNote('');
+        }
+      } else {
+        // No checklist — start directly
+        await startIntervention(machine_id, note || undefined);
+        await load();
+        setNote('');
+      }
     } catch {
       setError('Action échouée');
     } finally {
@@ -172,6 +544,25 @@ export default function MachineOperatorPage() {
   return (
     <div className="h-screen flex flex-col bg-[#0d1117] text-white overflow-hidden select-none">
 
+      {/* Safety checklist modal */}
+      {showChecklist && pendingInterventionId && checklistItems.length > 0 && (
+        <SafetyChecklistModal
+          machineId={machine_id!}
+          interventionId={pendingInterventionId}
+          items={checklistItems}
+          onConfirm={() => {
+            setShowChecklist(false);
+            setPendingInterventionId(null);
+            setChecklistItems([]);
+          }}
+          onCancel={() => {
+            setShowChecklist(false);
+            setPendingInterventionId(null);
+            setChecklistItems([]);
+          }}
+        />
+      )}
+
       {/* TOP BAR */}
       <header className="flex items-center justify-between px-8"
         style={{ height: '13%', background: '#111318', borderBottom: '1px solid #21262d' }}>
@@ -208,7 +599,7 @@ export default function MachineOperatorPage() {
         <div className="h-3/4 w-px" style={{ background: '#21262d' }} />
 
         {/* Action zone */}
-        <div className="flex-1 flex flex-col items-center justify-center gap-6 max-w-xl">
+        <div className="flex-1 flex flex-col items-center justify-center gap-6 max-w-xl overflow-y-auto">
           {error && <p className="text-red-400 text-sm bg-red-500/10 px-4 py-2 rounded-lg">{error}</p>}
 
           {/* STATE 1 — idle */}
@@ -249,7 +640,7 @@ export default function MachineOperatorPage() {
                 className="w-full h-20 bg-[#111318] border border-[#21262d] rounded-xl px-4 py-3 text-sm text-gray-300 placeholder-gray-600 resize-none focus:outline-none focus:border-blue-700/60"
               />
               <button disabled={acting}
-                onClick={() => act(() => startIntervention(machine_id!, note || undefined))}
+                onClick={handleStartIntervention}
                 className="w-full py-5 rounded-2xl text-xl font-bold transition-all active:scale-95 disabled:opacity-50 bg-green-800 hover:bg-green-700"
                 style={{ border: '2px solid #22c55e' }}>
                 {acting ? <Loader2 className="animate-spin mx-auto" size={24} /> : '▶ Démarrer l\'intervention'}
@@ -270,6 +661,9 @@ export default function MachineOperatorPage() {
                   <p className="text-gray-400 text-xs mt-2 italic">"{intervention!.operator_note}"</p>
                 )}
               </div>
+
+              {/* Parts panel — always visible in state 3 */}
+              <PartsPanel machineId={machine_id!} interventionId={intervention!.id} />
 
               {/* STEP idle — single "Terminer" button */}
               {completionStep === 'idle' && (
