@@ -42,6 +42,10 @@ async def _enrich(ticket: MaintenanceTicket, db: AsyncSession, with_comments: bo
     machine = await db.get(Machine, ticket.machine_id)
     if machine:
         data.machine_name = machine.name
+    else:
+        equip = await db.get(Equipment, ticket.machine_id)
+        if equip:
+            data.machine_name = equip.name
     if ticket.assigned_to_id:
         user = await db.get(User, ticket.assigned_to_id)
         if user:
@@ -269,3 +273,16 @@ async def get_ticket_work_order(
     if equip:
         wo_out.equipment_name = equip.name
     return wo_out
+
+
+@router.delete("/{ticket_id}", status_code=204)
+async def delete_ticket(
+    ticket_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ticket = await db.get(MaintenanceTicket, ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    await db.delete(ticket)
+    await db.commit()

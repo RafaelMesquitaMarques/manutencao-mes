@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, AlertTriangle, Send } from 'lucide-react';
-import { createTicket, fetchMachines } from '../../api/maintenance';
-import type { Machine, AlertPriority, AlertProblemType } from '../../types';
+import { createTicket } from '../../api/maintenance';
+import { fetchEquipment } from '../../api/workOrders';
+import type { Equipment, AlertPriority, AlertProblemType } from '../../types';
 import Spinner from '../../components/ui/Spinner';
 
 const PROBLEM_TYPES: { value: AlertProblemType; label: string }[] = [
@@ -26,7 +27,7 @@ const PRIORITIES: { value: AlertPriority; label: string; cls: string }[] = [
 
 export default function NewTicket() {
   const navigate = useNavigate();
-  const [machines, setMachines] = useState<Machine[]>([]);
+  const [machines, setMachines] = useState<Equipment[]>([]);
   const [form, setForm] = useState({
     machine_id: '',
     priority: 'high' as AlertPriority,
@@ -38,7 +39,7 @@ export default function NewTicket() {
   const [err, setErr] = useState('');
 
   useEffect(() => {
-    fetchMachines().then(setMachines).catch(() => {});
+    fetchEquipment({ limit: '200' }).then(setMachines).catch(() => {});
   }, []);
 
   const submit = async () => {

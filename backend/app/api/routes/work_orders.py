@@ -756,3 +756,21 @@ async def list_actions(
     )
     items = result.scalars().all()
     return WOActionListResponse(total=len(items), items=items)
+
+
+@router.delete("/{work_order_id}", status_code=204)
+async def delete_work_order(
+    work_order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    wo = await db.get(WorkOrder, work_order_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    # Null out the ticket's work_order_id so the ticket is not orphaned
+    if wo.ticket_id:
+        ticket = await db.get(MaintenanceTicket, wo.ticket_id)
+        if ticket:
+            ticket.work_order_id = None
+    await db.delete(wo)
+    await db.commit()

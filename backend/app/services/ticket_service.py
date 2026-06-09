@@ -69,7 +69,13 @@ class TicketService:
     async def create_ticket(self, data: TicketCreate, created_by: str = "") -> MaintenanceTicket:
         machine = await self.db.get(Machine, data.machine_id)
         if not machine:
-            raise ValueError("Machine not found")
+            # Equipment IDs are accepted directly — auto-provision a Machine row if needed
+            equipment = await self.db.get(Equipment, data.machine_id)
+            if not equipment:
+                raise ValueError("Machine not found")
+            machine = Machine(id=equipment.id, name=equipment.name, code=equipment.code, is_active=True)
+            self.db.add(machine)
+            await self.db.flush()
 
         alert_id = data.alert_id
         new_alert = None

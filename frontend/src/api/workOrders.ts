@@ -56,6 +56,10 @@ export const updateWorkOrder = async (id: string, payload: Partial<WorkOrderCrea
   return data;
 };
 
+export const deleteWorkOrder = async (id: string): Promise<void> => {
+  await api.delete(`/api/wo/${id}`);
+};
+
 export const startWorkOrder = async (id: string): Promise<WorkOrder> => {
   const { data } = await api.post<WorkOrder>(`/api/wo/${id}/start`);
   return data;
