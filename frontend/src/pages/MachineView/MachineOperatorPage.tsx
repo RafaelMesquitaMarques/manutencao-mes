@@ -56,8 +56,11 @@ export default function MachineOperatorPage() {
       const data = await fetchMachineOperatorState(machine_id);
       setState(data);
       setError(null);
-    } catch {
-      setError('Connexion impossible');
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { detail?: string } }; message?: string };
+      const msg = e?.response?.data?.detail || e?.message || 'Connexion impossible';
+      console.error('[MachineOperatorPage] fetch error:', err);
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -118,8 +121,15 @@ export default function MachineOperatorPage() {
 
   if (!state) {
     return (
-      <div className="h-screen flex items-center justify-center bg-[#0d1117]">
-        <p className="text-red-400 text-xl">{error ?? 'Machine introuvable'}</p>
+      <div style={{ background: '#0d1117', height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
+        <span style={{ color: '#f85149', fontSize: '16px' }}>⚠ {error ?? 'Machine introuvable'}</span>
+        <span style={{ color: '#6e7681', fontSize: '12px', fontFamily: 'monospace' }}>{machine_id}</span>
+        <button
+          onClick={() => window.location.reload()}
+          style={{ marginTop: '8px', padding: '8px 16px', background: '#21262d', color: '#e6edf3', border: '0.5px solid #30363d', borderRadius: '6px', cursor: 'pointer' }}
+        >
+          Retry
+        </button>
       </div>
     );
   }

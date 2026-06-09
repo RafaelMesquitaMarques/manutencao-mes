@@ -134,7 +134,7 @@ async def get_state(machine_id: str, db: AsyncSession = Depends(get_db)):
             "id":         str(equipment.id),
             "name":       equipment.name or "",
             "code":       equipment.code or "",
-            "department": equipment.department or "",
+            "location":   equipment.location or "",
             "hour_meter": equipment.hour_meter or 0,
         } if equipment else None,
         "active_intervention":  _intervention_dict(active),

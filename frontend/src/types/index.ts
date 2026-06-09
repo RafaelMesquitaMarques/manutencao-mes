@@ -825,7 +825,7 @@ export interface MachineOperatorState {
     id: string;
     name: string;
     code: string;
-    department: string;
+    location: string;
     hour_meter: number;
   } | null;
   active_intervention: MachineIntervention | null;
