@@ -104,14 +104,14 @@ const App = () => (
         <Route path="maintenance/supervisor" element={<SupervisorDashboard />} />
         <Route path="machines"              element={<Navigate to="/equipment" replace />} />
         <Route path="my-work"               element={<MyWorkPage />} />
-        <Route path="settings/machines"      element={<MachinesSetup />} />
-        <Route path="settings/machines/:id"  element={<MachineSettings />} />
-        <Route path="settings/stop-categories"    element={<StopCategoriesPage />} />
-        <Route path="settings/users"                          element={<UsersSetup />} />
-        <Route path="settings/users/:id"                      element={<UserDetail />} />
-        <Route path="settings/profile"                        element={<MyProfile />} />
-        <Route path="settings/change-password"                element={<ChangePassword />} />
-        <Route path="settings/intervention-types"             element={<InterventionTypeSettings />} />
+        <Route path="settings/machines"           element={<Navigate to="/equipment" replace />} />
+        <Route path="settings/machines/:id"       element={<Navigate to="/equipment" replace />} />
+        <Route path="settings/stop-categories"    element={<Navigate to="/equipment" replace />} />
+        <Route path="settings/users"              element={<UsersSetup />} />
+        <Route path="settings/users/:id"          element={<UserDetail />} />
+        <Route path="settings/profile"            element={<MyProfile />} />
+        <Route path="settings/change-password"    element={<ChangePassword />} />
+        <Route path="settings/intervention-types" element={<Navigate to="/equipment" replace />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

@@ -5,8 +5,10 @@ import {
   ArrowLeft, Cpu, MapPin, Clock, Gauge, AlertCircle, Calendar,
   Save, Plus, Trash2, Check, X, Copy, ChevronRight, ExternalLink,
   Settings, StopCircle, AlertTriangle, Users, BarChart2, Activity,
+  Zap, Pencil,
   type LucideIcon,
 } from 'lucide-react';
+import * as LucideIcons from 'lucide-react';
 import { fetchEquipmentById, fetchWorkOrders, fetchMaintenancePlans } from '../../api/workOrders';
 import {
   fetchMachinesAll, updateMachineConfig,
@@ -23,6 +25,7 @@ import type {
   Machine, MachineConfigUpdate, MachineOperatorOut, MachineOperatorCreate,
   OperatorShift, StopCategoryOut, StopSubcategoryOut, StopCategoryType,
   RejectCategoryOut, RejectSubcategoryOut, HourlyRateCurrency,
+  InterventionType,
 } from '../../types';
 import { format } from 'date-fns';
 import { IconRenderer, IconPicker } from '../../components/ui/IconLibrary';
@@ -57,7 +60,7 @@ type TabId = 'overview' | 'workorders' | 'plans' | 'configuration';
 
 // ─── Config sub-tab types ────────────────────────────────────────────────────────
 
-type ConfigTab = 'general' | 'stop' | 'reject' | 'operators' | 'shifts' | 'parameters' | 'indicators';
+type ConfigTab = 'general' | 'stop' | 'reject' | 'operators' | 'shifts' | 'parameters' | 'indicators' | 'intervention_types';
 
 const CONFIG_TABS: { id: ConfigTab; label: string; Icon: LucideIcon }[] = [
   { id: 'general',    label: 'General',          Icon: Settings     },
@@ -66,7 +69,8 @@ const CONFIG_TABS: { id: ConfigTab; label: string; Icon: LucideIcon }[] = [
   { id: 'operators',  label: 'Operators',        Icon: Users        },
   { id: 'shifts',     label: 'Work Shifts',      Icon: Clock        },
   { id: 'parameters', label: 'Parameters',       Icon: BarChart2    },
-  { id: 'indicators', label: 'Indicators',       Icon: Activity     },
+  { id: 'indicators',          label: 'Indicators',          Icon: Activity },
+  { id: 'intervention_types', label: 'Intervention Types',  Icon: Zap      },
 ];
 
 const LANG_OPTIONS = [
@@ -677,6 +681,218 @@ function ParametersTab({ form, set }: {
   );
 }
 
+// ─── Intervention Types config tab ───────────────────────────────────────────────
+
+const IT_ICONS = [
+  'Wrench', 'Zap', 'Wind', 'Droplets', 'Cpu', 'Gauge',
+  'SlidersHorizontal', 'Sparkles', 'HelpCircle', 'Settings',
+  'AlertTriangle', 'Cog', 'Activity', 'Hammer', 'Scissors',
+  'Package', 'Layers', 'Flame',
+];
+
+function ITDynamicIcon({ name, size = 16 }: { name: string; size?: number }) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const Icon = (LucideIcons as Record<string, any>)[name];
+  if (Icon) return <Icon size={size} />;
+  return <span style={{ fontSize: Math.floor(size * 0.6) }}>{name ? name[0] : '?'}</span>;
+}
+
+interface ITForm { name: string; icon: string; color: string; sort_order: number; }
+const IT_EMPTY: ITForm = { name: '', icon: 'Wrench', color: '#388bfd', sort_order: 0 };
+
+function ITIconPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {IT_ICONS.map((ic) => (
+        <button key={ic} type="button" onClick={() => onChange(ic)} title={ic}
+          className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
+            value === ic
+              ? 'bg-blue-600 text-white'
+              : 'bg-white/[0.04] border border-white/10 text-gray-400 hover:text-gray-200 hover:border-blue-500/40'
+          }`}>
+          <ITDynamicIcon name={ic} size={13} />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function InterventionTypesConfigTab({ equipmentId }: { equipmentId: string }) {
+  const [types, setTypes] = useState<InterventionType[]>([]);
+  const [loadingIT, setLoadingIT] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [addForm, setAddForm] = useState<ITForm>(IT_EMPTY);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<ITForm>(IT_EMPTY);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoadingIT(true);
+    try {
+      const r = await api.get(`/api/settings/intervention-types/?equipment_id=${equipmentId}`);
+      setTypes(r.data.items.filter((t: InterventionType) => t.is_active));
+    } catch {
+      setTypes([]);
+    } finally {
+      setLoadingIT(false);
+    }
+  }, [equipmentId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleAdd = async () => {
+    if (!addForm.name.trim()) return;
+    setSaving(true);
+    try {
+      await api.post('/api/settings/intervention-types/', {
+        equipment_id: equipmentId,
+        name: addForm.name.trim(),
+        icon: addForm.icon,
+        color: addForm.color,
+        sort_order: addForm.sort_order,
+      });
+      setShowAdd(false);
+      setAddForm(IT_EMPTY);
+      await load();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleEdit = async (id: string) => {
+    setSaving(true);
+    try {
+      await api.patch(`/api/settings/intervention-types/${id}`, {
+        name: editForm.name.trim(),
+        icon: editForm.icon,
+        color: editForm.color,
+        sort_order: editForm.sort_order,
+      });
+      setEditId(null);
+      await load();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteIT = async (id: string) => {
+    if (!confirm('Désactiver ce type?')) return;
+    await api.delete(`/api/settings/intervention-types/${id}`);
+    await load();
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-bold text-gray-400 uppercase tracking-widest">Intervention Types</h2>
+        <button onClick={() => setShowAdd(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition-colors">
+          <Plus size={12} /> Add
+        </button>
+      </div>
+
+      {showAdd && (
+        <div className="p-4 bg-[#0d1421] rounded-2xl border border-blue-500/30 space-y-3">
+          <p className="text-sm font-semibold text-white">New type</p>
+          <div className="flex flex-wrap gap-3 items-end">
+            <div className="flex-1 min-w-[160px]">
+              <label className="block text-xs text-gray-500 mb-1">Name</label>
+              <input value={addForm.name} onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
+                placeholder="e.g. Conveyor..."
+                className="w-full bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Color</label>
+              <input type="color" value={addForm.color}
+                onChange={(e) => setAddForm({ ...addForm, color: e.target.value })}
+                className="h-9 w-12 rounded-lg cursor-pointer border border-white/10 bg-transparent" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Order</label>
+              <input type="number" value={addForm.sort_order}
+                onChange={(e) => setAddForm({ ...addForm, sort_order: Number(e.target.value) })}
+                className="w-16 bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-2">Icon</label>
+            <ITIconPicker value={addForm.icon} onChange={(v) => setAddForm({ ...addForm, icon: v })} />
+          </div>
+          <div className="flex gap-2">
+            <button onClick={handleAdd} disabled={saving || !addForm.name.trim()}
+              className="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold disabled:opacity-50 flex items-center gap-1.5">
+              <Check size={13} /> Add
+            </button>
+            <button onClick={() => { setShowAdd(false); setAddForm(IT_EMPTY); }}
+              className="text-gray-500 px-4 py-2 border border-white/10 rounded-xl text-sm">
+              <X size={13} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loadingIT ? (
+        <div className="py-10 text-center text-gray-600 text-sm">Loading…</div>
+      ) : types.length === 0 ? (
+        <div className="py-10 text-center text-gray-700 text-sm">No types configured. Add one above.</div>
+      ) : (
+        <div className="space-y-2">
+          {types.map((t) =>
+            editId === t.id ? (
+              <div key={t.id} className="p-4 bg-[#0d1421] rounded-2xl border border-blue-500/30 space-y-3">
+                <div className="flex flex-wrap gap-3 items-end">
+                  <div className="flex-1 min-w-[160px]">
+                    <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                      className="w-full bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+                  </div>
+                  <input type="color" value={editForm.color}
+                    onChange={(e) => setEditForm({ ...editForm, color: e.target.value })}
+                    className="h-9 w-12 rounded-lg cursor-pointer border border-white/10 bg-transparent" />
+                  <input type="number" value={editForm.sort_order}
+                    onChange={(e) => setEditForm({ ...editForm, sort_order: Number(e.target.value) })}
+                    className="w-16 bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white" />
+                </div>
+                <ITIconPicker value={editForm.icon} onChange={(v) => setEditForm({ ...editForm, icon: v })} />
+                <div className="flex gap-2">
+                  <button onClick={() => handleEdit(t.id)} disabled={saving}
+                    className="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold disabled:opacity-50 flex items-center gap-1.5">
+                    <Check size={13} /> Save
+                  </button>
+                  <button onClick={() => setEditId(null)}
+                    className="text-gray-500 px-4 py-2 border border-white/10 rounded-xl text-sm">
+                    <X size={13} />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div key={t.id} className="bg-[#0d1421] rounded-2xl border border-white/[0.06] p-4 flex items-center gap-3 hover:border-white/20 transition-colors">
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                  style={{ background: `${t.color}18`, color: t.color, border: `1px solid ${t.color}40` }}>
+                  <ITDynamicIcon name={t.icon} size={18} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold text-white">{t.name}</p>
+                  <p className="text-xs text-gray-600 font-mono">{t.icon}</p>
+                </div>
+                <div className="w-4 h-4 rounded-full flex-shrink-0" style={{ background: t.color }} />
+                <button
+                  onClick={() => { setEditId(t.id); setEditForm({ name: t.name, icon: t.icon, color: t.color, sort_order: t.sort_order }); }}
+                  className="p-1.5 rounded-lg text-gray-700 hover:text-blue-400 hover:bg-blue-400/10 transition-colors">
+                  <Pencil size={13} />
+                </button>
+                <button onClick={() => handleDeleteIT(t.id)}
+                  className="p-1.5 rounded-lg text-gray-700 hover:text-red-400 hover:bg-red-400/10 transition-colors">
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            )
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Configuration panel (lazy) ───────────────────────────────────────────────────
 
 function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
@@ -860,6 +1076,7 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
             <p className="text-gray-600 text-sm">Indicators configuration — coming soon</p>
           </div>
         )}
+        {configTab === 'intervention_types' && <InterventionTypesConfigTab equipmentId={equipment.id} />}
       </div>
     </div>
   );
