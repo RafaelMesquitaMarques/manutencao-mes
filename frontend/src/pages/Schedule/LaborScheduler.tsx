@@ -14,6 +14,7 @@ import {
 import { useDroppable, useDraggable } from '@dnd-kit/core';
 import { GripVertical, User, AlertCircle, Clock, Ticket, X, CalendarDays, ChevronRight } from 'lucide-react';
 import { fetchWorkOrders, fetchTechniciansFull, updateWorkOrder } from '../../api/workOrders';
+import { useWorkOrderStore } from '../../store/workOrderStore';
 import type { WorkOrder, TechnicianFull } from '../../types';
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -233,6 +234,7 @@ function WODetailPanel({ wo, onClose }: { wo: WorkOrder; onClose: () => void }) 
 export default function LaborScheduler() {
   const { t } = useTranslation();
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  const upsertWorkOrder = useWorkOrderStore((s) => s.upsertWorkOrder);
 
   const [allWOs, setAllWOs] = useState<WorkOrder[]>([]);
   const [techs, setTechs] = useState<TechnicianFull[]>([]);
@@ -305,8 +307,9 @@ export default function LaborScheduler() {
 
     // Persist via API
     try {
-      await updateWorkOrder(woId, { executor_id: executorId });
+      const updated = await updateWorkOrder(woId, { executor_id: executorId });
       setAllWOs((prev) => prev.map((w) => w.id === woId ? { ...w, executor_id: executorId ?? undefined } : w));
+      upsertWorkOrder(updated);
     } catch {
       // Revert on failure — reload from server
       const fresh = await fetchWorkOrders({ status: 'open', limit: '100' });
@@ -321,7 +324,7 @@ export default function LaborScheduler() {
       });
       setAssignments(map);
     }
-  }, [allWOs, assignments, techs]);
+  }, [allWOs, assignments, techs, upsertWorkOrder]);
 
   return (
     <div className="p-6 flex flex-col h-full min-h-0 space-y-4">

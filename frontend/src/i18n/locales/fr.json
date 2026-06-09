@@ -42,7 +42,7 @@
     "settings":             "Paramètres",
     "logout":               "Déconnexion",
     "alerts":               "Alertes maintenance",
-    "tickets":              "Tickets ouverts",
+    "tickets":              "Tickets",
     "maintenanceDashboard": "Tableau maintenance",
     "supervisorView":       "Vue superviseur",
     "machines":             "Toutes les machines",
@@ -361,7 +361,7 @@
     "escalation":          "Escalade"
   },
   "tickets": {
-    "title":               "Tickets ouverts",
+    "title":               "Tickets",
     "subtitle":            "Suivi des interventions de maintenance",
     "total":               "tickets",
     "noTickets":           "Aucun ticket trouvé",
@@ -520,7 +520,7 @@
     "title":                "Tableau maintenance",
     "subtitle":             "KPIs et métriques du module de maintenance",
     "openAlerts":           "Alertes ouvertes",
-    "openTickets":          "Tickets ouverts",
+    "openTickets":          "Tickets",
     "criticalTickets":      "Tickets critiques",
     "overdueAlerts":        "Alertes en retard",
     "avgResolution":        "Rés. moyenne",

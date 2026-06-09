@@ -42,7 +42,7 @@
     "settings":             "Settings",
     "logout":               "Logout",
     "alerts":               "Maintenance Alerts",
-    "tickets":              "Open Tickets",
+    "tickets":              "Tickets",
     "maintenanceDashboard": "Maintenance Dashboard",
     "supervisorView":       "Supervisor View",
     "machines":             "All Machines",
@@ -361,7 +361,7 @@
     "escalation":          "Escalation"
   },
   "tickets": {
-    "title":               "Open Tickets",
+    "title":               "Tickets",
     "subtitle":            "Track and manage maintenance interventions",
     "total":               "tickets",
     "noTickets":           "No tickets found",
@@ -520,7 +520,7 @@
     "title":                "Maintenance Dashboard",
     "subtitle":             "KPIs and metrics for the maintenance module",
     "openAlerts":           "Open Alerts",
-    "openTickets":          "Open Tickets",
+    "openTickets":          "Tickets",
     "criticalTickets":      "Critical Tickets",
     "overdueAlerts":        "Overdue Alerts",
     "avgResolution":        "Avg Resolution",

@@ -22,6 +22,7 @@ from app.schemas.wo_subresources import (
 from app.core.security import get_current_user
 from app.services.inventory_service import InventoryService
 from app.services.machine_history_service import MachineHistoryService
+from app.services.ticket_service import sync_alert_from_ticket
 
 router = APIRouter()
 
@@ -38,6 +39,7 @@ async def _sync_ticket_from_wo(wo: WorkOrder, db: AsyncSession) -> None:
     elif status == WorkOrderStatus.completed:
         ticket.status = TicketStatus.completed
     # open/assigned → keep ticket as assigned
+    await sync_alert_from_ticket(ticket, db)
 
 
 async def _resolve_tech_for_labor(wo: WorkOrder, current_user: User, db: AsyncSession) -> Optional[Technician]:

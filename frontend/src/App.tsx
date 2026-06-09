@@ -35,6 +35,8 @@ import MachineList from './pages/Machines/MachineList';
 import MachinePage from './pages/Machines/MachinePage';
 import MyWorkPage from './pages/MyWork/MyWorkPage';
 import StopCategoriesPage from './pages/Settings/StopCategories';
+import MachinesSetup from './pages/Settings/MachinesSetup';
+import MachineSettings from './pages/Settings/MachineSettings';
 import UsersSetup from './pages/Settings/UsersSetup';
 import UserDetail from './pages/Settings/UserDetail';
 import MyProfile from './pages/Settings/MyProfile';
@@ -100,9 +102,8 @@ const App = () => (
         <Route path="maintenance/supervisor" element={<SupervisorDashboard />} />
         <Route path="machines"              element={<MachineList />} />
         <Route path="my-work"               element={<MyWorkPage />} />
-        <Route path="settings/machines"           element={<Navigate to="/equipment" replace />} />
-        <Route path="settings/machines/:id"       element={<Navigate to="/equipment" replace />} />
-        <Route path="settings/machines/:id/*"     element={<Navigate to="/equipment" replace />} />
+        <Route path="settings/machines"      element={<MachinesSetup />} />
+        <Route path="settings/machines/:id"  element={<MachineSettings />} />
         <Route path="settings/stop-categories"    element={<StopCategoriesPage />} />
         <Route path="settings/users"                          element={<UsersSetup />} />
         <Route path="settings/users/:id"                      element={<UserDetail />} />

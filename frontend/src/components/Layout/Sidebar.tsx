@@ -42,10 +42,12 @@ const CORE_GROUPS: NavGroup[] = [
   {
     label: 'Maintenance',
     items: [
-      { to: '/alerts',                  icon: Bell,     key: 'alerts' },
-      { to: '/tickets',                 icon: Ticket,   key: 'tickets',              roles: TECH_UP },
-      { to: '/maintenance/dashboard',   icon: Activity, key: 'maintenanceDashboard', roles: TECH_UP },
-      { to: '/maintenance/supervisor',  icon: Shield,   key: 'supervisorView',       roles: SUPERVISOR_UP },
+      { to: '/alerts',                  icon: Bell,         key: 'alerts' },
+      { to: '/tickets',                 icon: Ticket,       key: 'tickets',              roles: TECH_UP },
+      { to: '/maintenance/dashboard',   icon: Activity,     key: 'maintenanceDashboard', roles: TECH_UP },
+      { to: '/maintenance/supervisor',  icon: Shield,       key: 'supervisorView',       roles: SUPERVISOR_UP },
+      { to: '/schedule',                icon: CalendarDays, key: 'schedule',             roles: TECH_UP },
+      { to: '/pm-calendar',             icon: CalendarCheck, key: 'pmCalendar',          roles: TECH_UP },
     ],
   },
   {
@@ -60,13 +62,6 @@ const CORE_GROUPS: NavGroup[] = [
       { to: '/inventory',        icon: Package,       key: 'inventory',       roles: TECH_UP },
       { to: '/suppliers',        icon: Building2,     key: 'suppliers',       roles: SUPERVISOR_UP },
       { to: '/supplier-orders',  icon: ShoppingCart,  key: 'purchaseOrders',  roles: SUPERVISOR_UP },
-    ],
-  },
-  {
-    label: 'Planning',
-    items: [
-      { to: '/schedule',    icon: CalendarDays,  key: 'schedule',   roles: TECH_UP },
-      { to: '/pm-calendar', icon: CalendarCheck, key: 'pmCalendar', roles: TECH_UP },
     ],
   },
   {
@@ -99,7 +94,8 @@ const Sidebar = ({ onClose }: SidebarProps) => {
   };
 
   const settingsItems: NavItem[] = [
-    { to: '/settings/stop-categories', icon: Settings, key: 'stopCategories', roles: TECH_UP },
+    { to: '/settings/stop-categories', icon: Settings, key: 'stopCategories',  roles: TECH_UP },
+    { to: '/settings/machines',        icon: Factory,  key: 'machinesSetup',   roles: TECH_UP },
     ...(isAdmin() ? [{ to: '/settings/users', icon: UserCog, key: 'userManagement' }] : []),
   ];
 

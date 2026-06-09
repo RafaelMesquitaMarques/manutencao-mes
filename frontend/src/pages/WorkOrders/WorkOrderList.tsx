@@ -7,6 +7,7 @@ import type { ColDef, GridReadyEvent, RowClickedEvent } from 'ag-grid-community'
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-quartz.css';
 import { fetchWorkOrders } from '../../api/workOrders';
+import { useWorkOrderStore } from '../../store/workOrderStore';
 import type { WorkOrder, WorkOrderStatus, WorkOrderType, Priority } from '../../types';
 import Spinner from '../../components/ui/Spinner';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
@@ -62,24 +63,23 @@ const WorkOrderList = () => {
   const navigate = useNavigate();
   const gridRef = useRef<AgGridReact>(null);
 
-  const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const { workOrders, isLoading, setWorkOrders, setLoading } = useWorkOrderStore();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<WorkOrderStatus | ''>(ALL);
   const [typeFilter, setTypeFilter] = useState<WorkOrderType | ''>(ALL);
   const [priorityFilter, setPriorityFilter] = useState<Priority | ''>(ALL);
 
   const load = useCallback(async (silent = false) => {
-    if (!silent) setIsLoading(true);
+    if (!silent) setLoading(true);
     try {
       const data = await fetchWorkOrders();
       setWorkOrders(data);
     } catch {
       // keep empty
     } finally {
-      if (!silent) setIsLoading(false);
+      if (!silent) setLoading(false);
     }
-  }, []);
+  }, [setWorkOrders, setLoading]);
 
   useEffect(() => { load(); }, [load]);
 
