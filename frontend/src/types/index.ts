@@ -796,3 +796,40 @@ export interface MaintenanceDashboardData {
   by_escalation:        { level: string; count: number }[];
   by_ticket_status:     { status: string; count: number }[];
 }
+
+export interface MachineIntervention {
+  id: string;
+  machine_id: string | null;
+  equipment_id: string | null;
+  ticket_id: string | null;
+  status: 'waiting' | 'in_progress' | 'completed';
+  called_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  called_by_id: string | null;
+  started_by_id: string | null;
+  operator_note: string | null;
+  mechanic_note: string | null;
+}
+
+export interface MachineOperatorState {
+  machine: {
+    id: string;
+    name: string;
+    code: string;
+    department: string;
+    location: string;
+    status: string;
+  };
+  equipment: {
+    id: string;
+    name: string;
+    code: string;
+    department: string;
+    hour_meter: number;
+  } | null;
+  active_intervention: MachineIntervention | null;
+  last_intervention: MachineIntervention | null;
+  open_tickets_count: number;
+  last_maintenance_days_ago: number | null;
+}

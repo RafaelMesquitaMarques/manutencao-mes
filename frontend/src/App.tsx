@@ -32,6 +32,7 @@ import NewPurchaseOrder  from './pages/PurchaseOrders/NewPurchaseOrder';
 import MaintenanceDashboard from './pages/MaintenanceDashboard/MaintenanceDashboard';
 import SupervisorDashboard from './pages/MaintenanceDashboard/SupervisorDashboard';
 import MachinePage from './pages/Machines/MachinePage';
+import MachineOperatorPage from './pages/MachineView/MachineOperatorPage';
 import MyWorkPage from './pages/MyWork/MyWorkPage';
 import StopCategoriesPage from './pages/Settings/StopCategories';
 import MachinesSetup from './pages/Settings/MachinesSetup';
@@ -58,6 +59,7 @@ const App = () => (
         }
       />
       <Route path="/machines/:slug" element={<MachinePage />} />
+      <Route path="/machine/:machine_id" element={<MachineOperatorPage />} />
       <Route path="/accept-invite" element={<AcceptInvite />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />

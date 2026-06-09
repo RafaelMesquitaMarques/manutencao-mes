@@ -13,6 +13,7 @@ from app.api.routes import (
     tickets, maintenance_dashboard, machines, stop_categories, job_orders,
     suppliers as suppliers_module,
 )
+from app.api.routes.machine_operator import router as machine_operator_router
 
 
 async def _escalation_loop() -> None:
@@ -328,6 +329,25 @@ async def _run_migrations() -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """,
+        # Phase: machine operator call flow
+        """
+        CREATE TABLE IF NOT EXISTS machine_interventions (
+            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            plant_id        UUID REFERENCES plants(id) ON DELETE SET NULL,
+            machine_id      UUID REFERENCES machines(id) ON DELETE SET NULL,
+            equipment_id    UUID REFERENCES equipment(id) ON DELETE SET NULL,
+            ticket_id       UUID REFERENCES maintenance_tickets(id) ON DELETE SET NULL,
+            status          VARCHAR(30) NOT NULL DEFAULT 'waiting',
+            called_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            started_at      TIMESTAMPTZ,
+            completed_at    TIMESTAMPTZ,
+            called_by_id    UUID REFERENCES users(id) ON DELETE SET NULL,
+            started_by_id   UUID REFERENCES users(id) ON DELETE SET NULL,
+            completed_by_id UUID REFERENCES users(id) ON DELETE SET NULL,
+            operator_note   TEXT,
+            mechanic_note   TEXT
+        )
+        """,
         # Phase: alert ↔ ticket direct link
         "ALTER TABLE maintenance_alerts ADD COLUMN IF NOT EXISTS ticket_id UUID REFERENCES maintenance_tickets(id) ON DELETE SET NULL",
         "ALTER TABLE maintenance_alerts ALTER COLUMN escalation_level SET DEFAULT 0",
@@ -446,6 +466,7 @@ app.include_router(stop_categories.router,        prefix="/api/stop-categories",
 app.include_router(job_orders.router,             prefix="/api/job-orders",      tags=["Job Orders"])
 app.include_router(suppliers_module.supplier_router, prefix="/api/suppliers",       tags=["Suppliers"])
 app.include_router(suppliers_module.po_router,       prefix="/api/supplier-orders", tags=["Purchase Orders"])
+app.include_router(machine_operator_router)
 
 
 @app.get("/api/health", tags=["System"])

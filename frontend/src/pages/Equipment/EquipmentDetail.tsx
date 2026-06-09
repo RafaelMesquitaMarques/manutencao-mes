@@ -708,28 +708,30 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
   const machineId  = machine?.id || equipment.id;
 
   useEffect(() => {
-    fetchMachinesAll().then((machines) => {
-      setAllMachines(machines);
-      const found = machines.find((m) => m.code && equipment.code && m.code === equipment.code);
-      if (found) {
-        setMachine(found);
-        setForm({
-          display_name:            found.display_name || '',
-          page_language:           found.page_language || 'fr',
-          custom_color:            found.custom_color || '',
-          target_availability_pct: found.target_availability_pct ?? 70,
-          target_count:            found.target_count ?? 0,
-          target_count_per_shift:  found.target_count_per_shift ?? 0,
-          hourly_rate:             found.hourly_rate,
-          hourly_rate_currency:    found.hourly_rate_currency ?? 'CAD',
-          show_production_panel:   found.show_production_panel ?? true,
-          show_reject_panel:       found.show_reject_panel ?? true,
-          show_availability_gauge: found.show_availability_gauge ?? true,
-          show_job_number:         found.show_job_number ?? true,
-        });
-      }
-      setSearched(true);
-    });
+    fetchMachinesAll()
+      .then((machines) => {
+        setAllMachines(machines);
+        const found = machines.find((m) => m.code && equipment.code && m.code === equipment.code);
+        if (found) {
+          setMachine(found);
+          setForm({
+            display_name:            found.display_name || '',
+            page_language:           found.page_language || 'fr',
+            custom_color:            found.custom_color || '',
+            target_availability_pct: found.target_availability_pct ?? 70,
+            target_count:            found.target_count ?? 0,
+            target_count_per_shift:  found.target_count_per_shift ?? 0,
+            hourly_rate:             found.hourly_rate,
+            hourly_rate_currency:    found.hourly_rate_currency ?? 'CAD',
+            show_production_panel:   found.show_production_panel ?? true,
+            show_reject_panel:       found.show_reject_panel ?? true,
+            show_availability_gauge: found.show_availability_gauge ?? true,
+            show_job_number:         found.show_job_number ?? true,
+          });
+        }
+      })
+      .catch(() => { /* ignore fetch errors — config works with defaults */ })
+      .finally(() => setSearched(true));
   }, [equipment.code, equipment.id, equipment.name]);
 
   const set = <K extends keyof MachineConfigUpdate>(key: K, val: MachineConfigUpdate[K]) =>

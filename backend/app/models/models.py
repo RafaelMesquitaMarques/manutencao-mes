@@ -1080,3 +1080,24 @@ class CostAuditLog(Base):
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
 
     changed_by = relationship("User")
+
+
+# ─── Machine Intervention (operator call flow) ────────────────────────────────
+
+class MachineIntervention(Base):
+    __tablename__ = "machine_interventions"
+
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id        = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    machine_id      = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
+    equipment_id    = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True)
+    ticket_id       = Column(UUID(as_uuid=True), ForeignKey("maintenance_tickets.id"), nullable=True)
+    status          = Column(String(30), default="waiting")
+    called_at       = Column(DateTime(timezone=True), server_default=func.now())
+    started_at      = Column(DateTime(timezone=True), nullable=True)
+    completed_at    = Column(DateTime(timezone=True), nullable=True)
+    called_by_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    started_by_id   = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    completed_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    operator_note   = Column(Text, nullable=True)
+    mechanic_note   = Column(Text, nullable=True)

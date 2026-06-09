@@ -124,7 +124,7 @@ export default function EquipmentList() {
               {/* Action buttons */}
               <div className="flex items-center gap-2 mt-3 pt-3 border-t border-white/[0.04]">
                 <button
-                  onClick={(e) => { e.stopPropagation(); e.preventDefault(); navigate(`/machines/${eq.id}`); }}
+                  onClick={(e) => { e.stopPropagation(); e.preventDefault(); navigate(`/machine/${eq.id}`); }}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-blue-700 text-blue-400 hover:bg-blue-900/20 transition-colors"
                 >
                   <Monitor size={12} /> Machine page

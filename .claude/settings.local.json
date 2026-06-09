@@ -66,7 +66,13 @@
       "PowerShell(Copy-Item *)",
       "Bash(curl *)",
       "PowerShell($login = Invoke-RestMethod -Method Post -Uri \"http://localhost/api/auth/login\" -ContentType \"application/json\" -Body '{\"email\":\"admin@foliot.com\",\"password\":\"admin123\"}'; $token = $login.access_token; $headers = @{Authorization = \"Bearer $token\"}; Write-Host \"=== /items ===\"; Invoke-RestMethod -Uri \"http://localhost/api/inventory/items?limit=3\" -Headers $headers | ConvertTo-Json -Depth 3; Write-Host \"=== /dashboard ===\"; Invoke-RestMethod -Uri \"http://localhost/api/inventory/dashboard\" -Headers $headers | ConvertTo-Json; Write-Host \"=== /suppliers ===\"; Invoke-RestMethod -Uri \"http://localhost/api/inventory/suppliers?limit=3\" -Headers $headers | ConvertTo-Json)",
-      "PowerShell($login = Invoke-RestMethod -Method Post -Uri \"http://localhost/api/auth/login\" -ContentType \"application/json\" -Body '{\"email\":\"admin@foliot.com\",\"password\":\"admin123\"}'; $headers = @{Authorization = \"Bearer $\\($login.access_token\\)\"}; $dash = Invoke-RestMethod -Uri \"http://localhost/api/inventory/dashboard\" -Headers $headers; Write-Host \"total_items: $\\($dash.total_items\\)  low_stock: $\\($dash.low_stock_count\\)  zero_stock: $\\($dash.zero_stock_count\\)  categories: $\\($dash.by_category.Count\\)\"; $cats = Invoke-RestMethod -Uri \"http://localhost/api/inventory/items/categories\" -Headers $headers; Write-Host \"Distinct categories: $\\($cats.categories -join ', '\\)\"; Write-Host \"Warehouses: $\\($cats.warehouses -join ', '\\)\")"
+      "PowerShell($login = Invoke-RestMethod -Method Post -Uri \"http://localhost/api/auth/login\" -ContentType \"application/json\" -Body '{\"email\":\"admin@foliot.com\",\"password\":\"admin123\"}'; $headers = @{Authorization = \"Bearer $\\($login.access_token\\)\"}; $dash = Invoke-RestMethod -Uri \"http://localhost/api/inventory/dashboard\" -Headers $headers; Write-Host \"total_items: $\\($dash.total_items\\)  low_stock: $\\($dash.low_stock_count\\)  zero_stock: $\\($dash.zero_stock_count\\)  categories: $\\($dash.by_category.Count\\)\"; $cats = Invoke-RestMethod -Uri \"http://localhost/api/inventory/items/categories\" -Headers $headers; Write-Host \"Distinct categories: $\\($cats.categories -join ', '\\)\"; Write-Host \"Warehouses: $\\($cats.warehouses -join ', '\\)\")",
+      "Bash(dir Z:\\\\manutencao-mes\\\\manutencao-mes *)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'total={d[\\\\\"total\\\\\"]} items={len\\(d[\\\\\"items\\\\\"]\\)}'\\)\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'include_resolved=true: total={d[\\\\\"total\\\\\"]}'\\)\")",
+      "Bash(git *)",
+      "Bash(sleep 3)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(f'  {i[\\\\\"alert_number\\\\\"]} {i[\\\\\"status\\\\\"]}'\\) for i in d['items']]; print\\(f'total={d[\\\\\"total\\\\\"]}'\\)\")"
     ]
   }
 }
