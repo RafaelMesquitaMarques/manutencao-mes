@@ -51,12 +51,6 @@ const CORE_GROUPS: NavGroup[] = [
     ],
   },
   {
-    label: 'Machines',
-    items: [
-      { to: '/machines',   icon: Factory,  key: 'machines' },
-    ],
-  },
-  {
     label: 'Inventory',
     items: [
       { to: '/inventory',        icon: Package,       key: 'inventory',       roles: TECH_UP },

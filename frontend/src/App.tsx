@@ -31,7 +31,6 @@ import PurchaseOrderList from './pages/PurchaseOrders/PurchaseOrderList';
 import NewPurchaseOrder  from './pages/PurchaseOrders/NewPurchaseOrder';
 import MaintenanceDashboard from './pages/MaintenanceDashboard/MaintenanceDashboard';
 import SupervisorDashboard from './pages/MaintenanceDashboard/SupervisorDashboard';
-import MachineList from './pages/Machines/MachineList';
 import MachinePage from './pages/Machines/MachinePage';
 import MyWorkPage from './pages/MyWork/MyWorkPage';
 import StopCategoriesPage from './pages/Settings/StopCategories';
@@ -100,7 +99,7 @@ const App = () => (
         <Route path="supplier-orders/new"  element={<NewPurchaseOrder />} />
         <Route path="maintenance/dashboard"  element={<MaintenanceDashboard />} />
         <Route path="maintenance/supervisor" element={<SupervisorDashboard />} />
-        <Route path="machines"              element={<MachineList />} />
+        <Route path="machines"              element={<Navigate to="/equipment" replace />} />
         <Route path="my-work"               element={<MyWorkPage />} />
         <Route path="settings/machines"      element={<MachinesSetup />} />
         <Route path="settings/machines/:id"  element={<MachineSettings />} />

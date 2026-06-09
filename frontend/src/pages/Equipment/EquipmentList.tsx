@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Search, Plus, Cpu, MapPin, Activity } from 'lucide-react';
+import { Search, Plus, Cpu, MapPin, Activity, Monitor, Pencil } from 'lucide-react';
 import { fetchEquipment } from '../../api/workOrders';
 import type { Equipment } from '../../types';
 
@@ -21,6 +21,7 @@ const CRIT_COLORS: Record<string, string> = {
 
 export default function EquipmentList() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [items, setItems] = useState<Equipment[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -118,6 +119,22 @@ export default function EquipmentList() {
                 <span className="text-xs text-gray-600">
                   {eq.hour_meter.toLocaleString()} {t('equipment.hours')}
                 </span>
+              </div>
+
+              {/* Action buttons */}
+              <div className="flex items-center gap-2 mt-3 pt-3 border-t border-white/[0.04]">
+                <button
+                  onClick={(e) => { e.stopPropagation(); e.preventDefault(); navigate(`/machines/${eq.id}`); }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-blue-700 text-blue-400 hover:bg-blue-900/20 transition-colors"
+                >
+                  <Monitor size={12} /> Machine page
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); e.preventDefault(); navigate(`/equipment/${eq.id}`); }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-gray-700 text-gray-400 hover:bg-gray-800 transition-colors ml-auto"
+                >
+                  <Pencil size={12} /> Edit
+                </button>
               </div>
             </Link>
           ))}
