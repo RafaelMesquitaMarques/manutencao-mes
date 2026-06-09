@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type { User, UserRole } from '../types';
 
 const ROLE_PERMISSIONS: Record<string, Set<string>> = {
@@ -62,28 +63,40 @@ interface AuthState {
   isAdmin: () => boolean;
 }
 
-export const useAuthStore = create<AuthState>()((set, get) => ({
-  user: null,
-  token: null,
-  isAuthenticated: false,
-  setAuth: (user, token) => set({ user, token, isAuthenticated: true }),
-  patchUser: (patch) => set((state) => ({ user: state.user ? { ...state.user, ...patch } : null })),
-  logout: () => set({ user: null, token: null, isAuthenticated: false }),
-  can: (resource: string, action = 'view') => {
-    const { user } = get();
-    if (!user) return false;
-    const role = (user.role ?? 'operator') as string;
-    if (role === 'admin') return true;
-    const perms = ROLE_PERMISSIONS[role] ?? new Set<string>();
-    return perms.has(`${resource}:${action}`);
-  },
-  hasRole: (...roles: UserRole[]) => {
-    const { user } = get();
-    if (!user) return false;
-    return roles.includes((user.role ?? 'operator') as UserRole);
-  },
-  isAdmin: () => {
-    const { user } = get();
-    return user?.role === 'admin';
-  },
-}));
+export const useAuthStore = create<AuthState>()(
+  persist(
+    (set, get) => ({
+      user: null,
+      token: null,
+      isAuthenticated: false,
+      setAuth: (user, token) => set({ user, token, isAuthenticated: true }),
+      patchUser: (patch) => set((state) => ({ user: state.user ? { ...state.user, ...patch } : null })),
+      logout: () => set({ user: null, token: null, isAuthenticated: false }),
+      can: (resource: string, action = 'view') => {
+        const { user } = get();
+        if (!user) return false;
+        const role = (user.role ?? 'operator') as string;
+        if (role === 'admin') return true;
+        const perms = ROLE_PERMISSIONS[role] ?? new Set<string>();
+        return perms.has(`${resource}:${action}`);
+      },
+      hasRole: (...roles: UserRole[]) => {
+        const { user } = get();
+        if (!user) return false;
+        return roles.includes((user.role ?? 'operator') as UserRole);
+      },
+      isAdmin: () => {
+        const { user } = get();
+        return user?.role === 'admin';
+      },
+    }),
+    {
+      name: 'foliot-auth',
+      partialize: (state) => ({
+        token: state.token,
+        user: state.user,
+        isAuthenticated: state.isAuthenticated,
+      }),
+    }
+  )
+);

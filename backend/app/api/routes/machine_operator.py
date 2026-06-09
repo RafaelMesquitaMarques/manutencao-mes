@@ -10,9 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.models.models import (
     Equipment, Machine, MachineIntervention, MaintenanceTicket,
-    TicketStatus, AlertPriority,
+    TicketStatus, AlertPriority, MaintenanceAlert, AlertStatus, AlertProblemType,
 )
-from app.services.ticket_service import _next_ticket_number
+from app.services.ticket_service import _next_ticket_number, _next_alert_number, sync_alert_from_ticket
 
 router = APIRouter(prefix="/api/machine-operator", tags=["Machine Operator"])
 
@@ -156,10 +156,24 @@ async def call_maintenance(machine_id: str, body: CallBody, db: AsyncSession = D
     if existing:
         return {"status": "already_active", "intervention": _intervention_dict(existing)}
 
+    alert = MaintenanceAlert(
+        alert_number=await _next_alert_number(db),
+        machine_id=machine.id,
+        department=machine.department,
+        problem_type=AlertProblemType.mechanical,
+        priority=AlertPriority.medium,
+        description=body.operator_note or "Appel opérateur",
+        created_by="operator",
+        status=AlertStatus.new_alert,
+    )
+    db.add(alert)
+    await db.flush()
+
     ticket_number = await _next_ticket_number(db)
     ticket = MaintenanceTicket(
         ticket_number=ticket_number,
         machine_id=machine.id,
+        alert_id=alert.id,
         priority=AlertPriority.medium,
         status=TicketStatus.open,
         description=body.operator_note or "Appel opérateur",
@@ -167,6 +181,8 @@ async def call_maintenance(machine_id: str, body: CallBody, db: AsyncSession = D
     )
     db.add(ticket)
     await db.flush()
+
+    alert.ticket_id = ticket.id
 
     intervention = MachineIntervention(
         machine_id=machine.id,
@@ -199,6 +215,15 @@ async def start_intervention(machine_id: str, body: StartBody, db: AsyncSession 
     intervention.started_at = datetime.now(timezone.utc)
     if body.mechanic_note:
         intervention.mechanic_note = body.mechanic_note
+
+    if intervention.ticket_id:
+        ticket = await db.get(MaintenanceTicket, intervention.ticket_id)
+        if ticket:
+            ticket.status = TicketStatus.in_progress
+            if not ticket.started_at:
+                ticket.started_at = intervention.started_at
+            await sync_alert_from_ticket(ticket, db)
+
     await db.commit()
     await db.refresh(intervention)
     return {"status": "started", "intervention": _intervention_dict(intervention)}
@@ -229,6 +254,7 @@ async def complete_intervention(machine_id: str, body: CompleteBody, db: AsyncSe
         if ticket:
             ticket.status                  = TicketStatus.completed
             ticket.closed_by_technician_at = now
+            await sync_alert_from_ticket(ticket, db)
 
     machine.last_maintenance_at = now
     await db.commit()
