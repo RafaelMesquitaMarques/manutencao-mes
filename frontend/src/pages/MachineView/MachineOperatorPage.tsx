@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { AlertTriangle, Clock, Wrench, CheckCircle, Loader2, Mic, MicOff } from 'lucide-react';
+import * as LucideIcons from 'lucide-react';
 import {
   fetchMachineOperatorState,
   fetchInterventionTypes,
@@ -47,7 +48,8 @@ export default function MachineOperatorPage() {
   const [selectedTypeId, setSelectedTypeId] = useState<string | null>(null);
   const [selectedTypeName, setSelectedTypeName] = useState('');
   const [selectedTypeIcon, setSelectedTypeIcon] = useState('');
-  const [completePhase, setCompletePhase] = useState<'type' | 'note'>('type');
+  type CompletionStep = 'idle' | 'select_type' | 'add_note';
+  const [completionStep, setCompletionStep] = useState<CompletionStep>('idle');
   const [mechNote, setMechNote] = useState('');
 
   // Voice transcription
@@ -97,7 +99,7 @@ export default function MachineOperatorPage() {
       setSelectedTypeId(null);
       setSelectedTypeName('');
       setSelectedTypeIcon('');
-      setCompletePhase('type');
+      setCompletionStep('idle');
     } catch {
       setError('Action échouée');
     } finally {
@@ -258,7 +260,7 @@ export default function MachineOperatorPage() {
           {/* STATE 3 — in_progress */}
           {isInProgress && (
             <>
-              {/* Status card */}
+              {/* Status card — always visible in state 3 */}
               <div className="w-full rounded-2xl px-6 py-4 text-center"
                 style={{ background: '#0a1628', border: '1px solid #1d4ed8' }}>
                 <Wrench className="mx-auto text-blue-400 mb-1" size={28} />
@@ -269,12 +271,25 @@ export default function MachineOperatorPage() {
                 )}
               </div>
 
-              {/* Phase A — type selector */}
-              {completePhase === 'type' && interventionTypes.length > 0 && (
+              {/* STEP idle — single "Terminer" button */}
+              {completionStep === 'idle' && (
+                <button
+                  disabled={acting}
+                  onClick={() => setCompletionStep(interventionTypes.length > 0 ? 'select_type' : 'add_note')}
+                  className="w-full py-5 rounded-2xl text-xl font-bold transition-all active:scale-95 disabled:opacity-50"
+                  style={{ background: '#1e3a5f', border: '2px solid #3b82f6' }}>
+                  <CheckCircle className="inline mr-2" size={22} />Terminer l'intervention
+                </button>
+              )}
+
+              {/* STEP select_type — type grid */}
+              {completionStep === 'select_type' && (
                 <div className="w-full">
-                  <p className="text-center text-gray-400 text-sm mb-4 font-medium tracking-wide uppercase">
-                    Type d'intervention
-                  </p>
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-gray-400 text-sm font-medium tracking-wide uppercase">Type d'intervention</p>
+                    <button onClick={() => setCompletionStep('idle')}
+                      className="text-xs text-gray-600 hover:text-gray-400 transition-colors">← Retour</button>
+                  </div>
                   <div className="grid grid-cols-3 gap-3">
                     {interventionTypes.map((t) => (
                       <button key={t.id}
@@ -282,13 +297,10 @@ export default function MachineOperatorPage() {
                           setSelectedTypeId(t.id);
                           setSelectedTypeName(t.name);
                           setSelectedTypeIcon(t.icon);
-                          setCompletePhase('note');
+                          setCompletionStep('add_note');
                         }}
                         className="flex flex-col items-center gap-2 p-3 rounded-2xl transition-all active:scale-95"
-                        style={{
-                          background: '#111318',
-                          border: `1.5px solid ${t.color}40`,
-                        }}
+                        style={{ background: '#111318', border: `1.5px solid ${t.color}40` }}
                         onMouseEnter={(e) => {
                           (e.currentTarget as HTMLButtonElement).style.background = `${t.color}15`;
                           (e.currentTarget as HTMLButtonElement).style.border = `1.5px solid ${t.color}`;
@@ -297,42 +309,41 @@ export default function MachineOperatorPage() {
                           (e.currentTarget as HTMLButtonElement).style.background = '#111318';
                           (e.currentTarget as HTMLButtonElement).style.border = `1.5px solid ${t.color}40`;
                         }}>
-                        <div className="w-16 h-16 rounded-full flex items-center justify-center text-2xl"
-                          style={{ background: `${t.color}18`, border: `1.5px solid ${t.color}50` }}>
-                          {t.icon}
+                        <div className="w-16 h-16 rounded-full flex items-center justify-center"
+                          style={{ background: `${t.color}18`, border: `1.5px solid ${t.color}50`, color: t.color }}>
+                          <DynamicIcon name={t.icon} size={28} />
                         </div>
                         <span className="text-xs text-gray-300 text-center leading-tight">{t.name}</span>
                       </button>
                     ))}
                   </div>
-                  {/* Skip option if type not mandatory */}
-                  <button onClick={() => setCompletePhase('note')}
+                  <button
+                    onClick={() => { setSelectedTypeId(null); setSelectedTypeName(''); setSelectedTypeIcon(''); setCompletionStep('add_note'); }}
                     className="mt-3 w-full text-xs text-gray-600 hover:text-gray-400 transition-colors">
                     Passer sans type →
                   </button>
                 </div>
               )}
 
-              {/* Phase B — closing note + confirm (also shown if no types) */}
-              {(completePhase === 'note' || interventionTypes.length === 0) && (
+              {/* STEP add_note — note + voice + confirm */}
+              {completionStep === 'add_note' && (
                 <div className="w-full flex flex-col gap-4">
-                  {/* Selected type badge */}
-                  {selectedTypeName && (
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => { setSelectedTypeId(null); setCompletePhase('type'); }}
-                        className="text-xs text-gray-600 hover:text-gray-400 transition-colors">← Changer</button>
+                  <div className="flex items-center justify-between">
+                    <button
+                      onClick={() => setCompletionStep(interventionTypes.length > 0 ? 'select_type' : 'idle')}
+                      className="text-xs text-gray-600 hover:text-gray-400 transition-colors">← Retour</button>
+                    {selectedTypeName && (
                       <div className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium"
                         style={{ background: '#1e3a5f', border: '1px solid #3b82f6', color: '#93c5fd' }}>
-                        <span>{selectedTypeIcon}</span>
+                        <DynamicIcon name={selectedTypeIcon} size={15} />
                         <span>{selectedTypeName}</span>
                       </div>
-                    </div>
-                  )}
+                    )}
+                  </div>
 
-                  {/* Note field + microphone */}
                   <div className="flex gap-2 items-start">
                     <textarea value={mechNote} onChange={(e) => setMechNote(e.target.value)}
-                      placeholder="Note de clôture (optionnel) — ou utilisez le micro 🎤"
+                      placeholder="Note de clôture (optionnel)"
                       className="flex-1 h-20 bg-[#111318] border border-[#21262d] rounded-xl px-4 py-3 text-sm text-gray-300 placeholder-gray-600 resize-none focus:outline-none focus:border-blue-700/60"
                     />
                     <button onClick={toggleRecording} title={isRecording ? 'Arrêter' : 'Dicter'}
@@ -402,6 +413,13 @@ export default function MachineOperatorPage() {
       </footer>
     </div>
   );
+}
+
+function DynamicIcon({ name, size = 28 }: { name: string; size?: number }) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const Icon = (LucideIcons as Record<string, any>)[name];
+  if (Icon) return <Icon size={size} />;
+  return <span style={{ fontSize: Math.floor(size * 0.6) }}>{name ? name[0] : '?'}</span>;
 }
 
 function InfoCard({ label, value, alert }: { label: string; value: string; alert?: boolean }) {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Plus, Pencil, Trash2, Check, X } from 'lucide-react';
+import * as LucideIcons from 'lucide-react';
 import api from '../../api/axios';
 import { fetchEquipment } from '../../api/workOrders';
 import type { Equipment, InterventionType } from '../../types';
@@ -11,8 +12,43 @@ interface TypeForm {
   sort_order: number;
 }
 
-const DEFAULT_ICONS = ['🔧', '⚡', '💨', '💧', '🔌', '🛢️', '🔩', '🧹', '❓', '🔥', '⚙️', '🪛', '🔄', '📦', '🪤'];
-const EMPTY_FORM: TypeForm = { name: '', icon: '🔧', color: '#388bfd', sort_order: 0 };
+const DEFAULT_ICONS = [
+  'Wrench', 'Zap', 'Wind', 'Droplets', 'Cpu', 'Gauge',
+  'SlidersHorizontal', 'Sparkles', 'HelpCircle', 'Settings',
+  'AlertTriangle', 'Cog', 'Activity', 'Hammer', 'Scissors',
+  'Package', 'Layers', 'Flame',
+];
+
+const EMPTY_FORM: TypeForm = { name: '', icon: 'Wrench', color: '#388bfd', sort_order: 0 };
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function DynamicIcon({ name, size = 16 }: { name: string; size?: number }) {
+  const Icon = (LucideIcons as Record<string, any>)[name];
+  if (Icon) return <Icon size={size} />;
+  return <span style={{ fontSize: Math.floor(size * 0.6) }}>{name ? name[0] : '?'}</span>;
+}
+
+function IconPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {DEFAULT_ICONS.map((ic) => (
+        <button
+          key={ic}
+          type="button"
+          onClick={() => onChange(ic)}
+          title={ic}
+          className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+            value === ic
+              ? 'bg-blue-600 text-white'
+              : 'bg-[#111318] border border-white/[0.08] text-gray-400 hover:text-gray-200 hover:border-blue-500/40'
+          }`}
+        >
+          <DynamicIcon name={ic} size={15} />
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export default function InterventionTypeSettings() {
   const [equipment, setEquipment] = useState<Equipment[]>([]);
@@ -120,11 +156,11 @@ export default function InterventionTypeSettings() {
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-white/[0.04]">
-                    <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">Icône</th>
+                    <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase tracking-wider w-12">Icône</th>
                     <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">Nom</th>
-                    <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">Couleur</th>
-                    <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase tracking-wider">Ordre</th>
-                    <th className="px-4 py-3" />
+                    <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase tracking-wider w-28">Couleur</th>
+                    <th className="px-4 py-3 text-left text-xs text-gray-600 uppercase tracking-wider w-16">Ordre</th>
+                    <th className="px-4 py-3 w-20" />
                   </tr>
                 </thead>
                 <tbody>
@@ -132,27 +168,22 @@ export default function InterventionTypeSettings() {
                     <tr key={t.id} className="border-b border-white/[0.03] last:border-0">
                       {editId === t.id ? (
                         <>
-                          <td className="px-4 py-2">
-                            <select value={editForm.icon} onChange={(e) => setEditForm({ ...editForm, icon: e.target.value })}
-                              className="bg-[#111318] border border-white/[0.08] rounded px-2 py-1 text-sm text-white w-20">
-                              {DEFAULT_ICONS.map((ic) => <option key={ic} value={ic}>{ic}</option>)}
-                            </select>
+                          <td className="px-4 py-3" colSpan={4}>
+                            <div className="space-y-3">
+                              <div className="flex gap-3 items-center">
+                                <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                                  className="bg-[#111318] border border-white/[0.08] rounded px-2 py-1.5 text-sm text-white w-44" />
+                                <input type="color" value={editForm.color}
+                                  onChange={(e) => setEditForm({ ...editForm, color: e.target.value })}
+                                  className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent" />
+                                <input type="number" value={editForm.sort_order}
+                                  onChange={(e) => setEditForm({ ...editForm, sort_order: Number(e.target.value) })}
+                                  className="bg-[#111318] border border-white/[0.08] rounded px-2 py-1.5 text-sm text-white w-16" />
+                              </div>
+                              <IconPicker value={editForm.icon} onChange={(v) => setEditForm({ ...editForm, icon: v })} />
+                            </div>
                           </td>
-                          <td className="px-4 py-2">
-                            <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                              className="bg-[#111318] border border-white/[0.08] rounded px-2 py-1 text-sm text-white w-36" />
-                          </td>
-                          <td className="px-4 py-2">
-                            <input type="color" value={editForm.color}
-                              onChange={(e) => setEditForm({ ...editForm, color: e.target.value })}
-                              className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent" />
-                          </td>
-                          <td className="px-4 py-2">
-                            <input type="number" value={editForm.sort_order}
-                              onChange={(e) => setEditForm({ ...editForm, sort_order: Number(e.target.value) })}
-                              className="bg-[#111318] border border-white/[0.08] rounded px-2 py-1 text-sm text-white w-16" />
-                          </td>
-                          <td className="px-4 py-2">
+                          <td className="px-4 py-3">
                             <div className="flex gap-1">
                               <button onClick={() => handleEdit(t.id)} disabled={saving}
                                 className="p-1 rounded text-green-400 hover:bg-green-900/20 transition-colors">
@@ -167,7 +198,12 @@ export default function InterventionTypeSettings() {
                         </>
                       ) : (
                         <>
-                          <td className="px-4 py-3 text-xl">{t.icon}</td>
+                          <td className="px-4 py-3">
+                            <div className="w-7 h-7 rounded-lg flex items-center justify-center"
+                              style={{ background: `${t.color}18`, color: t.color }}>
+                              <DynamicIcon name={t.icon} size={15} />
+                            </div>
+                          </td>
                           <td className="px-4 py-3 text-sm text-gray-200">{t.name}</td>
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-2">
@@ -199,16 +235,9 @@ export default function InterventionTypeSettings() {
 
           {/* Add form */}
           {showAdd ? (
-            <div className="bg-[#0d1421] border border-blue-500/30 rounded-xl p-4">
-              <p className="text-sm font-semibold text-white mb-3">Nouveau type</p>
+            <div className="bg-[#0d1421] border border-blue-500/30 rounded-xl p-4 space-y-4">
+              <p className="text-sm font-semibold text-white">Nouveau type</p>
               <div className="flex flex-wrap gap-3 items-end">
-                <div>
-                  <label className="text-xs text-gray-500 mb-1 block">Icône</label>
-                  <select value={addForm.icon} onChange={(e) => setAddForm({ ...addForm, icon: e.target.value })}
-                    className="bg-[#111318] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white">
-                    {DEFAULT_ICONS.map((ic) => <option key={ic} value={ic}>{ic}</option>)}
-                  </select>
-                </div>
                 <div className="flex-1 min-w-[160px]">
                   <label className="text-xs text-gray-500 mb-1 block">Nom</label>
                   <input value={addForm.name} onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
@@ -227,16 +256,21 @@ export default function InterventionTypeSettings() {
                     onChange={(e) => setAddForm({ ...addForm, sort_order: Number(e.target.value) })}
                     className="w-16 bg-[#111318] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white" />
                 </div>
-                <div className="flex gap-2">
-                  <button onClick={handleAdd} disabled={saving || !addForm.name.trim()}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50">
-                    Ajouter
-                  </button>
-                  <button onClick={() => { setShowAdd(false); setAddForm(EMPTY_FORM); }}
-                    className="px-4 py-2 bg-[#111318] border border-white/[0.06] text-gray-400 text-sm rounded-lg hover:text-white transition-colors">
-                    Annuler
-                  </button>
-                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-2 block">Icône</label>
+                <IconPicker value={addForm.icon} onChange={(v) => setAddForm({ ...addForm, icon: v })} />
+                <p className="text-xs text-gray-600 mt-1.5">Sélectionné: <span className="text-gray-400 font-mono">{addForm.icon}</span></p>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={handleAdd} disabled={saving || !addForm.name.trim()}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50">
+                  Ajouter
+                </button>
+                <button onClick={() => { setShowAdd(false); setAddForm(EMPTY_FORM); }}
+                  className="px-4 py-2 bg-[#111318] border border-white/[0.06] text-gray-400 text-sm rounded-lg hover:text-white transition-colors">
+                  Annuler
+                </button>
               </div>
             </div>
           ) : (
