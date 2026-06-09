@@ -305,9 +305,12 @@ export default function LaborScheduler() {
       return next;
     });
 
-    // Persist via API
+    // Persist via API — update executor_id (technician) AND assigned_to_id (user) together
     try {
-      const updated = await updateWorkOrder(woId, { executor_id: executorId });
+      const executorTech = executorId ? techs.find((t) => t.id === executorId) : null;
+      const patchPayload: { executor_id: string | null; assigned_to_id?: string } = { executor_id: executorId };
+      if (executorTech?.user_id) patchPayload.assigned_to_id = executorTech.user_id;
+      const updated = await updateWorkOrder(woId, patchPayload);
       setAllWOs((prev) => prev.map((w) => w.id === woId ? { ...w, executor_id: executorId ?? undefined } : w));
       upsertWorkOrder(updated);
     } catch {
