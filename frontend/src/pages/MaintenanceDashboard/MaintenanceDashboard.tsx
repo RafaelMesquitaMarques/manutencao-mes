@@ -1,11 +1,29 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bell, Ticket, AlertTriangle, Clock, RefreshCw, BarChart2 } from 'lucide-react';
+import { Bell, Ticket, AlertTriangle, Clock, RefreshCw, BarChart2, Wrench, TrendingUp, Zap, Timer } from 'lucide-react';
 import ReactECharts from 'echarts-for-react';
 import { fetchMaintenanceDashboard } from '../../api/maintenance';
 import type { MaintenanceDashboardData } from '../../types';
 import Spinner from '../../components/ui/Spinner';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
+import api from '../../api/axios';
+
+interface InterventionKpis {
+  total_interventions: number;
+  period_days: number;
+  mttr_minutes: number | null;
+  mtbf_hours: number | null;
+  avg_response_time_minutes: number | null;
+  avg_duration_minutes: number | null;
+  avg_downtime_minutes: number | null;
+  by_equipment: {
+    equipment_id: string;
+    name: string;
+    intervention_count: number;
+    avg_duration_minutes: number | null;
+    avg_response_minutes: number | null;
+  }[];
+}
 
 const CHART_TEXT   = '#9ca3af';
 const CHART_LINE   = 'rgba(255,255,255,0.05)';
@@ -73,6 +91,8 @@ export default function MaintenanceDashboard() {
   const { t } = useTranslation();
   const [data, setData]       = useState<MaintenanceDashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [kpiData, setKpiData] = useState<InterventionKpis | null>(null);
+  const [kpiPeriod, setKpiPeriod] = useState<7 | 30 | 90>(30);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -83,6 +103,12 @@ export default function MaintenanceDashboard() {
       if (!silent) setLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    api.get(`/api/maintenance/intervention-kpis?days=${kpiPeriod}`)
+      .then(r => setKpiData(r.data))
+      .catch(() => {});
+  }, [kpiPeriod]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -216,6 +242,88 @@ export default function MaintenanceDashboard() {
           <ReactECharts option={barOpts(byEscalData, 'Escalation', '#ef4444')} style={{ height: 200 }} />
         </div>
       )}
+
+      {/* Intervention KPIs */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-white font-semibold flex items-center gap-2">
+            <Wrench size={16} className="text-blue-400" />
+            KPIs Interventions
+          </h2>
+          <div className="flex gap-1">
+            {([7, 30, 90] as const).map(d => (
+              <button
+                key={d}
+                onClick={() => setKpiPeriod(d)}
+                className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${
+                  kpiPeriod === d
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white/[0.05] text-gray-400 hover:bg-white/[0.08]'
+                }`}
+              >{d}j</button>
+            ))}
+          </div>
+        </div>
+
+        {kpiData && (
+          <>
+            <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
+              <KPICard
+                title="MTTR (durée moy. réparation)"
+                value={kpiData.mttr_minutes != null ? `${kpiData.mttr_minutes.toFixed(0)} min` : '—'}
+                icon={Wrench}
+                iconBg="bg-blue-500/15"
+                iconColor="text-blue-400"
+                valueColor="text-blue-400"
+              />
+              <KPICard
+                title="MTBF (temps moy. entre pannes)"
+                value={kpiData.mtbf_hours != null ? `${kpiData.mtbf_hours.toFixed(1)} h` : '—'}
+                icon={TrendingUp}
+                iconBg="bg-green-500/15"
+                iconColor="text-green-400"
+                valueColor="text-green-400"
+              />
+              <KPICard
+                title="Temps de réponse moyen"
+                value={kpiData.avg_response_time_minutes != null ? `${kpiData.avg_response_time_minutes.toFixed(0)} min` : '—'}
+                icon={Zap}
+                iconBg="bg-amber-500/15"
+                iconColor="text-amber-400"
+                valueColor="text-amber-400"
+              />
+              <KPICard
+                title="Arrêt moyen par intervention"
+                value={kpiData.avg_downtime_minutes != null ? `${kpiData.avg_downtime_minutes.toFixed(0)} min` : '—'}
+                icon={Timer}
+                iconBg="bg-red-500/15"
+                iconColor="text-red-400"
+                valueColor="text-red-400"
+              />
+            </div>
+
+            {kpiData.by_equipment.length > 0 && (
+              <div className="glass-card p-5">
+                <h3 className="text-white font-semibold text-sm mb-4">Durée moy. par équipement (min)</h3>
+                <ReactECharts
+                  option={barOpts(
+                    kpiData.by_equipment
+                      .filter(e => e.avg_duration_minutes != null)
+                      .map(e => ({ label: e.name, count: e.avg_duration_minutes! })),
+                    'Avg Duration',
+                    '#8b5cf6',
+                  )}
+                  style={{ height: 220 }}
+                />
+              </div>
+            )}
+
+            <p className="text-xs text-gray-600 text-right">
+              {kpiData.total_interventions} interventions sur les {kpiPeriod} derniers jours
+            </p>
+          </>
+        )}
+      </div>
     </div>
   );
 }

@@ -56,7 +56,7 @@ const PRIORITY_COLORS: Record<string, string> = {
 
 // ─── Main tab types ──────────────────────────────────────────────────────────────
 
-type TabId = 'overview' | 'workorders' | 'plans' | 'configuration';
+type TabId = 'overview' | 'workorders' | 'plans' | 'configuration' | 'history';
 
 // ─── Config sub-tab types ────────────────────────────────────────────────────────
 
@@ -893,6 +893,124 @@ function InterventionTypesConfigTab({ equipmentId }: { equipmentId: string }) {
   );
 }
 
+// ─── History tab ──────────────────────────────────────────────────────────────────
+
+interface HistoryItem {
+  id: string;
+  called_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  called_by_name: string;
+  started_by_name: string;
+  completed_by_name: string;
+  intervention_type_name: string;
+  operator_note: string;
+  mechanic_note: string;
+  response_time_minutes: number | null;
+  intervention_duration_minutes: number | null;
+  total_downtime_minutes: number | null;
+  ticket_id: string | null;
+}
+
+function fmtMin(v: number | null): string {
+  if (v == null) return '—';
+  if (v < 60) return `${v.toFixed(0)} min`;
+  return `${(v / 60).toFixed(1)} h`;
+}
+
+function responseColor(v: number | null): string {
+  if (v == null) return 'text-gray-500';
+  if (v <= 5)  return 'text-green-400';
+  if (v <= 15) return 'text-amber-400';
+  return 'text-red-400';
+}
+
+function HistoryTab({ equipment }: { equipment: Equipment }) {
+  const [items, setItems] = useState<HistoryItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(0);
+  const limit = 20;
+
+  useEffect(() => {
+    setLoading(true);
+    api.get(`/api/machine-operator/${equipment.id}/history?skip=${page * limit}&limit=${limit}`)
+      .then(r => { setItems(r.data.items); setTotal(r.data.total); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [equipment.id, page]);
+
+  if (loading) return <div className="text-gray-500 text-sm p-4">Loading…</div>;
+  if (items.length === 0) return (
+    <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-8 text-center text-gray-500 text-sm">
+      No completed interventions recorded yet.
+    </div>
+  );
+
+  return (
+    <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-white/[0.06] text-xs text-gray-500 uppercase">
+              <th className="px-4 py-3 text-left">Date</th>
+              <th className="px-4 py-3 text-left">Type</th>
+              <th className="px-4 py-3 text-right">Response</th>
+              <th className="px-4 py-3 text-right">Duration</th>
+              <th className="px-4 py-3 text-right">Downtime</th>
+              <th className="px-4 py-3 text-left">Note</th>
+              <th className="px-4 py-3 text-left">Ticket</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map(item => (
+              <tr key={item.id} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
+                <td className="px-4 py-3 text-gray-300 whitespace-nowrap">
+                  {item.called_at ? format(new Date(item.called_at), 'yyyy-MM-dd HH:mm') : '—'}
+                </td>
+                <td className="px-4 py-3 text-gray-300">{item.intervention_type_name}</td>
+                <td className={`px-4 py-3 text-right font-medium ${responseColor(item.response_time_minutes)}`}>
+                  {fmtMin(item.response_time_minutes)}
+                </td>
+                <td className="px-4 py-3 text-right text-gray-300">{fmtMin(item.intervention_duration_minutes)}</td>
+                <td className="px-4 py-3 text-right text-gray-300">{fmtMin(item.total_downtime_minutes)}</td>
+                <td className="px-4 py-3 text-gray-500 max-w-[200px] truncate">
+                  {item.mechanic_note || item.operator_note || '—'}
+                </td>
+                <td className="px-4 py-3">
+                  {item.ticket_id ? (
+                    <Link to={`/tickets/${item.ticket_id}`} className="text-blue-400 hover:underline text-xs">
+                      View
+                    </Link>
+                  ) : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {total > limit && (
+        <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.06] text-xs text-gray-500">
+          <span>{total} total</span>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              disabled={page === 0}
+              className="px-3 py-1 rounded bg-white/[0.05] disabled:opacity-30"
+            >Prev</button>
+            <span className="px-2 py-1">{page + 1} / {Math.ceil(total / limit)}</span>
+            <button
+              onClick={() => setPage(p => p + 1)}
+              disabled={(page + 1) * limit >= total}
+              className="px-3 py-1 rounded bg-white/[0.05] disabled:opacity-30"
+            >Next</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Configuration panel (lazy) ───────────────────────────────────────────────────
 
 function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
@@ -1128,6 +1246,7 @@ export default function EquipmentDetail() {
     { id: 'overview',       label: t('equipment.tabOverview') },
     { id: 'workorders',     label: `${t('equipment.tabWorkOrders')} (${wos.length})` },
     { id: 'plans',          label: `${t('equipment.tabPlans')} (${plans.length})` },
+    { id: 'history',        label: 'Historique' },
     { id: 'configuration',  label: 'Configuration' },
   ];
 
@@ -1309,6 +1428,8 @@ export default function EquipmentDetail() {
           )}
         </div>
       )}
+
+      {tab === 'history' && <HistoryTab equipment={equipment} />}
 
       {tab === 'configuration' && <ConfigurationPanel equipment={equipment} />}
     </div>

@@ -1,12 +1,16 @@
-from fastapi import APIRouter, Depends
+from datetime import datetime, timezone, timedelta
+from typing import Optional
+import uuid as _uuid
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_
 
 from app.db.session import get_db
 from app.models.models import (
     MaintenanceAlert, MaintenanceTicket, AlertStatus, TicketStatus,
     AlertPriority, Machine, User, WorkOrder, WorkOrderStatus, Technician,
-    WorkOrderSource,
+    WorkOrderSource, MachineIntervention, Equipment,
 )
 from app.schemas.maintenance import SupervisorOverview, TicketSummary, WOSummary
 from app.core.security import get_current_user
@@ -232,3 +236,98 @@ async def supervisor_overview(
         unassigned_wos=unassigned_wos,
         unscheduled_wos=unscheduled_wos,
     )
+
+
+@router.get("/intervention-kpis")
+async def get_intervention_kpis(
+    days: int = Query(30, ge=1, le=365),
+    equipment_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(lambda: None),  # optional — open endpoint
+):
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    filters = [
+        MachineIntervention.status == "completed",
+        MachineIntervention.called_at >= since,
+    ]
+    if equipment_id:
+        try:
+            filters.append(MachineIntervention.equipment_id == _uuid.UUID(equipment_id))
+        except ValueError:
+            pass
+
+    items = (await db.execute(
+        select(MachineIntervention)
+        .where(and_(*filters))
+        .order_by(MachineIntervention.called_at)
+    )).scalars().all()
+
+    if not items:
+        return {
+            "total_interventions": 0,
+            "period_days": days,
+            "mttr_minutes": None,
+            "mtbf_hours": None,
+            "avg_response_time_minutes": None,
+            "avg_duration_minutes": None,
+            "avg_downtime_minutes": None,
+            "by_equipment": [],
+        }
+
+    durations = [i.intervention_duration_minutes for i in items if i.intervention_duration_minutes is not None]
+    responses  = [i.response_time_minutes for i in items if i.response_time_minutes is not None]
+    downtimes  = [i.total_downtime_minutes for i in items if i.total_downtime_minutes is not None]
+
+    mttr = round(sum(durations) / len(durations), 1) if durations else None
+
+    if len(items) > 1:
+        span_hours = (items[-1].called_at - items[0].called_at).total_seconds() / 3600
+        mtbf = round(span_hours / (len(items) - 1), 1)
+    else:
+        mtbf = None
+
+    avg_response  = round(sum(responses) / len(responses), 1) if responses else None
+    avg_downtime  = round(sum(downtimes) / len(downtimes), 1) if downtimes else None
+    avg_duration  = round(sum(durations) / len(durations), 1) if durations else None
+
+    eq_map: dict = {}
+    for i in items:
+        key = str(i.equipment_id or i.machine_id or "unknown")
+        if key not in eq_map:
+            eq_map[key] = {"equipment_id": key, "count": 0, "durations": [], "responses": [], "name": None}
+        eq_map[key]["count"] += 1
+        if i.intervention_duration_minutes is not None:
+            eq_map[key]["durations"].append(i.intervention_duration_minutes)
+        if i.response_time_minutes is not None:
+            eq_map[key]["responses"].append(i.response_time_minutes)
+
+    # Resolve equipment names
+    for key, data in eq_map.items():
+        try:
+            eq = await db.get(Equipment, _uuid.UUID(key))
+            if eq:
+                data["name"] = eq.name
+        except Exception:
+            pass
+
+    by_equipment = []
+    for key, data in eq_map.items():
+        by_equipment.append({
+            "equipment_id": data["equipment_id"],
+            "name": data["name"] or data["equipment_id"][:8],
+            "intervention_count": data["count"],
+            "avg_duration_minutes": round(sum(data["durations"]) / len(data["durations"]), 1) if data["durations"] else None,
+            "avg_response_minutes": round(sum(data["responses"]) / len(data["responses"]), 1) if data["responses"] else None,
+        })
+
+    return {
+        "total_interventions": len(items),
+        "period_days": days,
+        "mttr_minutes": mttr,
+        "mtbf_hours": mtbf,
+        "avg_response_time_minutes": avg_response,
+        "avg_duration_minutes": avg_duration,
+        "avg_downtime_minutes": avg_downtime,
+        "by_equipment": sorted(by_equipment, key=lambda x: x["intervention_count"], reverse=True),
+    }

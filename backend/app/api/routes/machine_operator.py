@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -217,6 +217,10 @@ async def start_intervention(machine_id: str, body: StartBody, db: AsyncSession 
     if body.mechanic_note:
         intervention.mechanic_note = body.mechanic_note
 
+    if intervention.called_at and intervention.started_at:
+        delta = intervention.started_at - intervention.called_at
+        intervention.response_time_minutes = round(delta.total_seconds() / 60, 2)
+
     if intervention.ticket_id:
         ticket = await db.get(MaintenanceTicket, intervention.ticket_id)
         if ticket:
@@ -275,6 +279,21 @@ async def complete_intervention(machine_id: str, body: CompleteBody, db: AsyncSe
     now = datetime.now(timezone.utc)
     intervention.status       = _STATUS_COMPLETED
     intervention.completed_at = now
+
+    # ── Timing metrics ───────────────────────────────────────────────────────
+    if intervention.called_at and intervention.started_at:
+        delta_response = intervention.started_at - intervention.called_at
+        intervention.response_time_minutes = round(delta_response.total_seconds() / 60, 2)
+
+    if intervention.started_at:
+        delta_duration = now - intervention.started_at
+        intervention.intervention_duration_minutes = round(delta_duration.total_seconds() / 60, 2)
+
+    if intervention.called_at:
+        delta_total = now - intervention.called_at
+        intervention.total_downtime_minutes = round(delta_total.total_seconds() / 60, 2)
+
+    # ── Note and type ────────────────────────────────────────────────────────
     if body.mechanic_note:
         intervention.mechanic_note = body.mechanic_note
     if body.intervention_type_id:
@@ -297,4 +316,60 @@ async def complete_intervention(machine_id: str, body: CompleteBody, db: AsyncSe
     machine.last_maintenance_at = now
     await db.commit()
     await db.refresh(intervention)
-    return {"status": "completed", "intervention": _intervention_dict(intervention)}
+    return {
+        "status": "completed",
+        "intervention": _intervention_dict(intervention),
+        "response_time_minutes": intervention.response_time_minutes,
+        "intervention_duration_minutes": intervention.intervention_duration_minutes,
+        "total_downtime_minutes": intervention.total_downtime_minutes,
+    }
+
+
+@router.get("/{machine_id}/history")
+async def get_intervention_history(
+    machine_id: str,
+    skip: int = 0,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    machine, _ = await _resolve(machine_id, db)
+    m_id = machine.id
+
+    q = (
+        select(MachineIntervention)
+        .where(
+            MachineIntervention.machine_id == m_id,
+            MachineIntervention.status == _STATUS_COMPLETED,
+        )
+        .order_by(MachineIntervention.called_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+
+    total_q = select(func.count(MachineIntervention.id)).where(
+        MachineIntervention.machine_id == m_id,
+        MachineIntervention.status == _STATUS_COMPLETED,
+    )
+
+    items = (await db.execute(q)).scalars().all()
+    total = (await db.execute(total_q)).scalar_one()
+
+    def _fmt(i: MachineIntervention) -> dict:
+        return {
+            "id":                           str(i.id),
+            "called_at":                    i.called_at.isoformat() if i.called_at else None,
+            "started_at":                   i.started_at.isoformat() if i.started_at else None,
+            "completed_at":                 i.completed_at.isoformat() if i.completed_at else None,
+            "called_by_name":               i.called_by_name or "—",
+            "started_by_name":              i.started_by_name or "—",
+            "completed_by_name":            i.completed_by_name or "—",
+            "intervention_type_name":       i.intervention_type_name or "—",
+            "operator_note":                i.operator_note or "",
+            "mechanic_note":                i.mechanic_note or "",
+            "response_time_minutes":        i.response_time_minutes,
+            "intervention_duration_minutes": i.intervention_duration_minutes,
+            "total_downtime_minutes":       i.total_downtime_minutes,
+            "ticket_id":                    str(i.ticket_id) if i.ticket_id else None,
+        }
+
+    return {"total": total, "items": [_fmt(i) for i in items]}

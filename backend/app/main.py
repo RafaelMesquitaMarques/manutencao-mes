@@ -345,6 +345,13 @@ async def _run_migrations() -> None:
         """,
         "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS intervention_type_id UUID REFERENCES intervention_types(id) ON DELETE SET NULL",
         "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS intervention_type_name VARCHAR(200)",
+        # Phase: intervention timing metrics
+        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS response_time_minutes FLOAT",
+        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS intervention_duration_minutes FLOAT",
+        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS total_downtime_minutes FLOAT",
+        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS called_by_name VARCHAR(200)",
+        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS started_by_name VARCHAR(200)",
+        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS completed_by_name VARCHAR(200)",
         # Phase: machine operator call flow
         """
         CREATE TABLE IF NOT EXISTS machine_interventions (
