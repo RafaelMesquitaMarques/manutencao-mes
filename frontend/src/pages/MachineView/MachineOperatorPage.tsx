@@ -303,11 +303,19 @@ function PartsPanel({ machineId, interventionId }: PartsPanelProps) {
                     {results.map((r) => (
                       <button
                         key={r.id}
-                        onClick={() => { setSelected(r); setQuery(r.name); setResults([]); }}
-                        className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-white/5 transition-colors">
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs text-gray-200 truncate">{r.name}</p>
-                          <p className="text-xs text-gray-600">{r.code} · Stock: {r.quantity} {r.unit}</p>
+                        onClick={() => { setSelected(r); setQuery(r.code || r.name); setResults([]); }}
+                        className="w-full px-3 py-2 text-left hover:bg-white/5 transition-colors"
+                        style={{ borderBottom: '0.5px solid #21262d' }}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1 min-w-0">
+                            <span className="text-xs font-mono font-medium text-blue-400">{r.code}</span>
+                            {r.description && (
+                              <div className="text-xs text-gray-500 mt-0.5 truncate">{r.description}</div>
+                            )}
+                          </div>
+                          <span className="text-xs text-gray-600 flex-shrink-0 whitespace-nowrap">
+                            Stock: {r.quantity} {r.unit}
+                          </span>
                         </div>
                       </button>
                     ))}
