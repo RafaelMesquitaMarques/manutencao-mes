@@ -55,6 +55,10 @@ export const convertAlertToTicket = async (
   return data;
 };
 
+export const deleteAlert = async (id: string): Promise<void> => {
+  await api.delete(`/api/alerts/${id}`);
+};
+
 // ── Tickets ───────────────────────────────────────────────────────────────────
 
 export const fetchTickets = async (
@@ -150,6 +154,10 @@ export const createTicket = async (payload: {
 export const fetchTicketWorkOrder = async (ticketId: string): Promise<WorkOrder> => {
   const { data } = await api.get<WorkOrder>(`/api/tickets/${ticketId}/work-order`);
   return data;
+};
+
+export const deleteTicket = async (id: string): Promise<void> => {
+  await api.delete(`/api/tickets/${id}`);
 };
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────

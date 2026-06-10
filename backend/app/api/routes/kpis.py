@@ -90,7 +90,7 @@ async def get_backlog(
     rows = result.all()
     buckets = {"0_7": 0, "7_30": 0, "30_plus": 0}
     for row in rows:
-        opened = row.opened_at.replace(tzinfo=None) if row.opened_at.tzinfo else row.opened_at
+        opened = row.opened_at if row.opened_at.tzinfo else row.opened_at.replace(tzinfo=timezone.utc)
         age = (now - opened).days
         if age <= 7:
             buckets["0_7"] += 1

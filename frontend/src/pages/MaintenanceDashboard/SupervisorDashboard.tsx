@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import {
   Ticket, Wrench, ChevronRight, AlertTriangle,
-  CheckCircle2, Clock, RefreshCw, UserCheck, Play,
+  CheckCircle2, Clock, RefreshCw, UserCheck, Play, Package,
 } from 'lucide-react';
 import { fetchTickets, assignTicket } from '../../api/maintenance';
 import { fetchWorkOrders } from '../../api/workOrders';
@@ -235,6 +235,11 @@ export default function SupervisorDashboard() {
               {lastUpdatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
             </span>
           )}
+          <Link to="/maintenance/parts-approval"
+            className="btn-secondary py-1.5 px-3 flex items-center gap-1.5 text-sm">
+            <Package size={14} />
+            Parts Approval
+          </Link>
           <button onClick={manualRefresh} disabled={loading || isRefreshing} className="btn-secondary py-1.5 px-3 flex items-center gap-1.5">
             <RefreshCw size={14} className={(loading || isRefreshing) ? 'animate-spin' : ''} />
             Refresh

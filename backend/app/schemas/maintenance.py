@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from typing import Optional, List, Any
 from uuid import UUID
 from datetime import datetime
@@ -43,6 +43,11 @@ class MachineOut(BaseModel):
     target_count_per_shift:  Optional[int] = None
     shifts_config:           Optional[dict] = None
     created_at:              datetime
+
+    @field_validator('show_production_panel', 'show_reject_panel', 'show_availability_gauge', 'show_job_number', mode='before')
+    @classmethod
+    def _coerce_null_bool(cls, v):
+        return True if v is None else v
 
 
 class MachineListResponse(BaseModel):

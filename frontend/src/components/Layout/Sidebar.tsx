@@ -44,8 +44,9 @@ const CORE_GROUPS: NavGroup[] = [
     items: [
       { to: '/alerts',                  icon: Bell,         key: 'alerts' },
       { to: '/tickets',                 icon: Ticket,       key: 'tickets',              roles: TECH_UP },
-      { to: '/maintenance/dashboard',   icon: Activity,     key: 'maintenanceDashboard', roles: TECH_UP },
-      { to: '/maintenance/supervisor',  icon: Shield,       key: 'supervisorView',       roles: SUPERVISOR_UP },
+      { to: '/maintenance/dashboard',      icon: Activity,     key: 'maintenanceDashboard', roles: TECH_UP },
+      { to: '/maintenance/supervisor',     icon: Shield,       key: 'supervisorView',       roles: SUPERVISOR_UP },
+      { to: '/maintenance/parts-approval', icon: Package,      key: 'partsApproval',        roles: SUPERVISOR_UP },
       { to: '/schedule',                icon: CalendarDays, key: 'schedule',             roles: TECH_UP },
       { to: '/pm-calendar',             icon: CalendarCheck, key: 'pmCalendar',          roles: TECH_UP },
     ],

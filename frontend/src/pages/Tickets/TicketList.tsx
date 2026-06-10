@@ -3,9 +3,9 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Ticket, RefreshCw, Play, PauseCircle, CheckCircle2,
-  XCircle, MessageSquare, Package, ChevronRight, Plus,
+  XCircle, MessageSquare, Package, ChevronRight, Plus, Trash2,
 } from 'lucide-react';
-import { fetchTickets, updateTicketStatus } from '../../api/maintenance';
+import { fetchTickets, updateTicketStatus, deleteTicket } from '../../api/maintenance';
 import type { MaintenanceTicket, AlertPriority, TicketStatus } from '../../types';
 import Spinner from '../../components/ui/Spinner';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
@@ -59,6 +59,7 @@ export default function TicketList() {
   const [total, setTotal]       = useState(0);
   const [loading, setLoading]   = useState(true);
   const [actionId, setActionId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [fStatus, setFStatus]   = useState('');
 
   const load = useCallback(async () => {
@@ -84,6 +85,18 @@ export default function TicketList() {
       setTickets((prev) => prev.map((t) => (t.id === id ? updated : t)));
     } finally {
       setActionId(null);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Delete this ticket permanently?')) return;
+    setDeletingId(id);
+    try {
+      await deleteTicket(id);
+      setTickets((prev) => prev.filter((t) => t.id !== id));
+      setTotal((prev) => prev - 1);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -259,6 +272,16 @@ export default function TicketList() {
                               className="btn-danger py-1 px-2 text-xs"
                             >
                               <XCircle size={11} />
+                            </button>
+                          )}
+                          {(ticket.status === 'completed' || ticket.status === 'cancelled') && (
+                            <button
+                              onClick={() => handleDelete(ticket.id)}
+                              disabled={deletingId === ticket.id}
+                              title="Delete ticket"
+                              className="btn-danger py-1 px-2 text-xs"
+                            >
+                              <Trash2 size={11} />
                             </button>
                           )}
                           <button

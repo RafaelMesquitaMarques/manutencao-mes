@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft,
@@ -162,7 +162,15 @@ const OverviewTab = ({ wo }: { wo: WorkOrder }) => {
       <div className="space-y-4">
         <SectionCard icon={Wrench} title={t('workOrders.equipment')}>
           <div className="space-y-2">
-            <p className="text-gray-200 text-sm font-medium">{wo.equipment_name ?? '—'}</p>
+            {wo.equipment_id ? (
+              <Link to={`/equipment/${wo.equipment_id}`}
+                className="text-blue-400 hover:text-blue-300 text-sm font-medium flex items-center gap-1 transition-colors">
+                {wo.equipment_name ?? wo.equipment_id}
+                <ChevronRight size={13} />
+              </Link>
+            ) : (
+              <p className="text-gray-200 text-sm font-medium">{wo.equipment_name ?? '—'}</p>
+            )}
             {wo.equipment_location && (
               <p className="text-gray-500 text-xs">{wo.equipment_location}</p>
             )}
@@ -171,6 +179,16 @@ const OverviewTab = ({ wo }: { wo: WorkOrder }) => {
             )}
           </div>
         </SectionCard>
+
+        {wo.ticket_id && (
+          <SectionCard icon={AlertCircle} title="Linked Ticket">
+            <Link to={`/tickets/${wo.ticket_id}`}
+              className="text-blue-400 hover:text-blue-300 text-sm font-medium flex items-center gap-1 transition-colors">
+              {wo.ticket_number ?? wo.ticket_id.slice(0, 8)}
+              <ChevronRight size={13} />
+            </Link>
+          </SectionCard>
+        )}
 
         <SectionCard icon={Calendar} title={t('common.date')}>
           <div className="space-y-3 text-sm">
@@ -1051,7 +1069,13 @@ const WorkOrderDetail = () => {
         {wo.equipment_name && (
           <div className="flex items-center gap-2 text-gray-400">
             <Wrench size={13} className="text-gray-600" />
-            <span>{wo.equipment_name}</span>
+            {wo.equipment_id ? (
+              <Link to={`/equipment/${wo.equipment_id}`} className="hover:text-blue-400 transition-colors">
+                {wo.equipment_name}
+              </Link>
+            ) : (
+              <span>{wo.equipment_name}</span>
+            )}
           </div>
         )}
         {(wo.assigned_to_name || wo.executor_name || wo.assigned_to_id) && (

@@ -108,6 +108,19 @@ async def get_alert(
     return await _enrich(alert, db)
 
 
+@router.delete("/{alert_id}", status_code=204)
+async def delete_alert(
+    alert_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    alert = await db.get(MaintenanceAlert, alert_id)
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    await db.delete(alert)
+    await db.commit()
+
+
 @router.patch("/{alert_id}/assign", response_model=AlertOut)
 async def assign_alert(
     alert_id: UUID,

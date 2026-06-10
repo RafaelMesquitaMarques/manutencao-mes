@@ -3,9 +3,9 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Bell, Plus, RefreshCw, AlertTriangle, Clock,
-  UserPlus, ArrowRightCircle, Filter, Eye,
+  UserPlus, ArrowRightCircle, Filter, Eye, Trash2,
 } from 'lucide-react';
-import { fetchAlerts, fetchMachines, assignAlert, convertAlertToTicket } from '../../api/maintenance';
+import { fetchAlerts, fetchMachines, assignAlert, convertAlertToTicket, deleteAlert } from '../../api/maintenance';
 import type { MaintenanceAlert, Machine, AlertPriority, AlertStatus } from '../../types';
 import Spinner from '../../components/ui/Spinner';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
@@ -63,6 +63,7 @@ export default function AlertList() {
   const [total, setTotal]           = useState(0);
   const [loading, setLoading]       = useState(true);
   const [actionId, setActionId]     = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [showResolved, setShowResolved] = useState(false);
 
   // Filters
@@ -110,6 +111,18 @@ export default function AlertList() {
       await load(); // refresh list — alert now has ticket_id
     } finally {
       setActionId(null);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Delete this alert permanently?')) return;
+    setDeletingId(id);
+    try {
+      await deleteAlert(id);
+      setAlerts((prev) => prev.filter((a) => a.id !== id));
+      setTotal((prev) => prev - 1);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -288,9 +301,19 @@ export default function AlertList() {
                       </td>
                       <td className="table-cell">
                         {resolved ? (
-                          <span className="text-xs text-gray-600 font-mono">
-                            {alert.status === 'resolved' ? '✓ Resolved' : 'Cancelled'}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-gray-600 font-mono">
+                              {alert.status === 'resolved' ? '✓ Resolved' : 'Cancelled'}
+                            </span>
+                            <button
+                              onClick={() => handleDelete(alert.id)}
+                              disabled={deletingId === alert.id}
+                              title="Delete alert"
+                              className="btn-danger py-1 px-2 text-xs ml-1"
+                            >
+                              <Trash2 size={11} />
+                            </button>
+                          </div>
                         ) : (
                           <div className="flex items-center gap-1.5">
                             {alert.status === 'new_alert' && !alert.ticket_id && (
