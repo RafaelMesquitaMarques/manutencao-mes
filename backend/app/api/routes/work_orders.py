@@ -9,7 +9,7 @@ from app.db.session import get_db
 from app.models.models import (
     User, WorkOrder, Equipment, WorkOrderStatus, WorkOrderType, WorkOrderPriority,
     LaborRecord, WOPart, WOCost, WOAction, Technician,
-    MaintenanceTicket, TicketStatus,
+    MaintenanceTicket, TicketStatus, MachineIntervention, InterventionPart,
 )
 from app.schemas.work_order import WorkOrderCreate, WorkOrderUpdate, WorkOrderOut, WorkOrderListResponse, WOAssign, WOSchedule
 from app.schemas.wo_subresources import (
@@ -95,6 +95,30 @@ async def _enrich_wo(wo: WorkOrder, db: AsyncSession) -> WorkOrderOut:
             user = await db.get(User, tech.user_id)
             if user:
                 out.executor_name = user.name
+    # Fetch parts from linked intervention (kiosk-added parts)
+    if wo.ticket_id:
+        intervention_r = await db.execute(
+            select(MachineIntervention).where(MachineIntervention.ticket_id == wo.ticket_id)
+        )
+        intervention = intervention_r.scalar_one_or_none()
+        if intervention:
+            parts_r = await db.execute(
+                select(InterventionPart)
+                .where(InterventionPart.intervention_id == intervention.id)
+                .order_by(InterventionPart.added_at)
+            )
+            out.intervention_parts = [
+                {
+                    "id": str(p.id),
+                    "item_code": p.item_code or "",
+                    "item_description": p.item_description or "",
+                    "quantity_used": p.quantity_used,
+                    "unit": p.unit or "",
+                    "approval_status": p.approval_status,
+                    "approved_at": p.approved_at.isoformat() if p.approved_at else None,
+                }
+                for p in parts_r.scalars().all()
+            ]
     return out
 
 

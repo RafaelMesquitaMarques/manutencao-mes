@@ -580,6 +580,7 @@ class TicketOut(BaseModel):
     current_escalation_level:   int
     last_updated_at:            Optional[datetime]  = None
     comments:                   Optional[List[CommentOut]] = None
+    intervention_parts:         Optional[List[Any]] = None
 
 
 class TicketListResponse(BaseModel):

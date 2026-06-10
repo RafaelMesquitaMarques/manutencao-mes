@@ -454,13 +454,61 @@ const LaborTab = ({
   );
 };
 
+// ─── Intervention Parts Section (kiosk-added) ────────────────────────────────
+
+const IPART_STYLE: Record<string, string> = {
+  approved: 'bg-green-500/10 text-green-400 border-green-500/30',
+  rejected: 'bg-red-500/10 text-red-400 border-red-500/30',
+  pending:  'bg-amber-500/10 text-amber-400 border-amber-500/30',
+};
+
+const InterventionPartsSection = ({ wo }: { wo: WorkOrder }) => {
+  const iParts = wo.intervention_parts ?? [];
+  if (iParts.length === 0) return null;
+  return (
+    <div className="glass-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-white/[0.06] flex items-center gap-2">
+        <Package size={14} className="text-amber-500" />
+        <span className="text-sm font-medium text-gray-300">Parts added via kiosk</span>
+        <span className="ml-auto text-xs text-gray-600 font-mono">{iParts.length} part{iParts.length !== 1 ? 's' : ''}</span>
+      </div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-white/[0.04]">
+            <th className="table-header-cell">Code</th>
+            <th className="table-header-cell">Description</th>
+            <th className="table-header-cell text-right">Qty</th>
+            <th className="table-header-cell text-center">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {iParts.map((p) => (
+            <tr key={p.id} className="table-row">
+              <td className="table-cell font-mono text-blue-400 text-xs">{p.item_code || '—'}</td>
+              <td className="table-cell text-gray-300">{p.item_description || '—'}</td>
+              <td className="table-cell text-right font-mono">{p.quantity_used} {p.unit}</td>
+              <td className="table-cell text-center">
+                <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border ${IPART_STYLE[p.approval_status] ?? IPART_STYLE.pending}`}>
+                  {p.approval_status}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
 // ─── Parts Tab ───────────────────────────────────────────────────────────────
 
 const PartsTab = ({
+  wo,
   woId,
   parts,
   onAdded,
 }: {
+  wo: WorkOrder;
   woId: string;
   parts: WOPart[];
   onAdded: (p: WOPart) => void;
@@ -506,6 +554,7 @@ const PartsTab = ({
 
   return (
     <div className="space-y-4">
+      <InterventionPartsSection wo={wo} />
       <div className="flex items-center justify-between">
         {totalCost > 0 && (
           <div>
@@ -1132,6 +1181,7 @@ const WorkOrderDetail = () => {
         )}
         {activeTab === 'parts' && (
           <PartsTab
+            wo={wo}
             woId={wo.id}
             parts={parts}
             onAdded={(p) => setParts((prev) => [...prev, p])}

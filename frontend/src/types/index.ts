@@ -125,6 +125,7 @@ export interface WorkOrder {
   actual_downtime_minutes?: number;
   created_at?: string;
   updated_at?: string;
+  intervention_parts?: InterventionPartOut[];
 }
 
 export interface WorkOrderCreate {
@@ -601,6 +602,17 @@ export interface MaintenanceTicket {
   current_escalation_level:   number;
   last_updated_at?:            string;
   comments?:                   TicketComment[];
+  intervention_parts?:         InterventionPartOut[];
+}
+
+export interface InterventionPartOut {
+  id:               string;
+  item_code:        string;
+  item_description: string;
+  quantity_used:    number;
+  unit:             string;
+  approval_status:  'pending' | 'approved' | 'rejected';
+  approved_at:      string | null;
 }
 
 export interface PartUsed {

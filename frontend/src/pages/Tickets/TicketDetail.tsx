@@ -88,7 +88,7 @@ export default function TicketDetail() {
         {([
           { key: 'details',   icon: Info,       label: 'Details' },
           { key: 'workorder', icon: Wrench,      label: `Work Order${wo ? ' ✓' : ''}` },
-          { key: 'parts',     icon: Package,     label: 'Parts' },
+          { key: 'parts',     icon: Package,     label: `Parts${ticket.intervention_parts?.length ? ` (${ticket.intervention_parts.length})` : ''}` },
           { key: 'history',   icon: History,     label: 'Machine History' },
         ] as { key: Tab; icon: React.ElementType; label: string }[]).map(({ key, icon: Icon, label }) => (
           <button
@@ -108,7 +108,7 @@ export default function TicketDetail() {
 
       {tab === 'details'   && <DetailsTab ticket={ticket} wo={wo} onRefresh={load} />}
       {tab === 'workorder' && <WorkOrderTab ticket={ticket} wo={wo} />}
-      {tab === 'parts'     && <PartsTab wo={wo} />}
+      {tab === 'parts'     && <PartsTab ticket={ticket} />}
       {tab === 'history'   && <MachineHistoryTab machineId={ticket.machine_id} />}
     </div>
   );
@@ -339,65 +339,59 @@ function WorkOrderTab({ ticket, wo }: { ticket: MaintenanceTicket; wo: WorkOrder
 
 // ── Parts Tab ─────────────────────────────────────────────────────────────────
 
-function PartsTab({ wo }: { wo: WorkOrder | null }) {
-  const [parts, setParts] = useState<{
-    id: string; description: string; quantity: number; unit: string;
-    part_number?: string; total_cost?: number;
-  }[]>([]);
-  const [loading, setLoading] = useState(false);
+const APPROVAL_STYLE: Record<string, { bg: string; text: string; border: string }> = {
+  approved: { bg: 'bg-green-500/10', text: 'text-green-400', border: 'border-green-500/30' },
+  rejected: { bg: 'bg-red-500/10',   text: 'text-red-400',   border: 'border-red-500/30' },
+  pending:  { bg: 'bg-amber-500/10', text: 'text-amber-400', border: 'border-amber-500/30' },
+};
 
-  useEffect(() => {
-    if (!wo) return;
-    setLoading(true);
-    api.get(`/api/wo/${wo.id}/parts`)
-      .then((r) => setParts(r.data.items ?? r.data ?? []))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [wo?.id]);
+function PartsTab({ ticket }: { ticket: MaintenanceTicket }) {
+  const parts = ticket.intervention_parts ?? [];
 
-  if (!wo) return (
-    <div className="glass-card p-8 text-center text-gray-600 text-sm">
-      No work order — assign a technician to create one first.
-    </div>
-  );
+  if (parts.length === 0) {
+    return (
+      <div className="glass-card p-8 text-center">
+        <Package size={32} className="text-gray-700 mx-auto mb-2 opacity-50" />
+        <p className="text-gray-500 text-sm">No parts recorded for this intervention</p>
+        <p className="text-gray-600 text-xs mt-1">Parts are added from the kiosk during the intervention.</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-3">
-      {loading ? (
-        <div className="flex items-center justify-center h-24"><Spinner size="lg" /></div>
-      ) : parts.length === 0 ? (
-        <div className="glass-card p-8 text-center">
-          <Package size={32} className="text-gray-700 mx-auto mb-2 opacity-50" />
-          <p className="text-gray-500 text-sm">No parts recorded yet</p>
-          <p className="text-gray-600 text-xs mt-1">Parts are added from the Work Order detail page.</p>
-        </div>
-      ) : (
-        <div className="glass-card overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-white/[0.06]">
-                <th className="text-left p-3 text-xs text-gray-600 uppercase tracking-wider">Part</th>
-                <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">Qty</th>
-                <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">Cost</th>
+    <div className="glass-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-white/[0.06] flex items-center gap-2">
+        <Package size={14} className="text-gray-500" />
+        <span className="text-sm font-medium text-gray-300">Parts used during intervention</span>
+        <span className="ml-auto text-xs text-gray-600 font-mono">{parts.length} part{parts.length !== 1 ? 's' : ''}</span>
+      </div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-white/[0.06]">
+            <th className="text-left p-3 text-xs text-gray-600 uppercase tracking-wider">Code</th>
+            <th className="text-left p-3 text-xs text-gray-600 uppercase tracking-wider">Description</th>
+            <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">Qty</th>
+            <th className="text-center p-3 text-xs text-gray-600 uppercase tracking-wider">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {parts.map((p) => {
+            const s = APPROVAL_STYLE[p.approval_status] ?? APPROVAL_STYLE.pending;
+            return (
+              <tr key={p.id} className="border-b border-white/[0.04] last:border-0">
+                <td className="p-3 font-mono text-blue-400 text-xs">{p.item_code || '—'}</td>
+                <td className="p-3 text-gray-300">{p.item_description || '—'}</td>
+                <td className="p-3 text-right font-mono text-gray-200">{p.quantity_used} {p.unit}</td>
+                <td className="p-3 text-center">
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border ${s.bg} ${s.text} ${s.border}`}>
+                    {p.approval_status}
+                  </span>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {parts.map((p) => (
-                <tr key={p.id} className="border-b border-white/[0.04] last:border-0">
-                  <td className="p-3">
-                    <p className="text-gray-300">{p.description}</p>
-                    {p.part_number && <p className="text-xs text-gray-600">{p.part_number}</p>}
-                  </td>
-                  <td className="p-3 text-right text-gray-400">{p.quantity} {p.unit}</td>
-                  <td className="p-3 text-right text-gray-400">
-                    {p.total_cost != null ? `$${p.total_cost.toFixed(2)}` : '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

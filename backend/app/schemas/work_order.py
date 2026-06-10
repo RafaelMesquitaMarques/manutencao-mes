@@ -110,6 +110,7 @@ class WorkOrderOut(BaseModel):
     scheduled_end_time: Optional[str] = None
     total_minutes: Optional[int] = None
     actual_downtime_minutes: Optional[int] = None
+    intervention_parts: Optional[List] = None
 
 
 class WorkOrderListResponse(BaseModel):

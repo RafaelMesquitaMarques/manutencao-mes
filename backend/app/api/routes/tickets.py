@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel
 
 from app.db.session import get_db
-from app.models.models import MaintenanceTicket, TicketComment, Machine, User, TicketStatus, WorkOrder, Equipment
+from app.models.models import MaintenanceTicket, TicketComment, Machine, User, TicketStatus, WorkOrder, Equipment, MachineIntervention, InterventionPart
 from app.schemas.maintenance import (
     TicketCreate, TicketUpdate, TicketClose, CommentCreate,
     TicketOut, TicketListResponse, CommentOut,
@@ -62,6 +62,29 @@ async def _enrich(ticket: MaintenanceTicket, db: AsyncSession, with_comments: bo
             .order_by(TicketComment.created_at)
         )
         data.comments = [CommentOut.model_validate(c) for c in r.scalars().all()]
+    # Fetch parts from linked intervention
+    intervention_r = await db.execute(
+        select(MachineIntervention).where(MachineIntervention.ticket_id == ticket.id)
+    )
+    intervention = intervention_r.scalar_one_or_none()
+    if intervention:
+        parts_r = await db.execute(
+            select(InterventionPart)
+            .where(InterventionPart.intervention_id == intervention.id)
+            .order_by(InterventionPart.added_at)
+        )
+        data.intervention_parts = [
+            {
+                "id": str(p.id),
+                "item_code": p.item_code or "",
+                "item_description": p.item_description or "",
+                "quantity_used": p.quantity_used,
+                "unit": p.unit or "",
+                "approval_status": p.approval_status,
+                "approved_at": p.approved_at.isoformat() if p.approved_at else None,
+            }
+            for p in parts_r.scalars().all()
+        ]
     return data
 
 
