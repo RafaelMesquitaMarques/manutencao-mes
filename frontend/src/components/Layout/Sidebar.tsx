@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   LayoutDashboard, ClipboardList, Wrench, Users, BarChart3,
-  Settings, Factory, CalendarDays, CalendarCheck, Bell, Ticket,
+  Settings, Factory, CalendarDays, CalendarCheck, CalendarClock, Bell, Ticket,
   Activity, Shield, Briefcase, X, UserCog, Package, Building2, ShoppingCart, type LucideIcon,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
@@ -49,6 +49,7 @@ const CORE_GROUPS: NavGroup[] = [
       { to: '/maintenance/parts-approval', icon: Package,      key: 'partsApproval',        roles: SUPERVISOR_UP },
       { to: '/schedule',                icon: CalendarDays, key: 'schedule',             roles: TECH_UP },
       { to: '/pm-calendar',             icon: CalendarCheck, key: 'pmCalendar',          roles: TECH_UP },
+      { to: '/maintenance/plans',       icon: CalendarClock, key: 'maintenancePlans',    roles: TECH_UP },
     ],
   },
   {

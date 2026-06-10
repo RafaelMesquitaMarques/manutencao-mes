@@ -104,6 +104,18 @@ class WOActionOut(BaseModel):
     new_value: Optional[str] = None
     created_at: datetime
 
+    # ── PM checklist ──
+    description: Optional[str] = None
+    is_required: bool = True
+    is_completed: bool = False
+    completed_at: Optional[datetime] = None
+    completed_by_id: Optional[UUID] = None
+    sort_order: int = 0
+
+
+class WOActionToggle(BaseModel):
+    is_completed: bool
+
 
 class WOCostSummary(BaseModel):
     labor_total: float = 0.0

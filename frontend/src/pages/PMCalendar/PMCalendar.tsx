@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
@@ -6,8 +6,8 @@ import timeGridPlugin from '@fullcalendar/timegrid';
 import interactionPlugin from '@fullcalendar/interaction';
 import type { EventInput, EventClickArg } from '@fullcalendar/core';
 import { useNavigate } from 'react-router-dom';
-import { fetchMaintenancePlans, fetchWorkOrders } from '../../api/workOrders';
-import type { MaintenancePlan, WorkOrder } from '../../types';
+import { fetchPmCalendar } from '../../api/maintenancePlans';
+import type { PlanCalendarItem } from '../../types';
 
 // FullCalendar dark theme overrides injected once
 const FC_DARK_CSS = `
@@ -22,72 +22,64 @@ const FC_DARK_CSS = `
   .fc .fc-daygrid-day-number { color: #94a3b8; font-size: 0.75rem; }
   .fc .fc-daygrid-day.fc-day-today { background: rgba(37,99,235,0.06) !important; }
   .fc .fc-event { border: none; cursor: pointer; font-size: 0.7rem; }
+  .fc .fc-event.pm-cancelled { opacity: 0.45; text-decoration: line-through; }
+  .fc .fc-event.pm-overridden { border-left: 3px solid #fbbf24 !important; }
   .fc .fc-daygrid-event-dot { display: none; }
   .fc .fc-h-event .fc-event-title { padding: 1px 4px; }
 `;
 
 const STATUS_EVENT_COLORS: Record<string, string> = {
-  open: '#3b82f6',
+  scheduled: '#3b82f6',
   in_progress: '#f59e0b',
   completed: '#22c55e',
-  on_hold: '#64748b',
-  cancelled: '#ef4444',
+  skipped: '#64748b',
+  cancelled: '#64748b',
 };
+
+const OVERDUE_COLOR = '#ef4444';
 
 export default function PMCalendar() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const [plans, setPlans] = useState<MaintenancePlan[]>([]);
-  const [wos, setWOs] = useState<WorkOrder[]>([]);
-  const [loading, setLoading] = useState(true);
   const styleInjected = useRef(false);
 
-  useEffect(() => {
-    if (!styleInjected.current) {
-      const style = document.createElement('style');
-      style.textContent = FC_DARK_CSS;
-      document.head.appendChild(style);
-      styleInjected.current = true;
+  if (!styleInjected.current) {
+    const style = document.createElement('style');
+    style.textContent = FC_DARK_CSS;
+    document.head.appendChild(style);
+    styleInjected.current = true;
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const loadEvents = async (info: { startStr: string; endStr: string }): Promise<EventInput[]> => {
+    try {
+      const items = await fetchPmCalendar(info.startStr.slice(0, 10), info.endStr.slice(0, 10));
+      return items.map((item: PlanCalendarItem) => {
+        const overdue = !item.is_cancelled && item.status === 'scheduled' && item.date < today;
+        const color = overdue ? OVERDUE_COLOR : (STATUS_EVENT_COLORS[item.status] ?? '#64748b');
+        const classNames: string[] = [];
+        if (item.is_cancelled) classNames.push('pm-cancelled');
+        if (item.is_overridden) classNames.push('pm-overridden');
+        return {
+          id: item.id,
+          title: `📋 ${item.plan_name}${item.equipment_name ? ` · ${item.equipment_name}` : ''}`,
+          start: item.date,
+          backgroundColor: color,
+          borderColor: color,
+          classNames,
+          extendedProps: { item },
+        };
+      });
+    } catch {
+      return [];
     }
-  }, []);
-
-  useEffect(() => {
-    Promise.allSettled([
-      fetchMaintenancePlans(),
-      fetchWorkOrders({ type: 'preventive', limit: '200' }),
-    ]).then(([p, w]) => {
-      if (p.status === 'fulfilled') setPlans(p.value);
-      if (w.status === 'fulfilled') setWOs(w.value);
-      setLoading(false);
-    });
-  }, []);
-
-  const planEvents: EventInput[] = plans
-    .filter((p) => p.next_execution_at)
-    .map((p) => ({
-      id: `plan-${p.id}`,
-      title: `📋 ${p.name}`,
-      start: p.next_execution_at!,
-      backgroundColor: '#1d4ed8',
-      borderColor: '#1d4ed8',
-      extendedProps: { type: 'plan', plan: p },
-    }));
-
-  const woEvents: EventInput[] = wos
-    .filter((w) => w.due_date || w.opened_at)
-    .map((w) => ({
-      id: `wo-${w.id}`,
-      title: `🔧 ${w.wo_number} · ${w.title}`,
-      start: w.due_date ?? w.opened_at,
-      backgroundColor: STATUS_EVENT_COLORS[w.status] ?? '#64748b',
-      borderColor: STATUS_EVENT_COLORS[w.status] ?? '#64748b',
-      extendedProps: { type: 'wo', wo: w },
-    }));
+  };
 
   const handleEventClick = (info: EventClickArg) => {
-    const { type, wo } = info.event.extendedProps as { type: string; wo?: WorkOrder };
-    if (type === 'wo' && wo) {
-      navigate(`/work-orders/${wo.id}`);
+    const { item } = info.event.extendedProps as { item: PlanCalendarItem };
+    if (item?.plan_id) {
+      navigate(`/maintenance/plans/${item.plan_id}`);
     }
   };
 
@@ -101,36 +93,34 @@ export default function PMCalendar() {
 
       {/* Legend */}
       <div className="flex items-center gap-4 flex-wrap">
-        <LegendItem color="#1d4ed8" label={t('pmCalendar.plannedPM')} />
-        <LegendItem color="#3b82f6" label={t('status.open')} />
-        <LegendItem color="#f59e0b" label={t('status.in_progress')} />
-        <LegendItem color="#22c55e" label={t('status.completed')} />
-        <LegendItem color="#ef4444" label={t('status.cancelled')} />
+        <LegendItem color={STATUS_EVENT_COLORS.scheduled} label={t('pm.occurrenceStatus.scheduled')} />
+        <LegendItem color={STATUS_EVENT_COLORS.in_progress} label={t('pm.occurrenceStatus.in_progress')} />
+        <LegendItem color={STATUS_EVENT_COLORS.completed} label={t('pm.occurrenceStatus.completed')} />
+        <LegendItem color={STATUS_EVENT_COLORS.skipped} label={t('pm.occurrenceStatus.skipped')} />
+        <LegendItem color={OVERDUE_COLOR} label={t('pmCalendar.overdue')} />
+        <div className="flex items-center gap-1.5">
+          <div className="w-3 h-3 rounded-sm bg-gray-600 border-l-[3px] border-amber-400" />
+          <span className="text-xs text-gray-500">{t('pmCalendar.overridden')}</span>
+        </div>
       </div>
 
       {/* Calendar */}
       <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
-        {loading ? (
-          <div className="flex items-center justify-center h-64 text-gray-500 text-sm">
-            {t('common.loading')}
-          </div>
-        ) : (
-          <FullCalendar
-            plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
-            initialView="dayGridMonth"
-            headerToolbar={{
-              left: 'prev,next today',
-              center: 'title',
-              right: 'dayGridMonth,timeGridWeek',
-            }}
-            events={[...planEvents, ...woEvents]}
-            eventClick={handleEventClick}
-            height="auto"
-            dayMaxEvents={4}
-            moreLinkText={(n) => `+${n} more`}
-            eventDisplay="block"
-          />
-        )}
+        <FullCalendar
+          plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
+          initialView="dayGridMonth"
+          headerToolbar={{
+            left: 'prev,next today',
+            center: 'title',
+            right: 'dayGridMonth,timeGridWeek',
+          }}
+          events={loadEvents}
+          eventClick={handleEventClick}
+          height="auto"
+          dayMaxEvents={4}
+          moreLinkText={(n) => `+${n} more`}
+          eventDisplay="block"
+        />
       </div>
     </div>
   );

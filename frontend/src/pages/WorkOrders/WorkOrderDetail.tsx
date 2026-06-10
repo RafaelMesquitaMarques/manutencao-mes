@@ -23,6 +23,9 @@ import {
   Plus,
   X,
   ChevronRight,
+  ListChecks,
+  CheckSquare,
+  Square,
 } from 'lucide-react';
 import {
   fetchWorkOrder,
@@ -39,6 +42,7 @@ import {
   fetchWOCostSummary,
   fetchWOActions,
   addWOAction,
+  toggleWOAction,
   fetchTechnicians,
 } from '../../api/workOrders';
 import type {
@@ -125,9 +129,87 @@ const SectionCard = ({ icon: Icon, title, children }: {
   </div>
 );
 
+// ─── PM Checklist Section ────────────────────────────────────────────────────
+
+const ChecklistSection = ({
+  woId,
+  checklist,
+  onToggle,
+}: {
+  woId: string;
+  checklist: WOAction[];
+  onToggle: (action: WOAction) => void;
+}) => {
+  const { t } = useTranslation();
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+
+  const total = checklist.length;
+  const done = checklist.filter((a) => a.is_completed).length;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+  const handleToggle = async (action: WOAction) => {
+    setTogglingId(action.id);
+    try {
+      const updated = await toggleWOAction(woId, action.id, !action.is_completed);
+      onToggle(updated);
+    } catch {
+      // ignore — UI stays unchanged on failure
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  return (
+    <div className="glass-card p-5">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <ListChecks size={15} className="text-gray-500" />
+          <h2 className="text-white font-semibold text-sm">{t('pm.checklist', 'PM Checklist')}</h2>
+        </div>
+        <span className="text-xs font-mono text-gray-500">{done}/{total}</span>
+      </div>
+      <div className="w-full h-1.5 bg-white/[0.06] rounded-full mb-4 overflow-hidden">
+        <div className="h-full bg-green-500 transition-all" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="space-y-1.5">
+        {checklist.map((action) => (
+          <button
+            key={action.id}
+            onClick={() => handleToggle(action)}
+            disabled={togglingId === action.id}
+            className="w-full flex items-start gap-2.5 text-left px-2 py-1.5 rounded-lg hover:bg-white/[0.03] transition-colors disabled:opacity-50"
+          >
+            {action.is_completed ? (
+              <CheckSquare size={16} className="text-green-400 flex-shrink-0 mt-0.5" />
+            ) : (
+              <Square size={16} className="text-gray-600 flex-shrink-0 mt-0.5" />
+            )}
+            <span className={`text-sm flex-1 ${action.is_completed ? 'text-gray-500 line-through' : 'text-gray-200'}`}>
+              {action.description}
+            </span>
+            {action.is_required && !action.is_completed && (
+              <span className="text-[10px] text-amber-400 border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 rounded-full flex-shrink-0">
+                {t('pm.required', 'Required')}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
-const OverviewTab = ({ wo }: { wo: WorkOrder }) => {
+const OverviewTab = ({
+  wo,
+  checklist,
+  onToggleChecklist,
+}: {
+  wo: WorkOrder;
+  checklist: WOAction[];
+  onToggleChecklist: (action: WOAction) => void;
+}) => {
   const { t } = useTranslation();
 
   const textFields = [
@@ -141,6 +223,9 @@ const OverviewTab = ({ wo }: { wo: WorkOrder }) => {
     <div className="grid lg:grid-cols-3 gap-4">
       {/* Left — description fields */}
       <div className="lg:col-span-2 space-y-4">
+        {checklist.length > 0 && (
+          <ChecklistSection woId={wo.id} checklist={checklist} onToggle={onToggleChecklist} />
+        )}
         {textFields.length === 0 ? (
           <div className="glass-card p-8 text-center">
             <p className="text-gray-600 text-sm">{t('common.noData')}</p>
@@ -988,6 +1073,14 @@ const WorkOrderDetail = () => {
 
   useEffect(() => { load(); }, [id]);
 
+  const checklist = actions
+    .filter((a) => a.action_type === 'checklist')
+    .sort((a, b) => a.sort_order - b.sort_order);
+
+  const handleToggleChecklist = (updated: WOAction) => {
+    setActions((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+  };
+
   const handleAction = async (status: string) => {
     if (!wo) return;
     setIsActioning(true);
@@ -1170,7 +1263,9 @@ const WorkOrderDetail = () => {
 
       {/* Tab content */}
       <div className="min-h-[300px]">
-        {activeTab === 'overview' && <OverviewTab wo={wo} />}
+        {activeTab === 'overview' && (
+          <OverviewTab wo={wo} checklist={checklist} onToggleChecklist={handleToggleChecklist} />
+        )}
         {activeTab === 'labor' && (
           <LaborTab
             woId={wo.id}

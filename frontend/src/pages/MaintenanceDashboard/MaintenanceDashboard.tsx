@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bell, Ticket, AlertTriangle, Clock, RefreshCw, BarChart2, Wrench, TrendingUp, Zap, Timer } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Bell, Ticket, AlertTriangle, Clock, RefreshCw, BarChart2, Wrench, TrendingUp, Zap, Timer, CalendarClock, ListChecks, CheckCircle2, Percent, ArrowRight } from 'lucide-react';
 import ReactECharts from 'echarts-for-react';
 import { fetchMaintenanceDashboard } from '../../api/maintenance';
-import type { MaintenanceDashboardData } from '../../types';
+import { fetchPmDashboard } from '../../api/maintenancePlans';
+import type { MaintenanceDashboardData, PmDashboard } from '../../types';
 import Spinner from '../../components/ui/Spinner';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 import api from '../../api/axios';
@@ -93,6 +95,7 @@ export default function MaintenanceDashboard() {
   const [loading, setLoading] = useState(true);
   const [kpiData, setKpiData] = useState<InterventionKpis | null>(null);
   const [kpiPeriod, setKpiPeriod] = useState<7 | 30 | 90>(30);
+  const [pmData, setPmData] = useState<PmDashboard | null>(null);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -111,6 +114,10 @@ export default function MaintenanceDashboard() {
   }, [kpiPeriod]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    fetchPmDashboard().then(setPmData).catch(() => {});
+  }, []);
 
   const { lastUpdatedAt, isRefreshing, hasError, manualRefresh } = useAutoRefresh(
     () => load(true),
@@ -202,6 +209,116 @@ export default function MaintenanceDashboard() {
           valueColor="text-green-400"
         />
       </div>
+
+      {/* Preventive Maintenance */}
+      {pmData && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-white font-semibold flex items-center gap-2">
+              <CalendarClock size={16} className="text-blue-400" />
+              {t('pm.dashboardTitle')}
+            </h2>
+            <Link to="/maintenance/plans" className="text-blue-400 hover:text-blue-300 text-xs flex items-center gap-1">
+              {t('pm.viewAllPlans')}
+              <ArrowRight size={12} />
+            </Link>
+          </div>
+
+          <div className="grid grid-cols-2 xl:grid-cols-6 gap-3 md:gap-4">
+            <KPICard
+              title={t('pm.totalPlans')}
+              value={pmData.total_plans}
+              icon={ListChecks}
+              iconBg="bg-blue-500/15"
+              iconColor="text-blue-400"
+              valueColor="text-blue-400"
+            />
+            <KPICard
+              title={t('pm.activePlans')}
+              value={pmData.active_plans}
+              icon={CheckCircle2}
+              iconBg="bg-green-500/15"
+              iconColor="text-green-400"
+              valueColor="text-green-400"
+            />
+            <KPICard
+              title={t('pm.overdueOccurrences')}
+              value={pmData.overdue_occurrences}
+              icon={AlertTriangle}
+              iconBg="bg-red-500/15"
+              iconColor="text-red-400"
+              valueColor="text-red-400"
+            />
+            <KPICard
+              title={t('pm.dueThisWeek')}
+              value={pmData.due_this_week}
+              icon={CalendarClock}
+              iconBg="bg-amber-500/15"
+              iconColor="text-amber-400"
+              valueColor="text-amber-400"
+            />
+            <KPICard
+              title={t('pm.completedThisMonth')}
+              value={pmData.completed_this_month}
+              icon={Wrench}
+              iconBg="bg-purple-500/15"
+              iconColor="text-purple-400"
+              valueColor="text-purple-400"
+            />
+            <KPICard
+              title={t('pm.complianceRate')}
+              value={`${pmData.compliance_rate.toFixed(0)}%`}
+              icon={Percent}
+              iconBg="bg-sky-500/15"
+              iconColor="text-sky-400"
+              valueColor="text-sky-400"
+            />
+          </div>
+
+          <div className="grid lg:grid-cols-2 gap-4">
+            <div className="glass-card p-5">
+              <h3 className="text-white font-semibold text-sm mb-3">{t('pm.overdueOccurrences')}</h3>
+              {pmData.overdue.length === 0 ? <Empty /> : (
+                <div className="space-y-1.5">
+                  {pmData.overdue.slice(0, 8).map((occ) => (
+                    <Link
+                      key={occ.id}
+                      to={`/maintenance/plans/${occ.plan_id}`}
+                      className="flex items-center justify-between text-sm bg-white/[0.02] hover:bg-white/[0.04] rounded px-3 py-2 transition-colors"
+                    >
+                      <span className="text-gray-300 truncate">
+                        {occ.plan_name} · <span className="text-gray-500">{occ.equipment_name}</span>
+                      </span>
+                      <span className="text-red-400 text-xs font-mono flex-shrink-0 ml-2">
+                        {occ.scheduled_date}{occ.days_late ? ` (${t('pm.daysLate', { count: occ.days_late })})` : ''}
+                      </span>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="glass-card p-5">
+              <h3 className="text-white font-semibold text-sm mb-3">{t('pm.upcoming')}</h3>
+              {pmData.upcoming.length === 0 ? <Empty /> : (
+                <div className="space-y-1.5">
+                  {pmData.upcoming.slice(0, 8).map((occ) => (
+                    <Link
+                      key={occ.id}
+                      to={`/maintenance/plans/${occ.plan_id}`}
+                      className="flex items-center justify-between text-sm bg-white/[0.02] hover:bg-white/[0.04] rounded px-3 py-2 transition-colors"
+                    >
+                      <span className="text-gray-300 truncate">
+                        {occ.plan_name} · <span className="text-gray-500">{occ.equipment_name}</span>
+                      </span>
+                      <span className="text-gray-400 text-xs font-mono flex-shrink-0 ml-2">{occ.scheduled_date}</span>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Charts row 1 */}
       <div className="grid lg:grid-cols-2 gap-4">

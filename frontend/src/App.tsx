@@ -14,6 +14,9 @@ import EquipmentList from './pages/Equipment/EquipmentList';
 import EquipmentDetail from './pages/Equipment/EquipmentDetail';
 import NewEquipment from './pages/Equipment/NewEquipment';
 import PMCalendar from './pages/PMCalendar/PMCalendar';
+import PlanList from './pages/MaintenancePlans/PlanList';
+import NewPlan from './pages/MaintenancePlans/NewPlan';
+import PlanDetail from './pages/MaintenancePlans/PlanDetail';
 import LaborScheduler from './pages/Schedule/LaborScheduler';
 import AlertList from './pages/Alerts/AlertList';
 import NewAlert from './pages/Alerts/NewAlert';
@@ -86,6 +89,9 @@ const App = () => (
         <Route path="equipment/new"         element={<NewEquipment />} />
         <Route path="equipment/:id"         element={<EquipmentDetail />} />
         <Route path="pm-calendar"           element={<PMCalendar />} />
+        <Route path="maintenance/plans"      element={<PlanList />} />
+        <Route path="maintenance/plans/new"  element={<NewPlan />} />
+        <Route path="maintenance/plans/:id"  element={<PlanDetail />} />
         <Route path="schedule"              element={<LaborScheduler />} />
         <Route path="alerts"               element={<AlertList />} />
         <Route path="alerts/new"            element={<NewAlert />} />

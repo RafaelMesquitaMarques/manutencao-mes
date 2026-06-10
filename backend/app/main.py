@@ -17,6 +17,7 @@ from app.api.routes.machine_operator import router as machine_operator_router
 from app.api.routes.intervention_type_settings import router as intervention_types_router
 from app.api.routes.safety_checklist_settings import router as safety_checklist_router
 from app.api.routes.parts_approval import router as parts_approval_router
+from app.api.routes.pm_template_settings import router as pm_template_settings_router
 
 
 async def _escalation_loop() -> None:
@@ -29,6 +30,19 @@ async def _escalation_loop() -> None:
                 await EscalationService(db).check_overdue_alerts()
         except Exception as exc:
             print(f"[EscalationService] {exc}")
+
+
+async def _pm_loop() -> None:
+    """Check overdue PM occurrences and send reminders/alerts every hour."""
+    from app.services import pm_service
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            async with AsyncSessionLocal() as db:
+                await pm_service.check_overdue_occurrences(db)
+                await pm_service.check_upcoming_reminders(db)
+        except Exception as exc:
+            print(f"[PMService] {exc}")
 
 
 async def _backfill_ticket_alerts() -> None:
@@ -440,6 +454,91 @@ async def _run_migrations() -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """,
+        # Phase: TPM preventive maintenance module
+        """
+        CREATE TABLE IF NOT EXISTS pm_templates (
+            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            plant_id        UUID REFERENCES plants(id),
+            equipment_id    UUID NOT NULL REFERENCES equipment(id) ON DELETE CASCADE,
+            frequency_type  VARCHAR(30) NOT NULL,
+            name            VARCHAR(200) NOT NULL,
+            description     TEXT,
+            estimated_hours DOUBLE PRECISION DEFAULT 1.0,
+            is_active       BOOLEAN DEFAULT TRUE,
+            sort_order      INTEGER DEFAULT 0
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS pm_template_tasks (
+            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            template_id UUID NOT NULL REFERENCES pm_templates(id) ON DELETE CASCADE,
+            description TEXT NOT NULL,
+            sort_order  INTEGER DEFAULT 0,
+            is_required BOOLEAN DEFAULT TRUE
+        )
+        """,
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS pm_template_id UUID REFERENCES pm_templates(id) ON DELETE SET NULL",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS plan_type VARCHAR(30) DEFAULT 'preventive'",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS frequency_type VARCHAR(30)",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS frequency_value INTEGER DEFAULT 1",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS frequency_days INTEGER",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS frequency_hours DOUBLE PRECISION",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS weekdays VARCHAR(20)",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS start_date DATE",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS recurrence_end_type VARCHAR(20) DEFAULT 'never'",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS recurrence_end_value INTEGER",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS recurrence_end_date DATE",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS lead_time_days INTEGER DEFAULT 3",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS assigned_technician_id UUID REFERENCES technicians(id) ON DELETE SET NULL",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS priority VARCHAR(20) DEFAULT 'medium'",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS estimated_hours DOUBLE PRECISION DEFAULT 1.0",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS next_due_date DATE",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS next_due_hours DOUBLE PRECISION",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS total_occurrences INTEGER DEFAULT 0",
+        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS created_by_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        """
+        CREATE TABLE IF NOT EXISTS plan_occurrences (
+            id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            plan_id            UUID NOT NULL REFERENCES maintenance_plans(id) ON DELETE CASCADE,
+            plant_id           UUID REFERENCES plants(id) ON DELETE SET NULL,
+            equipment_id       UUID REFERENCES equipment(id) ON DELETE SET NULL,
+            work_order_id      UUID REFERENCES work_orders(id) ON DELETE SET NULL,
+            scheduled_date     DATE NOT NULL,
+            actual_date        DATE,
+            is_overridden      BOOLEAN DEFAULT FALSE,
+            override_date      DATE,
+            override_note      TEXT,
+            is_cancelled       BOOLEAN DEFAULT FALSE,
+            cancel_reason      TEXT,
+            status             VARCHAR(20) DEFAULT 'scheduled',
+            compliance         VARCHAR(20),
+            days_late          INTEGER,
+            reminder_sent      BOOLEAN DEFAULT FALSE,
+            overdue_alert_sent BOOLEAN DEFAULT FALSE,
+            created_at         TIMESTAMPTZ DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS plan_recommended_parts (
+            id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            plan_id              UUID NOT NULL REFERENCES maintenance_plans(id) ON DELETE CASCADE,
+            stock_item_id        UUID REFERENCES stock_items(id) ON DELETE SET NULL,
+            item_code            VARCHAR(100),
+            item_description     TEXT,
+            quantity_recommended DOUBLE PRECISION DEFAULT 1,
+            unit                 VARCHAR(50)
+        )
+        """,
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS plan_id UUID REFERENCES maintenance_plans(id)",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS occurrence_id UUID REFERENCES plan_occurrences(id) ON DELETE SET NULL",
+        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS description TEXT",
+        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS is_required BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS is_completed BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ",
+        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS completed_by_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0",
     ]
     async with engine.begin() as conn:
         for stmt in stmts:
@@ -500,8 +599,10 @@ async def lifespan(app: FastAPI):
     await _run_migrations()
     await _backfill_ticket_alerts()
     task = asyncio.create_task(_escalation_loop())
+    pm_task = asyncio.create_task(_pm_loop())
     yield
     task.cancel()
+    pm_task.cancel()
     await engine.dispose()
 
 
@@ -542,6 +643,7 @@ app.include_router(machine_operator_router)
 app.include_router(intervention_types_router)
 app.include_router(safety_checklist_router)
 app.include_router(parts_approval_router)
+app.include_router(pm_template_settings_router)
 
 
 @app.get("/api/health", tags=["System"])

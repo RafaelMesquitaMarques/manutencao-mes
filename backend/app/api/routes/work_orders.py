@@ -16,13 +16,14 @@ from app.schemas.wo_subresources import (
     LaborCreate, LaborOut, LaborListResponse,
     WOPartCreate, WOPartOut, WOPartListResponse,
     WOCostCreate, WOCostOut, WOCostListResponse,
-    WOActionCreate, WOActionOut, WOActionListResponse,
+    WOActionCreate, WOActionOut, WOActionListResponse, WOActionToggle,
     WOCostSummary,
 )
 from app.core.security import get_current_user
 from app.services.inventory_service import InventoryService
 from app.services.machine_history_service import MachineHistoryService
 from app.services.ticket_service import sync_alert_from_ticket
+from app.services import pm_service
 
 router = APIRouter()
 
@@ -368,6 +369,9 @@ async def update_work_order(
         await _sync_ticket_from_wo(wo, db)
         await db.commit()
 
+        if wo.status == WorkOrderStatus.completed:
+            await pm_service.on_work_order_completed(db, wo)
+
     return await _enrich_wo(wo, db)
 
 
@@ -552,6 +556,8 @@ async def complete_work_order(
     # Sync ticket
     await _sync_ticket_from_wo(wo, db)
     await db.commit()
+
+    await pm_service.on_work_order_completed(db, wo)
 
     return await _enrich_wo(wo, db)
 
@@ -780,6 +786,41 @@ async def list_actions(
     )
     items = result.scalars().all()
     return WOActionListResponse(total=len(items), items=items)
+
+
+@router.patch("/{work_order_id}/actions/{action_id}/toggle", response_model=WOActionOut)
+async def toggle_checklist_item(
+    work_order_id: UUID,
+    action_id: UUID,
+    data: WOActionToggle,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    action = await db.get(WOAction, action_id)
+    if not action or action.work_order_id != work_order_id:
+        raise HTTPException(status_code=404, detail="Action not found")
+
+    action.is_completed = data.is_completed
+    action.completed_at = datetime.now(timezone.utc) if data.is_completed else None
+    action.completed_by_id = current_user.id if data.is_completed else None
+
+    # Recompute the work order's checklist completion ratio
+    checklist_result = await db.execute(
+        select(WOAction).where(
+            WOAction.work_order_id == work_order_id,
+            WOAction.action_type == "checklist",
+        )
+    )
+    checklist_items = checklist_result.scalars().all()
+    if checklist_items:
+        wo = await db.get(WorkOrder, work_order_id)
+        if wo:
+            completed = sum(1 for a in checklist_items if a.is_completed)
+            wo.completion_ratio = round(completed / len(checklist_items), 4)
+
+    await db.commit()
+    await db.refresh(action)
+    return action
 
 
 @router.delete("/{work_order_id}", status_code=204)

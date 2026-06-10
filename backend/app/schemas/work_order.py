@@ -111,6 +111,8 @@ class WorkOrderOut(BaseModel):
     total_minutes: Optional[int] = None
     actual_downtime_minutes: Optional[int] = None
     intervention_parts: Optional[List] = None
+    plan_id: Optional[UUID] = None
+    occurrence_id: Optional[UUID] = None
 
 
 class WorkOrderListResponse(BaseModel):

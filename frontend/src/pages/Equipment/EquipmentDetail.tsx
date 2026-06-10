@@ -3,13 +3,18 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft, Cpu, MapPin, Clock, Gauge, AlertCircle, Calendar,
-  Save, Plus, Trash2, Check, X, Copy, ChevronRight, ExternalLink,
+  Save, Plus, Trash2, Check, X, Copy, ChevronRight, ChevronDown, ExternalLink,
   Settings, StopCircle, AlertTriangle, Users, BarChart2, Activity,
-  Zap, Pencil, Shield, Loader2,
+  Zap, Pencil, Shield, Loader2, Power, CalendarClock,
   type LucideIcon,
 } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
-import { fetchEquipmentById, fetchWorkOrders, fetchMaintenancePlans } from '../../api/workOrders';
+import { fetchEquipmentById, fetchWorkOrders } from '../../api/workOrders';
+import { fetchMaintenancePlans } from '../../api/maintenancePlans';
+import {
+  fetchPmTemplates, createPmTemplate, updatePmTemplate, deletePmTemplate,
+  addPmTemplateTask, updatePmTemplateTask, deletePmTemplateTask,
+} from '../../api/pmTemplates';
 import {
   fetchMachinesAll, updateMachineConfig,
   addMachineOperator, updateMachineOperatorRecord, deleteOperator,
@@ -21,7 +26,7 @@ import {
 } from '../../api/machines';
 import api from '../../api/axios';
 import type {
-  Equipment, WorkOrder, MaintenancePlan,
+  Equipment, WorkOrder, MaintenancePlan, PmTemplate, PmTemplateTask, PmFrequency,
   Machine, MachineConfigUpdate, MachineOperatorOut, MachineOperatorCreate,
   OperatorShift, StopCategoryOut, StopSubcategoryOut, StopCategoryType,
   RejectCategoryOut, RejectSubcategoryOut, HourlyRateCurrency,
@@ -60,7 +65,7 @@ type TabId = 'overview' | 'workorders' | 'plans' | 'configuration' | 'history';
 
 // ─── Config sub-tab types ────────────────────────────────────────────────────────
 
-type ConfigTab = 'general' | 'stop' | 'reject' | 'operators' | 'shifts' | 'parameters' | 'indicators' | 'intervention_types' | 'safety_checklist';
+type ConfigTab = 'general' | 'stop' | 'reject' | 'operators' | 'shifts' | 'parameters' | 'indicators' | 'intervention_types' | 'safety_checklist' | 'pm_templates';
 
 const CONFIG_TABS: { id: ConfigTab; label: string; Icon: LucideIcon }[] = [
   { id: 'general',    label: 'General',          Icon: Settings     },
@@ -72,6 +77,7 @@ const CONFIG_TABS: { id: ConfigTab; label: string; Icon: LucideIcon }[] = [
   { id: 'indicators',          label: 'Indicators',          Icon: Activity },
   { id: 'intervention_types', label: 'Intervention Types',  Icon: Zap      },
   { id: 'safety_checklist',   label: 'Safety Checklist',    Icon: Shield   },
+  { id: 'pm_templates',       label: 'PM Templates',        Icon: CalendarClock },
 ];
 
 const LANG_OPTIONS = [
@@ -894,6 +900,299 @@ function InterventionTypesConfigTab({ equipmentId }: { equipmentId: string }) {
   );
 }
 
+// ─── PM Templates Config Tab ─────────────────────────────────────────────────────
+
+const PM_FREQUENCIES: PmFrequency[] = ['daily', 'weekly', 'monthly', 'quarterly', 'semiannual', 'annual'];
+
+interface PmTemplateFormState {
+  name: string;
+  frequency_type: PmFrequency;
+  description: string;
+  estimated_hours: number;
+}
+
+const EMPTY_PM_TEMPLATE_FORM: PmTemplateFormState = {
+  name: '',
+  frequency_type: 'monthly',
+  description: '',
+  estimated_hours: 1,
+};
+
+function PmTemplatesConfigTab({ equipmentId }: { equipmentId: string }) {
+  const { t } = useTranslation();
+  const [templates, setTemplates] = useState<PmTemplate[]>([]);
+  const [loadingPM, setLoadingPM] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [addForm, setAddForm] = useState<PmTemplateFormState>(EMPTY_PM_TEMPLATE_FORM);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<PmTemplateFormState>(EMPTY_PM_TEMPLATE_FORM);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoadingPM(true);
+    try {
+      const items = await fetchPmTemplates({ equipment_id: equipmentId });
+      setTemplates(items);
+    } catch {
+      setTemplates([]);
+    } finally {
+      setLoadingPM(false);
+    }
+  }, [equipmentId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleAdd = async () => {
+    if (!addForm.name.trim()) return;
+    setSaving(true);
+    try {
+      await createPmTemplate({
+        equipment_id: equipmentId,
+        frequency_type: addForm.frequency_type,
+        name: addForm.name.trim(),
+        description: addForm.description.trim() || undefined,
+        estimated_hours: addForm.estimated_hours,
+      });
+      setShowAdd(false);
+      setAddForm(EMPTY_PM_TEMPLATE_FORM);
+      await load();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleEdit = async (id: string) => {
+    setSaving(true);
+    try {
+      await updatePmTemplate(id, {
+        name: editForm.name.trim(),
+        frequency_type: editForm.frequency_type,
+        description: editForm.description.trim() || undefined,
+        estimated_hours: editForm.estimated_hours,
+      });
+      setEditId(null);
+      await load();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggleActive = async (tpl: PmTemplate) => {
+    await updatePmTemplate(tpl.id, { is_active: !tpl.is_active });
+    await load();
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm(t('pm.confirmDeleteTemplate'))) return;
+    await deletePmTemplate(id);
+    await load();
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-bold text-gray-400 uppercase tracking-widest">{t('pm.templates')}</h2>
+        <button onClick={() => setShowAdd(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition-colors">
+          <Plus size={12} /> {t('common.add')}
+        </button>
+      </div>
+
+      {showAdd && (
+        <div className="p-4 bg-[#0d1421] rounded-2xl border border-blue-500/30 space-y-3">
+          <p className="text-sm font-semibold text-white">{t('pm.newTemplate')}</p>
+          <div className="flex flex-wrap gap-3 items-end">
+            <div className="flex-1 min-w-[160px]">
+              <label className="block text-xs text-gray-500 mb-1">{t('pm.name')}</label>
+              <input value={addForm.name} onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
+                placeholder={t('pm.namePlaceholder')}
+                className="w-full bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">{t('pm.frequencyType')}</label>
+              <select value={addForm.frequency_type} onChange={(e) => setAddForm({ ...addForm, frequency_type: e.target.value as PmFrequency })}
+                className="bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500">
+                {PM_FREQUENCIES.map((f) => <option key={f} value={f}>{t(`pmFrequency.${f}`)}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">{t('pm.estimatedHours')}</label>
+              <input type="number" min={0} step="0.5" value={addForm.estimated_hours}
+                onChange={(e) => setAddForm({ ...addForm, estimated_hours: Number(e.target.value) })}
+                className="w-20 bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">{t('common.description')}</label>
+            <input value={addForm.description} onChange={(e) => setAddForm({ ...addForm, description: e.target.value })}
+              className="w-full bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500" />
+          </div>
+          <div className="flex gap-2">
+            <button onClick={handleAdd} disabled={saving || !addForm.name.trim()}
+              className="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold disabled:opacity-50 flex items-center gap-1.5">
+              <Check size={13} /> {t('common.add')}
+            </button>
+            <button onClick={() => { setShowAdd(false); setAddForm(EMPTY_PM_TEMPLATE_FORM); }}
+              className="text-gray-500 px-4 py-2 border border-white/10 rounded-xl text-sm">
+              <X size={13} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loadingPM ? (
+        <div className="py-10 text-center text-gray-600 text-sm">{t('common.loading')}</div>
+      ) : templates.length === 0 ? (
+        <div className="py-10 text-center text-gray-700 text-sm">{t('pm.noTemplates')}</div>
+      ) : (
+        <div className="space-y-2">
+          {templates.map((tpl) =>
+            editId === tpl.id ? (
+              <div key={tpl.id} className="p-4 bg-[#0d1421] rounded-2xl border border-blue-500/30 space-y-3">
+                <div className="flex flex-wrap gap-3 items-end">
+                  <div className="flex-1 min-w-[160px]">
+                    <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                      className="w-full bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+                  </div>
+                  <select value={editForm.frequency_type} onChange={(e) => setEditForm({ ...editForm, frequency_type: e.target.value as PmFrequency })}
+                    className="bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500">
+                    {PM_FREQUENCIES.map((f) => <option key={f} value={f}>{t(`pmFrequency.${f}`)}</option>)}
+                  </select>
+                  <input type="number" min={0} step="0.5" value={editForm.estimated_hours}
+                    onChange={(e) => setEditForm({ ...editForm, estimated_hours: Number(e.target.value) })}
+                    className="w-20 bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white" />
+                </div>
+                <input value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                  className="w-full bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+                <div className="flex gap-2">
+                  <button onClick={() => handleEdit(tpl.id)} disabled={saving}
+                    className="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold disabled:opacity-50 flex items-center gap-1.5">
+                    <Check size={13} /> {t('common.save')}
+                  </button>
+                  <button onClick={() => setEditId(null)}
+                    className="text-gray-500 px-4 py-2 border border-white/10 rounded-xl text-sm">
+                    <X size={13} />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div key={tpl.id} className="bg-[#0d1421] rounded-2xl border border-white/[0.06] overflow-hidden">
+                <div className="flex items-center gap-3 p-4 hover:border-white/20 transition-colors">
+                  <button onClick={() => setExpandedId(expandedId === tpl.id ? null : tpl.id)} className="p-1 text-gray-600 hover:text-gray-300">
+                    {expandedId === tpl.id ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-bold text-white">{tpl.name}</p>
+                      {!tpl.is_active && <span className="text-xs px-1.5 py-0.5 rounded-full bg-gray-500/15 text-gray-500">{t('pm.inactive')}</span>}
+                    </div>
+                    <div className="flex items-center gap-2 mt-1 text-xs text-gray-600">
+                      <span className="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">{t(`pmFrequency.${tpl.frequency_type}`)}</span>
+                      <span>{tpl.estimated_hours}h</span>
+                      <span>{t('pm.taskCount', { count: tpl.tasks.length })}</span>
+                    </div>
+                    {tpl.description && <p className="text-gray-500 text-xs mt-1">{tpl.description}</p>}
+                  </div>
+                  <button onClick={() => handleToggleActive(tpl)}
+                    title={tpl.is_active ? t('pm.deactivate') : t('pm.activate')}
+                    className={`p-1.5 rounded-lg transition-colors ${tpl.is_active ? 'text-green-400 hover:bg-green-400/10' : 'text-gray-700 hover:text-gray-400 hover:bg-white/5'}`}>
+                    <Power size={14} />
+                  </button>
+                  <button
+                    onClick={() => { setEditId(tpl.id); setEditForm({ name: tpl.name, frequency_type: tpl.frequency_type, description: tpl.description ?? '', estimated_hours: tpl.estimated_hours }); }}
+                    className="p-1.5 rounded-lg text-gray-700 hover:text-blue-400 hover:bg-blue-400/10 transition-colors">
+                    <Pencil size={13} />
+                  </button>
+                  <button onClick={() => handleDelete(tpl.id)}
+                    className="p-1.5 rounded-lg text-gray-700 hover:text-red-400 hover:bg-red-400/10 transition-colors">
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+                {expandedId === tpl.id && (
+                  <div className="border-t border-white/[0.06] p-4">
+                    <PmTemplateTaskList template={tpl} onChange={load} />
+                  </div>
+                )}
+              </div>
+            )
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PmTemplateTaskList({ template, onChange }: { template: PmTemplate; onChange: () => void }) {
+  const { t } = useTranslation();
+  const [newText, setNewText] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const addTask = async () => {
+    if (!newText.trim()) return;
+    setSaving(true);
+    try {
+      await addPmTemplateTask(template.id, { description: newText.trim(), sort_order: template.tasks.length, is_required: true });
+      setNewText('');
+      onChange();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleRequired = async (task: PmTemplateTask) => {
+    await updatePmTemplateTask(template.id, task.id, { is_required: !task.is_required });
+    onChange();
+  };
+
+  const removeTask = async (taskId: string) => {
+    await deletePmTemplateTask(template.id, taskId);
+    onChange();
+  };
+
+  return (
+    <div className="space-y-2">
+      {template.tasks.length === 0 && (
+        <p className="text-gray-600 text-xs py-1">{t('pm.noTasks')}</p>
+      )}
+      {template.tasks.map((task, idx) => (
+        <div key={task.id} className="flex items-center gap-3 py-1.5 px-3 rounded-lg" style={{ background: '#0d1117', border: '1px solid #21262d' }}>
+          <span className="text-gray-600 text-xs w-5 text-right">{idx + 1}</span>
+          <p className="flex-1 text-sm text-gray-200">{task.description}</p>
+          <button
+            onClick={() => toggleRequired(task)}
+            className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+              task.is_required
+                ? 'text-amber-400 border-amber-500/40 bg-amber-500/10'
+                : 'text-gray-600 border-gray-700/40'
+            }`}>
+            {task.is_required ? t('pm.required') : t('pm.optional')}
+          </button>
+          <button onClick={() => removeTask(task.id)} className="p-1 text-gray-600 hover:text-red-400 transition-colors">
+            <Trash2 size={13} />
+          </button>
+        </div>
+      ))}
+      <div className="flex gap-2 items-center">
+        <input
+          value={newText}
+          onChange={(e) => setNewText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') addTask(); }}
+          placeholder={t('pm.newTaskPlaceholder')}
+          className="flex-1 bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 outline-none focus:border-blue-500/50"
+        />
+        <button
+          disabled={saving || !newText.trim()}
+          onClick={addTask}
+          className="px-3 py-2 rounded-lg text-sm font-medium text-white transition-all disabled:opacity-40"
+          style={{ background: '#1d4ed8' }}>
+          {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Safety Checklist Config Tab ─────────────────────────────────────────────────
 
 interface SCItem { id: string; text: string; sort_order: number; is_required: boolean; }
@@ -1315,6 +1614,7 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
         )}
         {configTab === 'intervention_types' && <InterventionTypesConfigTab equipmentId={equipment.id} />}
         {configTab === 'safety_checklist' && <SafetyChecklistConfigTab equipmentId={equipment.id} />}
+        {configTab === 'pm_templates' && <PmTemplatesConfigTab equipmentId={equipment.id} />}
       </div>
     </div>
   );
@@ -1337,11 +1637,11 @@ export default function EquipmentDetail() {
     Promise.allSettled([
       fetchEquipmentById(id),
       fetchWorkOrders({ equipment_id: id, limit: '50' }),
-      fetchMaintenancePlans(id),
+      fetchMaintenancePlans({ equipment_id: id }),
     ]).then(([eq, wo, pl]) => {
       if (eq.status === 'fulfilled') setEquipment(eq.value);
       if (wo.status === 'fulfilled') setWOs(wo.value);
-      if (pl.status === 'fulfilled') setPlans(pl.value);
+      if (pl.status === 'fulfilled') setPlans(pl.value.items);
       setLoading(false);
     });
   }, [id]);
@@ -1518,33 +1818,49 @@ export default function EquipmentDetail() {
 
       {tab === 'plans' && (
         <div className="space-y-3">
+          <div className="flex justify-end">
+            <Link to={`/maintenance/plans/new?equipmentId=${equipment.id}`} className="btn-primary py-1.5 px-3 text-sm gap-1.5">
+              <Plus size={14} />
+              {t('pm.newPlan')}
+            </Link>
+          </div>
           {plans.length === 0 ? (
             <div className="flex items-center justify-center h-32 text-gray-600 text-sm bg-[#0d1421] border border-white/[0.06] rounded-xl">
               {t('equipment.noPlans')}
             </div>
           ) : (
-            plans.map((plan) => (
-              <div key={plan.id} className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-white font-medium text-sm">{plan.name}</p>
-                    {plan.description && <p className="text-gray-500 text-xs mt-0.5">{plan.description}</p>}
-                    <div className="flex items-center gap-3 mt-2 text-xs text-gray-600">
-                      <span>{plan.trigger_type}</span>
-                      {plan.interval_days && <span>Every {plan.interval_days} days</span>}
+            plans.map((plan) => {
+              const freqLabel = plan.frequency_type
+                ? ((plan.frequency_value ?? 1) > 1
+                    ? `${t('pm.every')} ${plan.frequency_value} ${t(`pmFrequency.unit.${plan.frequency_type}`)}`
+                    : t(`pmFrequency.${plan.frequency_type}`))
+                : null;
+              return (
+                <Link key={plan.id} to={`/maintenance/plans/${plan.id}`} className="block bg-[#0d1421] border border-white/[0.06] rounded-xl p-4 hover:border-white/20 transition-colors">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <p className="text-white font-medium text-sm">{plan.name}</p>
+                        {!plan.is_active && (
+                          <span className="text-xs px-1.5 py-0.5 rounded-full bg-gray-500/15 text-gray-500">{t('pm.inactive')}</span>
+                        )}
+                      </div>
+                      {plan.description && <p className="text-gray-500 text-xs mt-0.5">{plan.description}</p>}
+                      <div className="flex items-center gap-3 mt-2 text-xs text-gray-600">
+                        {freqLabel && <span>{freqLabel}</span>}
+                        {plan.assigned_technician_name && <span>{plan.assigned_technician_name}</span>}
+                      </div>
                     </div>
+                    {plan.next_due_date && (
+                      <div className="text-right">
+                        <p className="text-xs text-gray-600">{t('pm.nextDue')}</p>
+                        <p className="text-sm text-amber-400 font-medium">{plan.next_due_date}</p>
+                      </div>
+                    )}
                   </div>
-                  {plan.next_execution_at && (
-                    <div className="text-right">
-                      <p className="text-xs text-gray-600">Next</p>
-                      <p className="text-sm text-amber-400 font-medium">
-                        {format(new Date(plan.next_execution_at), 'MMM dd, yyyy')}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))
+                </Link>
+              );
+            })
           )}
         </div>
       )}

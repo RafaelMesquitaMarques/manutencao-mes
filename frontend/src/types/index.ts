@@ -10,7 +10,7 @@ export type UserRole =
 export type WorkOrderStatus = 'open' | 'in_progress' | 'on_hold' | 'completed' | 'cancelled';
 export type WorkOrderType = 'corrective' | 'preventive' | 'predictive' | 'inspection' | 'improvement';
 export type Priority = 'low' | 'medium' | 'high' | 'critical';
-export type WorkOrderSource = 'manual' | 'ticket';
+export type WorkOrderSource = 'manual' | 'ticket' | 'pm';
 export type MachineStatus = 'running' | 'stopped' | 'maintenance' | 'idle' | 'planned_stop';
 export type StopCategoryType = 'planned' | 'unplanned' | 'maintenance';
 export type OperatorShift = 'morning' | 'afternoon' | 'night' | 'all';
@@ -123,6 +123,9 @@ export interface WorkOrder {
   from_iot: boolean;
   total_minutes?: number;
   actual_downtime_minutes?: number;
+  completion_ratio?: number;
+  plan_id?: string;
+  occurrence_id?: string;
   created_at?: string;
   updated_at?: string;
   intervention_parts?: InterventionPartOut[];
@@ -241,6 +244,12 @@ export interface WOAction {
   old_value?: string;
   new_value?: string;
   created_at: string;
+  description?: string;
+  is_required: boolean;
+  is_completed: boolean;
+  completed_at?: string;
+  completed_by_id?: string;
+  sort_order: number;
 }
 
 export interface LoginResponse {
@@ -258,18 +267,154 @@ export interface LoginCredentials {
   password: string;
 }
 
+// ─── TPM Preventive Maintenance ────────────────────────────────────────────────
+
+export type PmFrequency = 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'semiannual' | 'annual';
+export type RecurrenceEndType = 'never' | 'after_occurrences' | 'on_date';
+export type OccurrenceStatus = 'scheduled' | 'in_progress' | 'completed' | 'skipped' | 'cancelled';
+export type OccurrenceCompliance = 'on_time' | 'early' | 'late';
+
+export interface PmTemplateTask {
+  id: string;
+  template_id: string;
+  description: string;
+  sort_order: number;
+  is_required: boolean;
+}
+
+export interface PmTemplate {
+  id: string;
+  plant_id?: string;
+  equipment_id: string;
+  equipment_name?: string;
+  frequency_type: PmFrequency;
+  name: string;
+  description?: string;
+  estimated_hours: number;
+  is_active: boolean;
+  sort_order: number;
+  tasks: PmTemplateTask[];
+}
+
+export interface PmTemplateListResponse {
+  total: number;
+  items: PmTemplate[];
+}
+
+export interface PlanRecommendedPart {
+  id: string;
+  plan_id: string;
+  stock_item_id?: string;
+  item_code?: string;
+  item_description?: string;
+  quantity_recommended: number;
+  unit?: string;
+}
+
 export interface MaintenancePlan {
   id: string;
   equipment_id: string;
   equipment_name?: string;
+  plant_id?: string;
   name: string;
   description?: string;
-  trigger_type?: string;
-  interval_days?: number;
-  interval_hours?: number;
-  last_executed_at?: string;
-  next_execution_at?: string;
-  active: boolean;
+
+  pm_template_id?: string;
+  pm_template_name?: string;
+  plan_type?: string;
+
+  frequency_type?: PmFrequency;
+  frequency_value?: number;
+  frequency_days?: number;
+  frequency_hours?: number;
+  weekdays?: string;
+  start_date?: string;
+
+  recurrence_end_type?: RecurrenceEndType;
+  recurrence_end_value?: number;
+  recurrence_end_date?: string;
+
+  lead_time_days?: number;
+  assigned_technician_id?: string;
+  assigned_technician_name?: string;
+  priority?: string;
+  estimated_hours?: number;
+  is_active: boolean;
+
+  next_due_date?: string;
+  next_due_hours?: number;
+  total_occurrences?: number;
+  created_by_id?: string;
+  created_at: string;
+
+  recommended_parts: PlanRecommendedPart[];
+}
+
+export interface MaintenancePlanListResponse {
+  total: number;
+  items: MaintenancePlan[];
+  overdue_count: number;
+  due_this_week: number;
+}
+
+export interface PlanOccurrence {
+  id: string;
+  plan_id: string;
+  plan_name?: string;
+  plant_id?: string;
+  equipment_id?: string;
+  equipment_name?: string;
+  work_order_id?: string;
+  work_order_number?: string;
+
+  scheduled_date: string;
+  actual_date?: string;
+
+  is_overridden: boolean;
+  override_date?: string;
+  override_note?: string;
+
+  is_cancelled: boolean;
+  cancel_reason?: string;
+
+  status: OccurrenceStatus;
+  compliance?: OccurrenceCompliance;
+  days_late?: number;
+
+  reminder_sent: boolean;
+  overdue_alert_sent: boolean;
+  created_at: string;
+}
+
+export interface PlanOccurrenceListResponse {
+  total: number;
+  items: PlanOccurrence[];
+}
+
+export interface PlanCalendarItem {
+  id: string;
+  plan_id: string;
+  plan_name: string;
+  equipment_id?: string;
+  equipment_name?: string;
+  date: string;
+  status: OccurrenceStatus;
+  compliance?: OccurrenceCompliance;
+  is_overridden: boolean;
+  is_cancelled: boolean;
+  work_order_id?: string;
+  priority?: string;
+}
+
+export interface PmDashboard {
+  total_plans: number;
+  active_plans: number;
+  overdue_occurrences: number;
+  due_this_week: number;
+  completed_this_month: number;
+  compliance_rate: number;
+  upcoming: PlanOccurrence[];
+  overdue: PlanOccurrence[];
 }
 
 export interface KPISummary {

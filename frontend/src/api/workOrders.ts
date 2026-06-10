@@ -13,7 +13,6 @@ import type {
   WOCostSummary,
   WOAction,
   User,
-  MaintenancePlan,
   KPISummary,
   BacklogData,
   MTTRItem,
@@ -261,23 +260,12 @@ export const addWOAction = async (
   return data;
 };
 
-// ─── Maintenance Plans ────────────────────────────────────────────────────────
-
-export const fetchMaintenancePlans = async (equipment_id?: string): Promise<MaintenancePlan[]> => {
-  const params = equipment_id ? { equipment_id } : undefined;
-  const { data } = await api.get<MaintenancePlan[]>('/api/plans/', { params });
-  return Array.isArray(data) ? data : [];
-};
-
-export const createMaintenancePlan = async (payload: {
-  equipment_id: string;
-  name: string;
-  description?: string;
-  trigger_type?: string;
-  interval_days?: number;
-  next_execution_at?: string;
-}): Promise<MaintenancePlan> => {
-  const { data } = await api.post<MaintenancePlan>('/api/plans/', payload);
+export const toggleWOAction = async (
+  workOrderId: string,
+  actionId: string,
+  is_completed: boolean
+): Promise<WOAction> => {
+  const { data } = await api.patch<WOAction>(`/api/wo/${workOrderId}/actions/${actionId}/toggle`, { is_completed });
   return data;
 };
 

@@ -161,6 +161,7 @@ class PurchaseOrderStatus(str, enum.Enum):
 class WorkOrderSource(str, enum.Enum):
     manual = "manual"
     ticket = "ticket"
+    pm     = "pm"
 
 class HourlyRateCurrency(str, enum.Enum):
     CAD = "CAD"
@@ -176,6 +177,35 @@ class JobOrderStatus(str, enum.Enum):
 class JobOrderSource(str, enum.Enum):
     manual = "manual"
     erp    = "erp"
+
+
+class PmFrequency(str, enum.Enum):
+    daily      = "daily"
+    weekly     = "weekly"
+    monthly    = "monthly"
+    quarterly  = "quarterly"
+    semiannual = "semiannual"
+    annual     = "annual"
+
+
+class RecurrenceEndType(str, enum.Enum):
+    never             = "never"
+    after_occurrences = "after_occurrences"
+    on_date           = "on_date"
+
+
+class OccurrenceStatus(str, enum.Enum):
+    scheduled   = "scheduled"
+    in_progress = "in_progress"
+    completed   = "completed"
+    skipped     = "skipped"
+    cancelled   = "cancelled"
+
+
+class OccurrenceCompliance(str, enum.Enum):
+    on_time = "on_time"
+    early   = "early"
+    late    = "late"
 
 
 # ─── Plant ─────────────────────────────────────────────────────────────────────
@@ -304,6 +334,7 @@ class Equipment(Base):
     plans           = relationship("MaintenancePlan", back_populates="equipment")
     sensor_readings = relationship("SensorReading", back_populates="equipment")
     sensors         = relationship("Sensor", back_populates="equipment")
+    pm_templates    = relationship("PmTemplate", back_populates="equipment")
 
 
 # ─── Work Order ────────────────────────────────────────────────────────────────
@@ -364,6 +395,13 @@ class WorkOrder(Base):
     ticket_id = Column(UUID(as_uuid=True), nullable=True)
     source    = Column(SAEnum(WorkOrderSource, native_enum=False), default=WorkOrderSource.manual)
 
+    # PM occurrence origin
+    occurrence_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("plan_occurrences.id", ondelete="SET NULL", use_alter=True, name="work_orders_occurrence_id_fkey"),
+        nullable=True,
+    )
+
     # Scheduler
     scheduled_date       = Column(Date, nullable=True)
     scheduled_start_time = Column(String(10), nullable=True)
@@ -383,6 +421,7 @@ class WorkOrder(Base):
     assigned_to     = relationship("User", back_populates="assigned_work_orders", foreign_keys=[assigned_to_id])
     executor        = relationship("Technician", back_populates="work_orders", foreign_keys=[executor_id])
     plan            = relationship("MaintenancePlan", back_populates="work_orders")
+    occurrence      = relationship("PlanOccurrence", foreign_keys=[occurrence_id])
     legacy_items    = relationship("WorkOrderStockItem", back_populates="work_order")
     labor_records   = relationship("LaborRecord", back_populates="work_order", cascade="all, delete-orphan")
     wo_parts        = relationship("WOPart", back_populates="work_order", cascade="all, delete-orphan")
@@ -409,8 +448,125 @@ class MaintenancePlan(Base):
     checklist         = Column(JSON, default=[])
     created_at        = Column(DateTime(timezone=True), server_default=func.now())
 
-    equipment   = relationship("Equipment", back_populates="plans")
-    work_orders = relationship("WorkOrder", back_populates="plan")
+    # ── TPM plant / template ──
+    plant_id       = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    pm_template_id = Column(UUID(as_uuid=True), ForeignKey("pm_templates.id", ondelete="SET NULL"), nullable=True)
+    plan_type      = Column(String(30), default="preventive")
+
+    # ── TPM recurrence ──
+    frequency_type       = Column(SAEnum(PmFrequency, native_enum=False), nullable=True)
+    frequency_value      = Column(Integer, default=1)
+    frequency_days       = Column(Integer, nullable=True)
+    frequency_hours      = Column(Float, nullable=True)
+    weekdays             = Column(String(20), nullable=True)  # comma-separated 0=Mon..6=Sun
+    start_date           = Column(Date, nullable=True)
+    recurrence_end_type  = Column(SAEnum(RecurrenceEndType, native_enum=False), default=RecurrenceEndType.never)
+    recurrence_end_value = Column(Integer, nullable=True)
+    recurrence_end_date  = Column(Date, nullable=True)
+
+    # ── TPM scheduling/assignment ──
+    lead_time_days         = Column(Integer, default=3)
+    assigned_technician_id = Column(UUID(as_uuid=True), ForeignKey("technicians.id", ondelete="SET NULL"), nullable=True)
+    priority                = Column(String(20), default="medium")
+    estimated_hours         = Column(Float, default=1.0)
+    is_active               = Column(Boolean, default=True)
+    next_due_date           = Column(Date, nullable=True)
+    next_due_hours          = Column(Float, nullable=True)
+    total_occurrences       = Column(Integer, default=0)
+    created_by_id           = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    equipment           = relationship("Equipment", back_populates="plans")
+    plant               = relationship("Plant", foreign_keys=[plant_id])
+    work_orders         = relationship("WorkOrder", back_populates="plan")
+    pm_template         = relationship("PmTemplate", back_populates="plans")
+    assigned_technician = relationship("Technician", back_populates="assigned_maintenance_plans", foreign_keys=[assigned_technician_id])
+    created_by          = relationship("User", foreign_keys=[created_by_id])
+    occurrences         = relationship("PlanOccurrence", back_populates="plan", cascade="all, delete-orphan", order_by="PlanOccurrence.scheduled_date")
+    recommended_parts   = relationship("PlanRecommendedPart", back_populates="plan", cascade="all, delete-orphan")
+
+
+# ─── PM Templates ──────────────────────────────────────────────────────────────
+
+class PmTemplate(Base):
+    __tablename__ = "pm_templates"
+
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id        = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    equipment_id    = Column(UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="CASCADE"), nullable=False)
+    frequency_type  = Column(SAEnum(PmFrequency, native_enum=False), nullable=False)
+    name            = Column(String(200), nullable=False)
+    description     = Column(Text, nullable=True)
+    estimated_hours = Column(Float, default=1.0)
+    is_active       = Column(Boolean, default=True)
+    sort_order      = Column(Integer, default=0)
+
+    plant     = relationship("Plant", foreign_keys=[plant_id])
+    equipment = relationship("Equipment", back_populates="pm_templates")
+    tasks     = relationship("PmTemplateTask", back_populates="template", cascade="all, delete-orphan", order_by="PmTemplateTask.sort_order")
+    plans     = relationship("MaintenancePlan", back_populates="pm_template")
+
+
+class PmTemplateTask(Base):
+    __tablename__ = "pm_template_tasks"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    template_id = Column(UUID(as_uuid=True), ForeignKey("pm_templates.id", ondelete="CASCADE"), nullable=False)
+    description = Column(Text, nullable=False)
+    sort_order  = Column(Integer, default=0)
+    is_required = Column(Boolean, default=True)
+
+    template = relationship("PmTemplate", back_populates="tasks")
+
+
+# ─── Plan Occurrences & Recommended Parts ──────────────────────────────────────
+
+class PlanOccurrence(Base):
+    __tablename__ = "plan_occurrences"
+
+    id             = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plan_id        = Column(UUID(as_uuid=True), ForeignKey("maintenance_plans.id", ondelete="CASCADE"), nullable=False)
+    plant_id       = Column(UUID(as_uuid=True), ForeignKey("plants.id", ondelete="SET NULL"), nullable=True)
+    equipment_id   = Column(UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="SET NULL"), nullable=True)
+    work_order_id  = Column(UUID(as_uuid=True), ForeignKey("work_orders.id", ondelete="SET NULL"), nullable=True)
+
+    scheduled_date = Column(Date, nullable=False)
+    actual_date    = Column(Date, nullable=True)
+
+    is_overridden  = Column(Boolean, default=False)
+    override_date  = Column(Date, nullable=True)
+    override_note  = Column(Text, nullable=True)
+
+    is_cancelled   = Column(Boolean, default=False)
+    cancel_reason  = Column(Text, nullable=True)
+
+    status     = Column(SAEnum(OccurrenceStatus, native_enum=False), default=OccurrenceStatus.scheduled)
+    compliance = Column(SAEnum(OccurrenceCompliance, native_enum=False), nullable=True)
+    days_late  = Column(Integer, nullable=True)
+
+    reminder_sent      = Column(Boolean, default=False)
+    overdue_alert_sent = Column(Boolean, default=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    plan       = relationship("MaintenancePlan", back_populates="occurrences")
+    plant      = relationship("Plant", foreign_keys=[plant_id])
+    equipment  = relationship("Equipment", foreign_keys=[equipment_id])
+    work_order = relationship("WorkOrder", foreign_keys=[work_order_id])
+
+
+class PlanRecommendedPart(Base):
+    __tablename__ = "plan_recommended_parts"
+
+    id                   = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plan_id              = Column(UUID(as_uuid=True), ForeignKey("maintenance_plans.id", ondelete="CASCADE"), nullable=False)
+    stock_item_id        = Column(UUID(as_uuid=True), ForeignKey("stock_items.id", ondelete="SET NULL"), nullable=True)
+    item_code            = Column(String(100), nullable=True)
+    item_description     = Column(Text, nullable=True)
+    quantity_recommended = Column(Float, default=1)
+    unit                 = Column(String(50), nullable=True)
+
+    plan       = relationship("MaintenancePlan", back_populates="recommended_parts")
+    stock_item = relationship("StockItem")
 
 
 # ─── Inventory ─────────────────────────────────────────────────────────────────
@@ -557,6 +713,7 @@ class Technician(Base):
     user          = relationship("User", back_populates="technician_profile")
     work_orders   = relationship("WorkOrder", back_populates="executor", foreign_keys="WorkOrder.executor_id")
     labor_records = relationship("LaborRecord", back_populates="technician")
+    assigned_maintenance_plans = relationship("MaintenancePlan", back_populates="assigned_technician", foreign_keys="MaintenancePlan.assigned_technician_id")
 
 
 # ─── Labor Record ──────────────────────────────────────────────────────────────
@@ -636,8 +793,17 @@ class WOAction(Base):
     new_value     = Column(String(200))
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
 
-    work_order = relationship("WorkOrder", back_populates="wo_actions")
-    author     = relationship("User")
+    # ── PM checklist ──
+    description     = Column(Text, nullable=True)
+    is_required     = Column(Boolean, default=True)
+    is_completed    = Column(Boolean, default=False)
+    completed_at    = Column(DateTime(timezone=True), nullable=True)
+    completed_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    sort_order      = Column(Integer, default=0)
+
+    work_order   = relationship("WorkOrder", back_populates="wo_actions")
+    author       = relationship("User", foreign_keys=[author_id])
+    completed_by = relationship("User", foreign_keys=[completed_by_id])
 
 
 # ─── Supplier Orders ───────────────────────────────────────────────────────────
