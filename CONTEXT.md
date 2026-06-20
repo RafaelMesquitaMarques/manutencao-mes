@@ -1,21 +1,53 @@
-# Foliot MES — Project Context
+# Kaizo MES — Project Context
 
 > **Purpose of this file:** Single source of truth for AI coding sessions and onboarding.
 > Read this before touching any module. Keep it updated as architecture evolves.
+> **Last full sync: 2026-06-20.** Sections 0, 3, 5, 6, 9, 14 reflect the current code; older
+> sections may still describe the original 06-06 baseline — trust the code when they disagree.
+
+---
+
+## 0. Current State (2026-06-20) — What's Live Now
+
+The platform is **branded "Kaizo"** (ninja logo + wordmark; logo asset is `frontend/public/mirai-icon.png`,
+the AI/Intelligence module keeps the "Mirai" naming). Built for **Foliot Furniture** (plant TZ America/Toronto).
+Since the 06-06 baseline below, the codebase roughly **tripled**: ~70 ORM tables, ~30 API routers,
+~17 backend services, and ~25 frontend page groups.
+
+**Modules live today (beyond CMMS core):**
+- **Maintenance flow** — Alerts ↔ Tickets ↔ Work Orders fully linked; alert auto-created with each ticket; SLA escalation engine with configurable `escalation_settings`/`escalation_contacts`.
+- **Machine / MES operator** — per-machine kiosk page (`/machine/:id`), stop justification (stop categories/subcategories), reject logging, production logs, OF/job orders, MES panel.
+- **Intervention workflow** — intervention types per machine, safety checklist on start, parts consumed during intervention, supervisor approval, voice transcription on closing note.
+- **PM / TPM** — PM templates (reusable SOPs with photo/video/link steps), recurring plans → `plan_occurrences`, PM calendar, PM dashboard. Driven by `pm_service` + `_pm_loop` cron.
+- **Inventory** — full catalog + `inventory_movements` (stock deduction on intervention), low-stock, parts approval flow.
+- **Suppliers & Purchasing** — suppliers + purchase orders (`/api/suppliers`, `/api/supplier-orders`).
+- **Factory Map / digital twin base** — React Flow 2D editable map of production assets with live status (`/factory-map`), `factory_zones` + `map_props`, asset positions on `equipment`.
+- **Robot Cells** — read-only telemetry for FANUC CRX cobots (`robot_cells` + states/samples/alarms), ingest service + simulator.
+- **Intelligence (Mirai)** — tool-use AI agent (`/api/intelligence`, anthropic SDK opus-4-8) + `intelligence_ai`/`intelligence_calculator`; AI insights/recommendations/risk-score tables; `_intelligence_cron`.
+- **Identity & access** — user invitations, password reset / forced first-login change, **permissions enforcement** (allow-list override or role default; backend `resource_guard`, frontend `RequireView`/`can()`).
+- **Reports** — `/api/reports`, machine reports page.
+
+**Backend cron tasks (in lifespan):** `_escalation_loop`, `_pm_loop`, `_intelligence_cron`.
+
+> The detailed module notes in Sections 1–14 below predate most of the above. They remain useful
+> for the core CMMS but are NOT exhaustive of current functionality. Use Section 0 + the code as truth.
 
 ---
 
 ## 1. What This System Is
 
-**Foliot Furniture MES** — an industrial maintenance and manufacturing execution platform
-built to replace an external monitoring vendor. Multi-plant, multi-user, multi-language (EN / FR / ES).
+**Kaizo MES** (internal product name; built for **Foliot Furniture**) — an industrial maintenance and
+manufacturing execution platform built to replace an external monitoring vendor. Multi-plant, multi-user,
+multi-language (EN / FR / ES).
 
 **Primary use case today:** CMMS (Computerized Maintenance Management System) for a furniture
-manufacturing plant. IoT sensor data from physical sensors already on the shop floor feeds in
-via MQTT. The roadmap extends this into a full MES with OEE, predictive maintenance, and SAP
-integration.
+manufacturing plant, now extended with shop-floor MES operator flows, PM/TPM, inventory, suppliers,
+factory map, robot-cell telemetry, and an AI intelligence assistant. IoT sensor data from physical
+sensors feeds in via MQTT. The roadmap extends this into a full MES with OEE, predictive maintenance,
+and SAP integration.
 
-**Company context:** Foliot Furniture. Plant timezone: America/Toronto.
+**Company context:** Foliot Furniture. Plant timezone: America/Toronto. **Multi-plant note:** SJ + Mirabel
+share one base (shared team, 2 Plants); Las Vegas is intended as full isolation → separate instance.
 
 ---
 
@@ -25,12 +57,14 @@ integration.
 |---|---|
 | Frontend | React 18 + Vite + TypeScript, Tailwind CSS (dark), Zustand, Axios, Recharts, echarts-for-react, react-i18next, react-router-dom v6, lucide-react |
 | Backend | FastAPI (Python 3.12), SQLAlchemy async (asyncpg), Pydantic v2 |
-| Database | TimescaleDB (PostgreSQL 15 extension) — hypertable on `sensor_readings` |
+| Database | TimescaleDB (PostgreSQL 16 extension, `timescale/timescaledb:latest-pg16`) — hypertable on `sensor_readings` |
 | Cache / Queue | Redis |
 | IoT Broker | Mosquitto MQTT |
 | Proxy | nginx:alpine (inline config via heredoc — no file mounts, Z: network drive) |
 | Container | Docker Compose, all services in one stack |
-| Auth | JWT (Bearer), FastAPI OAuth2, bcrypt 4.1.3 direct (no passlib) |
+| Auth | JWT (Bearer), FastAPI OAuth2, bcrypt 4.1.3 direct (no passlib); permission enforcement (`resource_guard` backend, `RequireView`/`can()` frontend) |
+| AI | Anthropic SDK (`claude-opus-4-8`) — Intelligence tool-use agent + insights/risk cron |
+| Backups | `prodrigestivill/postgres-backup-local` (`mes_backup` service) |
 
 ---
 
@@ -40,42 +74,58 @@ integration.
 manutencao-mes/
 ├── backend/
 │   └── app/
-│       ├── api/routes/              # One file per domain
+│       ├── api/routes/              # One file per domain (~30 routers — see Section 6 for full list)
 │       │   ├── auth.py              # POST /api/auth/login → {access_token, user_id, name, language}
 │       │   ├── work_orders.py       # /api/wo/  (list, dashboard, CRUD, start, complete, sub-resources)
 │       │   ├── technicians.py       # /api/technicians/
-│       │   ├── equipment.py         # /api/equipment/
+│       │   ├── equipment.py         # /api/equipment/   (+ machine auto-sync)
+│       │   ├── machines.py          # /api/machines/    (production-floor machines, MES panel)
+│       │   ├── machine_operator.py  # /api/machine-operator/  (kiosk: call/start/complete, stops, rejects)
 │       │   ├── maintenance_plans.py # /api/plans/
-│       │   ├── inventory.py         # /api/inventory/   ← stub only
+│       │   ├── pm_template_settings.py  # /api/pm-templates/ (reusable SOP templates)
+│       │   ├── inventory.py         # /api/inventory/   (full: catalog + movements + low-stock)
+│       │   ├── suppliers.py         # /api/suppliers/ + /api/supplier-orders/ (POs)
+│       │   ├── parts_approval.py    # /api/.../parts-approval (supervisor approval flow)
 │       │   ├── kpis.py              # /api/kpis/
+│       │   ├── reports.py           # /api/reports/
 │       │   ├── alerts.py            # /api/alerts/ + /api/alerts/machines
 │       │   ├── tickets.py           # /api/tickets/
 │       │   ├── maintenance_dashboard.py  # /api/maintenance/dashboard
+│       │   ├── escalation.py        # /api/escalation/ (settings + contacts)
+│       │   ├── stop_categories.py   # /api/stop-categories/
+│       │   ├── intervention_type_settings.py  # intervention types per machine
+│       │   ├── safety_checklist_settings.py   # safety checklists per machine
+│       │   ├── job_orders.py        # /api/job-orders/ (OF)
+│       │   ├── factory_map.py       # /api/factory-map/ (zones, props, asset positions)
+│       │   ├── robot_cells.py       # /api/robot-cells/ (FANUC CRX telemetry, read-only)
+│       │   ├── intelligence.py      # /api/intelligence/ (Mirai tool-use AI agent)
+│       │   ├── uploads.py           # /api/uploads → /api/media (photo/video/links)
 │       │   ├── iot.py               # /api/iot/
-│       │   ├── users.py             # /api/users/
+│       │   ├── users.py             # /api/users/ (+ invitations, password reset, permissions)
 │       │   └── plants.py            # /api/plants/
 │       ├── core/
 │       │   ├── config.py            # Settings from .env
-│       │   └── security.py          # JWT encode/decode, bcrypt, get_current_user
+│       │   ├── security.py          # JWT encode/decode, bcrypt, get_current_user
+│       │   └── permissions.py       # resource_guard / role + allow-list enforcement
 │       ├── db/
 │       │   ├── base.py              # Base = declarative_base()
 │       │   └── session.py           # async engine + get_db dependency
-│       ├── models/models.py         # All ORM models (see Section 5)
-│       ├── schemas/
-│       │   ├── work_order.py        # WorkOrderCreate, WorkOrderUpdate, WorkOrderOut, WorkOrderListResponse
-│       │   ├── wo_subresources.py   # LaborCreate/Out, WOPartCreate/Out, WOCostCreate/Out, WOActionCreate/Out
-│       │   ├── technician.py        # TechnicianCreate, TechnicianOut, TechnicianListResponse
-│       │   ├── equipment.py         # EquipmentCreate, EquipmentOut, EquipmentListResponse
-│       │   ├── user.py              # UserCreate, UserOut, LoginRequest, TokenResponse
-│       │   └── maintenance.py       # MachineOut, AlertCreate/Out, TicketCreate/Out, CommentCreate/Out
-│       ├── services/
-│       │   ├── alert_service.py     # AlertService: create, assign, convert_to_ticket
-│       │   ├── ticket_service.py    # TicketService: create, close, add_comment
-│       │   ├── escalation_service.py # EscalationService: check_overdue_alerts (SLA enforcement)
-│       │   └── notification_service.py # NotificationService: mock email/SMS/Teams → notification_logs
+│       ├── models/models.py         # All ORM models — ~70 tables (see Section 5)
+│       ├── schemas/                 # work_order, wo_subresources, technician, equipment, user,
+│       │                            #   maintenance, pm, robot_cell, intelligence
+│       ├── services/                # ~17 services — see below
+│       │   ├── alert_service.py / ticket_service.py / escalation_service.py / notification_service.py
+│       │   ├── email_service.py            # real email (invites, reset)
+│       │   ├── equipment_machine_sync.py   # ensure_machine_for_equipment (auto-sync)
+│       │   ├── mes_service.py / machine_history_service.py / intervention_sync.py
+│       │   ├── inventory_service.py / numbering.py
+│       │   ├── pm_service.py               # PM template → occurrences, PM cron logic
+│       │   ├── robot_cell_ingest.py        # cobot telemetry ingestion
+│       │   └── intelligence_ai.py / intelligence_calculator.py / intelligence_chat.py
 │       ├── workers/
-│       │   └── iot_consumer.py      # MQTT → TimescaleDB ingestor
-│       └── main.py                  # FastAPI app, CORS, router registration, escalation cron (asyncio)
+│       │   └── iot_consumer.py      # MQTT → TimescaleDB ingestor (mes_iot_worker service)
+│       └── main.py                  # FastAPI app, CORS, router registration; 3 crons in lifespan
+│                                    #   (_escalation_loop, _pm_loop, _intelligence_cron)
 ├── frontend/
 │   └── src/
 │       ├── api/
@@ -83,25 +133,28 @@ manutencao-mes/
 │       │   ├── auth.ts              # POST /api/auth/login (JSON body)
 │       │   ├── workOrders.ts        # All WO + inventory + equipment API calls
 │       │   └── maintenance.ts       # All maintenance module API calls (alerts, tickets, dashboard)
-│       ├── pages/
-│       │   ├── Login.tsx
+│       ├── pages/                   # ~25 page groups — key ones:
+│       │   ├── Login.tsx / ForgotPassword.tsx / ResetPassword.tsx / AcceptInvite.tsx
 │       │   ├── Dashboard.tsx        # KPI cards + recent WOs (Promise.allSettled)
-│       │   ├── WorkOrders/
-│       │   │   ├── WorkOrderList.tsx
-│       │   │   ├── WorkOrderDetail.tsx
-│       │   │   └── NewWorkOrder.tsx
-│       │   ├── Alerts/
-│       │   │   ├── AlertList.tsx    # Priority rows, SLA timer, assign/convert, 30s auto-refresh
-│       │   │   └── NewAlert.tsx     # Operator form; ?machineId= param for QR-code flow
-│       │   ├── Tickets/
-│       │   │   ├── TicketList.tsx   # Status tab pills, quick action buttons, SLA display
-│       │   │   └── TicketDetail.tsx # 3-tab detail (Details/Comments/Parts), inline close form
-│       │   └── MaintenanceDashboard/
-│       │       └── MaintenanceDashboard.tsx  # 5 KPI cards + 5 ECharts (bar + donut)
+│       │   ├── WorkOrders/          # List (AG Grid) / Detail / NewWorkOrder
+│       │   ├── Alerts/              # AlertList / NewAlert (QR ?machineId=) / AlertDetail
+│       │   ├── Tickets/             # TicketList / NewTicket / TicketDetail
+│       │   ├── MaintenanceDashboard/ + Supervisor/  # KPI dashboards
+│       │   ├── Equipment/           # List / Detail (Config tab: stop cats, intervention types, ops) / NewEquipment
+│       │   ├── Machines/ + MachineView/  # MES machine page + operator kiosk (/machine/:id)
+│       │   ├── MaintenancePlans/ + PMCalendar/   # recurring plans + PM templates + calendar
+│       │   ├── Inventory/ + Suppliers/ + PurchaseOrders/   # stock, vendors, POs
+│       │   ├── Schedule/            # LaborScheduler (@dnd-kit)
+│       │   ├── FactoryMap/          # React Flow editable asset map, live status
+│       │   ├── Intelligence/        # Mirai AI chat + insights dashboard
+│       │   ├── KPIs/                # KPIDashboard + MachineReport
+│       │   ├── MyWork/              # per-technician work queue
+│       │   └── Settings/            # users, escalation, profile, change-password, intervention types
 │       ├── components/
 │       │   ├── ui/                  # Badge, Spinner, etc.
-│       │   ├── charts/              # WOBarChart, WODonutChart (Recharts)
-│       │   └── layout/              # Sidebar (4 nav groups), Layout wrapper
+│       │   ├── charts/              # WOBarChart, WODonutChart (Recharts) + ECharts usage
+│       │   └── layout/              # Sidebar (Core/Maintenance/Inventory/Analytics/Settings groups), Layout
+│       ├── pages/ProtectedRoute.tsx + RequireView.tsx   # auth + permission gating
 │       ├── store/
 │       │   └── authStore.ts         # Zustand — token in memory ONLY (never localStorage)
 │       ├── i18n/
@@ -237,12 +290,52 @@ All PKs are UUID. TimescaleDB hypertable on `sensor_readings(timestamp)`.
 
 **Note on naming:** `machines` = production floor assets for alerts/tickets. `equipment` = asset catalog linked to work orders and maintenance plans. They are separate models by design.
 
-### Tables to add (next phase)
+### Tables added since 06-06 (now live — ~70 tables total)
 
-| Table | Purpose |
-|---|---|
-| `stock_movements` | Stock in/out movements linked to WOs |
-| `machine_stops` | Machine stop events → corrective WO linkage |
+> The original schema above is the CMMS core. The model has since grown substantially.
+> Authoritative list lives in `backend/app/models/models.py` (~1750 lines). Grouped summary:
+
+**Identity & access**
+- `permissions` — per-user allow-list overrides (resource + action)
+- `user_invitations` — email invite flow (AcceptInvite page)
+- `password_reset_tokens` — forgot/reset + forced first-login change
+
+**PM / TPM**
+- `pm_templates`, `pm_template_tasks`, `pm_task_media` — reusable SOPs with photo/video/link steps
+- `plan_occurrences` — generated recurring PM events (status + compliance)
+- `plan_recommended_parts` — parts suggested per plan
+
+**Machines / MES floor**
+- `machines` (expanded: status, MES panel), `machine_operators`, `machine_production_logs`
+- `stop_categories`, `stop_subcategories`, `machine_stops` — stop justification taxonomy
+- `reject_categories`, `reject_subcategories`, `reject_logs` — scrap/reject tracking
+- `machine_history` — per-machine event log
+- `job_orders` — production OF / job orders
+
+**Intervention workflow**
+- `intervention_types`, `machine_interventions`
+- `safety_checklists`, `safety_checklist_items`, `intervention_checklist_responses`
+- `intervention_parts` — parts consumed during an intervention
+
+**Inventory & purchasing**
+- `inventory_movements` — stock in/out (quantity derived from movements; deduction on intervention)
+- `suppliers`, `purchase_orders`, `purchase_order_items`
+- `cost_audit_log` — audit trail for cost changes
+
+**Escalation / notifications**
+- `escalation_settings`, `escalation_contacts` — configurable SLA + recipients (replaces hard-coded thresholds)
+
+**Factory map / digital twin**
+- `factory_zones`, `map_props` — editable 2D map; asset positions stored on `equipment` (pos_*)
+
+**Robot cells (FANUC CRX telemetry, read-only)**
+- `robot_cells`, `robot_cell_states`, `robot_cell_samples`, `robot_cell_alarms`
+
+**Intelligence (AI)**
+- `ai_insights`, `ai_recommendations`, `machine_risk_scores`, `spare_parts_risk`
+
+**WO additions**
+- `work_order_technicians` — many-to-many techs per WO (alongside `executor_id` + `labor_records`)
 
 ---
 
@@ -339,13 +432,26 @@ GET    /api/maintenance/dashboard    → { open_alerts, open_tickets, critical_t
                                          by_technician[], by_escalation[], by_ticket_status[] }
 ```
 
-### Other active routes
+### Full router registration (main.py, 2026-06-20)
+
+All registered under `/api`. Guarded routers use `resource_guard(<resource>)`:
+
 ```
-GET /api/plants/     ← stub, returns []
-GET /api/plans/      ← real endpoints: GET list (with equipment_name), POST create
-GET /api/inventory/  ← stub, returns []
-GET /api/kpis/       ← real endpoints: /summary, /backlog, /mttr, /cost
-GET /api/iot/        ← stub
+/api/auth            /api/plants            /api/equipment*        /api/wo*
+/api/plans           /api/inventory         /api/alerts            /api/tickets
+/api/maintenance     /api/iot               /api/users             /api/kpis
+/api/reports         /api/escalation        /api/technicians*      /api/machines
+/api/factory-map     /api/robot-cells       /api/stop-categories   /api/job-orders
+/api/suppliers       /api/supplier-orders   /api/machine-operator  /api/intervention-types
+/api/safety-checklist  /api/parts-approval  /api/pm-templates      /api/intelligence
+/api/uploads (→ /api/media)
+```
+*= permission-guarded: `equipment`, `work_orders`, `technicians`.
+
+Notable: `/api/inventory` and `/api/iot` are **no longer stubs** — inventory is a full
+catalog + movements module; KPIs has `/summary`, `/backlog`, `/mttr`, `/cost` (+ machine reports).
+
+```
 GET /api/health
 ```
 
@@ -515,16 +621,23 @@ Phase 1 — CMMS Core (current)
   ✅ New DB tables: machines, maintenance_alerts, maintenance_tickets, notification_logs, ticket_comments
   ✅ New roles: operator, maintenance_director
   ✅ i18n: alertStatus, ticketStatus, problemType, alerts, tickets, maintenanceDash keys in en/fr/es
-  ⬜ Inventory management UI (stub backend exists)
-  ⬜ Machine stop tracking (machine_stops table)
+  ✅ Inventory management UI (catalog + movements + low-stock + parts approval)
+  ✅ Machine stop tracking (machine_stops + stop categories/subcategories)
 
-Phase 2 — Full Maintenance + IoT (3-6 months)
-  ⬜ machine_stops table + stop registration flow
-  ⬜ Auto-corrective WO from IoT alert
-  ⬜ MTBF / Availability KPI endpoints (needs machine_stops table)
-  ⬜ Stock movements + low-stock alerts
-  ⬜ Frontend: Inventory module UI
-  ⬜ Equipment create/edit form
+Phase 2 — Full Maintenance + IoT (LARGELY DELIVERED 06-07 → 06-20)
+  ✅ machine_stops table + stop registration flow (operator kiosk)
+  ✅ Stock movements + low-stock alerts + inventory deduction on intervention
+  ✅ Frontend: Inventory + Suppliers + Purchase Orders modules
+  ✅ Equipment create/edit form (+ Config tab with stop cats / intervention types / operators)
+  ✅ PM/TPM module (templates, recurring plans, occurrences, calendar, dashboard)
+  ✅ Machine/MES operator page (call/start/complete, stop justification, rejects, production logs)
+  ✅ Intervention workflow (types, safety checklist, parts, supervisor approval, voice note)
+  ✅ Factory map / digital-twin base (React Flow, live status)
+  ✅ Robot-cell telemetry (FANUC CRX, read-only) + simulator
+  ✅ Intelligence (Mirai) AI assistant + insights/risk cron
+  ✅ Permissions enforcement (resource_guard + RequireView) + user invites/password reset
+  ⬜ Auto-corrective WO from IoT alert (machine_stops links exist; auto-create not wired)
+  ⬜ MTBF / Availability KPI endpoints (machine_stops now exists — compute pending)
 
 Phase 3 — MES + Predictive (12+ months)
   ⬜ OEE calculation (needs production counters)
@@ -670,3 +783,24 @@ MQTT_PORT=1883
 - Updated: `App.tsx` — 5 new routes (`/kpis`, `/equipment`, `/equipment/:id`, `/pm-calendar`, `/schedule`)
 - Updated: `Sidebar.tsx` — 3 nav groups (Core / Planning / Analytics), all new links active
 - Updated: `en.json`, `fr.json`, `es.json` — new keys for `equipment.*`, `kpis.*`, `schedule.*`, `pmCalendar.*`, `nav.kpis|schedule|pmCalendar`
+
+### Sessions 2026-06-07 → 2026-06-20 — Major expansion (condensed from git history)
+
+Brand changed to **Kaizo** (logo `mirai-icon.png`; Intelligence module keeps "Mirai" name).
+Roughly tripled the codebase. Key feature commits, newest first:
+
+- **TPM / PM module** (`1105b13`): PM templates with media steps, recurring plans → `plan_occurrences`, PM calendar, PM dashboard; `pm_service` + `_pm_loop` cron.
+- **Intervention workflow** (`40d0bc1`, `cfe41ec`, `f102bd3`, `a34780b`): safety checklist on start, parts consumed during intervention, supervisor approval, inventory deduction, intervention types per machine, voice transcription on closing note, intervention timings + history tab + KPIs.
+- **Parts visibility & search** (`c1bc42f`, `470ad3e`): parts used shown on ticket + WO detail; parts search by code + description + stock.
+- **QA audit pass** (`4edadd9`, `1bbdbf2`): fixed broken connections, UUID displays, data-sync issues, P0–P4 bugs.
+- **Machine / MES operator** (`1aef7a9`, `16ca484`, `f8749c4`, `89859c0`, `192a0ab`): operator kiosk page, MES panel, stop/reject categories per machine, OF, machine history, simplified ticket↔WO flow with auto inventory deduction. Note: Equipment has **no** `department` field (`1f1a9f5`).
+- **Alert ↔ ticket sync** (`31c0c90`, `3f20657`, `aadefe3`, `67e24da`, `dce34a2`): auto-create alert when ticket created, backfill missing alerts, force `plant_id`, 30s auto-refresh + live sidebar badges, Zustand persist for session-across-refresh.
+- **Suppliers & POs** (`8e541c8`): supplier management + purchase orders module.
+- **Inventory** (`aa0f808`, `49d3fd5`): full inventory table (fixed field-mapping render bugs); imported from `Inventory.xml`.
+- **Users & permissions** (`e849186`, `594cc33`): complete user + permissions management, admin password reset + forced first-login change.
+- **Labor & costs** (`f7d4acc`, `ee4a747`, `c70703e`): labor cost from technician hourly rate, labor record creation + time calc, resume-after-hold fix.
+- **Equipment config** (`3f4cf9a`, `251b1a7`): Equipment Configuration tab always accessible; Stop Categories + Intervention Types moved into it (removed from sidebar).
+- **Not yet committed to git** (working tree, per CONTEXT 06-20): Factory Map, Robot Cells (FANUC CRX) telemetry, Intelligence (Mirai) AI assistant + `ai_insights`/`ai_recommendations`/`machine_risk_scores`/`spare_parts_risk` tables, `_intelligence_cron`. Verify with `git status` before assuming committed.
+
+> This entry is reconstructed from commit messages + current code, not a live session log.
+> When in doubt, the code in `backend/app/models/models.py` and `frontend/src/App.tsx` is authoritative.
