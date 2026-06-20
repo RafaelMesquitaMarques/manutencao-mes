@@ -6,11 +6,13 @@ import { AgGridReact } from 'ag-grid-react';
 import type { ColDef, GridReadyEvent, RowClickedEvent } from 'ag-grid-community';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-quartz.css';
-import { fetchWorkOrders } from '../../api/workOrders';
+import { fetchAllWorkOrders } from '../../api/workOrders';
 import { useWorkOrderStore } from '../../store/workOrderStore';
 import type { WorkOrder, WorkOrderStatus, WorkOrderType, Priority } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import ExcelSetFilter from '../../components/grid/ExcelSetFilter';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
+import { usePermission } from '../../hooks/usePermission';
 
 const ALL = '';
 
@@ -61,6 +63,7 @@ function DateCell({ value }: { value: string | null }) {
 const WorkOrderList = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const canCreate = usePermission('work_orders', 'create');
   const gridRef = useRef<AgGridReact>(null);
 
   const { workOrders, isLoading, setWorkOrders, setLoading } = useWorkOrderStore();
@@ -72,7 +75,7 @@ const WorkOrderList = () => {
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const data = await fetchWorkOrders();
+      const data = await fetchAllWorkOrders();
       setWorkOrders(data);
     } catch {
       // keep empty
@@ -111,7 +114,7 @@ const WorkOrderList = () => {
       width: 140,
       cellRenderer: WONumberCell,
       sortable: true,
-      filter: false,
+      filter: 'agTextColumnFilter',
     },
     {
       field: 'title',
@@ -126,7 +129,26 @@ const WorkOrderList = () => {
       headerName: t('workOrders.equipment'),
       flex: 1,
       sortable: true,
-      filter: 'agTextColumnFilter',
+      filter: ExcelSetFilter,
+      cellStyle: { color: '#94a3b8', fontSize: '13px' },
+    },
+    {
+      colId: 'sector',
+      headerName: t('workOrders.sector', 'Secteur'),
+      valueGetter: (p) => p.data?.equipment_location ?? '',
+      width: 150,
+      sortable: true,
+      filter: ExcelSetFilter,
+      cellStyle: { color: '#94a3b8', fontSize: '13px' },
+    },
+    {
+      colId: 'technician',
+      headerName: t('workOrders.technician', 'Technicien'),
+      valueGetter: (p) =>
+        p.data?.technicians?.[0]?.name ?? p.data?.assigned_to_name ?? '',
+      width: 160,
+      sortable: true,
+      filter: ExcelSetFilter,
       cellStyle: { color: '#94a3b8', fontSize: '13px' },
     },
     {
@@ -134,7 +156,7 @@ const WorkOrderList = () => {
       headerName: t('common.type'),
       width: 120,
       sortable: true,
-      filter: 'agSetColumnFilter',
+      filter: ExcelSetFilter,
       cellStyle: { color: '#94a3b8', fontSize: '13px', textTransform: 'capitalize' },
     },
     {
@@ -142,7 +164,7 @@ const WorkOrderList = () => {
       headerName: t('common.priority'),
       width: 110,
       sortable: true,
-      filter: 'agSetColumnFilter',
+      filter: ExcelSetFilter,
       cellRenderer: PriorityCell,
     },
     {
@@ -150,7 +172,7 @@ const WorkOrderList = () => {
       headerName: t('common.status'),
       width: 130,
       sortable: true,
-      filter: 'agSetColumnFilter',
+      filter: ExcelSetFilter,
       cellRenderer: StatusCell,
     },
     {
@@ -158,6 +180,7 @@ const WorkOrderList = () => {
       headerName: t('workOrders.dueDate'),
       width: 130,
       sortable: true,
+      filter: 'agDateColumnFilter',
       cellRenderer: DateCell,
     },
     {
@@ -166,6 +189,7 @@ const WorkOrderList = () => {
       width: 130,
       sortable: true,
       sort: 'desc',
+      filter: 'agDateColumnFilter',
       cellRenderer: DateCell,
     },
   ] as ColDef<WorkOrder>[]), [t]);
@@ -173,6 +197,7 @@ const WorkOrderList = () => {
   const defaultColDef: ColDef = useMemo(() => ({
     resizable: true,
     suppressMovable: false,
+    floatingFilter: true,
   }), []);
 
   const onRowClicked = useCallback((event: RowClickedEvent<WorkOrder>) => {
@@ -195,10 +220,12 @@ const WorkOrderList = () => {
           <h1 className="text-2xl font-bold text-white">{t('workOrders.title')}</h1>
           <p className="text-gray-500 text-sm mt-1">{t('workOrders.subtitle')}</p>
         </div>
-        <button onClick={() => navigate('/work-orders/new')} className="btn-primary flex-shrink-0">
-          <Plus size={16} />
-          {t('workOrders.newWO')}
-        </button>
+        {canCreate && (
+          <button onClick={() => navigate('/work-orders/new')} className="btn-primary flex-shrink-0">
+            <Plus size={16} />
+            {t('workOrders.newWO')}
+          </button>
+        )}
       </div>
 
       {/* Filters */}
@@ -278,6 +305,7 @@ const WorkOrderList = () => {
           >
             <AgGridReact<WorkOrder>
               ref={gridRef}
+              reactiveCustomComponents
               rowData={filtered}
               columnDefs={colDefs}
               defaultColDef={defaultColDef}

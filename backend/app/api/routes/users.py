@@ -75,7 +75,18 @@ async def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    for field, value in data.model_dump(exclude_none=True).items():
+    updates = data.model_dump(exclude_none=True)
+
+    # Email is unique — reject if another user already owns it
+    new_email = updates.get("email")
+    if new_email and new_email != user.email:
+        taken = await db.execute(
+            select(User).where(User.email == new_email, User.id != user_id)
+        )
+        if taken.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Email already registered to another user")
+
+    for field, value in updates.items():
         setattr(user, field, value)
 
     await db.commit()
@@ -99,6 +110,116 @@ async def delete_user(
 
     user.active = False
     await db.commit()
+
+
+@router.delete("/{user_id}/permanent", status_code=204)
+async def delete_user_permanently(
+    user_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    """Hard-delete a user. Blocked when the user has operational history
+    (work orders, labor, tickets) — deactivate those instead. Audit-only
+    references (who created a PO, who approved a part…) are detached."""
+    from sqlalchemy import update as sa_update, func, or_
+    from sqlalchemy.exc import IntegrityError
+    from app.models.models import (
+        Technician, WorkOrder, WorkOrderTechnician, LaborRecord,
+        MaintenanceTicket, MaintenanceAlert, EscalationContact,
+        MachineOperator, Machine, InterventionPart, MachineIntervention,
+        PurchaseOrder, InventoryMovement, WOAction,
+    )
+
+    if str(user_id) == str(current_admin.id):
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Never remove the last active admin
+    if user.role == UserRole.admin:
+        other_admins = (await db.execute(
+            select(func.count(User.id)).where(
+                User.role == UserRole.admin, User.active == True, User.id != user_id
+            )
+        )).scalar() or 0
+        if other_admins == 0:
+            raise HTTPException(status_code=400, detail="Cannot delete the last active admin")
+
+    # ── Operational history blocks deletion ─────────────────────────────────
+    blockers: list[str] = []
+    wo_count = (await db.execute(
+        select(func.count(WorkOrder.id)).where(
+            or_(WorkOrder.created_by_id == user_id, WorkOrder.assigned_to_id == user_id)
+        )
+    )).scalar() or 0
+    if wo_count:
+        blockers.append(f"{wo_count} work order(s)")
+
+    ticket_count = (await db.execute(
+        select(func.count(MaintenanceTicket.id)).where(MaintenanceTicket.assigned_to_id == user_id)
+    )).scalar() or 0
+    if ticket_count:
+        blockers.append(f"{ticket_count} ticket(s)")
+
+    alert_count = (await db.execute(
+        select(func.count(MaintenanceAlert.id)).where(MaintenanceAlert.assigned_to_id == user_id)
+    )).scalar() or 0
+    if alert_count:
+        blockers.append(f"{alert_count} alert(s)")
+
+    tech = (await db.execute(
+        select(Technician).where(Technician.user_id == user_id)
+    )).scalar_one_or_none()
+    if tech:
+        tech_wos = (await db.execute(
+            select(func.count(WorkOrder.id)).where(WorkOrder.executor_id == tech.id)
+        )).scalar() or 0
+        tech_links = (await db.execute(
+            select(func.count(WorkOrderTechnician.work_order_id)).where(
+                WorkOrderTechnician.technician_id == tech.id
+            )
+        )).scalar() or 0
+        labor = (await db.execute(
+            select(func.count(LaborRecord.id)).where(LaborRecord.technician_id == tech.id)
+        )).scalar() or 0
+        if tech_wos or tech_links or labor:
+            blockers.append(f"technician history ({tech_wos + tech_links} WO link(s), {labor} labor record(s))")
+
+    if blockers:
+        raise HTTPException(
+            status_code=409,
+            detail="User has linked history: " + ", ".join(blockers)
+                   + ". Deactivate the user instead to keep records intact.",
+        )
+
+    # ── Detach audit-only references, remove config rows, delete ────────────
+    try:
+        await db.execute(delete(Permission).where(Permission.user_id == user_id))
+        await db.execute(delete(UserPlant).where(UserPlant.user_id == user_id))
+        await db.execute(delete(EscalationContact).where(EscalationContact.user_id == user_id))
+        await db.execute(sa_update(MachineOperator).where(MachineOperator.user_id == user_id).values(user_id=None))
+        await db.execute(sa_update(Machine).where(Machine.current_operator_id == user_id).values(current_operator_id=None))
+        await db.execute(sa_update(User).where(User.invited_by_id == user_id).values(invited_by_id=None))
+        await db.execute(sa_update(InterventionPart).where(InterventionPart.added_by_id == user_id).values(added_by_id=None))
+        await db.execute(sa_update(InterventionPart).where(InterventionPart.approved_by_id == user_id).values(approved_by_id=None))
+        await db.execute(sa_update(MachineIntervention).where(MachineIntervention.called_by_id == user_id).values(called_by_id=None))
+        await db.execute(sa_update(MachineIntervention).where(MachineIntervention.started_by_id == user_id).values(started_by_id=None))
+        await db.execute(sa_update(MachineIntervention).where(MachineIntervention.completed_by_id == user_id).values(completed_by_id=None))
+        await db.execute(sa_update(PurchaseOrder).where(PurchaseOrder.created_by_id == user_id).values(created_by_id=None))
+        await db.execute(sa_update(InventoryMovement).where(InventoryMovement.created_by_id == user_id).values(created_by_id=None))
+        await db.execute(sa_update(WOAction).where(WOAction.author_id == user_id).values(author_id=None))
+        if tech:
+            await db.execute(delete(Technician).where(Technician.id == tech.id))
+        await db.delete(user)
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="User is still referenced by other records. Deactivate the user instead.",
+        )
 
 
 @router.post("/{user_id}/reset-password")

@@ -52,6 +52,7 @@ export interface UserInviteRequest {
 
 export interface UserAdminUpdate {
   name?: string;
+  email?: string;
   language?: string;
   active?: boolean;
   role?: UserRole;
@@ -74,6 +75,16 @@ export interface Equipment {
   manufacturing_year?: number;
   criticality: string;
   status: string;
+  asset_type?: 'production' | 'auxiliary';
+  subtype?: string | null;
+  function_label?: string | null;
+  model_url?: string | null;
+  height_3d?: number | null;
+  parent_equipment_id?: string | null;
+  department?: string | null;
+  family?: string | null;
+  pm_strategy?: string | null;
+  cleaning_priority?: string | null;
   hour_meter: number;
   specifications?: Record<string, unknown>;
   active: boolean;
@@ -124,11 +135,22 @@ export interface WorkOrder {
   total_minutes?: number;
   actual_downtime_minutes?: number;
   completion_ratio?: number;
+  checklist_enforcement?: 'advisory' | 'required' | 'strict';
+  board_order?: number | null;
   plan_id?: string;
   occurrence_id?: string;
   created_at?: string;
   updated_at?: string;
   intervention_parts?: InterventionPartOut[];
+  technicians?: WOTechnician[];
+}
+
+export interface WOTechnician {
+  technician_id: string;
+  user_id?: string;
+  name?: string;
+  specialty?: string;
+  is_primary?: boolean;
 }
 
 export interface WorkOrderCreate {
@@ -245,6 +267,10 @@ export interface WOAction {
   new_value?: string;
   created_at: string;
   description?: string;
+  expected_result?: string | null;
+  template_task_id?: string | null;
+  proof_photo_url?: string | null;
+  media?: { id: string; media_type: 'image' | 'video' | 'link'; url: string; caption?: string | null; sort_order: number }[];
   is_required: boolean;
   is_completed: boolean;
   completed_at?: string;
@@ -274,12 +300,23 @@ export type RecurrenceEndType = 'never' | 'after_occurrences' | 'on_date';
 export type OccurrenceStatus = 'scheduled' | 'in_progress' | 'completed' | 'skipped' | 'cancelled';
 export type OccurrenceCompliance = 'on_time' | 'early' | 'late';
 
+export interface PmTaskMedia {
+  id: string;
+  task_id: string;
+  media_type: 'image' | 'video' | 'link';
+  url: string;
+  caption?: string | null;
+  sort_order: number;
+}
+
 export interface PmTemplateTask {
   id: string;
   template_id: string;
   description: string;
+  expected_result?: string | null;
   sort_order: number;
   is_required: boolean;
+  media: PmTaskMedia[];
 }
 
 export interface PmTemplate {
@@ -293,6 +330,7 @@ export interface PmTemplate {
   estimated_hours: number;
   is_active: boolean;
   sort_order: number;
+  enforcement?: 'advisory' | 'required' | 'strict';
   tasks: PmTemplateTask[];
 }
 
@@ -412,7 +450,7 @@ export interface PmDashboard {
   overdue_occurrences: number;
   due_this_week: number;
   completed_this_month: number;
-  compliance_rate: number;
+  compliance_rate: number | null;
   upcoming: PlanOccurrence[];
   overdue: PlanOccurrence[];
 }
@@ -442,6 +480,82 @@ export interface CostItem {
   total: number;
 }
 
+// ── Per-machine reports ───────────────────────────────────────────────────────
+
+export interface TrendPoint {
+  date: string;
+  pct: number;
+}
+
+export interface StopParetoItem {
+  category: string;
+  color: string;
+  type: string;
+  count: number;
+  minutes: number;
+}
+
+export interface MachineReportData {
+  machine: {
+    id: string;
+    name: string;
+    code?: string | null;
+    department?: string | null;
+    equipment_id?: string | null;
+    target_availability_pct: number;
+  };
+  period_days: number;
+  availability: { avg_pct: number | null; trend: TrendPoint[] };
+  oee: {
+    avg_oee_pct: number | null;
+    avg_performance_pct: number | null;
+    avg_quality_pct: number | null;
+    trend: TrendPoint[];
+  };
+  downtime: {
+    unplanned_minutes: number;
+    planned_minutes: number;
+    stops_count: number;
+    pareto: StopParetoItem[];
+  };
+  mttr: { hours: number | null; repairs: number };
+  mtbf: { hours: number | null; failures: number };
+  pm_compliance: { pct: number | null; total: number; on_time: number };
+  backlog: { total: number; buckets: { label: string; count: number }[] };
+  costs: { total: number; by_type: CostItem[] };
+  interventions: {
+    count: number;
+    avg_response_minutes: number | null;
+    avg_duration_minutes: number | null;
+    avg_downtime_minutes: number | null;
+  };
+  tickets: { opened: number; avg_resolution_hours: number | null; avg_resolution_seconds?: number | null };
+}
+
+export interface MachineCompareItem {
+  machine_id: string;
+  name: string;
+  code?: string | null;
+  department?: string | null;
+  target_availability_pct: number;
+  availability_pct: number | null;
+  oee_pct: number | null;
+  downtime_minutes: number;
+  stops_count: number;
+  mttr_hours: number | null;
+  repairs: number;
+  failures: number;
+  mtbf_hours: number | null;
+  total_cost: number;
+  backlog_count: number;
+  avg_response_minutes: number | null;
+}
+
+export interface MachineCompareResponse {
+  period_days: number;
+  items: MachineCompareItem[];
+}
+
 // ── Maintenance Alerts & Tickets ──────────────────────────────────────────────
 
 export type AlertPriority  = 'low' | 'medium' | 'high' | 'critical';
@@ -456,6 +570,8 @@ export interface Machine {
   id:                       string;
   name:                     string;
   code?:                    string;
+  serial_number?:           string;
+  equipment_id?:            string | null;
   department?:              string;
   location?:                string;
   is_active:                boolean;
@@ -639,6 +755,7 @@ export interface StopCreateRequest {
 }
 
 export interface MachineConfigUpdate {
+  serial_number?:           string;
   display_name?:            string;
   page_language?:           string;
   custom_color?:            string;
@@ -726,6 +843,7 @@ export interface MaintenanceTicket {
   status:                      TicketStatus;
   assigned_to_id?:             string;
   assigned_to_name?:           string;
+  assigned_technicians?:       WOTechnician[];
   suggested_technician_id?:    string;
   reported_at?:                string;
   work_order_id?:              string;
@@ -756,6 +874,8 @@ export interface InterventionPartOut {
   item_description: string;
   quantity_used:    number;
   unit:             string;
+  unit_cost?:       number | null;
+  total_cost?:      number | null;
   approval_status:  'pending' | 'approved' | 'rejected';
   approved_at:      string | null;
 }
@@ -814,6 +934,9 @@ export interface StockItem {
   quantity:             number;
   min_quantity:         number | null;
   unit_cost:            number | null;
+  average_cost:         number | null;
+  last_purchase_cost:   number | null;
+  last_purchase_date:   string | null;
   warehouse:            string;
   location:             string;
   supplier_id:          string | null;
@@ -947,12 +1070,100 @@ export interface MaintenanceDashboardData {
   critical_tickets:     number;
   overdue_alerts:       number;
   avg_resolution_hours: number;
+  avg_resolution_minutes?: number | null;
+  avg_resolution_seconds?: number | null;
   by_machine:           { machine: string; count: number }[];
   by_problem_type:      { type: string; count: number }[];
   by_technician:        { technician: string; count: number }[];
   by_escalation:        { level: string; count: number }[];
   by_ticket_status:     { status: string; count: number }[];
+  trend:                { date: string; label: string; tickets: number; interventions: number }[];
+  bucket_unit:          'day' | 'week';
+  period:               { start: string; end: string };
 }
+
+export interface DashboardFilters {
+  period_days?: number;
+  start_date?:  string;
+  end_date?:    string;
+  machine_ids?: string;
+}
+
+// ── Maintenance Intelligence ──────────────────────────────────────────────────
+
+export type IntelRiskLevel = 'low' | 'medium' | 'high' | 'critical';
+export type InsightType =
+  | 'daily_summary' | 'machine_risk' | 'top_irritants'
+  | 'trend_analysis' | 'spare_parts' | 'technician_workload' | 'full_report';
+
+export interface AIRecommendation {
+  id: string;
+  insight_id: string;
+  title: string;
+  evidence: string;
+  impact: string;
+  recommendation: string;
+  risk_level: IntelRiskLevel;
+  related_machine_name?: string | null;
+  related_category?: string | null;
+  confidence?: number | null;
+  status: 'pending' | 'acknowledged' | 'dismissed';
+  acknowledged_by?: string | null;
+  acknowledged_at?: string | null;
+  created_at: string;
+}
+
+export interface AIInsight {
+  id: string;
+  plant_id?: string | null;
+  insight_type: InsightType;
+  language: string;
+  period_start: string;
+  period_end: string;
+  findings_json: Record<string, unknown>;
+  insight_text: string;
+  ai_generated: boolean;
+  generated_at: string;
+  generated_by_model?: string | null;
+  recommendations: AIRecommendation[];
+}
+
+export interface MachineRiskScore {
+  id: string;
+  machine_id?: string | null;
+  machine_name: string;
+  score: number;
+  risk_level: IntelRiskLevel;
+  hours_since_last_ticket?: number | null;
+  historical_mtbf_hours?: number | null;
+  recent_ticket_count: number;
+  criticality_factor: number;
+  computed_at: string;
+}
+
+export interface SparePartRiskItem {
+  id: string;
+  stock_item_id: string;
+  part_code: string;
+  part_name: string;
+  current_qty: number;
+  safety_qty: number;
+  avg_consumption_30d: number;
+  recent_consumption_30d: number;
+  risk_level: IntelRiskLevel;
+  computed_at: string;
+}
+
+export interface GenerateInsightRequest {
+  language: string;
+  period_days: number;
+  insight_type: InsightType;
+  plant_id?: string | null;
+}
+
+export interface InsightListResponse { total: number; items: AIInsight[] }
+export interface MachineRiskListResponse { total: number; items: MachineRiskScore[] }
+export interface SparePartRiskListResponse { total: number; items: SparePartRiskItem[] }
 
 export interface InterventionType {
   id: string;

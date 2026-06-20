@@ -3,15 +3,17 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft, CalendarClock, AlertTriangle, Pencil, Check, X, Trash2,
-  Power, PlayCircle, Ban, ExternalLink, Package,
+  Power, PlayCircle, Ban, ExternalLink, Package, ListChecks, Plus,
 } from 'lucide-react';
 import {
   fetchMaintenancePlan, updateMaintenancePlan, deleteMaintenancePlan,
   fetchPlanOccurrences, overrideOccurrence, cancelOccurrence, generateOccurrenceWO,
 } from '../../api/maintenancePlans';
+import { fetchPmTemplate, fetchPmTemplates, createPmTemplate } from '../../api/pmTemplates';
 import { fetchTechniciansFull } from '../../api/workOrders';
-import type { MaintenancePlan, PlanOccurrence, TechnicianFull, OccurrenceStatus, OccurrenceCompliance } from '../../types';
+import type { MaintenancePlan, PlanOccurrence, TechnicianFull, OccurrenceStatus, OccurrenceCompliance, PmTemplate } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import PmStepsEditor from '../../components/pm/PmStepsEditor';
 
 const STATUS_BADGE: Record<OccurrenceStatus, string> = {
   scheduled:   'bg-sky-500/15 text-sky-400 border-sky-500/25',
@@ -72,6 +74,8 @@ export default function PlanDetail() {
   const [editTechnicianId, setEditTechnicianId] = useState('');
   const [editEstimatedHours, setEditEstimatedHours] = useState(1);
   const [editLeadTimeDays, setEditLeadTimeDays] = useState(3);
+  const [editTemplateId, setEditTemplateId] = useState('');
+  const [templates, setTemplates] = useState<PmTemplate[]>([]);
 
   const [editingOccurrenceId, setEditingOccurrenceId] = useState<string | null>(null);
   const [overrideDate, setOverrideDate] = useState('');
@@ -89,6 +93,7 @@ export default function PlanDetail() {
       setEditTechnicianId(p.assigned_technician_id ?? '');
       setEditEstimatedHours(p.estimated_hours ?? 1);
       setEditLeadTimeDays(p.lead_time_days ?? 3);
+      setEditTemplateId(p.pm_template_id ?? '');
     } catch {
       setError(t('pm.planNotFound'));
     } finally {
@@ -102,6 +107,11 @@ export default function PlanDetail() {
     fetchTechniciansFull().then(setTechnicians).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    if (!plan?.equipment_id) return;
+    fetchPmTemplates({ equipment_id: plan.equipment_id, is_active: true }).then(setTemplates).catch(() => {});
+  }, [plan?.equipment_id]);
+
   const handleSaveEdit = async () => {
     if (!plan) return;
     setActioning(true);
@@ -113,6 +123,7 @@ export default function PlanDetail() {
         assigned_technician_id: editTechnicianId || undefined,
         estimated_hours: editEstimatedHours,
         lead_time_days: editLeadTimeDays,
+        pm_template_id: editTemplateId || null,
       });
       setPlan(updated);
       setEditing(false);
@@ -297,6 +308,15 @@ export default function PlanDetail() {
               <label className="label">{t('common.description')}</label>
               <textarea value={editDescription} onChange={(e) => setEditDescription(e.target.value)} rows={2} className="input-field resize-none" />
             </div>
+            <div className="sm:col-span-2">
+              <label className="label">{t('pm.template', 'Procédure (modèle PM)')}</label>
+              <select value={editTemplateId} onChange={(e) => setEditTemplateId(e.target.value)} className="select-field">
+                <option value="">{t('pm.noTemplate', 'Aucun')}</option>
+                {templates.map((tpl) => (
+                  <option key={tpl.id} value={tpl.id}>{tpl.name} ({t(`pmFrequency.${tpl.frequency_type}`)})</option>
+                ))}
+              </select>
+            </div>
             <div>
               <label className="label">{t('common.priority')}</label>
               <select value={editPriority} onChange={(e) => setEditPriority(e.target.value)} className="select-field">
@@ -349,6 +369,9 @@ export default function PlanDetail() {
           </div>
         )}
       </div>
+
+      {/* Procedure (SOP) — illustrated step-by-step */}
+      <PlanProcedure plan={plan} onLinked={load} />
 
       {/* Plan actions */}
       <div className="flex flex-wrap gap-3">
@@ -470,6 +493,105 @@ export default function PlanDetail() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── Procedure (SOP) section — illustrated steps from the linked PM template ──────────
+
+function PlanProcedure({ plan, onLinked }: { plan: MaintenancePlan; onLinked: () => void }) {
+  const { t } = useTranslation();
+  const [tpl, setTpl] = useState<PmTemplate | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [allTemplates, setAllTemplates] = useState<PmTemplate[]>([]);
+
+  const loadTpl = useCallback(async () => {
+    if (!plan.pm_template_id) { setTpl(null); return; }
+    setLoading(true);
+    try { setTpl(await fetchPmTemplate(plan.pm_template_id)); }
+    catch { setTpl(null); }
+    finally { setLoading(false); }
+  }, [plan.pm_template_id]);
+
+  useEffect(() => { loadTpl(); }, [loadTpl]);
+
+  const createProcedure = async () => {
+    if (!plan.frequency_type) return;
+    setCreating(true);
+    try {
+      const created = await createPmTemplate({
+        equipment_id: plan.equipment_id,
+        frequency_type: plan.frequency_type,
+        name: plan.name,
+        estimated_hours: plan.estimated_hours ?? 1,
+      });
+      await updateMaintenancePlan(plan.id, { pm_template_id: created.id });
+      onLinked();
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!plan.equipment_id) return;
+    fetchPmTemplates({ equipment_id: plan.equipment_id, is_active: true }).then(setAllTemplates).catch(() => {});
+  }, [plan.equipment_id]);
+
+  const linkExisting = async (id: string) => {
+    if (!id) return;
+    await updateMaintenancePlan(plan.id, { pm_template_id: id });
+    onLinked();
+  };
+
+  return (
+    <div className="glass-card p-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wide flex items-center gap-2">
+          <ListChecks size={15} className="text-blue-400" />
+          {t('pm.procedure', 'Procedure')}
+        </h2>
+        {tpl && (
+          <Link to={`/equipment/${plan.equipment_id}`} className="text-xs text-gray-500 hover:text-gray-300 inline-flex items-center gap-1">
+            {t('pm.manageOnEquipment', 'Manage on equipment')}
+            <ExternalLink size={11} />
+          </Link>
+        )}
+      </div>
+
+      {tpl && (
+        <p className="text-xs text-gray-600 -mt-2">
+          {t('pm.procedureShared', 'Standard procedure for this equipment + frequency — reused by every plan that uses it.')}
+        </p>
+      )}
+
+      {loading ? (
+        <div className="py-6 flex justify-center"><Spinner size="md" /></div>
+      ) : tpl ? (
+        <PmStepsEditor template={tpl} onChange={loadTpl} />
+      ) : (
+        <div className="text-center py-6 space-y-3">
+          <p className="text-gray-500 text-sm">{t('pm.noProcedureYet', 'No step-by-step procedure yet for this plan.')}</p>
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            {allTemplates.length > 0 && (
+              <select
+                defaultValue=""
+                onChange={(e) => linkExisting(e.target.value)}
+                className="select-field max-w-xs"
+              >
+                <option value="" disabled>{t('pm.linkExistingTemplate', 'Lier un modèle existant…')}</option>
+                {allTemplates.map((x) => (
+                  <option key={x.id} value={x.id}>{x.name} ({t(`pmFrequency.${x.frequency_type}`)})</option>
+                ))}
+              </select>
+            )}
+            <button onClick={createProcedure} disabled={creating} className="btn-primary gap-2">
+              {creating ? <Spinner size="sm" /> : <Plus size={15} />}
+              {t('pm.createProcedure', 'Create procedure')}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

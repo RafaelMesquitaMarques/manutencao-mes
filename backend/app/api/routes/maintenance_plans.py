@@ -3,16 +3,17 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, select, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.core.security import get_current_user
 from app.models.models import (
-    User, Equipment, Technician, PmTemplate,
+    User, Equipment, Machine, Technician, PmTemplate,
     MaintenancePlan, PlanOccurrence, PlanRecommendedPart, WorkOrder,
     OccurrenceStatus, OccurrenceCompliance, PmFrequency,
 )
+import uuid as _uuid
 from app.schemas.pm import (
     MaintenancePlanCreate, MaintenancePlanUpdate, MaintenancePlanOut, MaintenancePlanListResponse,
     PlanRecommendedPartOut,
@@ -90,6 +91,15 @@ async def _occurrence_out(
     if work_order is None and occ.work_order_id:
         work_order = await db.get(WorkOrder, occ.work_order_id)
 
+    # days_late: trust the stored value for completed/cancelled occurrences, but
+    # compute it live for still-open ones so it is accurate between cron runs and
+    # honours a per-occurrence override_date.
+    days_late = occ.days_late
+    if not occ.is_cancelled and occ.status in (OccurrenceStatus.scheduled, OccurrenceStatus.in_progress):
+        effective = occ.override_date or occ.scheduled_date
+        if effective and effective < date.today():
+            days_late = (date.today() - effective).days
+
     return PlanOccurrenceOut(
         id=occ.id,
         plan_id=occ.plan_id,
@@ -108,7 +118,7 @@ async def _occurrence_out(
         cancel_reason=occ.cancel_reason,
         status=occ.status,
         compliance=occ.compliance,
-        days_late=occ.days_late,
+        days_late=days_late,
         reminder_sent=occ.reminder_sent,
         overdue_alert_sent=occ.overdue_alert_sent,
         created_at=occ.created_at,
@@ -249,7 +259,9 @@ async def create_maintenance_plan(
     await db.commit()
     await db.refresh(plan)
 
-    if occurrence:
+    # A WO is generated only once a technician is assigned (the plan can be
+    # created without one — the occurrence stays pending until then).
+    if occurrence and plan.assigned_technician_id:
         await db.refresh(occurrence)
         today = date.today()
         if occurrence.scheduled_date <= today + timedelta(days=plan.lead_time_days or 0):
@@ -304,9 +316,52 @@ async def get_pm_calendar(
     return items
 
 
+def _parse_uuid_csv(raw: Optional[str]) -> List[UUID]:
+    """Comma-separated UUID string -> list of UUIDs (invalid entries dropped)."""
+    if not raw:
+        return []
+    out: List[UUID] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(_uuid.UUID(part))
+        except ValueError:
+            pass
+    return out
+
+
+async def _resolve_equipment_ids(db: AsyncSession, machine_ids: List[UUID]) -> List[UUID]:
+    """Map the dashboard's machine_ids to the equipment ids that PM plans key off.
+    Plans reference Equipment; the dashboard filter sends Machine ids. For canonical
+    machines id == equipment_id, so the id resolves directly; otherwise fall back to
+    Machine.equipment_id, then to an Equipment with the same name (covers unlinked
+    floor rows like a kiosk-only machine)."""
+    eq_ids: set[UUID] = set()
+    for mid in machine_ids:
+        eq = await db.get(Equipment, mid)
+        if eq:                       # the id is itself an equipment id
+            eq_ids.add(eq.id)
+            continue
+        m = await db.get(Machine, mid)
+        if not m:
+            continue
+        if m.equipment_id:
+            eq_ids.add(m.equipment_id)
+            continue
+        # Unlinked floor row (no equipment_id): map to equipment by name (e.g. STEFANI).
+        named = (await db.execute(
+            select(Equipment.id).where(func.lower(Equipment.name) == (m.name or "").lower())
+        )).scalars().all()
+        eq_ids.update(named)
+    return list(eq_ids)
+
+
 @router.get("/dashboard", response_model=PmDashboard)
 async def get_pm_dashboard(
     plant_id: Optional[UUID] = None,
+    machine_ids: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -314,9 +369,17 @@ async def get_pm_dashboard(
     week_end = today + timedelta(days=7)
     month_start = today.replace(day=1)
 
+    # Machine filter → equipment ids the plans are tied to. If the caller selected
+    # machines but none resolve to equipment, force an empty result rather than
+    # silently showing everything.
+    mids = _parse_uuid_csv(machine_ids)
+    eq_ids = await _resolve_equipment_ids(db, mids) if mids else None
+
     plan_query = select(MaintenancePlan)
     if plant_id:
         plan_query = plan_query.where(MaintenancePlan.plant_id == plant_id)
+    if eq_ids is not None:
+        plan_query = plan_query.where(MaintenancePlan.equipment_id.in_(eq_ids))
 
     total_plans = (await db.execute(
         select(func.count()).select_from(plan_query.subquery())
@@ -329,22 +392,27 @@ async def get_pm_dashboard(
     occ_query = select(PlanOccurrence).join(MaintenancePlan, PlanOccurrence.plan_id == MaintenancePlan.id)
     if plant_id:
         occ_query = occ_query.where(MaintenancePlan.plant_id == plant_id)
+    if eq_ids is not None:
+        occ_query = occ_query.where(MaintenancePlan.equipment_id.in_(eq_ids))
+
+    # Effective date honours a per-occurrence override (matches the calendar + cron).
+    eff_date = func.coalesce(PlanOccurrence.override_date, PlanOccurrence.scheduled_date)
 
     overdue_occs = (await db.execute(
         occ_query.where(
             PlanOccurrence.is_cancelled == False,
             PlanOccurrence.status.in_([OccurrenceStatus.scheduled, OccurrenceStatus.in_progress]),
-            PlanOccurrence.scheduled_date < today,
-        ).order_by(PlanOccurrence.scheduled_date)
+            eff_date < today,
+        ).order_by(eff_date)
     )).scalars().all()
 
     upcoming_occs = (await db.execute(
         occ_query.where(
             PlanOccurrence.is_cancelled == False,
             PlanOccurrence.status == OccurrenceStatus.scheduled,
-            PlanOccurrence.scheduled_date >= today,
-            PlanOccurrence.scheduled_date <= week_end,
-        ).order_by(PlanOccurrence.scheduled_date)
+            eff_date >= today,
+            eff_date <= week_end,
+        ).order_by(eff_date)
     )).scalars().all()
 
     completed_occs = (await db.execute(
@@ -365,8 +433,9 @@ async def get_pm_dashboard(
     )).scalars().all()
 
     completed_this_month = len(completed_occs)
+    # None (nothing completed) -> UI shows "—" instead of a misleading 100%.
     compliance_rate = (
-        round(len(on_time_occs) / completed_this_month * 100, 1) if completed_this_month else 100.0
+        round(len(on_time_occs) / completed_this_month * 100, 1) if completed_this_month else None
     )
 
     return PmDashboard(
@@ -409,19 +478,26 @@ async def override_occurrence(
     if occ.status != OccurrenceStatus.scheduled:
         raise HTTPException(status_code=400, detail="Only scheduled occurrences can be edited")
 
-    if data.override_date is not None:
-        occ.override_date = data.override_date
-        occ.is_overridden = True
+    # Distinguish "field omitted" from "explicitly null" so a client can CLEAR the
+    # override (send override_date=null) and not just set it.
+    fields_set = data.model_fields_set
+
+    if "override_date" in fields_set:
+        occ.override_date = data.override_date  # a date, or None to clear the override
+        # Keep the linked WO in sync: follow the override, or fall back to the
+        # original scheduled_date when the override is cleared.
         if occ.work_order_id:
             wo = await db.get(WorkOrder, occ.work_order_id)
             if wo:
-                wo.scheduled_date = data.override_date
+                wo.scheduled_date = data.override_date or occ.scheduled_date
         occ.overdue_alert_sent = False
         occ.reminder_sent = False
 
-    if data.override_note is not None:
+    if "override_note" in fields_set:
         occ.override_note = data.override_note
-        occ.is_overridden = True
+
+    # is_overridden reflects whether any manual override remains on the occurrence.
+    occ.is_overridden = bool(occ.override_date or occ.override_note)
 
     await db.commit()
     await db.refresh(occ)
@@ -473,6 +549,11 @@ async def generate_occurrence_wo(
     plan = await db.get(MaintenancePlan, occ.plan_id)
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
+    if not plan.assigned_technician_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Attribuez un technicien au plan avant de générer l'ordre de travail.",
+        )
 
     await pm_service.generate_wo_and_ticket(db, plan, occ)
     await db.refresh(occ)
@@ -530,7 +611,9 @@ async def update_maintenance_plan(
     if data.assigned_technician_id is not None and not await db.get(Technician, data.assigned_technician_id):
         raise HTTPException(status_code=404, detail="Technician not found")
 
-    update_data = data.model_dump(exclude_none=True)
+    # exclude_unset (not exclude_none) so an explicit null clears a field —
+    # e.g. pm_template_id: null unlinks the procedure template.
+    update_data = data.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(plan, field, value)
     if "is_active" in update_data:
@@ -551,19 +634,11 @@ async def delete_maintenance_plan(
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
 
-    plan.is_active = False
-    plan.active = False
-
-    pending = (await db.execute(
-        select(PlanOccurrence).where(
-            PlanOccurrence.plan_id == plan.id,
-            PlanOccurrence.status == OccurrenceStatus.scheduled,
-            PlanOccurrence.is_cancelled == False,
-        )
-    )).scalars().all()
-    for occ in pending:
-        occ.is_cancelled = True
-        occ.cancel_reason = "Plan deactivated"
-        occ.status = OccurrenceStatus.cancelled
-
+    # Hard delete: remove the plan, its occurrences and recommended parts.
+    # Already-generated work orders are real history — keep them, just unlink
+    # (their occurrence_id is cleared by the FK's ON DELETE SET NULL).
+    await db.execute(update(WorkOrder).where(WorkOrder.plan_id == plan.id).values(plan_id=None))
+    await db.execute(delete(PlanOccurrence).where(PlanOccurrence.plan_id == plan.id))
+    await db.execute(delete(PlanRecommendedPart).where(PlanRecommendedPart.plan_id == plan.id))
+    await db.execute(delete(MaintenancePlan).where(MaintenancePlan.id == plan.id))
     await db.commit()

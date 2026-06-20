@@ -3,18 +3,14 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
-from app.models.models import MaintenanceAlert, MaintenanceTicket, AlertStatus, Machine
+from app.models.models import MaintenanceAlert, MaintenanceTicket, AlertStatus, AlertPriority, Machine
 from app.schemas.maintenance import AlertCreate
 
 
 async def _next_alert_number(db: AsyncSession) -> str:
+    from app.services.numbering import next_number
     year = datetime.now(timezone.utc).year
-    r = await db.execute(
-        select(func.count(MaintenanceAlert.id)).where(
-            func.extract("year", MaintenanceAlert.created_at) == year
-        )
-    )
-    return f"ALT-{year}-{(r.scalar() + 1):05d}"
+    return await next_number(db, MaintenanceAlert.alert_number, f"ALT-{year}")
 
 
 class AlertService:
@@ -37,6 +33,17 @@ class AlertService:
             shift=data.shift,
         )
         self.db.add(alert)
+        await self.db.flush()
+
+        if data.priority == AlertPriority.critical:
+            from app.services.notification_service import NotificationService
+            await NotificationService(self.db).notify_new_critical(
+                ref_number=alert.alert_number,
+                description=data.description,
+                machine_name=machine.name,
+                alert_id=alert.id,
+            )
+
         await self.db.commit()
         await self.db.refresh(alert)
         return alert

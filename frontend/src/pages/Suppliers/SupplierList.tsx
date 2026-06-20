@@ -118,20 +118,20 @@ export default function SupplierList() {
       </div>
 
       {/* Table */}
-      <div className="overflow-x-auto">
+      <div className="overflow-auto max-h-[calc(100vh-320px)]">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-gray-800 text-xs text-gray-500 uppercase tracking-wider">
-              <th className="px-4 py-3 text-left font-medium">Code</th>
-              <th className="px-4 py-3 text-left font-medium">{t('suppliers.name', 'Name')}</th>
-              <th className="px-4 py-3 text-left font-medium">{t('suppliers.category', 'Category')}</th>
-              <th className="px-4 py-3 text-left font-medium">{t('suppliers.contact', 'Contact')}</th>
-              <th className="px-4 py-3 text-left font-medium">{t('suppliers.email', 'Email')}</th>
-              <th className="px-4 py-3 text-center font-medium">{t('suppliers.leadTime', 'Lead time')}</th>
-              <th className="px-4 py-3 text-center font-medium">{t('suppliers.rating', 'Rating')}</th>
-              <th className="px-4 py-3 text-center font-medium">{t('suppliers.items', 'Items')}</th>
-              <th className="px-4 py-3 text-center font-medium">{t('suppliers.status', 'Status')}</th>
-              <th className="px-4 py-3"></th>
+            <tr className="text-xs text-gray-500 uppercase tracking-wider">
+              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left font-medium">Code</th>
+              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left font-medium">{t('suppliers.name', 'Name')}</th>
+              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left font-medium">{t('suppliers.category', 'Category')}</th>
+              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left font-medium">{t('suppliers.contact', 'Contact')}</th>
+              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left font-medium">{t('suppliers.email', 'Email')}</th>
+              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-center font-medium">{t('suppliers.leadTime', 'Lead time')}</th>
+              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-center font-medium">{t('suppliers.rating', 'Rating')}</th>
+              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-center font-medium">{t('suppliers.items', 'Items')}</th>
+              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-center font-medium">{t('suppliers.status', 'Status')}</th>
+              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3"></th>
             </tr>
           </thead>
           <tbody>

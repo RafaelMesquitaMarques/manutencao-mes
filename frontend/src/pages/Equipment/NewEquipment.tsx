@@ -17,7 +17,10 @@ interface FormState {
   location: string;
   criticality: string;
   manufacturer: string;
+  serial_number: string;
   description: string;
+  asset_type: 'production' | 'auxiliary';
+  subtype: string;
 }
 
 const CRITICALITIES = ['low', 'medium', 'high', 'critical'];
@@ -36,7 +39,10 @@ export default function NewEquipment() {
     location: '',
     criticality: 'medium',
     manufacturer: '',
+    serial_number: '',
     description: '',
+    asset_type: 'production',
+    subtype: '',
   });
 
   useEffect(() => {
@@ -68,7 +74,10 @@ export default function NewEquipment() {
         location: form.location.trim() || undefined,
         criticality: form.criticality,
         manufacturer: form.manufacturer.trim() || undefined,
+        serial_number: form.serial_number.trim() || undefined,
         description: form.description.trim() || undefined,
+        asset_type: form.asset_type,
+        subtype: form.asset_type === 'auxiliary' ? (form.subtype.trim() || undefined) : undefined,
       });
       navigate(`/equipment/${data.id}`);
     } catch (err: any) {
@@ -176,15 +185,70 @@ export default function NewEquipment() {
           </div>
 
           <div>
-            <label className="label">Manufacturer</label>
-            <input
-              type="text"
-              className="input-field"
-              value={form.manufacturer}
-              onChange={(e) => set('manufacturer', e.target.value)}
-              placeholder="e.g. Homag"
-              disabled={submitting}
-            />
+            <label className="label">Equipment type</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setForm((f) => ({ ...f, asset_type: 'production' }))}
+                disabled={submitting}
+                className={`p-3 rounded border text-left transition-colors ${
+                  form.asset_type === 'production' ? 'border-blue-500/60 bg-blue-500/10' : 'border-white/10 hover:border-white/20'
+                }`}
+              >
+                <p className="text-sm font-medium text-white">Production machine</p>
+                <p className="text-gray-500 text-xs mt-0.5 leading-snug">Produces output — has machine page, kiosk, MES, stops, operators.</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => setForm((f) => ({ ...f, asset_type: 'auxiliary' }))}
+                disabled={submitting}
+                className={`p-3 rounded border text-left transition-colors ${
+                  form.asset_type === 'auxiliary' ? 'border-teal-500/60 bg-teal-500/10' : 'border-white/10 hover:border-white/20'
+                }`}
+              >
+                <p className="text-sm font-medium text-white">Auxiliary (utility)</p>
+                <p className="text-gray-500 text-xs mt-0.5 leading-snug">Generator, compressor, HVAC, conveyor… maintenance only, no kiosk/MES.</p>
+              </button>
+            </div>
+          </div>
+
+          {form.asset_type === 'auxiliary' && (
+            <div>
+              <label className="label">Subtype</label>
+              <input
+                type="text"
+                className="input-field"
+                value={form.subtype}
+                onChange={(e) => set('subtype', e.target.value)}
+                placeholder="e.g. Generator, Compressor, HVAC, Conveyor"
+                disabled={submitting}
+              />
+            </div>
+          )}
+
+          <div className="grid sm:grid-cols-2 gap-4">
+            <div>
+              <label className="label">Manufacturer</label>
+              <input
+                type="text"
+                className="input-field"
+                value={form.manufacturer}
+                onChange={(e) => set('manufacturer', e.target.value)}
+                placeholder="e.g. Homag"
+                disabled={submitting}
+              />
+            </div>
+            <div>
+              <label className="label">Serial Number</label>
+              <input
+                type="text"
+                className="input-field"
+                value={form.serial_number}
+                onChange={(e) => set('serial_number', e.target.value)}
+                placeholder="e.g. SN-2024-00123"
+                disabled={submitting}
+              />
+            </div>
           </div>
 
           <div>

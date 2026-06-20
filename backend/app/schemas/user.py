@@ -40,6 +40,7 @@ class UserMeUpdate(BaseModel):
 
 class UserAdminUpdate(BaseModel):
     name: Optional[str] = None
+    email: Optional[EmailStr] = None
     language: Optional[str] = None
     active: Optional[bool] = None
     role: Optional[UserRole] = None

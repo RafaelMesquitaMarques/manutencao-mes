@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -26,6 +26,12 @@ import {
   ListChecks,
   CheckSquare,
   Square,
+  UserPlus,
+  Image as ImageIcon,
+  Video as VideoIcon,
+  ExternalLink,
+  Loader2,
+  Camera,
 } from 'lucide-react';
 import {
   fetchWorkOrder,
@@ -43,8 +49,13 @@ import {
   fetchWOActions,
   addWOAction,
   toggleWOAction,
+  setWOActionProof,
   fetchTechnicians,
+  addWOTechnician,
+  removeWOTechnician,
 } from '../../api/workOrders';
+import { uploadFile } from '../../api/uploads';
+import { humanDuration } from '../../utils/duration';
 import type {
   WorkOrder,
   LaborRecord,
@@ -90,22 +101,20 @@ const fmtMoney = (n?: number | null, currency = 'CAD') => {
 };
 
 const fmtDuration = (wo: WorkOrder): string | null => {
+  let seconds: number | null = null;
   if (wo.total_minutes != null && wo.total_minutes > 0) {
-    const h = Math.floor(wo.total_minutes / 60);
-    const m = wo.total_minutes % 60;
-    return `${h}h ${m}m`;
+    seconds = wo.total_minutes * 60;
+  } else if (wo.repair_hours != null && wo.repair_hours > 0) {
+    seconds = wo.repair_hours * 3600;
+  } else if (wo.completed_at) {
+    // Fall back to elapsed time; use started_at, else opened_at (to the second).
+    const start = wo.started_at ?? wo.opened_at;
+    if (start) {
+      const diff = (new Date(wo.completed_at).getTime() - new Date(start).getTime()) / 1000;
+      if (diff > 0) seconds = diff;
+    }
   }
-  if (wo.repair_hours != null && wo.repair_hours > 0) {
-    const mins = Math.round(wo.repair_hours * 60);
-    return `${Math.floor(mins / 60)}h ${mins % 60}m`;
-  }
-  if (wo.started_at && wo.completed_at) {
-    const mins = Math.floor(
-      (new Date(wo.completed_at).getTime() - new Date(wo.started_at).getTime()) / 60000
-    );
-    if (mins > 0) return `${Math.floor(mins / 60)}h ${mins % 60}m`;
-  }
-  return null;
+  return seconds && seconds > 0 ? humanDuration(seconds) : null;
 };
 
 const FieldRow = ({ label, value }: { label: string; value: React.ReactNode }) => (
@@ -134,66 +143,167 @@ const SectionCard = ({ icon: Icon, title, children }: {
 const ChecklistSection = ({
   woId,
   checklist,
+  enforcement = 'advisory',
   onToggle,
 }: {
   woId: string;
   checklist: WOAction[];
+  enforcement?: 'advisory' | 'required' | 'strict';
   onToggle: (action: WOAction) => void;
 }) => {
   const { t } = useTranslation();
-  const [togglingId, setTogglingId] = useState<string | null>(null);
 
   const total = checklist.length;
   const done = checklist.filter((a) => a.is_completed).length;
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
 
-  const handleToggle = async (action: WOAction) => {
-    setTogglingId(action.id);
-    try {
-      const updated = await toggleWOAction(woId, action.id, !action.is_completed);
-      onToggle(updated);
-    } catch {
-      // ignore — UI stays unchanged on failure
-    } finally {
-      setTogglingId(null);
-    }
-  };
+  const badge =
+    enforcement === 'strict'
+      ? { cls: 'text-red-300 border-red-500/40 bg-red-500/10', label: t('pm.enforcement.strict', 'Strict + photo') }
+      : enforcement === 'required'
+      ? { cls: 'text-amber-300 border-amber-500/40 bg-amber-500/10', label: t('pm.enforcement.required', 'Required') }
+      : { cls: 'text-gray-400 border-white/15 bg-white/5', label: t('pm.enforcement.advisory', 'Advisory') };
 
   return (
     <div className="glass-card p-5">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <ListChecks size={15} className="text-gray-500" />
-          <h2 className="text-white font-semibold text-sm">{t('pm.checklist', 'PM Checklist')}</h2>
+          <h2 className="text-white font-semibold text-sm">{t('pm.procedure', 'Procedure')}</h2>
+          <span className={`text-[10px] px-2 py-0.5 rounded-full border ${badge.cls}`}>{badge.label}</span>
         </div>
         <span className="text-xs font-mono text-gray-500">{done}/{total}</span>
       </div>
       <div className="w-full h-1.5 bg-white/[0.06] rounded-full mb-4 overflow-hidden">
         <div className="h-full bg-green-500 transition-all" style={{ width: `${pct}%` }} />
       </div>
-      <div className="space-y-1.5">
-        {checklist.map((action) => (
-          <button
+      <div className="space-y-2">
+        {checklist.map((action, idx) => (
+          <ChecklistItem
             key={action.id}
-            onClick={() => handleToggle(action)}
-            disabled={togglingId === action.id}
-            className="w-full flex items-start gap-2.5 text-left px-2 py-1.5 rounded-lg hover:bg-white/[0.03] transition-colors disabled:opacity-50"
-          >
-            {action.is_completed ? (
-              <CheckSquare size={16} className="text-green-400 flex-shrink-0 mt-0.5" />
-            ) : (
-              <Square size={16} className="text-gray-600 flex-shrink-0 mt-0.5" />
-            )}
-            <span className={`text-sm flex-1 ${action.is_completed ? 'text-gray-500 line-through' : 'text-gray-200'}`}>
+            woId={woId}
+            action={action}
+            index={idx}
+            strict={enforcement === 'strict'}
+            onUpdated={onToggle}
+          />
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const ChecklistItem = ({
+  woId, action, index, strict, onUpdated,
+}: {
+  woId: string;
+  action: WOAction;
+  index: number;
+  strict: boolean;
+  onUpdated: (action: WOAction) => void;
+}) => {
+  const { t } = useTranslation();
+  const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const toggle = async () => {
+    setBusy(true);
+    try { onUpdated(await toggleWOAction(woId, action.id, !action.is_completed)); }
+    catch { /* keep UI */ } finally { setBusy(false); }
+  };
+
+  const onPickProof = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const up = await uploadFile(file);
+      onUpdated(await setWOActionProof(woId, action.id, up.url));
+    } catch { /* ignore */ } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
+
+  const clearProof = async () => { onUpdated(await setWOActionProof(woId, action.id, null)); };
+
+  const needsProof = strict && action.is_required && !action.proof_photo_url;
+
+  return (
+    <div className={`rounded-lg border px-3 py-2.5 ${
+      action.is_completed ? 'border-white/[0.04] bg-white/[0.01]' : needsProof ? 'border-red-500/20' : 'border-white/[0.06]'
+    }`}>
+      <div className="flex items-start gap-2.5">
+        <button onClick={toggle} disabled={busy} className="flex-shrink-0 mt-0.5 disabled:opacity-50">
+          {action.is_completed
+            ? <CheckSquare size={17} className="text-green-400" />
+            : <Square size={17} className="text-gray-600" />}
+        </button>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-gray-600 text-xs">{index + 1}.</span>
+            <span className={`text-sm ${action.is_completed ? 'text-gray-500 line-through' : 'text-gray-200'}`}>
               {action.description}
             </span>
-            {action.is_required && !action.is_completed && (
-              <span className="text-[10px] text-amber-400 border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 rounded-full flex-shrink-0">
+            {action.is_required && (
+              <span className="text-[10px] text-amber-400/80 border border-amber-500/25 px-1.5 py-0.5 rounded-full flex-shrink-0">
                 {t('pm.required', 'Required')}
               </span>
             )}
-          </button>
-        ))}
+          </div>
+          {action.expected_result && (
+            <p className="text-xs text-gray-500 mt-0.5">
+              <span className="text-gray-600">{t('pm.expectedResult', 'Expected result')}: </span>{action.expected_result}
+            </p>
+          )}
+
+          {/* SOP media (how to do it) */}
+          {action.media && action.media.length > 0 && (
+            <div className="flex flex-wrap gap-2 mt-2">
+              {action.media.map((m) => (
+                m.media_type === 'image' ? (
+                  <a key={m.id} href={m.url} target="_blank" rel="noreferrer">
+                    <img src={m.url} alt={m.caption ?? ''} className="h-16 w-16 object-cover rounded-lg border border-white/10" />
+                  </a>
+                ) : m.media_type === 'video' ? (
+                  <video key={m.id} src={m.url} className="h-16 w-24 rounded-lg border border-white/10 bg-black object-cover" controls preload="metadata" />
+                ) : (
+                  <a key={m.id} href={m.url} target="_blank" rel="noreferrer"
+                    className="flex items-center gap-1 h-16 px-2 rounded-lg border border-white/10 text-[11px] text-blue-300 hover:bg-white/5">
+                    <ExternalLink size={13} /> {t('pm.video', 'Vidéo')}
+                  </a>
+                )
+              ))}
+            </div>
+          )}
+
+          {/* Proof photo (strict) */}
+          {strict && action.is_required && (
+            <div className="mt-2 flex items-center gap-2">
+              {action.proof_photo_url ? (
+                <div className="relative group">
+                  <a href={action.proof_photo_url} target="_blank" rel="noreferrer">
+                    <img src={action.proof_photo_url} alt="" className="h-16 w-16 object-cover rounded-lg border border-green-500/40" />
+                  </a>
+                  <button onClick={clearProof} className="absolute -top-2 -right-2 bg-red-600 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100">
+                    <X size={11} />
+                  </button>
+                  <span className="absolute bottom-0 inset-x-0 text-[9px] text-center bg-green-600/80 text-white rounded-b-lg">{t('pm.proof', 'Preuve')}</span>
+                </div>
+              ) : (
+                <>
+                  <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onPickProof} />
+                  <button onClick={() => fileRef.current?.click()} disabled={uploading}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-red-500/30 text-red-300 text-xs hover:bg-red-500/10 disabled:opacity-50">
+                    {uploading ? <Loader2 size={13} className="animate-spin" /> : <Camera size={13} />}
+                    {t('pm.addProof', 'Photo de preuve')}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -224,7 +334,7 @@ const OverviewTab = ({
       {/* Left — description fields */}
       <div className="lg:col-span-2 space-y-4">
         {checklist.length > 0 && (
-          <ChecklistSection woId={wo.id} checklist={checklist} onToggle={onToggleChecklist} />
+          <ChecklistSection woId={wo.id} checklist={checklist} enforcement={wo.checklist_enforcement} onToggle={onToggleChecklist} />
         )}
         {textFields.length === 0 ? (
           <div className="glass-card p-8 text-center">
@@ -364,6 +474,7 @@ const LaborTab = ({
     technician_id: '',
     date: new Date().toISOString().slice(0, 10),
     hours_worked: '',
+    minutes_worked: '',
     hourly_rate: '',
     activity: '',
     notes: '',
@@ -372,23 +483,39 @@ const LaborTab = ({
   const totalHours = records.reduce((s, r) => s + r.hours_worked, 0);
   const totalCost = records.reduce((s, r) => s + (r.labor_cost ?? 0), 0);
 
+  const byTech = records.reduce<Record<string, { name: string; hours: number; cost: number }>>(
+    (acc, r) => {
+      const entry = acc[r.technician_id] ?? {
+        name: r.technician_name ?? `${r.technician_id.slice(0, 8)}…`,
+        hours: 0,
+        cost: 0,
+      };
+      entry.hours += r.hours_worked;
+      entry.cost += r.labor_cost ?? 0;
+      acc[r.technician_id] = entry;
+      return acc;
+    },
+    {}
+  );
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.technician_id || !form.hours_worked) return;
+    const hoursDecimal = Number(form.hours_worked || 0) + Number(form.minutes_worked || 0) / 60;
+    if (!form.technician_id || hoursDecimal <= 0) return;
     setSubmitting(true);
     setErr(null);
     try {
       const rec = await addWOLabor(woId, {
         technician_id: form.technician_id,
         date: form.date,
-        hours_worked: Number(form.hours_worked),
+        hours_worked: hoursDecimal,   // fractional → labor cost is proportional to minutes
         hourly_rate: form.hourly_rate ? Number(form.hourly_rate) : undefined,
         activity: form.activity || undefined,
         notes: form.notes || undefined,
       });
       onAdded(rec);
       setShowForm(false);
-      setForm({ technician_id: '', date: new Date().toISOString().slice(0, 10), hours_worked: '', hourly_rate: '', activity: '', notes: '' });
+      setForm({ technician_id: '', date: new Date().toISOString().slice(0, 10), hours_worked: '', minutes_worked: '', hourly_rate: '', activity: '', notes: '' });
     } catch {
       setErr(t('common.error'));
     } finally {
@@ -403,7 +530,7 @@ const LaborTab = ({
         <div className="flex gap-6">
           <div>
             <p className="text-gray-600 text-[11px] uppercase tracking-wide">{t('workOrders.hoursWorked')}</p>
-            <p className="text-white font-mono font-semibold">{totalHours.toFixed(1)} {t('common.hours')}</p>
+            <p className="text-white font-mono font-semibold">{totalHours > 0 ? humanDuration(totalHours * 3600) : '0 min'}</p>
           </div>
           {totalCost > 0 && (
             <div>
@@ -420,6 +547,29 @@ const LaborTab = ({
           {t('workOrders.addLabor')}
         </button>
       </div>
+
+      {/* Per-technician breakdown */}
+      {Object.keys(byTech).length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {Object.entries(byTech).map(([techId, s]) => (
+            <div
+              key={techId}
+              className="flex items-center gap-3 bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2"
+            >
+              <div className="w-6 h-6 rounded-full bg-blue-500/20 flex items-center justify-center flex-shrink-0">
+                <User size={12} className="text-blue-400" />
+              </div>
+              <div>
+                <p className="text-xs text-gray-300 font-medium">{s.name}</p>
+                <p className="text-[11px] font-mono">
+                  <span className="text-blue-400">{s.hours.toFixed(1)} {t('common.hours')}</span>
+                  {s.cost > 0 && <span className="text-green-400 ml-2">{fmtMoney(s.cost)}</span>}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Add form */}
       {showForm && (
@@ -451,10 +601,21 @@ const LaborTab = ({
                 onChange={(e) => setForm({ ...form, date: e.target.value })} required />
             </div>
             <div>
-              <label className="label">{t('workOrders.hoursWorked')} *</label>
-              <input type="number" min="0.5" step="0.5" className="input-field"
-                placeholder="2.5" value={form.hours_worked}
-                onChange={(e) => setForm({ ...form, hours_worked: e.target.value })} required />
+              <label className="label">{t('workOrders.timeWorked', 'Temps travaillé')} *</label>
+              <div className="flex gap-2">
+                <div className="flex items-center gap-1.5">
+                  <input type="number" min="0" step="1" className="input-field w-20"
+                    placeholder="0" value={form.hours_worked}
+                    onChange={(e) => setForm({ ...form, hours_worked: e.target.value })} />
+                  <span className="text-gray-500 text-sm">h</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <input type="number" min="0" max="59" step="1" className="input-field w-20"
+                    placeholder="0" value={form.minutes_worked}
+                    onChange={(e) => setForm({ ...form, minutes_worked: e.target.value })} />
+                  <span className="text-gray-500 text-sm">min</span>
+                </div>
+              </div>
             </div>
             <div>
               <label className="label">{t('workOrders.rateLabel')}</label>
@@ -502,12 +663,10 @@ const LaborTab = ({
               </thead>
               <tbody>
                 {records.map((r) => {
-                  const durMins = r.started_at && r.stopped_at
-                    ? Math.round((new Date(r.stopped_at).getTime() - new Date(r.started_at).getTime()) / 60000)
-                    : null;
-                  const durStr = durMins != null
-                    ? `${Math.floor(durMins / 60)}h ${durMins % 60}m`
-                    : r.hours_worked > 0 ? `${r.hours_worked.toFixed(2)}h` : '…';
+                  const durSecs = r.started_at && r.stopped_at
+                    ? (new Date(r.stopped_at).getTime() - new Date(r.started_at).getTime()) / 1000
+                    : r.hours_worked > 0 ? r.hours_worked * 3600 : null;
+                  const durStr = durSecs != null ? humanDuration(durSecs) : '…';
                   return (
                     <tr key={r.id} className="table-row">
                       <td className="table-cell text-gray-200">
@@ -1046,6 +1205,7 @@ const WorkOrderDetail = () => {
   const [error, setError] = useState<string | null>(null);
 
   const [showCompleteModal, setShowCompleteModal] = useState(false);
+  const [showAddTech, setShowAddTech] = useState(false);
 
   const load = async () => {
     if (!id) return;
@@ -1079,6 +1239,28 @@ const WorkOrderDetail = () => {
 
   const handleToggleChecklist = (updated: WOAction) => {
     setActions((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+  };
+
+  const handleAddTech = async (techId: string) => {
+    if (!wo) return;
+    setActionError(null);
+    try {
+      const updated = await addWOTechnician(wo.id, techId);
+      setWo(updated);
+    } catch {
+      setActionError(t('common.error'));
+    }
+  };
+
+  const handleRemoveTech = async (techId: string) => {
+    if (!wo) return;
+    setActionError(null);
+    try {
+      const updated = await removeWOTechnician(wo.id, techId);
+      setWo(updated);
+    } catch {
+      setActionError(t('common.error'));
+    }
   };
 
   const handleAction = async (status: string) => {
@@ -1220,14 +1402,61 @@ const WorkOrderDetail = () => {
             )}
           </div>
         )}
-        {(wo.assigned_to_name || wo.executor_name || wo.assigned_to_id) && (
-          <div className="flex items-center gap-2 text-gray-400">
-            <User size={13} className="text-gray-600" />
-            <span>
-              {t('workOrders.assignedTo')}: {wo.assigned_to_name ?? wo.executor_name ?? `${wo.assigned_to_id!.slice(0, 8)}…`}
+        <div className="flex items-center gap-2 text-gray-400 flex-wrap">
+          <Users size={13} className="text-gray-600" />
+          <span>{t('workOrders.assignedTechnicians')}:</span>
+          {(wo.technicians ?? []).map((tech) => (
+            <span
+              key={tech.technician_id}
+              className="inline-flex items-center gap-1.5 bg-blue-500/10 border border-blue-500/25 text-blue-300 rounded-full pl-2.5 pr-1.5 py-0.5 text-xs"
+            >
+              <User size={10} className="text-blue-400/70" />
+              {tech.name ?? `${tech.technician_id.slice(0, 8)}…`}
+              {!isTerminal && (
+                <button
+                  onClick={() => handleRemoveTech(tech.technician_id)}
+                  className="text-blue-400/60 hover:text-red-400 transition-colors"
+                >
+                  <X size={12} />
+                </button>
+              )}
             </span>
-          </div>
-        )}
+          ))}
+          {(wo.technicians ?? []).length === 0 && (
+            wo.assigned_to_name
+              ? <span>{wo.assigned_to_name}</span>
+              : <span className="text-gray-600">—</span>
+          )}
+          {!isTerminal && (
+            showAddTech ? (
+              <select
+                autoFocus
+                className="input-field !w-48 !py-1 !text-xs"
+                defaultValue=""
+                onChange={(e) => {
+                  if (e.target.value) handleAddTech(e.target.value);
+                  setShowAddTech(false);
+                }}
+                onBlur={() => setShowAddTech(false)}
+              >
+                <option value="">{t('form.selectTechnician')}</option>
+                {techOptions
+                  .filter((o) => !(wo.technicians ?? []).some((a) => a.technician_id === o.id))
+                  .map((o) => (
+                    <option key={o.id} value={o.id}>{o.full_name}</option>
+                  ))}
+              </select>
+            ) : (
+              <button
+                onClick={() => setShowAddTech(true)}
+                className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-blue-400 border border-dashed border-white/15 hover:border-blue-500/40 rounded-full px-2 py-0.5 transition-colors"
+              >
+                <UserPlus size={11} />
+                {t('workOrders.addTechnician')}
+              </button>
+            )
+          )}
+        </div>
         {wo.cost_center && (
           <div className="flex items-center gap-2 text-gray-400">
             <DollarSign size={13} className="text-gray-600" />

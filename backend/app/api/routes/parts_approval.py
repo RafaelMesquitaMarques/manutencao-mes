@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.models import InterventionPart, MachineIntervention, StockItem, User
+from app.services.inventory_service import InventoryService
 
 router = APIRouter(prefix="/api/parts-approval", tags=["Parts Approval"])
 
@@ -23,12 +24,33 @@ def _part_out(p: InterventionPart) -> dict:
         "item_description": p.item_description,
         "quantity_used": p.quantity_used,
         "unit": p.unit,
+        "unit_cost": p.unit_cost,
+        "total_cost": p.total_cost,
         "approval_status": p.approval_status,
         "approved_by_id": str(p.approved_by_id) if p.approved_by_id else None,
         "approved_at": p.approved_at.isoformat() if p.approved_at else None,
         "rejection_reason": p.rejection_reason,
         "added_at": p.added_at.isoformat() if p.added_at else None,
     }
+
+
+async def _consume_stock(db: AsyncSession, part: InterventionPart, user_id) -> None:
+    """Snapshot price if still missing and deduct stock with a tracked movement."""
+    if not part.stock_item_id or not part.quantity_used:
+        return
+    stock = await db.get(StockItem, part.stock_item_id)
+    if not stock:
+        return
+    if part.unit_cost is None and stock.unit_cost is not None:
+        part.unit_cost = stock.unit_cost
+    if part.unit_cost is not None and part.total_cost is None:
+        part.total_cost = round(float(part.unit_cost) * float(part.quantity_used), 2)
+    await InventoryService(db).deduct_stock(
+        part.stock_item_id,
+        float(part.quantity_used),
+        user_id=user_id,
+        notes=f"Intervention part approved ({part.item_code or part.id})",
+    )
 
 
 @router.get("/pending")
@@ -79,11 +101,7 @@ async def approve_part(
     part.approved_by_id = current_user.id
     part.approved_at = now
 
-    # Deduct from stock if linked
-    if part.stock_item_id and part.quantity_used:
-        stock = await db.get(StockItem, part.stock_item_id)
-        if stock and stock.quantity is not None:
-            stock.quantity = max(0.0, float(stock.quantity) - float(part.quantity_used))
+    await _consume_stock(db, part, current_user.id)
 
     await db.commit()
     await db.refresh(part)
@@ -139,10 +157,7 @@ async def approve_batch(
         part.approved_by_id = current_user.id
         part.approved_at = now
 
-        if part.stock_item_id and part.quantity_used:
-            stock = await db.get(StockItem, part.stock_item_id)
-            if stock and stock.quantity is not None:
-                stock.quantity = max(0.0, float(stock.quantity) - float(part.quantity_used))
+        await _consume_stock(db, part, current_user.id)
 
         approved.append(str(part.id))
 

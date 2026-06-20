@@ -106,6 +106,10 @@ class WOActionOut(BaseModel):
 
     # ── PM checklist ──
     description: Optional[str] = None
+    expected_result: Optional[str] = None
+    template_task_id: Optional[UUID] = None
+    proof_photo_url: Optional[str] = None
+    media: List[dict] = []                 # live SOP photos/videos/links from the template step
     is_required: bool = True
     is_completed: bool = False
     completed_at: Optional[datetime] = None

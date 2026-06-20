@@ -6,16 +6,38 @@ from datetime import datetime, date
 from app.models.models import PmFrequency, RecurrenceEndType, OccurrenceStatus, OccurrenceCompliance
 
 
+# ─── PM Template Task Media ─────────────────────────────────────────────────────
+
+class PmTaskMediaCreate(BaseModel):
+    media_type: str                       # image | video | link
+    url: str
+    caption: Optional[str] = None
+    sort_order: int = 0
+
+
+class PmTaskMediaOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    task_id: UUID
+    media_type: str
+    url: str
+    caption: Optional[str] = None
+    sort_order: int
+
+
 # ─── PM Template Tasks ──────────────────────────────────────────────────────────
 
 class PmTemplateTaskCreate(BaseModel):
     description: str
+    expected_result: Optional[str] = None
     sort_order: int = 0
     is_required: bool = True
 
 
 class PmTemplateTaskUpdate(BaseModel):
     description: Optional[str] = None
+    expected_result: Optional[str] = None
     sort_order: Optional[int] = None
     is_required: Optional[bool] = None
 
@@ -26,8 +48,10 @@ class PmTemplateTaskOut(BaseModel):
     id: UUID
     template_id: UUID
     description: str
+    expected_result: Optional[str] = None
     sort_order: int
     is_required: bool
+    media: List[PmTaskMediaOut] = []
 
 
 # ─── PM Templates ────────────────────────────────────────────────────────────────
@@ -39,6 +63,7 @@ class PmTemplateCreate(BaseModel):
     description: Optional[str] = None
     estimated_hours: float = 1.0
     sort_order: int = 0
+    enforcement: str = "advisory"
     tasks: List[PmTemplateTaskCreate] = []
 
 
@@ -49,6 +74,7 @@ class PmTemplateUpdate(BaseModel):
     estimated_hours: Optional[float] = None
     is_active: Optional[bool] = None
     sort_order: Optional[int] = None
+    enforcement: Optional[str] = None
 
 
 class PmTemplateOut(BaseModel):
@@ -64,12 +90,17 @@ class PmTemplateOut(BaseModel):
     estimated_hours: float
     is_active: bool
     sort_order: int
+    enforcement: str = "advisory"
     tasks: List[PmTemplateTaskOut] = []
 
 
 class PmTemplateListResponse(BaseModel):
     total: int
     items: List[PmTemplateOut]
+
+
+class PmTemplateCloneRequest(BaseModel):
+    target_equipment_ids: List[UUID]
 
 
 # ─── Plan Recommended Parts ──────────────────────────────────────────────────────
@@ -264,6 +295,6 @@ class PmDashboard(BaseModel):
     overdue_occurrences: int
     due_this_week: int
     completed_this_month: int
-    compliance_rate: float
+    compliance_rate: Optional[float] = None
     upcoming: List[PlanOccurrenceOut] = []
     overdue: List[PlanOccurrenceOut] = []

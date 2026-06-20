@@ -1,18 +1,18 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft, Cpu, MapPin, Clock, Gauge, AlertCircle, Calendar,
   Save, Plus, Trash2, Check, X, Copy, ChevronRight, ChevronDown, ExternalLink,
   Settings, StopCircle, AlertTriangle, Users, BarChart2, Activity,
-  Zap, Pencil, Shield, Loader2, Power, CalendarClock,
+  Zap, Pencil, Shield, Loader2, Power, CalendarClock, ListChecks,
   type LucideIcon,
 } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
-import { fetchEquipmentById, fetchWorkOrders } from '../../api/workOrders';
+import { fetchEquipmentById, fetchWorkOrders, fetchEquipment } from '../../api/workOrders';
 import { fetchMaintenancePlans } from '../../api/maintenancePlans';
 import {
-  fetchPmTemplates, createPmTemplate, updatePmTemplate, deletePmTemplate,
+  fetchPmTemplates, createPmTemplate, updatePmTemplate, deletePmTemplate, clonePmTemplate,
   addPmTemplateTask, updatePmTemplateTask, deletePmTemplateTask,
 } from '../../api/pmTemplates';
 import {
@@ -25,6 +25,8 @@ import {
   cloneCategories,
 } from '../../api/machines';
 import api from '../../api/axios';
+import { uploadFile } from '../../api/uploads';
+import { saveMachineLayout } from '../../api/factoryMap';
 import type {
   Equipment, WorkOrder, MaintenancePlan, PmTemplate, PmTemplateTask, PmFrequency,
   Machine, MachineConfigUpdate, MachineOperatorOut, MachineOperatorCreate,
@@ -34,6 +36,8 @@ import type {
 } from '../../types';
 import { format } from 'date-fns';
 import { IconRenderer, IconPicker } from '../../components/ui/IconLibrary';
+import PmStepsEditor from '../../components/pm/PmStepsEditor';
+import { humanHours } from '../../utils/duration';
 
 // ─── Status palettes ────────────────────────────────────────────────────────────
 
@@ -77,7 +81,6 @@ const CONFIG_TABS: { id: ConfigTab; label: string; Icon: LucideIcon }[] = [
   { id: 'indicators',          label: 'Indicators',          Icon: Activity },
   { id: 'intervention_types', label: 'Intervention Types',  Icon: Zap      },
   { id: 'safety_checklist',   label: 'Safety Checklist',    Icon: Shield   },
-  { id: 'pm_templates',       label: 'PM Templates',        Icon: CalendarClock },
 ];
 
 const LANG_OPTIONS = [
@@ -928,6 +931,11 @@ function PmTemplatesConfigTab({ equipmentId }: { equipmentId: string }) {
   const [editForm, setEditForm] = useState<PmTemplateFormState>(EMPTY_PM_TEMPLATE_FORM);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [allEquipment, setAllEquipment] = useState<Equipment[]>([]);
+  const [cloneFor, setCloneFor] = useState<string | null>(null);
+  const [cloneTargets, setCloneTargets] = useState<string[]>([]);
+  const [cloning, setCloning] = useState(false);
+  const [cloneMsg, setCloneMsg] = useState('');
 
   const load = useCallback(async () => {
     setLoadingPM(true);
@@ -942,12 +950,30 @@ function PmTemplatesConfigTab({ equipmentId }: { equipmentId: string }) {
   }, [equipmentId]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { fetchEquipment({ limit: '500' }).then(setAllEquipment).catch(() => {}); }, []);
+
+  const openClone = (id: string) => { setCloneFor(id); setCloneTargets([]); setCloneMsg(''); };
+  const toggleCloneTarget = (id: string) =>
+    setCloneTargets((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+
+  const handleClone = async () => {
+    if (!cloneFor || cloneTargets.length === 0) return;
+    setCloning(true);
+    try {
+      const res = await clonePmTemplate(cloneFor, cloneTargets);
+      setCloneMsg(t('pm.cloneSuccess', { count: res.cloned_to, defaultValue: `Copié vers ${res.cloned_to} équipement(s)` }));
+      setCloneFor(null);
+      setCloneTargets([]);
+    } finally {
+      setCloning(false);
+    }
+  };
 
   const handleAdd = async () => {
     if (!addForm.name.trim()) return;
     setSaving(true);
     try {
-      await createPmTemplate({
+      const created = await createPmTemplate({
         equipment_id: equipmentId,
         frequency_type: addForm.frequency_type,
         name: addForm.name.trim(),
@@ -957,6 +983,7 @@ function PmTemplatesConfigTab({ equipmentId }: { equipmentId: string }) {
       setShowAdd(false);
       setAddForm(EMPTY_PM_TEMPLATE_FORM);
       await load();
+      setExpandedId(created.id);   // open the procedure editor right away
     } finally {
       setSaving(false);
     }
@@ -998,6 +1025,12 @@ function PmTemplatesConfigTab({ equipmentId }: { equipmentId: string }) {
           <Plus size={12} /> {t('common.add')}
         </button>
       </div>
+
+      {cloneMsg && (
+        <div className="flex items-center gap-2 p-2.5 bg-teal-500/10 border border-teal-500/30 rounded-xl text-teal-300 text-sm">
+          <Check size={14} /> {cloneMsg}
+        </div>
+      )}
 
       {showAdd && (
         <div className="p-4 bg-[#0d1421] rounded-2xl border border-blue-500/30 space-y-3">
@@ -1082,7 +1115,7 @@ function PmTemplatesConfigTab({ equipmentId }: { equipmentId: string }) {
                   <button onClick={() => setExpandedId(expandedId === tpl.id ? null : tpl.id)} className="p-1 text-gray-600 hover:text-gray-300">
                     {expandedId === tpl.id ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                   </button>
-                  <div className="flex-1 min-w-0">
+                  <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setExpandedId(expandedId === tpl.id ? null : tpl.id)}>
                     <div className="flex items-center gap-2">
                       <p className="text-sm font-bold text-white">{tpl.name}</p>
                       {!tpl.is_active && <span className="text-xs px-1.5 py-0.5 rounded-full bg-gray-500/15 text-gray-500">{t('pm.inactive')}</span>}
@@ -1091,9 +1124,17 @@ function PmTemplatesConfigTab({ equipmentId }: { equipmentId: string }) {
                       <span className="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">{t(`pmFrequency.${tpl.frequency_type}`)}</span>
                       <span>{tpl.estimated_hours}h</span>
                       <span>{t('pm.taskCount', { count: tpl.tasks.length })}</span>
+                      <span className="text-blue-400/80 inline-flex items-center gap-1">
+                        <ListChecks size={11} /> {t('pm.procedureHint', 'procédure · photos/vidéos')}
+                      </span>
                     </div>
                     {tpl.description && <p className="text-gray-500 text-xs mt-1">{tpl.description}</p>}
                   </div>
+                  <button onClick={() => openClone(tpl.id)}
+                    title={t('pm.copyTo', 'Copier vers un autre équipement')}
+                    className="p-1.5 rounded-lg text-gray-700 hover:text-teal-400 hover:bg-teal-400/10 transition-colors">
+                    <Copy size={13} />
+                  </button>
                   <button onClick={() => handleToggleActive(tpl)}
                     title={tpl.is_active ? t('pm.deactivate') : t('pm.activate')}
                     className={`p-1.5 rounded-lg transition-colors ${tpl.is_active ? 'text-green-400 hover:bg-green-400/10' : 'text-gray-700 hover:text-gray-400 hover:bg-white/5'}`}>
@@ -1109,9 +1150,34 @@ function PmTemplatesConfigTab({ equipmentId }: { equipmentId: string }) {
                     <Trash2 size={13} />
                   </button>
                 </div>
+                {cloneFor === tpl.id && (
+                  <div className="border-t border-white/[0.06] p-4 space-y-3">
+                    <p className="text-sm font-semibold text-white">{t('pm.copyToTitle', 'Copier ce modèle vers…')}</p>
+                    <p className="text-xs text-gray-500">{t('pm.copyToHint', 'Les étapes, photos, vidéos et liens sont copiés.')}</p>
+                    <div className="max-h-52 overflow-y-auto space-y-1 pr-1">
+                      {allEquipment.filter((eq) => eq.id !== equipmentId).map((eq) => (
+                        <label key={eq.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/5 cursor-pointer text-sm text-gray-200">
+                          <input type="checkbox" checked={cloneTargets.includes(eq.id)} onChange={() => toggleCloneTarget(eq.id)}
+                            className="w-4 h-4 rounded border-gray-600 bg-[#0b1120] text-blue-500" />
+                          {eq.name}{eq.location ? <span className="text-gray-600 text-xs">· {eq.location}</span> : null}
+                        </label>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={handleClone} disabled={cloning || cloneTargets.length === 0}
+                        className="bg-teal-600 hover:bg-teal-500 text-white px-4 py-2 rounded-xl text-sm font-bold disabled:opacity-50 flex items-center gap-1.5">
+                        {cloning ? <Loader2 size={13} className="animate-spin" /> : <Copy size={13} />}
+                        {t('pm.copyAction', 'Copier')} ({cloneTargets.length})
+                      </button>
+                      <button onClick={() => setCloneFor(null)} className="text-gray-500 px-4 py-2 border border-white/10 rounded-xl text-sm">
+                        <X size={13} />
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {expandedId === tpl.id && (
                   <div className="border-t border-white/[0.06] p-4">
-                    <PmTemplateTaskList template={tpl} onChange={load} />
+                    <PmStepsEditor template={tpl} onChange={load} />
                   </div>
                 )}
               </div>
@@ -1123,75 +1189,8 @@ function PmTemplatesConfigTab({ equipmentId }: { equipmentId: string }) {
   );
 }
 
-function PmTemplateTaskList({ template, onChange }: { template: PmTemplate; onChange: () => void }) {
-  const { t } = useTranslation();
-  const [newText, setNewText] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  const addTask = async () => {
-    if (!newText.trim()) return;
-    setSaving(true);
-    try {
-      await addPmTemplateTask(template.id, { description: newText.trim(), sort_order: template.tasks.length, is_required: true });
-      setNewText('');
-      onChange();
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const toggleRequired = async (task: PmTemplateTask) => {
-    await updatePmTemplateTask(template.id, task.id, { is_required: !task.is_required });
-    onChange();
-  };
-
-  const removeTask = async (taskId: string) => {
-    await deletePmTemplateTask(template.id, taskId);
-    onChange();
-  };
-
-  return (
-    <div className="space-y-2">
-      {template.tasks.length === 0 && (
-        <p className="text-gray-600 text-xs py-1">{t('pm.noTasks')}</p>
-      )}
-      {template.tasks.map((task, idx) => (
-        <div key={task.id} className="flex items-center gap-3 py-1.5 px-3 rounded-lg" style={{ background: '#0d1117', border: '1px solid #21262d' }}>
-          <span className="text-gray-600 text-xs w-5 text-right">{idx + 1}</span>
-          <p className="flex-1 text-sm text-gray-200">{task.description}</p>
-          <button
-            onClick={() => toggleRequired(task)}
-            className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
-              task.is_required
-                ? 'text-amber-400 border-amber-500/40 bg-amber-500/10'
-                : 'text-gray-600 border-gray-700/40'
-            }`}>
-            {task.is_required ? t('pm.required') : t('pm.optional')}
-          </button>
-          <button onClick={() => removeTask(task.id)} className="p-1 text-gray-600 hover:text-red-400 transition-colors">
-            <Trash2 size={13} />
-          </button>
-        </div>
-      ))}
-      <div className="flex gap-2 items-center">
-        <input
-          value={newText}
-          onChange={(e) => setNewText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') addTask(); }}
-          placeholder={t('pm.newTaskPlaceholder')}
-          className="flex-1 bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 outline-none focus:border-blue-500/50"
-        />
-        <button
-          disabled={saving || !newText.trim()}
-          onClick={addTask}
-          className="px-3 py-2 rounded-lg text-sm font-medium text-white transition-all disabled:opacity-40"
-          style={{ background: '#1d4ed8' }}>
-          {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-        </button>
-      </div>
-    </div>
-  );
-}
+// PM template steps are now edited via the shared <PmStepsEditor> component
+// (description + expected result + photos/videos/links), reused on the plan page.
 
 // ─── Safety Checklist Config Tab ─────────────────────────────────────────────────
 
@@ -1432,10 +1431,17 @@ function HistoryTab({ equipment }: { equipment: Equipment }) {
 // ─── Configuration panel (lazy) ───────────────────────────────────────────────────
 
 function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
+  // Auxiliary (utility) assets have no kiosk/MES layer — only maintenance-relevant
+  // config (intervention types + safety checklist) applies to them.
+  const isAux = equipment.asset_type === 'auxiliary';
+  const visibleConfigTabs = isAux
+    ? CONFIG_TABS.filter((c) => c.id === 'intervention_types' || c.id === 'safety_checklist')
+    : CONFIG_TABS;
+
   const [machine, setMachine] = useState<Machine | null>(null);
   const [allMachines, setAllMachines] = useState<Machine[]>([]);
   const [searched, setSearched] = useState(false);
-  const [configTab, setConfigTab] = useState<ConfigTab>('general');
+  const [configTab, setConfigTab] = useState<ConfigTab>(isAux ? 'intervention_types' : 'general');
   const [form, setForm] = useState<MachineConfigUpdate>({
     display_name:            equipment.name || '',
     page_language:           'fr',
@@ -1509,21 +1515,32 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
 
   return (
     <div className="space-y-4">
-      {/* MES integration info banner — shown when no linked machine */}
-      {!machine && (
-        <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-blue-500/20 bg-blue-500/5 text-sm">
-          <Settings size={15} className="text-blue-400 flex-shrink-0" />
-          <span className="text-blue-300">
-            MES kiosk integration coming soon. Configuration is saved and will activate when a kiosk machine with code{' '}
-            <span className="font-mono text-white">{equipment.code}</span> is linked.
+      {/* Auxiliary assets: maintenance-only, no kiosk/MES */}
+      {isAux ? (
+        <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-teal-500/20 bg-teal-500/5 text-sm">
+          <Power size={15} className="text-teal-400 flex-shrink-0" />
+          <span className="text-teal-300">
+            Auxiliary (utility) asset — maintenance only. No kiosk page, stop/reject categories,
+            operators or MES/OEE. Configure intervention types and the safety checklist used during work orders.
           </span>
         </div>
+      ) : (
+        /* MES integration info banner — shown when no linked machine */
+        !machine && (
+          <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-blue-500/20 bg-blue-500/5 text-sm">
+            <Settings size={15} className="text-blue-400 flex-shrink-0" />
+            <span className="text-blue-300">
+              MES kiosk integration coming soon. Configuration is saved and will activate when a kiosk machine with code{' '}
+              <span className="font-mono text-white">{equipment.code}</span> is linked.
+            </span>
+          </div>
+        )
       )}
 
       {/* Config sub-tab header */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1 overflow-x-auto pb-1">
-          {CONFIG_TABS.map(({ id, label, Icon }) => (
+          {visibleConfigTabs.map(({ id, label, Icon }) => (
             <button
               key={id}
               onClick={() => setConfigTab(id)}
@@ -1614,7 +1631,6 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
         )}
         {configTab === 'intervention_types' && <InterventionTypesConfigTab equipmentId={equipment.id} />}
         {configTab === 'safety_checklist' && <SafetyChecklistConfigTab equipmentId={equipment.id} />}
-        {configTab === 'pm_templates' && <PmTemplatesConfigTab equipmentId={equipment.id} />}
       </div>
     </div>
   );
@@ -1662,11 +1678,14 @@ export default function EquipmentDetail() {
     );
   }
 
+  const isAux = equipment.asset_type === 'auxiliary';
+
+  // Auxiliary (utility) assets have no kiosk/MES layer → no operator-intervention history tab.
   const tabs: { id: TabId; label: string }[] = [
     { id: 'overview',       label: t('equipment.tabOverview') },
     { id: 'workorders',     label: `${t('equipment.tabWorkOrders')} (${wos.length})` },
     { id: 'plans',          label: `${t('equipment.tabPlans')} (${plans.length})` },
-    { id: 'history',        label: 'Historique' },
+    ...(isAux ? [] : [{ id: 'history' as TabId, label: 'Historique' }]),
     { id: 'configuration',  label: 'Configuration' },
   ];
 
@@ -1684,15 +1703,20 @@ export default function EquipmentDetail() {
 
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center flex-shrink-0">
-              <Cpu size={24} className="text-blue-400" />
+            <div className={`w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 ${isAux ? 'bg-teal-500/10' : 'bg-blue-500/10'}`}>
+              {isAux ? <Power size={24} className="text-teal-400" /> : <Cpu size={24} className="text-blue-400" />}
             </div>
             <div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
                 <h1 className="text-2xl font-bold text-white">{equipment.name}</h1>
                 <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${STATUS_COLORS[equipment.status] ?? STATUS_COLORS.stopped}`}>
                   {equipment.status.replace('_', ' ')}
                 </span>
+                {isAux && (
+                  <span className="text-xs font-medium px-2 py-0.5 rounded-full border border-teal-500/20 bg-teal-500/10 text-teal-400">
+                    {equipment.subtype || t('equipment.filterAuxiliary', 'Auxiliary')}
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-4 mt-1">
                 <span className="text-gray-500 text-sm font-mono">{equipment.code}</span>
@@ -1743,11 +1767,147 @@ export default function EquipmentDetail() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4 space-y-3">
             <h3 className="text-sm font-semibold text-gray-300">{t('equipment.specifications')}</h3>
-            <SpecRow label={t('equipment.manufacturer')} value={equipment.manufacturer} />
-            <SpecRow label={t('equipment.model')} value={equipment.model} />
-            <SpecRow label={t('equipment.serialNumber')} value={equipment.serial_number} />
-            <SpecRow label={t('equipment.year')} value={equipment.manufacturing_year?.toString()} />
-            <SpecRow label={t('equipment.criticality')} value={equipment.criticality} />
+            <EditableSpecRow
+              label={t('equipment.name', 'Name')}
+              value={equipment.name}
+              equipmentId={equipment.id}
+              field="name"
+              placeholder="Machine name"
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, name: v } : prev))}
+            />
+            <EditableSpecRow
+              label={t('equipment.functionLabel', 'Function')}
+              value={equipment.function_label}
+              equipmentId={equipment.id}
+              field="function_label"
+              placeholder="e.g. CNC grooving machine"
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, function_label: v } : prev))}
+            />
+            <EditableSpecRow
+              label={t('equipment.code', 'Code')}
+              value={equipment.code}
+              equipmentId={equipment.id}
+              field="code"
+              placeholder="e.g. MILL-GRO-01"
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, code: v } : prev))}
+            />
+            <EditableSpecRow
+              label={t('equipment.equipmentType', 'Type')}
+              value={equipment.asset_type}
+              equipmentId={equipment.id}
+              field="asset_type"
+              type="select"
+              options={[
+                { value: 'production', label: t('equipment.filterProduction', 'Production') },
+                { value: 'auxiliary', label: t('equipment.filterAuxiliary', 'Auxiliary') },
+              ]}
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, asset_type: v as 'production' | 'auxiliary' } : prev))}
+            />
+            <EditableSpecRow
+              label={t('equipment.colSubtype', 'Subtype')}
+              value={equipment.subtype}
+              equipmentId={equipment.id}
+              field="subtype"
+              placeholder="e.g. Conveyor, HVAC, Sewing machine"
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, subtype: v } : prev))}
+            />
+            <EditableSpecRow
+              label={t('equipment.manufacturer')}
+              value={equipment.manufacturer}
+              equipmentId={equipment.id}
+              field="manufacturer"
+              placeholder="e.g. SCHELLING"
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, manufacturer: v } : prev))}
+            />
+            <EditableSpecRow
+              label={t('equipment.model')}
+              value={equipment.model}
+              equipmentId={equipment.id}
+              field="model"
+              placeholder="e.g. FH6"
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, model: v } : prev))}
+            />
+            <EditableSpecRow
+              label={t('equipment.serialNumber')}
+              value={equipment.serial_number}
+              equipmentId={equipment.id}
+              field="serial_number"
+              placeholder="e.g. SN-2024-00123"
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, serial_number: v } : prev))}
+            />
+            <EditableSpecRow
+              label={t('equipment.year')}
+              value={equipment.manufacturing_year?.toString()}
+              equipmentId={equipment.id}
+              field="manufacturing_year"
+              type="number"
+              placeholder="e.g. 2021"
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, manufacturing_year: v ? Number(v) : undefined } : prev))}
+            />
+            <EditableSpecRow
+              label={t('equipment.criticality')}
+              value={equipment.criticality}
+              equipmentId={equipment.id}
+              field="criticality"
+              type="select"
+              options={['low', 'medium', 'high', 'critical'].map((c) => ({ value: c, label: c.charAt(0).toUpperCase() + c.slice(1) }))}
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, criticality: v } : prev))}
+            />
+            <EditableSpecRow
+              label={t('equipment.department', 'Department')}
+              value={equipment.department}
+              equipmentId={equipment.id}
+              field="department"
+              placeholder="e.g. Assemblage"
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, department: v } : prev))}
+            />
+            <EditableSpecRow
+              label={t('equipment.family', 'Family')}
+              value={equipment.family}
+              equipmentId={equipment.id}
+              field="family"
+              placeholder="e.g. Edgebander"
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, family: v } : prev))}
+            />
+            <EditableSpecRow
+              label={t('equipment.pmStrategy', 'PM strategy')}
+              value={equipment.pm_strategy}
+              equipmentId={equipment.id}
+              field="pm_strategy"
+              placeholder="e.g. Préventif calendrier + inspection"
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, pm_strategy: v } : prev))}
+            />
+            <EditableSpecRow
+              label={t('equipment.cleaningPriority', 'Cleaning priority')}
+              value={equipment.cleaning_priority}
+              equipmentId={equipment.id}
+              field="cleaning_priority"
+              type="select"
+              options={[
+                { value: '', label: '—' },
+                { value: 'Basse', label: 'Basse' },
+                { value: 'Moyenne', label: 'Moyenne' },
+                { value: 'Haute', label: 'Haute' },
+              ]}
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, cleaning_priority: v } : prev))}
+            />
+            {equipment.asset_type === 'auxiliary' && (
+              <ParentMachineRow
+                equipmentId={equipment.id}
+                currentParentId={equipment.parent_equipment_id ?? null}
+                onSaved={(pid) => setEquipment((prev) => (prev ? { ...prev, parent_equipment_id: pid } : prev))}
+              />
+            )}
+            <EditableSpecRow
+              label={t('equipment.height3d', '3D height')}
+              value={equipment.height_3d != null ? String(equipment.height_3d) : undefined}
+              equipmentId={equipment.id}
+              field="height_3d"
+              type="number"
+              placeholder="e.g. 4.5"
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, height_3d: v ? Number(v) : null } : prev))}
+            />
+            <ModelUploadRow equipment={equipment} onSaved={(url) => setEquipment((prev) => (prev ? { ...prev, model_url: url } : prev))} />
             {equipment.description && (
               <div className="pt-2 border-t border-white/[0.04]">
                 <p className="text-xs text-gray-600 mb-1">{t('common.description')}</p>
@@ -1761,7 +1921,7 @@ export default function EquipmentDetail() {
               <StatCard label={t('equipment.totalWOs')} value={String(wos.length)} icon={<AlertCircle size={16} className="text-blue-400" />} />
               <StatCard label={t('equipment.openWOs')} value={String(wos.filter((w) => w.status === 'open' || w.status === 'in_progress').length)} icon={<Clock size={16} className="text-amber-400" />} />
               <StatCard label={t('equipment.activePlans')} value={String(plans.length)} icon={<Calendar size={16} className="text-green-400" />} />
-              <StatCard label={t('equipment.avgRepair')} value={`${(wos.filter((w) => w.repair_hours).reduce((a, w) => a + (w.repair_hours ?? 0), 0) / Math.max(wos.filter((w) => w.repair_hours).length, 1)).toFixed(1)}h`} icon={<Gauge size={16} className="text-purple-400" />} />
+              <StatCard label={t('equipment.avgRepair')} value={humanHours(wos.filter((w) => w.repair_hours).reduce((a, w) => a + (w.repair_hours ?? 0), 0) / Math.max(wos.filter((w) => w.repair_hours).length, 1))} icon={<Gauge size={16} className="text-purple-400" />} />
             </div>
           </div>
         </div>
@@ -1862,6 +2022,11 @@ export default function EquipmentDetail() {
               );
             })
           )}
+
+          {/* Reusable PM procedures (templates) — illustrated step-by-step (photos/videos) */}
+          <div className="pt-5 mt-3 border-t border-white/[0.06]">
+            <PmTemplatesConfigTab equipmentId={equipment.id} />
+          </div>
         </div>
       )}
 
@@ -1872,11 +2037,184 @@ export default function EquipmentDetail() {
   );
 }
 
-function SpecRow({ label, value }: { label: string; value?: string | null }) {
+/** Spec row whose value can be edited inline and saved via PATCH /api/equipment/{id}.
+ *  Supports free text, numbers and a fixed set of options (select). */
+/** Upload / replace a 3D model (.glb) for the equipment, saved to model_url. */
+function ModelUploadRow({ equipment, onSaved }: { equipment: Equipment; onSaved: (url: string | null) => void }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const onFile = async (f: File) => {
+    setBusy(true); setErr('');
+    try {
+      const up = await uploadFile(f);
+      await api.patch(`/api/equipment/${equipment.id}`, { model_url: up.url });
+      onSaved(up.url);
+    } catch (e) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setErr(msg ?? 'Upload failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    await api.patch(`/api/equipment/${equipment.id}`, { model_url: null });
+    onSaved(null);
+  };
+
   return (
-    <div className="flex items-center justify-between py-1.5 border-b border-white/[0.03] last:border-0">
-      <span className="text-xs text-gray-600">{label}</span>
-      <span className="text-sm text-gray-300">{value ?? '—'}</span>
+    <div className="flex items-center justify-between gap-2 py-1.5 border-b border-white/[0.03] last:border-0">
+      <span className="text-xs text-gray-600 flex-shrink-0">3D model</span>
+      <div className="flex items-center gap-2">
+        {err ? <span className="text-xs text-red-400">{err}</span>
+          : equipment.model_url ? <span className="text-xs text-green-400">✓ uploaded</span>
+          : <span className="text-xs text-gray-500">—</span>}
+        <button onClick={() => fileRef.current?.click()} disabled={busy}
+          className="text-xs text-blue-400 hover:text-blue-300 border border-blue-500/30 rounded px-2 py-0.5 disabled:opacity-50">
+          {busy ? 'Uploading…' : (equipment.model_url ? 'Replace .glb' : 'Upload .glb')}
+        </button>
+        {equipment.model_url && (
+          <button onClick={remove} className="text-xs text-gray-500 hover:text-red-400">Remove</button>
+        )}
+        <input ref={fileRef} type="file" accept=".glb,.gltf" className="hidden"
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = ''; }} />
+      </div>
+    </div>
+  );
+}
+
+function EditableSpecRow({
+  label, value, equipmentId, field, onSaved, placeholder, type = 'text', options,
+}: {
+  label: string;
+  value?: string | null;
+  equipmentId: string;
+  field: string;
+  onSaved: (value: string) => void;
+  placeholder?: string;
+  type?: 'text' | 'number' | 'select';
+  options?: { value: string; label: string }[];
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value ?? '');
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const raw = draft.trim();
+      // numbers go as int|null, everything else as the trimmed string
+      const payloadVal: string | number | null =
+        type === 'number' ? (raw === '' ? null : Number(raw)) : raw;
+      await api.patch(`/api/equipment/${equipmentId}`, { [field]: payloadVal });
+      onSaved(raw);
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cancel = () => { setDraft(value ?? ''); setEditing(false); };
+  const startEdit = () => { setDraft(value ?? ''); setEditing(true); };
+
+  const editorCls =
+    'bg-[#0b1120] border border-white/[0.1] rounded px-2 py-1 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500 disabled:opacity-50';
+
+  return (
+    <div className="flex items-center justify-between gap-2 py-1.5 border-b border-white/[0.03] last:border-0">
+      <span className="text-xs text-gray-600 flex-shrink-0">{label}</span>
+      {editing ? (
+        <div className="flex items-center gap-1.5">
+          {type === 'select' ? (
+            <select
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Escape') cancel(); }}
+              disabled={saving}
+              className={`w-44 ${editorCls}`}
+            >
+              {(options ?? []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          ) : (
+            <input
+              autoFocus
+              type={type === 'number' ? 'number' : 'text'}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') cancel(); }}
+              placeholder={placeholder}
+              disabled={saving}
+              className={`w-44 ${editorCls}`}
+            />
+          )}
+          <button onClick={save} disabled={saving} className="text-green-400 hover:text-green-300 p-0.5 disabled:opacity-50">
+            {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={14} />}
+          </button>
+          <button onClick={cancel} disabled={saving} className="text-gray-500 hover:text-red-400 p-0.5 disabled:opacity-50">
+            <X size={14} />
+          </button>
+        </div>
+      ) : (
+        <button onClick={startEdit} className="group flex items-center gap-1.5 text-sm text-gray-300 hover:text-white">
+          <span>{value || '—'}</span>
+          <Pencil size={11} className="text-gray-600 group-hover:text-blue-400" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Shows / edits the parent machine a cobot or conveyor serves (saved as parent_equipment_id). */
+function ParentMachineRow({ equipmentId, currentParentId, onSaved }: {
+  equipmentId: string;
+  currentParentId: string | null;
+  onSaved: (parentId: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(currentParentId ?? '');
+  const [saving, setSaving] = useState(false);
+  const [machines, setMachines] = useState<Equipment[]>([]);
+  useEffect(() => { fetchEquipment({ limit: '500' }).then(setMachines).catch(() => {}); }, []);
+  const parentName = machines.find((m) => m.id === currentParentId)?.name ?? null;
+  const options = machines
+    .filter((m) => m.id !== equipmentId && (m.subtype ?? '').toLowerCase() !== 'cobot' && (m.subtype ?? '').toLowerCase() !== 'conveyor')
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await saveMachineLayout(equipmentId, { parent_equipment_id: draft || null });
+      onSaved(draft || null);
+      setEditing(false);
+    } finally { setSaving(false); }
+  };
+  const editorCls = 'bg-[#0b1120] border border-white/[0.1] rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-blue-500 disabled:opacity-50';
+
+  return (
+    <div className="flex items-center justify-between gap-2 py-1.5 border-b border-white/[0.03] last:border-0">
+      <span className="text-xs text-gray-600 flex-shrink-0">Parent machine</span>
+      {editing ? (
+        <div className="flex items-center gap-1.5">
+          <select autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} disabled={saving} className={`w-44 ${editorCls}`}>
+            <option value="">— none —</option>
+            {options.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+          <button onClick={save} disabled={saving} className="text-green-400 hover:text-green-300 p-0.5 disabled:opacity-50">
+            {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={14} />}
+          </button>
+          <button onClick={() => { setDraft(currentParentId ?? ''); setEditing(false); }} disabled={saving} className="text-gray-500 hover:text-red-400 p-0.5 disabled:opacity-50">
+            <X size={14} />
+          </button>
+        </div>
+      ) : (
+        <button onClick={() => { setDraft(currentParentId ?? ''); setEditing(true); }} className="group flex items-center gap-1.5 text-sm text-gray-300 hover:text-white">
+          <span>{parentName || '—'}</span>
+          <Pencil size={11} className="text-gray-600 group-hover:text-blue-400" />
+        </button>
+      )}
     </div>
   );
 }

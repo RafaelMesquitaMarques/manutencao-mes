@@ -117,3 +117,49 @@ export async function receivePurchaseOrder(orderId: string, items: { id: string;
   const { data } = await api.patch(`/api/supplier-orders/${orderId}/receive`, { items });
   return data;
 }
+
+// ── Auto-replenishment ───────────────────────────────────────────────────────
+
+export interface ReplenishmentItem {
+  stock_item_id: string;
+  code: string;
+  description: string;
+  quantity_in_stock: number;
+  min_quantity: number | null;
+  unit: string;
+  unit_cost: number | null;
+  suggested_quantity: number;
+  estimated_cost: number | null;
+}
+
+export interface ReplenishmentGroup {
+  supplier_id: string;
+  supplier_name: string;
+  supplier_code: string | null;
+  currency: string;
+  lead_time_days: number | null;
+  items: ReplenishmentItem[];
+  estimated_total: number;
+}
+
+export interface ReplenishmentPreview {
+  groups: ReplenishmentGroup[];
+  low_stock_total: number;
+  orderable: number;
+  already_ordered: number;
+  without_supplier: number;
+  without_supplier_sample: { stock_item_id: string; code: string; description: string; quantity_in_stock: number }[];
+}
+
+export async function fetchReplenishmentPreview(): Promise<ReplenishmentPreview> {
+  const { data } = await api.get('/api/supplier-orders/replenishment/preview');
+  return data;
+}
+
+export async function generateReplenishment(
+  items: { stock_item_id: string; quantity: number }[],
+  notes?: string,
+): Promise<{ created: PurchaseOrder[]; skipped_no_supplier: number; skipped_already_ordered: number }> {
+  const { data } = await api.post('/api/supplier-orders/replenishment/generate', { items, notes });
+  return data;
+}

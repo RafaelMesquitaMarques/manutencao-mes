@@ -218,6 +218,7 @@ class Plant(Base):
     name       = Column(String(200), nullable=False)
     address    = Column(String(500))
     timezone   = Column(String(50), default="America/Toronto")
+    floor_plan_url = Column(String(500))   # uploaded top-down plant layout image (factory map)
     active     = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -323,6 +324,33 @@ class Equipment(Base):
     location           = Column(String(200))
     status             = Column(SAEnum(EquipmentStatus, native_enum=False), default=EquipmentStatus.running)
     criticality        = Column(String(20), default="medium")
+    # production = has the machine/kiosk/MES layer; auxiliary = maintenance-only (generator, compressor, HVAC, conveyor…)
+    asset_type         = Column(String(20), default="production")
+    subtype            = Column(String(100), nullable=True)   # free-text descriptive (Generator, Compressor, HVAC…)
+    parent_equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True, index=True)  # machine a cobot/conveyor serves
+    # Resizable "orbit" rectangle (map px) — drop a cobot/conveyor inside to auto-link it. Null = footprint+margin.
+    orbit_x            = Column(Float, nullable=True)
+    orbit_y            = Column(Float, nullable=True)
+    orbit_w            = Column(Float, nullable=True)
+    orbit_h            = Column(Float, nullable=True)
+    function_label     = Column(String(300))   # what the machine does, e.g. "Fraiseuse à contrôle numérique [CNC grooving machine]"
+    department         = Column(String(200))   # Excel "Division proposée" — org/budget grouping (level 2)
+    family             = Column(String(200))   # Excel "Famille maintenance proposée" — technical family (level 4)
+    pm_strategy        = Column(String(300))   # Excel "Stratégie PM proposée"
+    cleaning_priority  = Column(String(50))    # Excel "Priorité de nettoyage"
+    # ── Factory map / digital-twin layout ──
+    pos_x              = Column(Float, nullable=True)
+    pos_y              = Column(Float, nullable=True)
+    pos_w              = Column(Float, nullable=True)
+    pos_h              = Column(Float, nullable=True)
+    rotation_deg       = Column(Float, nullable=True)
+    icon_url           = Column(String(500), nullable=True)
+    model_url          = Column(String(500), nullable=True)   # uploaded .glb/.gltf 3D model
+    height_3d          = Column(Float, nullable=True)         # editable 3D block height (world units)
+    model_scale        = Column(Float, nullable=True)         # 3D size multiplier — X axis (defaults uniform)
+    scale_y            = Column(Float, nullable=True)         # 3D size multiplier — Y axis (height)
+    scale_z            = Column(Float, nullable=True)         # 3D size multiplier — Z axis (depth)
+    block_kind         = Column(String(40), nullable=True)    # explicit 3D shape: 'cobot' (animated), 'box', … (null = auto)
     hour_meter         = Column(Float, default=0)
     specifications     = Column(JSON, default={})
     qr_code            = Column(Text)
@@ -374,6 +402,10 @@ class WorkOrder(Base):
     total_cost       = Column(Float)
     notes            = Column(Text)
     completion_ratio = Column(Float, default=0)
+    # Checklist rigor copied from the PM template at generation: advisory | required | strict
+    checklist_enforcement = Column(String(20), default="advisory")
+    # Manual priority order within a technician's scheduler column (lower = higher priority)
+    board_order = Column(Integer, nullable=True)
 
     # Execution details
     executor_id    = Column(UUID(as_uuid=True), ForeignKey("technicians.id"), nullable=True)
@@ -428,6 +460,7 @@ class WorkOrder(Base):
     wo_costs        = relationship("WOCost", back_populates="work_order", cascade="all, delete-orphan")
     wo_actions      = relationship("WOAction", back_populates="work_order", cascade="all, delete-orphan")
     supplier_orders = relationship("SupplierOrder", back_populates="work_order", cascade="all, delete-orphan")
+    technician_links = relationship("WorkOrderTechnician", back_populates="work_order", cascade="all, delete-orphan")
 
 
 # ─── Maintenance Plan ──────────────────────────────────────────────────────────
@@ -499,6 +532,9 @@ class PmTemplate(Base):
     estimated_hours = Column(Float, default=1.0)
     is_active       = Column(Boolean, default=True)
     sort_order      = Column(Integer, default=0)
+    # How strictly the checklist is enforced on the work order:
+    # advisory (guide only) | required (must check required steps) | strict (also a proof photo)
+    enforcement     = Column(String(20), default="advisory")
 
     plant     = relationship("Plant", foreign_keys=[plant_id])
     equipment = relationship("Equipment", back_populates="pm_templates")
@@ -509,13 +545,33 @@ class PmTemplate(Base):
 class PmTemplateTask(Base):
     __tablename__ = "pm_template_tasks"
 
-    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    template_id = Column(UUID(as_uuid=True), ForeignKey("pm_templates.id", ondelete="CASCADE"), nullable=False)
-    description = Column(Text, nullable=False)
-    sort_order  = Column(Integer, default=0)
-    is_required = Column(Boolean, default=True)
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    template_id     = Column(UUID(as_uuid=True), ForeignKey("pm_templates.id", ondelete="CASCADE"), nullable=False)
+    description     = Column(Text, nullable=False)
+    expected_result = Column(Text, nullable=True)   # what must be observed/verified for this step
+    sort_order      = Column(Integer, default=0)
+    is_required     = Column(Boolean, default=True)
 
     template = relationship("PmTemplate", back_populates="tasks")
+    media    = relationship(
+        "PmTaskMedia", back_populates="task",
+        cascade="all, delete-orphan", order_by="PmTaskMedia.sort_order",
+    )
+
+
+class PmTaskMedia(Base):
+    """Photo / video / external link illustrating a PM template step (SOP)."""
+    __tablename__ = "pm_task_media"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id    = Column(UUID(as_uuid=True), ForeignKey("pm_template_tasks.id", ondelete="CASCADE"), nullable=False)
+    media_type = Column(String(20), nullable=False)   # image | video | link
+    url        = Column(String(1000), nullable=False) # served path (/api/media/..) or external URL
+    caption    = Column(String(300), nullable=True)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    task = relationship("PmTemplateTask", back_populates="media")
 
 
 # ─── Plan Occurrences & Recommended Parts ──────────────────────────────────────
@@ -611,7 +667,10 @@ class StockItem(Base):
     unit         = Column(String(50),  default="Unitaire")
     quantity     = Column(Float, default=0)
     min_quantity = Column(Float, nullable=True)
-    unit_cost    = Column(Float)
+    unit_cost    = Column(Float)                      # standard cost (manual) — used to value WO/ticket consumption
+    average_cost       = Column(Float, nullable=True) # weighted average of all received purchases
+    last_purchase_cost = Column(Float, nullable=True) # unit cost of the most recent receipt
+    last_purchase_date = Column(Date,  nullable=True) # date of that most recent receipt
     warehouse    = Column(String(100), nullable=True)
     location     = Column(String(200))
     supplier_id  = Column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=True)
@@ -714,6 +773,24 @@ class Technician(Base):
     work_orders   = relationship("WorkOrder", back_populates="executor", foreign_keys="WorkOrder.executor_id")
     labor_records = relationship("LaborRecord", back_populates="technician")
     assigned_maintenance_plans = relationship("MaintenancePlan", back_populates="assigned_technician", foreign_keys="MaintenancePlan.assigned_technician_id")
+    work_order_links = relationship("WorkOrderTechnician", back_populates="technician", cascade="all, delete-orphan")
+
+
+class WorkOrderTechnician(Base):
+    """Many-to-many: technicians assigned to a work order.
+
+    `executor_id` on WorkOrder remains the primary technician (mirrors the
+    is_primary row) for backward compatibility with single-technician flows.
+    """
+    __tablename__ = "work_order_technicians"
+
+    work_order_id = Column(UUID(as_uuid=True), ForeignKey("work_orders.id", ondelete="CASCADE"), primary_key=True)
+    technician_id = Column(UUID(as_uuid=True), ForeignKey("technicians.id", ondelete="CASCADE"), primary_key=True)
+    is_primary    = Column(Boolean, default=False)
+    assigned_at   = Column(DateTime(timezone=True), server_default=func.now())
+
+    work_order = relationship("WorkOrder", back_populates="technician_links")
+    technician = relationship("Technician", back_populates="work_order_links")
 
 
 # ─── Labor Record ──────────────────────────────────────────────────────────────
@@ -794,7 +871,10 @@ class WOAction(Base):
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
 
     # ── PM checklist ──
-    description     = Column(Text, nullable=True)
+    description      = Column(Text, nullable=True)
+    expected_result  = Column(Text, nullable=True)            # copied from the template step
+    template_task_id = Column(UUID(as_uuid=True), nullable=True)  # soft ref → live SOP media
+    proof_photo_url  = Column(String(1000), nullable=True)    # technician's evidence (strict mode)
     is_required     = Column(Boolean, default=True)
     is_completed    = Column(Boolean, default=False)
     completed_at    = Column(DateTime(timezone=True), nullable=True)
@@ -836,6 +916,8 @@ class Machine(Base):
     id                       = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name                     = Column(String(200), nullable=False)
     code                     = Column(String(50), unique=True, nullable=True)
+    serial_number            = Column(String(200), nullable=True)
+    equipment_id             = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True)
     department               = Column(String(200))
     location                 = Column(String(200))
     is_active                = Column(Boolean, default=True)
@@ -861,8 +943,17 @@ class Machine(Base):
     hourly_rate_currency     = Column(SAEnum(HourlyRateCurrency, native_enum=False), default=HourlyRateCurrency.CAD)
     target_count_per_shift   = Column(Integer, nullable=True)
     shifts_config            = Column(JSON, nullable=True)
+    # ── Factory map / digital-twin layout ──
+    plant_id                 = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    pos_x                    = Column(Float, nullable=True)   # top-down map coordinates
+    pos_y                    = Column(Float, nullable=True)
+    pos_w                    = Column(Float, nullable=True)   # block size on the map
+    pos_h                    = Column(Float, nullable=True)
+    rotation_deg             = Column(Float, nullable=True)
+    icon_url                 = Column(String(500), nullable=True)  # machine photo / icon
     created_at               = Column(DateTime(timezone=True), server_default=func.now())
 
+    equipment          = relationship("Equipment", foreign_keys=[equipment_id])
     alerts             = relationship("MaintenanceAlert", back_populates="machine")
     tickets            = relationship("MaintenanceTicket", back_populates="machine")
     stops              = relationship("MachineStop", back_populates="machine", cascade="all, delete-orphan")
@@ -870,6 +961,149 @@ class Machine(Base):
     production_logs    = relationship("MachineProductionLog", back_populates="machine", cascade="all, delete-orphan")
     stop_categories    = relationship("StopCategory", back_populates="machine", cascade="all, delete-orphan", foreign_keys="StopCategory.machine_id")
     reject_categories  = relationship("RejectCategory", back_populates="machine", cascade="all, delete-orphan")
+
+
+class FactoryZone(Base):
+    """A labelled rectangular area on the factory map (e.g. Parallèle, Assemblage)."""
+    __tablename__ = "factory_zones"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id   = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False)
+    name       = Column(String(200), nullable=False, default="Zone")
+    pos_x      = Column(Float, default=0)
+    pos_y      = Column(Float, default=0)
+    pos_w      = Column(Float, default=300)
+    pos_h      = Column(Float, default=200)
+    color      = Column(String(20), default="#6366f1")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class MapProp(Base):
+    """A decorative, non-tracked block on the factory map (conveyor, lift table, …).
+    Visual context only — NOT an asset, so no status/tickets. Geometry mirrors
+    equipment (same pos_x/pos_y pixel space → converted to 3D by the same scale)."""
+    __tablename__ = "map_props"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id     = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False, index=True)
+    equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True, index=True)  # optional live link
+    kind         = Column(String(40), nullable=False, default="box")   # catalog key: conveyor, lift_table, …
+    label        = Column(String(200), nullable=True)
+    model_url    = Column(String(500), nullable=True)   # uploaded .glb override (else procedural placeholder)
+    pos_x        = Column(Float, default=0)
+    pos_y        = Column(Float, default=0)
+    pos_w        = Column(Float, default=120)
+    pos_h        = Column(Float, default=120)
+    rotation_deg = Column(Float, default=0)
+    model_scale  = Column(Float, nullable=True)
+    scale_y      = Column(Float, nullable=True)
+    scale_z      = Column(Float, nullable=True)
+    height_3d    = Column(Float, nullable=True)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ── Robot cells (FANUC CRX cobots) — telemetry from connected cells ──────────────
+# Each cell is an EXISTING Equipment (equipment_id). Read-only: the MES receives,
+# stores and displays cell data; it never commands motion or safety.
+class RobotCell(Base):
+    """Configuration of a robot cell, attached 1:1 to an existing equipment."""
+    __tablename__ = "robot_cells"
+
+    id                 = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    equipment_id       = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=False, unique=True, index=True)
+    cell_model         = Column(String(50))    # CRX-25iA | CRX-30iA | CRX-30iAL
+    controller         = Column(String(80), default="FANUC R-30iB Mini Plus")
+    ip_address         = Column(String(64), nullable=True)
+    line               = Column(String(160), nullable=True)   # production line / area / station
+    has_machine_motion = Column(Boolean, default=False)        # Vention MachineMotion 2 present
+    has_gate           = Column(Boolean, default=False)
+    has_scanner        = Column(Boolean, default=False)        # laser scanner / light curtain
+    has_safety_module  = Column(Boolean, default=False)
+    io_modules         = Column(JSON, default=list)            # extra modules / I/O present
+    ingest_token       = Column(String(120), nullable=True)    # per-cell push secret (provisional auth)
+    notes              = Column(Text, nullable=True)
+    created_at         = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at         = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class RobotCellState(Base):
+    """Latest live snapshot for a cell (upserted on each telemetry push)."""
+    __tablename__ = "robot_cell_states"
+
+    id                  = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cell_id             = Column(UUID(as_uuid=True), ForeignKey("robot_cells.id"), nullable=False, unique=True, index=True)
+    # connectivity / mode
+    online              = Column(Boolean, default=False)
+    run_state           = Column(String(20), nullable=True)   # running | stopped | fault | idle
+    op_mode             = Column(String(20), nullable=True)   # auto | manual
+    servo_on            = Column(Boolean, nullable=True)
+    robot_ready         = Column(Boolean, nullable=True)
+    # alarms
+    alarm_active        = Column(Boolean, default=False)
+    alarm_code          = Column(String(40), nullable=True)
+    alarm_message       = Column(String(300), nullable=True)
+    # production
+    current_program     = Column(String(120), nullable=True)
+    current_recipe      = Column(String(120), nullable=True)
+    current_wo          = Column(String(120), nullable=True)
+    current_sku         = Column(String(120), nullable=True)
+    cycle_running       = Column(Boolean, nullable=True)
+    cycle_complete      = Column(Boolean, nullable=True)
+    last_cycle_s        = Column(Float, nullable=True)
+    avg_cycle_s         = Column(Float, nullable=True)
+    good_count          = Column(Integer, nullable=True)
+    reject_count        = Column(Integer, nullable=True)
+    total_count         = Column(Integer, nullable=True)
+    # safety (read-only mirror)
+    safety_ok           = Column(Boolean, nullable=True)
+    estop_active        = Column(Boolean, nullable=True)
+    scanner_zone        = Column(String(20), nullable=True)   # clear | occupied
+    collaborative_mode  = Column(Boolean, nullable=True)
+    reduced_speed       = Column(Boolean, nullable=True)
+    stopped_by_safety   = Column(Boolean, nullable=True)
+    gate_state          = Column(String(20), nullable=True)   # open | closed | moving | fault
+    reset_required      = Column(Boolean, nullable=True)
+    # maintenance / reliability
+    robot_running_hours = Column(Float, nullable=True)
+    servo_hours         = Column(Float, nullable=True)
+    cycle_count         = Column(Integer, nullable=True)
+    fault_count         = Column(Integer, nullable=True)
+    availability        = Column(Float, nullable=True)
+    mtbf                = Column(Float, nullable=True)
+    mttr                = Column(Float, nullable=True)
+    updated_at          = Column(DateTime(timezone=True), nullable=True, index=True)
+
+
+class RobotCellSample(Base):
+    """Time-series history for trends (TimescaleDB hypertable candidate)."""
+    __tablename__ = "robot_cell_samples"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cell_id      = Column(UUID(as_uuid=True), ForeignKey("robot_cells.id"), nullable=False, index=True)
+    equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=False, index=True)
+    timestamp    = Column(DateTime(timezone=True), nullable=False, index=True)
+    run_state    = Column(String(20), nullable=True)
+    total_count  = Column(Integer, nullable=True)
+    good_count   = Column(Integer, nullable=True)
+    reject_count = Column(Integer, nullable=True)
+    last_cycle_s = Column(Float, nullable=True)
+    availability = Column(Float, nullable=True)
+    alarm_active = Column(Boolean, nullable=True)
+
+
+class RobotCellAlarm(Base):
+    """Alarm log entries raised/cleared by a cell."""
+    __tablename__ = "robot_cell_alarms"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cell_id      = Column(UUID(as_uuid=True), ForeignKey("robot_cells.id"), nullable=False, index=True)
+    equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=False, index=True)
+    code         = Column(String(40), nullable=True)
+    message      = Column(String(300), nullable=True)
+    severity     = Column(String(20), default="warning")   # info | warning | critical
+    raised_at    = Column(DateTime(timezone=True), nullable=False)
+    cleared_at   = Column(DateTime(timezone=True), nullable=True)
+    active       = Column(Boolean, default=True, index=True)
 
 
 class StopCategory(Base):
@@ -1033,6 +1267,44 @@ class MaintenanceTicket(Base):
     machine     = relationship("Machine", back_populates="tickets")
     assigned_to = relationship("User", foreign_keys=[assigned_to_id])
     comments    = relationship("TicketComment", back_populates="ticket", cascade="all, delete-orphan")
+
+
+class EscalationSettings(Base):
+    """Singleton row with SLA thresholds and notification toggles."""
+    __tablename__ = "escalation_settings"
+
+    id                        = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sla_critical_minutes      = Column(Integer, default=10)
+    sla_high_minutes          = Column(Integer, default=30)
+    sla_medium_minutes        = Column(Integer, default=120)
+    sla_low_minutes           = Column(Integer, default=480)
+    max_escalation_level      = Column(Integer, default=3)
+    sms_enabled               = Column(Boolean, default=True)
+    email_enabled             = Column(Boolean, default=True)
+    notify_on_critical_alert  = Column(Boolean, default=True)
+    notify_on_ticket_assigned = Column(Boolean, default=True)
+    notify_on_pm_overdue      = Column(Boolean, default=True)
+    # Ticket lifecycle notifications — sent to the level-0 contact group
+    notify_on_ticket_opened    = Column(Boolean, default=True)
+    notify_on_ticket_completed = Column(Boolean, default=True)
+    # Workflow: can technicians claim unassigned tickets themselves?
+    technician_self_assign     = Column(Boolean, default=True)
+    updated_at                = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class EscalationContact(Base):
+    """Who gets notified at each escalation level (1..max)."""
+    __tablename__ = "escalation_contacts"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    level      = Column(Integer, nullable=False)
+    user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    via_sms    = Column(Boolean, default=True)
+    via_email  = Column(Boolean, default=True)
+    is_active  = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User")
 
 
 class NotificationLog(Base):
@@ -1330,9 +1602,156 @@ class InterventionPart(Base):
     item_description = Column(Text, nullable=True)
     quantity_used    = Column(Float, default=1.0)
     unit             = Column(String(50), nullable=True)
+    unit_cost        = Column(Float, nullable=True)   # snapshot of stock price at usage time
+    total_cost       = Column(Float, nullable=True)
     added_by_id      = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     added_at         = Column(DateTime(timezone=True), server_default=func.now())
     approval_status  = Column(String(20), default="pending")
     approved_by_id   = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     approved_at      = Column(DateTime(timezone=True), nullable=True)
     rejection_reason = Column(Text, nullable=True)
+
+
+# ─── Maintenance Intelligence Module ─────────────────────────────────────────
+
+class AIInsight(Base):
+    """
+    Stores every generated intelligence insight.
+    One record per generation request (language + period + type).
+    Enables historical comparison and audit trail.
+    """
+    __tablename__ = "ai_insights"
+
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id         = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    insight_type     = Column(SAEnum(
+                           "daily_summary", "machine_risk", "top_irritants",
+                           "trend_analysis", "spare_parts", "technician_workload",
+                           "full_report",
+                           name="insighttype", native_enum=False
+                       ), nullable=False, default="full_report")
+    language         = Column(String(5), nullable=False, default="en")   # en | fr | es
+    period_start     = Column(DateTime(timezone=True), nullable=False)
+    period_end       = Column(DateTime(timezone=True), nullable=False)
+    period_days      = Column(Integer, nullable=False, default=7)
+
+    # Raw structured findings from calculation engine (always stored)
+    findings_json    = Column(JSON, nullable=False, default={})
+
+    # Natural language output (empty string if no API key)
+    insight_text     = Column(Text, nullable=False, default="")
+    ai_generated     = Column(Boolean, nullable=False, default=False)
+    generated_by_model = Column(String(100), nullable=True)             # e.g. "claude-sonnet-4-6"
+
+    generated_at     = Column(DateTime(timezone=True), server_default=func.now())
+    generated_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    recommendations  = relationship("AIRecommendation", back_populates="insight",
+                                    cascade="all, delete-orphan")
+
+
+class AIRecommendation(Base):
+    """
+    Individual recommended actions extracted from an insight.
+    Users can acknowledge or dismiss each one.
+    """
+    __tablename__ = "ai_recommendations"
+
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    insight_id       = Column(UUID(as_uuid=True), ForeignKey("ai_insights.id",
+                                                              ondelete="CASCADE"),
+                              nullable=False)
+
+    title            = Column(String(300), nullable=False)
+    evidence         = Column(Text, nullable=False)
+    impact           = Column(Text, nullable=False)
+    recommendation   = Column(Text, nullable=False)
+    risk_level       = Column(SAEnum(
+                           "low", "medium", "high", "critical",
+                           name="rec_risk_level", native_enum=False
+                       ), nullable=False, default="medium")
+
+    related_machine_id   = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
+    related_equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True)
+    related_category     = Column(String(100), nullable=True)
+    related_period       = Column(String(100), nullable=True)
+
+    confidence           = Column(Float, nullable=True)
+
+    status               = Column(SAEnum(
+                               "pending", "acknowledged", "dismissed",
+                               name="rec_status", native_enum=False
+                           ), nullable=False, default="pending")
+    acknowledged_by      = Column(String(200), nullable=True)
+    acknowledged_at      = Column(DateTime(timezone=True), nullable=True)
+    created_at           = Column(DateTime(timezone=True), server_default=func.now())
+
+    insight              = relationship("AIInsight", back_populates="recommendations")
+
+
+class MachineRiskScore(Base):
+    """
+    Computed risk score per machine / equipment.
+    Recalculated on every intelligence generation run. History is preserved.
+    """
+    __tablename__ = "machine_risk_scores"
+
+    id                      = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    machine_id              = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
+    equipment_id            = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True)
+    machine_name            = Column(String(200), nullable=False)
+
+    score                   = Column(Float, nullable=False)
+    risk_level              = Column(SAEnum(
+                                  "low", "medium", "high", "critical",
+                                  name="risk_score_level", native_enum=False
+                              ), nullable=False, default="low")
+
+    hours_since_last_ticket = Column(Float, nullable=True)
+    historical_mtbf_hours   = Column(Float, nullable=True)
+    recent_ticket_count     = Column(Integer, nullable=False, default=0)
+    criticality_factor      = Column(Float, nullable=False, default=1.0)
+    top_failure_modes       = Column(JSON, nullable=True)
+
+    computed_at             = Column(DateTime(timezone=True), server_default=func.now())
+    insight_id              = Column(UUID(as_uuid=True), ForeignKey("ai_insights.id",
+                                                                    ondelete="SET NULL"),
+                                    nullable=True)
+
+
+class SparePartRisk(Base):
+    """
+    Risk assessment per spare part.
+    Identifies parts below safety stock or with abnormal consumption.
+    """
+    __tablename__ = "spare_parts_risk"
+
+    id                      = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    stock_item_id           = Column(UUID(as_uuid=True), ForeignKey("stock_items.id"),
+                                    nullable=False)
+
+    part_code               = Column(String(100), nullable=False)
+    part_name               = Column(String(300), nullable=False)
+
+    current_qty             = Column(Float, nullable=False, default=0)
+    safety_qty              = Column(Float, nullable=False, default=0)
+
+    avg_consumption_30d     = Column(Float, nullable=False, default=0)
+    recent_consumption_30d  = Column(Float, nullable=False, default=0)
+    consumption_trend       = Column(SAEnum(
+                                  "improved", "stable", "deteriorated", "abnormal",
+                                  name="consumption_trend", native_enum=False
+                              ), nullable=False, default="stable")
+
+    linked_machines         = Column(JSON, nullable=True, default=list)
+
+    risk_level              = Column(SAEnum(
+                                  "low", "medium", "high", "critical",
+                                  name="part_risk_level", native_enum=False
+                              ), nullable=False, default="low")
+    days_until_stockout     = Column(Float, nullable=True)
+
+    computed_at             = Column(DateTime(timezone=True), server_default=func.now())
+    insight_id              = Column(UUID(as_uuid=True), ForeignKey("ai_insights.id",
+                                                                    ondelete="SET NULL"),
+                                    nullable=True)

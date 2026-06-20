@@ -4,8 +4,9 @@ Supplier management + Purchase Orders
 """
 from __future__ import annotations
 
+import math
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -530,6 +531,7 @@ async def receive_purchase_order(
 
     receive_map = {item["id"]: float(item["received_quantity"]) for item in body.get("items", [])}
 
+    affected_stock_ids = set()
     for poi in po.items:
         received_qty = receive_map.get(str(poi.id), poi.received_quantity or 0)
         if received_qty < 0:
@@ -542,6 +544,9 @@ async def receive_purchase_order(
             if stock:
                 qty_before = float(stock.quantity or 0)
                 stock.quantity = qty_before + delta
+                # This receipt is, by definition, the most recent purchase
+                stock.last_purchase_cost = poi.unit_cost
+                stock.last_purchase_date = date.today()
                 movement = InventoryMovement(
                     stock_item_id=poi.stock_item_id,
                     movement_type="addition",
@@ -553,10 +558,29 @@ async def receive_purchase_order(
                     created_by_id=current_user.id,
                 )
                 db.add(movement)
+                affected_stock_ids.add(poi.stock_item_id)
 
     po.status        = PurchaseOrderStatus.received
     po.received_date = date.today()
     po.total_amount  = round(sum(i.received_quantity * i.unit_cost for i in po.items), 2)
+
+    # Recompute the weighted-average cost from every received movement (incl. the
+    # new ones) — same formula as the startup backfill, so the two never drift.
+    if affected_stock_ids:
+        await db.flush()
+        for sid in affected_stock_ids:
+            rows = (await db.execute(
+                select(InventoryMovement.unit_cost, InventoryMovement.quantity).where(
+                    InventoryMovement.stock_item_id == sid,
+                    InventoryMovement.movement_type == "addition",
+                )
+            )).all()
+            pairs = [(uc, q) for uc, q in rows if uc is not None and (q or 0) > 0]
+            total_qty = sum(q for _, q in pairs)
+            if total_qty > 0:
+                stock = await db.get(StockItem, sid)
+                if stock:
+                    stock.average_cost = round(sum(uc * q for uc, q in pairs) / total_qty, 4)
 
     await db.commit()
     result = await db.scalar(
@@ -565,3 +589,216 @@ async def receive_purchase_order(
         .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items))
     )
     return _po_out(result, include_items=True)
+
+
+# ─── AUTO-REPLENISHMENT ──────────────────────────────────────────────────────
+
+OPEN_PO_STATUSES = [PurchaseOrderStatus.draft, PurchaseOrderStatus.sent, PurchaseOrderStatus.confirmed]
+
+
+def _low_stock_cond():
+    return or_(
+        StockItem.quantity <= 0,
+        and_(StockItem.min_quantity.isnot(None), StockItem.quantity <= StockItem.min_quantity),
+    )
+
+
+def _suggested_qty(item: StockItem) -> float:
+    """Refill to twice the minimum (min/max heuristic); at least 1."""
+    qty = float(item.quantity or 0)
+    if item.min_quantity:
+        return float(math.ceil(max(float(item.min_quantity) * 2 - qty, 1.0)))
+    return float(math.ceil(max(1.0 - qty, 1.0)))
+
+
+async def _covered_stock_ids(db: AsyncSession) -> set:
+    """Stock items already on an open (draft/sent/confirmed) purchase order."""
+    r = await db.execute(
+        select(PurchaseOrderItem.stock_item_id)
+        .join(PurchaseOrder, PurchaseOrderItem.order_id == PurchaseOrder.id)
+        .where(
+            PurchaseOrder.status.in_(OPEN_PO_STATUSES),
+            PurchaseOrderItem.stock_item_id.isnot(None),
+        )
+    )
+    return {row[0] for row in r.all()}
+
+
+@po_router.get("/replenishment/preview")
+async def replenishment_preview(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Low-stock items grouped by supplier, ready to turn into draft POs.
+    Items already on an open PO are excluded; items without a supplier are
+    reported separately (they can't be ordered automatically)."""
+    covered = await _covered_stock_ids(db)
+    items = (await db.execute(
+        select(StockItem).where(_low_stock_cond()).order_by(StockItem.code)
+    )).scalars().all()
+
+    sup_ids = {i.supplier_id for i in items if i.supplier_id}
+    sup_map: dict = {}
+    if sup_ids:
+        sups = (await db.execute(select(Supplier).where(Supplier.id.in_(sup_ids)))).scalars().all()
+        sup_map = {s.id: s for s in sups}
+
+    groups: dict = {}
+    already_ordered = 0
+    without_supplier = 0
+    without_supplier_sample: list = []
+
+    for i in items:
+        if i.id in covered:
+            already_ordered += 1
+            continue
+        sup = sup_map.get(i.supplier_id) if i.supplier_id else None
+        if not sup:
+            without_supplier += 1
+            if len(without_supplier_sample) < 50:
+                without_supplier_sample.append({
+                    "stock_item_id": str(i.id),
+                    "code": i.code or "",
+                    "description": i.description or i.name or "",
+                    "quantity_in_stock": float(i.quantity or 0),
+                })
+            continue
+        key = str(sup.id)
+        if key not in groups:
+            groups[key] = {
+                "supplier_id": key,
+                "supplier_name": sup.name,
+                "supplier_code": sup.code,
+                "currency": sup.currency or "CAD",
+                "lead_time_days": sup.lead_time_days,
+                "items": [],
+            }
+        qty = _suggested_qty(i)
+        groups[key]["items"].append({
+            "stock_item_id": str(i.id),
+            "code": i.code or "",
+            "description": i.description or i.name or "",
+            "quantity_in_stock": float(i.quantity or 0),
+            "min_quantity": i.min_quantity,
+            "unit": i.unit or "Unitaire",
+            "unit_cost": i.unit_cost,
+            "suggested_quantity": qty,
+            "estimated_cost": round(qty * float(i.unit_cost), 2) if i.unit_cost else None,
+        })
+
+    group_list = sorted(groups.values(), key=lambda g: g["supplier_name"])
+    for g in group_list:
+        g["estimated_total"] = round(sum(it["estimated_cost"] or 0 for it in g["items"]), 2)
+
+    return {
+        "groups": group_list,
+        "low_stock_total": len(items),
+        "orderable": sum(len(g["items"]) for g in group_list),
+        "already_ordered": already_ordered,
+        "without_supplier": without_supplier,
+        "without_supplier_sample": without_supplier_sample,
+    }
+
+
+@po_router.post("/replenishment/generate", status_code=201)
+async def replenishment_generate(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create one draft PO per supplier from the selected items.
+    Body: { items: [{stock_item_id, quantity}], notes?: str }"""
+    requested = body.get("items") or []
+    if not requested:
+        raise HTTPException(422, "items is required")
+
+    qty_by_id: dict = {}
+    for entry in requested:
+        try:
+            sid = uuid.UUID(entry["stock_item_id"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        qty = float(entry.get("quantity") or 0)
+        if qty > 0:
+            qty_by_id[sid] = qty
+    if not qty_by_id:
+        raise HTTPException(422, "No valid items")
+
+    stock_items = (await db.execute(
+        select(StockItem).where(StockItem.id.in_(list(qty_by_id.keys())))
+    )).scalars().all()
+
+    covered = await _covered_stock_ids(db)
+    by_supplier: dict = {}
+    skipped_no_supplier = 0
+    skipped_covered = 0
+    for i in stock_items:
+        if i.id in covered:
+            skipped_covered += 1
+            continue
+        if not i.supplier_id:
+            skipped_no_supplier += 1
+            continue
+        by_supplier.setdefault(i.supplier_id, []).append(i)
+
+    if not by_supplier:
+        raise HTTPException(422, "No orderable items (missing supplier or already on an open PO)")
+
+    # Sequential numbers computed once to avoid duplicates within the batch
+    base_number = await _next_po_number(db)
+    year_prefix, seq = base_number.rsplit("-", 1)
+    seq = int(seq)
+
+    today = date.today()
+    notes = body.get("notes") or "Auto-replenishment (low stock)"
+    created_pos: list = []
+
+    for supplier_id, sup_items in by_supplier.items():
+        supplier = await db.get(Supplier, supplier_id)
+        if not supplier:
+            continue
+        po = PurchaseOrder(
+            order_number=f"{year_prefix}-{seq:04d}",
+            supplier_id=supplier_id,
+            status=PurchaseOrderStatus.draft,
+            order_date=today,
+            expected_date=today + timedelta(days=supplier.lead_time_days) if supplier.lead_time_days else None,
+            currency=supplier.currency or "CAD",
+            notes=notes,
+            created_by_id=current_user.id,
+        )
+        seq += 1
+        db.add(po)
+        await db.flush()
+
+        total = 0.0
+        for i in sup_items:
+            qty = qty_by_id[i.id]
+            cost = float(i.unit_cost) if i.unit_cost is not None else 0.0
+            line_total = round(qty * cost, 4)
+            total += line_total
+            db.add(PurchaseOrderItem(
+                order_id=po.id,
+                stock_item_id=i.id,
+                description=i.description or i.name or i.code or "",
+                quantity=qty,
+                unit_cost=cost,
+                total_cost=line_total,
+            ))
+        po.total_amount = round(total, 2)
+        created_pos.append(po.id)
+
+    await db.commit()
+
+    result = (await db.execute(
+        select(PurchaseOrder)
+        .where(PurchaseOrder.id.in_(created_pos))
+        .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items))
+        .order_by(PurchaseOrder.order_number)
+    )).scalars().all()
+
+    return {
+        "created": [_po_out(po, include_items=True) for po in result],
+        "skipped_no_supplier": skipped_no_supplier,
+        "skipped_already_ordered": skipped_covered,
+    }

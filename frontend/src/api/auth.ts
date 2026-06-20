@@ -14,6 +14,12 @@ export const getMe = async (): Promise<User> => {
   return data;
 };
 
+/** Effective permissions of the logged-in user ('resource:action' list, or ['*'] for admin). */
+export const fetchMyPermissions = async (): Promise<string[]> => {
+  const { data } = await api.get<{ permissions: string[] }>('/api/auth/permissions');
+  return data.permissions ?? [];
+};
+
 export const updateMe = async (payload: {
   name?: string;
   language?: string;

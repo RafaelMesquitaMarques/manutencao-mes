@@ -1,9 +1,10 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, User, Shield, Building2, Activity, CheckCircle, AlertCircle, Plus, Trash2, KeyRound, type LucideIcon } from 'lucide-react';
-import { fetchUser, updateUser, fetchUserPermissions, setUserPermissions, fetchUserPlants, assignUserToPlant, removeUserFromPlant, adminResetPassword } from '../../api/users';
+import { fetchUser, updateUser, fetchUserPermissions, setUserPermissions, fetchUserPlants, assignUserToPlant, removeUserFromPlant, adminResetPassword, deleteUser, deleteUserPermanently } from '../../api/users';
 import api from '../../api/axios';
 import type { User as UserType, UserPermission, UserRole } from '../../types';
+import { ROLE_PERMISSIONS } from '../../store/authStore';
 
 type Tab = 'profile' | 'permissions' | 'plants' | 'activity' | 'security';
 
@@ -40,8 +41,9 @@ const ACTIONS = ['view', 'create', 'update', 'delete'];
 
 // ─── Profile Tab ──────────────────────────────────────────────────────────────
 
-function ProfileTab({ user }: { user: UserType }) {
+function ProfileTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserType) => void }) {
   const [name, setName] = useState(user.name);
+  const [email, setEmail] = useState(user.email);
   const [jobTitle, setJobTitle] = useState(user.job_title ?? '');
   const [phone, setPhone] = useState(user.phone ?? '');
   const [role, setRole] = useState<UserRole>((user.role ?? 'operator') as UserRole);
@@ -56,8 +58,11 @@ function ProfileTab({ user }: { user: UserType }) {
     setSuccess(false);
     setLoading(true);
     try {
-      await updateUser(user.id, { name, job_title: jobTitle, phone, role, must_change_password: mustChange });
+      const updated = await updateUser(user.id, {
+        name, email: email.trim(), job_title: jobTitle, phone, role, must_change_password: mustChange,
+      });
       setSuccess(true);
+      onUpdated(updated);
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       setError(msg ?? 'Failed to update user.');
@@ -85,6 +90,10 @@ function ProfileTab({ user }: { user: UserType }) {
         <div>
           <label className="label">Full name</label>
           <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="input-field" required disabled={loading} />
+        </div>
+        <div>
+          <label className="label">Email / login</label>
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="input-field" required disabled={loading} />
         </div>
         <div>
           <label className="label">Job title</label>
@@ -126,17 +135,32 @@ function ProfileTab({ user }: { user: UserType }) {
 
 // ─── Permissions Tab ─────────────────────────────────────────────────────────
 
-function PermissionsTab({ userId }: { userId: string }) {
+function PermissionsTab({ userId, userRole }: { userId: string; userRole: string }) {
   const [overrides, setOverrides] = useState<UserPermission[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [seeded, setSeeded] = useState(false);
 
   const load = useCallback(() => {
     fetchUserPermissions(userId)
-      .then(setOverrides)
+      .then((rows) => {
+        if (rows.length === 0) {
+          // No saved overrides → pre-fill from the role defaults so the admin
+          // edits from the baseline (saving captures the full allow-list).
+          const base = Array.from(ROLE_PERMISSIONS[userRole] ?? []).map((p) => {
+            const [resource, action] = p.split(':');
+            return { id: `${resource}-${action}`, resource, action, granted: true };
+          });
+          setOverrides(base);
+          setSeeded(true);
+        } else {
+          setOverrides(rows);
+          setSeeded(false);
+        }
+      })
       .finally(() => setLoading(false));
-  }, [userId]);
+  }, [userId, userRole]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -168,7 +192,9 @@ function PermissionsTab({ userId }: { userId: string }) {
   return (
     <div>
       <p className="text-xs text-gray-500 mb-4">
-        These override the user's role defaults. Leave empty to use role defaults.
+        Checked = allowed. Saving stores exactly what's checked as this user's permissions.
+        {seeded && <span className="text-amber-400"> Currently showing the <b>{userRole}</b> role defaults — adjust and save to customize.</span>}
+        {' '}Uncheck everything and save to fall back to role defaults. Admin always has full access.
       </p>
       {success && (
         <div className="mb-4 flex items-center gap-2.5 p-3 bg-green-500/10 border border-green-500/25 rounded-lg">
@@ -337,7 +363,8 @@ function PlantAccessTab({ userId }: { userId: string }) {
 
 // ─── Security Tab ────────────────────────────────────────────────────────────
 
-function SecurityTab({ user }: { user: UserType }) {
+function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserType) => void }) {
+  const navigate = useNavigate();
   const [resetMode, setResetMode] = useState<'idle' | 'choose' | 'generate' | 'manual' | 'done_generate'>('idle');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -347,6 +374,54 @@ function SecurityTab({ user }: { user: UserType }) {
   const [tempPassword, setTempPassword] = useState('');
   const [copied, setCopied] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
+  const [dangerMode, setDangerMode] = useState<'idle' | 'confirm'>('idle');
+  const [confirmName, setConfirmName] = useState('');
+  const [dangerErr, setDangerErr] = useState('');
+  const [dangerBusy, setDangerBusy] = useState(false);
+
+  const handleDeactivate = async () => {
+    setDangerBusy(true);
+    setDangerErr('');
+    try {
+      await deleteUser(user.id);
+      onUpdated({ ...user, active: false });
+      setSuccessMsg('User deactivated — they can no longer log in. You can reactivate below.');
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setDangerErr(msg ?? 'Failed to deactivate user.');
+    } finally {
+      setDangerBusy(false);
+    }
+  };
+
+  const handleHardDelete = async () => {
+    setDangerBusy(true);
+    setDangerErr('');
+    try {
+      await deleteUserPermanently(user.id);
+      navigate('/settings/users');
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setDangerErr(msg ?? 'Failed to delete user.');
+    } finally {
+      setDangerBusy(false);
+    }
+  };
+
+  const handleReactivate = async () => {
+    setDangerBusy(true);
+    setDangerErr('');
+    try {
+      const updated = await updateUser(user.id, { active: true });
+      onUpdated(updated);
+      setSuccessMsg('User reactivated — they can log in again.');
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setDangerErr(msg ?? 'Failed to reactivate user.');
+    } finally {
+      setDangerBusy(false);
+    }
+  };
 
   const handleGenerate = async () => {
     setLoading(true); setError('');
@@ -491,6 +566,83 @@ function SecurityTab({ user }: { user: UserType }) {
           </div>
         )}
 
+        {resetMode === 'idle' && (
+          <div className="mt-8 pt-6 border-t border-red-500/15">
+            <h3 className="text-sm font-semibold text-red-400 mb-1 flex items-center gap-2">
+              <Trash2 size={14} /> Danger Zone
+            </h3>
+            <p className="text-xs text-gray-600 mb-3">
+              Deactivating keeps the user's history; permanent deletion removes the account entirely
+              and is blocked when the user has work orders, labor or tickets linked.
+            </p>
+            {dangerErr && (
+              <div className="mb-3 flex items-start gap-2.5 p-3 bg-red-500/10 border border-red-500/25 rounded-lg">
+                <AlertCircle size={14} className="text-red-400 flex-shrink-0 mt-0.5" />
+                <p className="text-red-400 text-sm">{dangerErr}</p>
+              </div>
+            )}
+            {dangerMode === 'idle' ? (
+              <div className="flex flex-wrap gap-3">
+                {user.active ? (
+                  <button
+                    onClick={handleDeactivate}
+                    disabled={dangerBusy}
+                    className="px-4 py-2 rounded-lg text-sm font-medium text-amber-400 border border-amber-500/30 hover:bg-amber-500/10 transition-all disabled:opacity-50"
+                  >
+                    Deactivate user
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleReactivate}
+                    disabled={dangerBusy}
+                    className="px-4 py-2 rounded-lg text-sm font-semibold text-green-400 border border-green-500/30 hover:bg-green-500/10 transition-all disabled:opacity-50"
+                  >
+                    {dangerBusy ? 'Reactivating…' : 'Reactivate user'}
+                  </button>
+                )}
+                <button
+                  onClick={() => { setDangerMode('confirm'); setConfirmName(''); setDangerErr(''); }}
+                  disabled={dangerBusy}
+                  className="px-4 py-2 rounded-lg text-sm font-medium text-red-400 border border-red-500/30 hover:bg-red-500/10 transition-all disabled:opacity-50"
+                >
+                  Delete permanently…
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3 p-4 bg-red-500/5 border border-red-500/20 rounded-xl max-w-md">
+                <p className="text-sm text-red-300">
+                  This cannot be undone. Type the user's name to confirm:
+                  <span className="block font-mono text-white mt-1">{user.name}</span>
+                </p>
+                <input
+                  value={confirmName}
+                  onChange={(e) => setConfirmName(e.target.value)}
+                  placeholder="Type the full name"
+                  className="input-field w-full"
+                  disabled={dangerBusy}
+                  autoFocus
+                />
+                <div className="flex gap-3">
+                  <button
+                    onClick={handleHardDelete}
+                    disabled={dangerBusy || confirmName.trim() !== user.name}
+                    className="px-4 py-2 rounded-lg text-sm font-semibold text-white bg-red-600 hover:bg-red-500 transition-all disabled:opacity-40"
+                  >
+                    {dangerBusy ? 'Deleting…' : 'Delete permanently'}
+                  </button>
+                  <button
+                    onClick={() => setDangerMode('idle')}
+                    disabled={dangerBusy}
+                    className="btn-secondary py-2 px-4 text-sm"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {resetMode === 'manual' && (
           <form onSubmit={handleManual} className="space-y-3">
             <div>
@@ -571,7 +723,14 @@ export default function UserDetail() {
           <span className="text-blue-400 font-bold">{initials}</span>
         </div>
         <div>
-          <h1 className="text-xl font-black text-white">{user.name}</h1>
+          <h1 className="text-xl font-black text-white flex items-center gap-2.5">
+            {user.name}
+            {!user.active && (
+              <span className="text-[11px] font-medium text-red-400 bg-red-500/10 border border-red-500/25 px-2 py-0.5 rounded-full">
+                Inactive
+              </span>
+            )}
+          </h1>
           <p className="text-sm text-gray-500">{user.email}</p>
         </div>
       </div>
@@ -595,10 +754,10 @@ export default function UserDetail() {
       </div>
 
       <div className="bg-[#0d1421] rounded-2xl border border-white/[0.06] p-6">
-        {tab === 'profile' && <ProfileTab user={user} />}
-        {tab === 'permissions' && <PermissionsTab userId={user.id} />}
+        {tab === 'profile' && <ProfileTab user={user} onUpdated={setUser} />}
+        {tab === 'permissions' && <PermissionsTab userId={user.id} userRole={(user.role ?? 'operator') as string} />}
         {tab === 'plants' && <PlantAccessTab userId={user.id} />}
-        {tab === 'security' && <SecurityTab user={user} />}
+        {tab === 'security' && <SecurityTab user={user} onUpdated={setUser} />}
         {tab === 'activity' && (
           <div className="space-y-2">
             {user.last_login_at ? (

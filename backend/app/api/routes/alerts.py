@@ -5,13 +5,14 @@ from typing import Optional
 from uuid import UUID
 
 from app.db.session import get_db
-from app.models.models import MaintenanceAlert, MaintenanceTicket, Machine, User, AlertStatus, AlertPriority
+from app.models.models import MaintenanceAlert, MaintenanceTicket, Machine, Equipment, User, AlertStatus, AlertPriority
 from app.schemas.maintenance import (
     AlertCreate, AlertOut, AlertListResponse,
     MachineOut, MachineListResponse,
 )
 from app.services.alert_service import AlertService
 from app.core.security import get_current_user
+from app.core.permissions import require_permission
 
 router = APIRouter()
 
@@ -43,10 +44,14 @@ async def list_machines(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
+    # Exclude auxiliary (non-productive) equipment — they have no kiosk/MES layer
+    aux_ids = set((await db.execute(
+        select(Equipment.id).where(Equipment.asset_type == "auxiliary")
+    )).scalars().all())
+    rows = (await db.execute(
         select(Machine).where(Machine.is_active == True).order_by(Machine.name)
-    )
-    items = result.scalars().all()
+    )).scalars().all()
+    items = [m for m in rows if m.id not in aux_ids and m.equipment_id not in aux_ids]
     return MachineListResponse(total=len(items), items=items)
 
 
@@ -57,6 +62,7 @@ async def create_alert(
     data: AlertCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _perm: User = Depends(require_permission("alerts", "create")),
 ):
     svc = AlertService(db)
     try:
@@ -113,6 +119,7 @@ async def delete_alert(
     alert_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _perm: User = Depends(require_permission("alerts", "delete")),
 ):
     alert = await db.get(MaintenanceAlert, alert_id)
     if not alert:
@@ -126,6 +133,7 @@ async def assign_alert(
     alert_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _perm: User = Depends(require_permission("alerts", "update")),
 ):
     svc = AlertService(db)
     try:
@@ -140,6 +148,7 @@ async def convert_to_ticket(
     alert_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _perm: User = Depends(require_permission("alerts", "update")),
 ):
     svc = AlertService(db)
     try:

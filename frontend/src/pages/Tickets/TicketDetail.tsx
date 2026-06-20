@@ -176,7 +176,23 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
         <Field label="Priority" value={ticket.priority} />
         <Field label="Status" value={ticket.status.replace(/_/g, ' ')} />
         <Field label="Opened" value={fmtDt(ticket.opened_at)} />
-        <Field label="Assigned To" value={ticket.assigned_to_name ?? 'Unassigned'} />
+        <div>
+          <p className="text-xs text-gray-600">Assigned To</p>
+          {(ticket.assigned_technicians?.length ?? 0) > 0 ? (
+            <div className="flex flex-wrap gap-1 mt-0.5">
+              {ticket.assigned_technicians!.map((tech) => (
+                <span
+                  key={tech.technician_id}
+                  className="inline-flex items-center gap-1 bg-blue-500/10 border border-blue-500/25 text-blue-300 rounded-full px-2 py-0.5 text-xs"
+                >
+                  {tech.name ?? `${tech.technician_id.slice(0, 8)}…`}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-gray-300 font-medium">{ticket.assigned_to_name ?? 'Unassigned'}</p>
+          )}
+        </div>
         {ticket.started_at && <Field label="Started" value={fmtDt(ticket.started_at)} />}
         {ticket.completed_at && <Field label="Completed" value={fmtDt(ticket.completed_at)} />}
         {ticket.estimated_downtime_minutes != null && (
@@ -310,7 +326,14 @@ function WorkOrderTab({ ticket, wo }: { ticket: MaintenanceTicket; wo: WorkOrder
         <p className="text-white font-medium">{wo.title}</p>
         <div className="grid grid-cols-2 gap-3 text-sm">
           <Field label="Priority" value={wo.priority} />
-          <Field label="Assigned To" value={wo.executor_name ?? wo.assigned_to_name ?? 'Unassigned'} />
+          <Field
+            label="Assigned To"
+            value={
+              wo.technicians && wo.technicians.length > 0
+                ? wo.technicians.map((t) => t.name ?? `${t.technician_id.slice(0, 8)}…`).join(', ')
+                : (wo.executor_name ?? wo.assigned_to_name ?? 'Unassigned')
+            }
+          />
           {wo.started_at && <Field label="Started" value={fmtDt(wo.started_at)} />}
           {wo.completed_at && <Field label="Completed" value={fmtDt(wo.completed_at)} />}
           {wo.repair_hours != null && <Field label="Repair Hours" value={`${wo.repair_hours}h`} />}
@@ -358,6 +381,11 @@ function PartsTab({ ticket }: { ticket: MaintenanceTicket }) {
     );
   }
 
+  const totalCost = parts.reduce(
+    (sum, p) => sum + (p.approval_status !== 'rejected' && p.total_cost != null ? p.total_cost : 0),
+    0,
+  );
+
   return (
     <div className="glass-card overflow-hidden">
       <div className="px-4 py-3 border-b border-white/[0.06] flex items-center gap-2">
@@ -371,6 +399,8 @@ function PartsTab({ ticket }: { ticket: MaintenanceTicket }) {
             <th className="text-left p-3 text-xs text-gray-600 uppercase tracking-wider">Code</th>
             <th className="text-left p-3 text-xs text-gray-600 uppercase tracking-wider">Description</th>
             <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">Qty</th>
+            <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">Unit cost</th>
+            <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">Total</th>
             <th className="text-center p-3 text-xs text-gray-600 uppercase tracking-wider">Status</th>
           </tr>
         </thead>
@@ -382,6 +412,12 @@ function PartsTab({ ticket }: { ticket: MaintenanceTicket }) {
                 <td className="p-3 font-mono text-blue-400 text-xs">{p.item_code || '—'}</td>
                 <td className="p-3 text-gray-300">{p.item_description || '—'}</td>
                 <td className="p-3 text-right font-mono text-gray-200">{p.quantity_used} {p.unit}</td>
+                <td className="p-3 text-right font-mono text-gray-400 text-xs">
+                  {p.unit_cost != null ? `$${p.unit_cost.toFixed(2)}` : '—'}
+                </td>
+                <td className="p-3 text-right font-mono text-emerald-300 text-xs">
+                  {p.total_cost != null ? `$${p.total_cost.toFixed(2)}` : '—'}
+                </td>
                 <td className="p-3 text-center">
                   <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border ${s.bg} ${s.text} ${s.border}`}>
                     {p.approval_status}
@@ -391,6 +427,19 @@ function PartsTab({ ticket }: { ticket: MaintenanceTicket }) {
             );
           })}
         </tbody>
+        {totalCost > 0 && (
+          <tfoot>
+            <tr className="border-t border-white/[0.06]">
+              <td colSpan={4} className="p-3 text-right text-xs text-gray-500 uppercase tracking-wider">
+                Parts total
+              </td>
+              <td className="p-3 text-right font-mono font-semibold text-emerald-300">
+                ${totalCost.toFixed(2)}
+              </td>
+              <td />
+            </tr>
+          </tfoot>
+        )}
       </table>
     </div>
   );

@@ -9,6 +9,7 @@ import { fetchTickets, updateTicketStatus, deleteTicket } from '../../api/mainte
 import type { MaintenanceTicket, AlertPriority, TicketStatus } from '../../types';
 import Spinner from '../../components/ui/Spinner';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
+import { usePermission } from '../../hooks/usePermission';
 
 const SLA_MINUTES: Record<AlertPriority, number> = {
   critical: 10, high: 30, medium: 120, low: 480,
@@ -54,6 +55,9 @@ function slaDisplay(priority: AlertPriority, openedAt: string, status: TicketSta
 export default function TicketList() {
   const { t }    = useTranslation();
   const navigate = useNavigate();
+  const canCreate = usePermission('tickets', 'create');
+  const canUpdate = usePermission('tickets', 'update');
+  const canDelete = usePermission('tickets', 'delete');
 
   const [tickets, setTickets]   = useState<MaintenanceTicket[]>([]);
   const [total, setTotal]       = useState(0);
@@ -123,9 +127,11 @@ export default function TicketList() {
           <button onClick={manualRefresh} disabled={isRefreshing} className="btn-secondary py-1.5 px-3">
             <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
           </button>
-          <Link to="/tickets/new" className="btn-primary py-1.5 px-3 flex items-center gap-1.5 text-sm">
-            <Plus size={14} /> New Ticket
-          </Link>
+          {canCreate && (
+            <Link to="/tickets/new" className="btn-primary py-1.5 px-3 flex items-center gap-1.5 text-sm">
+              <Plus size={14} /> New Ticket
+            </Link>
+          )}
         </div>
       </div>
 
@@ -159,19 +165,19 @@ export default function TicketList() {
             <p className="text-gray-500 text-sm">{t('tickets.noTickets')}</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-auto max-h-[calc(100vh-230px)]">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-white/[0.04]">
-                  <th className="table-header-cell">{t('tickets.ticketNumber')}</th>
-                  <th className="table-header-cell">{t('alerts.machine')}</th>
-                  <th className="table-header-cell">{t('common.priority')}</th>
-                  <th className="table-header-cell">{t('common.status')}</th>
-                  <th className="table-header-cell hidden md:table-cell">{t('tickets.assignedTo')}</th>
-                  <th className="table-header-cell hidden lg:table-cell">{t('tickets.timeOpen')}</th>
-                  <th className="table-header-cell hidden xl:table-cell">SLA</th>
-                  <th className="table-header-cell hidden xl:table-cell">{t('alerts.escalation')}</th>
-                  <th className="table-header-cell">{t('common.actions')}</th>
+                <tr>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('tickets.ticketNumber')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('alerts.machine')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('common.priority')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('common.status')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] hidden md:table-cell">{t('tickets.assignedTo')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] hidden lg:table-cell">{t('tickets.timeOpen')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] hidden xl:table-cell">SLA</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] hidden xl:table-cell">{t('alerts.escalation')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('common.actions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -224,7 +230,7 @@ export default function TicketList() {
                       </td>
                       <td className="table-cell">
                         <div className="flex items-center gap-1">
-                          {ticket.status === 'open' && (
+                          {canUpdate && ticket.status === 'open' && (
                             <button
                               onClick={() => quickAction(ticket.id, 'in_progress')}
                               disabled={actionId === ticket.id}
@@ -234,7 +240,7 @@ export default function TicketList() {
                               <Play size={11} />
                             </button>
                           )}
-                          {ticket.status === 'in_progress' && (
+                          {canUpdate && ticket.status === 'in_progress' && (
                             <>
                               <button
                                 onClick={() => quickAction(ticket.id, 'on_hold_parts')}
@@ -254,7 +260,7 @@ export default function TicketList() {
                               </button>
                             </>
                           )}
-                          {(ticket.status === 'on_hold_parts' || ticket.status === 'on_hold_ext') && (
+                          {canUpdate && (ticket.status === 'on_hold_parts' || ticket.status === 'on_hold_ext') && (
                             <button
                               onClick={() => quickAction(ticket.id, 'in_progress')}
                               disabled={actionId === ticket.id}
@@ -264,7 +270,7 @@ export default function TicketList() {
                               <Play size={11} />
                             </button>
                           )}
-                          {ticket.status !== 'completed' && ticket.status !== 'cancelled' && (
+                          {canUpdate && ticket.status !== 'completed' && ticket.status !== 'cancelled' && (
                             <button
                               onClick={() => quickAction(ticket.id, 'cancelled')}
                               disabled={actionId === ticket.id}
@@ -274,7 +280,7 @@ export default function TicketList() {
                               <XCircle size={11} />
                             </button>
                           )}
-                          {(ticket.status === 'completed' || ticket.status === 'cancelled') && (
+                          {canDelete && (ticket.status === 'completed' || ticket.status === 'cancelled') && (
                             <button
                               onClick={() => handleDelete(ticket.id)}
                               disabled={deletingId === ticket.id}

@@ -10,6 +10,8 @@ interface PartItem {
   item_description: string | null;
   quantity_used: number;
   unit: string | null;
+  unit_cost: number | null;
+  total_cost: number | null;
   approval_status: string;
   approved_at: string | null;
   rejection_reason: string | null;
@@ -148,6 +150,14 @@ export default function PartsApproval() {
                       <p className="text-xs text-gray-600 mt-0.5">
                         {part.item_code && <span className="mr-2 font-mono">{part.item_code}</span>}
                         {part.quantity_used} {part.unit || 'un'}
+                        {part.total_cost != null && (
+                          <span className="ml-2 font-mono text-emerald-400">
+                            ${part.total_cost.toFixed(2)}
+                            {part.unit_cost != null && part.quantity_used !== 1 && (
+                              <span className="text-gray-600"> (${part.unit_cost.toFixed(2)}/un)</span>
+                            )}
+                          </span>
+                        )}
                         {part.added_at && (
                           <span className="ml-2">
                             · {new Date(part.added_at).toLocaleString('fr-CA', { timeStyle: 'short', dateStyle: 'short' })}

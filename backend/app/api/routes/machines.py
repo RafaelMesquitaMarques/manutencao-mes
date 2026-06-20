@@ -54,9 +54,12 @@ async def _get_machine(ref: str, db: AsyncSession) -> Machine:
                 existing = await db.execute(select(Machine).where(Machine.code == eq.code))
                 m = existing.scalar_one_or_none()
                 if m:
+                    if m.equipment_id is None:
+                        m.equipment_id = eq.id
+                        await db.commit()
                     return m
             # Auto-provision a Machine record with the equipment's UUID
-            m = Machine(id=eq.id, name=eq.name, code=eq.code, is_active=True)
+            m = Machine(id=eq.id, name=eq.name, code=eq.code, equipment_id=eq.id, is_active=True)
             db.add(m)
             await db.commit()
             await db.refresh(m)
@@ -76,6 +79,7 @@ def _machine_to_page_data(machine: Machine, open_tickets: list) -> MachinePageDa
     currency = machine.hourly_rate_currency.value if machine.hourly_rate_currency and hasattr(machine.hourly_rate_currency, "value") else (str(machine.hourly_rate_currency) if machine.hourly_rate_currency else "CAD")
     return MachinePageData(
         id=machine.id, name=machine.name, code=machine.code,
+        serial_number=machine.serial_number,
         department=machine.department, location=machine.location,
         is_active=machine.is_active,
         current_status=cstatus,
@@ -106,10 +110,17 @@ def _machine_to_page_data(machine: Machine, open_tickets: list) -> MachinePageDa
 
 @router.get("/", response_model=MachineListResponse)
 async def list_machines(
+    include_inactive: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    r = await db.execute(select(Machine).order_by(Machine.name))
+    # Soft-deleted machines (is_active=False, set by DELETE) must not surface in
+    # dropdowns/lists — they "no longer exist" to the user. Callers that manage
+    # deleted records can opt in with ?include_inactive=true.
+    stmt = select(Machine).order_by(Machine.name)
+    if not include_inactive:
+        stmt = stmt.where(Machine.is_active == True)  # noqa: E712
+    r = await db.execute(stmt)
     items = r.scalars().all()
     return MachineListResponse(total=len(items), items=items)
 
@@ -633,6 +644,19 @@ async def request_maintenance(
         machine.current_operator = data.operator_name
     if data.shift:
         machine.current_shift = data.shift
+
+    from app.services.notification_service import NotificationService
+    notif = NotificationService(db)
+    await db.flush()
+    if data.priority == AlertPriority.critical:
+        await notif.notify_new_critical(
+            ref_number=ticket.ticket_number,
+            description=data.description,
+            machine_name=machine.name,
+            ticket_id=ticket.id,
+        )
+    await notif.notify_ticket_opened(ticket, machine.name)
+
     await db.commit()
     await db.refresh(ticket)
     return {

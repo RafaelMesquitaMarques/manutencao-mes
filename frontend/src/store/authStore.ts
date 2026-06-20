@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { User, UserRole } from '../types';
 
-const ROLE_PERMISSIONS: Record<string, Set<string>> = {
+export const ROLE_PERMISSIONS: Record<string, Set<string>> = {
   operator: new Set(['dashboard:view', 'machines:view', 'my_work:view']),
   technician: new Set([
     'dashboard:view', 'work_orders:view', 'work_orders:update',
@@ -55,7 +55,9 @@ interface AuthState {
   user: User | null;
   token: string | null;
   isAuthenticated: boolean;
+  permissions: string[] | null;   // effective 'resource:action' list from API; null = not loaded yet
   setAuth: (user: User, token: string) => void;
+  setPermissions: (permissions: string[]) => void;
   patchUser: (patch: Partial<User>) => void;
   logout: () => void;
   can: (resource: string, action?: string) => boolean;
@@ -69,14 +71,22 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       token: null,
       isAuthenticated: false,
-      setAuth: (user, token) => set({ user, token, isAuthenticated: true }),
+      permissions: null,
+      setAuth: (user, token) => set({ user, token, isAuthenticated: true, permissions: null }),
+      setPermissions: (permissions) => set({ permissions }),
       patchUser: (patch) => set((state) => ({ user: state.user ? { ...state.user, ...patch } : null })),
-      logout: () => set({ user: null, token: null, isAuthenticated: false }),
+      logout: () => set({ user: null, token: null, isAuthenticated: false, permissions: null }),
       can: (resource: string, action = 'view') => {
-        const { user } = get();
+        const { user, permissions } = get();
         if (!user) return false;
         const role = (user.role ?? 'operator') as string;
         if (role === 'admin') return true;
+        // Once the effective permissions are loaded from the API, they are authoritative
+        // (per-user overrides as an allow-list, or role defaults when the user has none).
+        if (permissions !== null) {
+          return permissions.includes('*') || permissions.includes(`${resource}:${action}`);
+        }
+        // Not loaded yet — fall back to role defaults to avoid a flash of hidden UI.
         const perms = ROLE_PERMISSIONS[role] ?? new Set<string>();
         return perms.has(`${resource}:${action}`);
       },
@@ -96,6 +106,7 @@ export const useAuthStore = create<AuthState>()(
         token: state.token,
         user: state.user,
         isAuthenticated: state.isAuthenticated,
+        permissions: state.permissions,
       }),
     }
   )

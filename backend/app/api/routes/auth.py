@@ -13,7 +13,7 @@ from app.schemas.user import (
     ForceChangePasswordRequest,
 )
 from app.core.security import verify_password, hash_password, create_access_token, get_current_user
-from app.core.permissions import require_admin
+from app.core.permissions import require_admin, effective_permissions
 from app.services.email_service import EmailService
 
 router = APIRouter()
@@ -74,6 +74,16 @@ async def register(
 @router.get("/me", response_model=UserOut)
 async def me(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+@router.get("/permissions")
+async def my_permissions(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Effective permissions of the logged-in user ('resource:action' list, or ['*'] for admin).
+    Frontend uses this to gate menus, routes and action buttons."""
+    return {"permissions": sorted(await effective_permissions(db, current_user))}
 
 
 @router.patch("/me", response_model=UserOut)

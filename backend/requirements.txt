@@ -27,6 +27,12 @@ python-dotenv==1.0.1
 # Email
 fastapi-mail==1.4.1
 
+# SMS
+twilio==9.3.7
+
+# IA (Maintenance Intelligence — chat tool-use agent)
+anthropic==0.69.0
+
 # Utilitários
 httpx==0.27.0
 python-dateutil==2.9.0

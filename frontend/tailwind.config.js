@@ -18,6 +18,7 @@ export default {
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],
         mono: ['JetBrains Mono', 'monospace'],
+        brand: ['Saira SemiCondensed', 'Inter', 'sans-serif'],
       },
       animation: {
         'fade-in': 'fadeIn 0.2s ease-out',

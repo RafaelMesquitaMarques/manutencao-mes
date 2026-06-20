@@ -1,4 +1,4 @@
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date as _date
 from typing import Optional
 import uuid as _uuid
 
@@ -21,60 +21,128 @@ _OPEN_ALERT_STATUSES  = [AlertStatus.new_alert, AlertStatus.assigned, AlertStatu
 _OPEN_TICKET_STATUSES = [TicketStatus.open, TicketStatus.in_progress, TicketStatus.on_hold_parts, TicketStatus.on_hold_ext]
 
 
+def _parse_machine_ids(machine_ids: Optional[str]) -> list:
+    """Comma-separated UUID string -> list of UUIDs (invalid entries dropped)."""
+    if not machine_ids:
+        return []
+    out = []
+    for part in machine_ids.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(_uuid.UUID(part))
+        except ValueError:
+            pass
+    return out
+
+
+def _resolve_window(period_days: int, start_date: Optional[str], end_date: Optional[str]):
+    """Return (start, end) UTC datetimes. Custom dates win; end is inclusive
+    of the chosen day. Falls back to the rolling period_days window."""
+    now = datetime.now(timezone.utc)
+    if start_date and end_date:
+        try:
+            start = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
+            end = datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc) + timedelta(days=1)
+            if start < end:
+                return start, end
+        except ValueError:
+            pass
+    return now - timedelta(days=period_days), now
+
+
 @router.get("/dashboard")
 async def maintenance_dashboard(
+    period_days: int = Query(30, ge=1, le=730),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    machine_ids: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # ── KPI counts ────────────────────────────────────────────────────────────
+    start, end = _resolve_window(period_days, start_date, end_date)
+    mids = _parse_machine_ids(machine_ids)
+
+    def t_conds(extra=None):
+        c = [MaintenanceTicket.opened_at >= start, MaintenanceTicket.opened_at < end]
+        if mids:
+            c.append(MaintenanceTicket.machine_id.in_(mids))
+        if extra:
+            c.extend(extra)
+        return c
+
+    def a_conds(extra=None):
+        c = [MaintenanceAlert.created_at >= start, MaintenanceAlert.created_at < end]
+        if mids:
+            c.append(MaintenanceAlert.machine_id.in_(mids))
+        if extra:
+            c.extend(extra)
+        return c
+    # ── KPI counts (within window + machine filter) ───────────────────────────
     r = await db.execute(
         select(func.count(MaintenanceAlert.id)).where(
-            MaintenanceAlert.status.in_(_OPEN_ALERT_STATUSES)
+            *a_conds([MaintenanceAlert.status.in_(_OPEN_ALERT_STATUSES)])
         )
     )
     open_alerts = r.scalar() or 0
 
     r = await db.execute(
         select(func.count(MaintenanceTicket.id)).where(
-            MaintenanceTicket.status.in_(_OPEN_TICKET_STATUSES)
+            *t_conds([MaintenanceTicket.status.in_(_OPEN_TICKET_STATUSES)])
         )
     )
     open_tickets = r.scalar() or 0
 
     r = await db.execute(
         select(func.count(MaintenanceTicket.id)).where(
-            MaintenanceTicket.priority == AlertPriority.critical,
-            MaintenanceTicket.status.in_(_OPEN_TICKET_STATUSES),
+            *t_conds([
+                MaintenanceTicket.priority == AlertPriority.critical,
+                MaintenanceTicket.status.in_(_OPEN_TICKET_STATUSES),
+            ])
         )
     )
     critical_tickets = r.scalar() or 0
 
     r = await db.execute(
         select(func.count(MaintenanceAlert.id)).where(
-            MaintenanceAlert.is_overdue == True,
-            MaintenanceAlert.status.in_(_OPEN_ALERT_STATUSES),
+            *a_conds([
+                MaintenanceAlert.is_overdue == True,
+                MaintenanceAlert.status.in_(_OPEN_ALERT_STATUSES),
+            ])
         )
     )
     overdue_alerts = r.scalar() or 0
 
-    # ── Avg resolution time ───────────────────────────────────────────────────
-    r = await db.execute(
-        select(MaintenanceTicket).where(
-            MaintenanceTicket.status == TicketStatus.completed,
-            MaintenanceTicket.total_intervention_minutes.isnot(None),
+    # ── Avg resolution time: real open → completed elapsed, to the second ─────
+    resolution_r = await db.execute(
+        select(func.avg(
+            func.extract("epoch", MaintenanceTicket.completed_at) -
+            func.extract("epoch", MaintenanceTicket.opened_at)
+        )).where(
+            *t_conds([
+                MaintenanceTicket.status == TicketStatus.completed,
+                MaintenanceTicket.completed_at.isnot(None),
+            ])
         )
     )
-    completed = r.scalars().all()
-    avg_resolution_hours = 0.0
-    if completed:
-        total_mins = sum(t.total_intervention_minutes or 0 for t in completed)
-        avg_resolution_hours = round(total_mins / len(completed) / 60, 1)
+    avg_secs = resolution_r.scalar()
+    # None (no completed tickets) stays None so the UI shows "—", not a fake "0 min".
+    if avg_secs is not None:
+        avg_resolution_seconds = round(float(avg_secs), 1)
+        avg_resolution_minutes = round(avg_resolution_seconds / 60, 4)
+        avg_resolution_hours = round(avg_resolution_seconds / 3600, 4)
+    else:
+        avg_resolution_seconds = None
+        avg_resolution_minutes = None
+        avg_resolution_hours = None
 
     # ── Charts data ───────────────────────────────────────────────────────────
 
     # Tickets by machine
     r = await db.execute(
         select(MaintenanceTicket.machine_id, func.count(MaintenanceTicket.id))
+        .where(*t_conds())
         .group_by(MaintenanceTicket.machine_id)
         .order_by(func.count(MaintenanceTicket.id).desc())
         .limit(10)
@@ -82,11 +150,12 @@ async def maintenance_dashboard(
     by_machine = []
     for machine_id, count in r.all():
         m = await db.get(Machine, machine_id)
-        by_machine.append({"machine": m.name if m else str(machine_id), "count": count})
+        by_machine.append({"machine": (m.display_name or m.name) if m else str(machine_id), "count": count})
 
     # Alerts by problem type
     r = await db.execute(
         select(MaintenanceAlert.problem_type, func.count(MaintenanceAlert.id))
+        .where(*a_conds())
         .group_by(MaintenanceAlert.problem_type)
     )
     by_problem_type = [
@@ -96,7 +165,7 @@ async def maintenance_dashboard(
     # Tickets by technician
     r = await db.execute(
         select(MaintenanceTicket.assigned_to_id, func.count(MaintenanceTicket.id))
-        .where(MaintenanceTicket.assigned_to_id.isnot(None))
+        .where(*t_conds([MaintenanceTicket.assigned_to_id.isnot(None)]))
         .group_by(MaintenanceTicket.assigned_to_id)
         .order_by(func.count(MaintenanceTicket.id).desc())
         .limit(10)
@@ -109,18 +178,67 @@ async def maintenance_dashboard(
     # Escalation by level (alerts that were escalated)
     r = await db.execute(
         select(MaintenanceAlert.escalation_level, func.count(MaintenanceAlert.id))
-        .where(MaintenanceAlert.escalation_level > 0)
+        .where(*a_conds([MaintenanceAlert.escalation_level > 0]))
         .group_by(MaintenanceAlert.escalation_level)
         .order_by(MaintenanceAlert.escalation_level)
     )
     by_escalation = [{"level": f"L{lv}", "count": c} for lv, c in r.all()]
 
-    # Open tickets by status
+    # Tickets by status
     r = await db.execute(
         select(MaintenanceTicket.status, func.count(MaintenanceTicket.id))
+        .where(*t_conds())
         .group_by(MaintenanceTicket.status)
     )
     by_ticket_status = [{"status": s, "count": c} for s, c in r.all() if s]
+
+    # ── Trend over time (tickets opened & interventions called per bucket) ─────
+    span_days = (end.date() - start.date()).days
+    daily = span_days <= 92
+    bucket_unit = "day" if daily else "week"
+
+    buckets = []
+    cur = start.date()
+    end_d = end.date()
+    while cur < end_d:
+        b_end = (cur + timedelta(days=1)) if daily else min(cur + timedelta(days=7), end_d)
+        buckets.append({"start": cur, "end": b_end, "date": cur.isoformat(),
+                        "label": cur.isoformat()[5:], "tickets": 0, "interventions": 0})
+        cur = b_end
+
+    def _bucket_for(d: _date):
+        for b in buckets:
+            if b["start"] <= d < b["end"]:
+                return b
+        return None
+
+    t_rows = (await db.execute(
+        select(func.date(MaintenanceTicket.opened_at), func.count(MaintenanceTicket.id))
+        .where(*t_conds())
+        .group_by(func.date(MaintenanceTicket.opened_at))
+    )).all()
+    for d, c in t_rows:
+        dd = d if isinstance(d, _date) else _date.fromisoformat(str(d))
+        b = _bucket_for(dd)
+        if b:
+            b["tickets"] += c
+
+    int_conds = [MachineIntervention.called_at >= start, MachineIntervention.called_at < end]
+    if mids:
+        int_conds.append(MachineIntervention.machine_id.in_(mids))
+    i_rows = (await db.execute(
+        select(func.date(MachineIntervention.called_at), func.count(MachineIntervention.id))
+        .where(*int_conds)
+        .group_by(func.date(MachineIntervention.called_at))
+    )).all()
+    for d, c in i_rows:
+        dd = d if isinstance(d, _date) else _date.fromisoformat(str(d))
+        b = _bucket_for(dd)
+        if b:
+            b["interventions"] += c
+
+    trend = [{"date": b["date"], "label": b["label"],
+              "tickets": b["tickets"], "interventions": b["interventions"]} for b in buckets]
 
     return {
         "open_alerts":          open_alerts,
@@ -128,11 +246,19 @@ async def maintenance_dashboard(
         "critical_tickets":     critical_tickets,
         "overdue_alerts":       overdue_alerts,
         "avg_resolution_hours": avg_resolution_hours,
+        "avg_resolution_minutes": avg_resolution_minutes,
+        "avg_resolution_seconds": avg_resolution_seconds,
         "by_machine":           by_machine,
         "by_problem_type":      by_problem_type,
         "by_technician":        by_technician,
         "by_escalation":        by_escalation,
         "by_ticket_status":     by_ticket_status,
+        "trend":                trend,
+        "bucket_unit":          bucket_unit,
+        "period": {
+            "start": start.date().isoformat(),
+            "end":   (end - timedelta(days=1)).date().isoformat(),
+        },
     }
 
 
@@ -240,22 +366,31 @@ async def supervisor_overview(
 
 @router.get("/intervention-kpis")
 async def get_intervention_kpis(
-    days: int = Query(30, ge=1, le=365),
+    days: int = Query(30, ge=1, le=730),
     equipment_id: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    machine_ids: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(lambda: None),  # optional — open endpoint
+    current_user: User = Depends(get_current_user),
 ):
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    start, end = _resolve_window(days, start_date, end_date)
+    # Window span drives the MTBF operating-time denominator
+    window_days = max(1, (end - start).days)
 
     filters = [
         MachineIntervention.status == "completed",
-        MachineIntervention.called_at >= since,
+        MachineIntervention.called_at >= start,
+        MachineIntervention.called_at < end,
     ]
     if equipment_id:
         try:
             filters.append(MachineIntervention.equipment_id == _uuid.UUID(equipment_id))
         except ValueError:
             pass
+    mids = _parse_machine_ids(machine_ids)
+    if mids:
+        filters.append(MachineIntervention.machine_id.in_(mids))
 
     items = (await db.execute(
         select(MachineIntervention)
@@ -266,7 +401,7 @@ async def get_intervention_kpis(
     if not items:
         return {
             "total_interventions": 0,
-            "period_days": days,
+            "period_days": window_days,
             "mttr_minutes": None,
             "mtbf_hours": None,
             "avg_response_time_minutes": None,
@@ -281,11 +416,24 @@ async def get_intervention_kpis(
 
     mttr = round(sum(durations) / len(durations), 1) if durations else None
 
-    if len(items) > 1:
-        span_hours = (items[-1].called_at - items[0].called_at).total_seconds() / 3600
-        mtbf = round(span_hours / (len(items) - 1), 1)
-    else:
-        mtbf = None
+    # MTBF per machine (operating hours / failures), then averaged across machines.
+    # Dividing a single-timeline window by a multi-machine failure count understates
+    # it, so aggregate per asset. Need >=2 events for a between-failures interval;
+    # if no machine qualifies, MTBF is not computable -> None (UI shows "—").
+    per_machine: dict = {}
+    for i in items:
+        mk = str(i.machine_id or i.equipment_id or "unknown")
+        slot = per_machine.setdefault(mk, {"count": 0, "downtime_min": 0.0})
+        slot["count"] += 1
+        if i.total_downtime_minutes is not None:
+            slot["downtime_min"] += i.total_downtime_minutes
+    mtbf_vals = []
+    for slot in per_machine.values():
+        if slot["count"] >= 2:
+            op_hours = window_days * 24 - slot["downtime_min"] / 60
+            if op_hours > 0:
+                mtbf_vals.append(op_hours / slot["count"])
+    mtbf = round(sum(mtbf_vals) / len(mtbf_vals), 1) if mtbf_vals else None
 
     avg_response  = round(sum(responses) / len(responses), 1) if responses else None
     avg_downtime  = round(sum(downtimes) / len(downtimes), 1) if downtimes else None
@@ -302,14 +450,26 @@ async def get_intervention_kpis(
         if i.response_time_minutes is not None:
             eq_map[key]["responses"].append(i.response_time_minutes)
 
-    # Resolve equipment names
+    # Resolve names. The key is an equipment id, or (when intervention.equipment_id
+    # is NULL) a machine id — fall back to the linked/own Machine name so the chart
+    # never shows a raw UUID fragment.
     for key, data in eq_map.items():
         try:
-            eq = await db.get(Equipment, _uuid.UUID(key))
-            if eq:
-                data["name"] = eq.name
-        except Exception:
-            pass
+            uid = _uuid.UUID(key)
+        except ValueError:
+            continue
+        eq = await db.get(Equipment, uid)
+        if eq:
+            data["name"] = eq.name
+            continue
+        m = await db.get(Machine, uid)
+        if m:
+            if m.equipment_id:
+                eq2 = await db.get(Equipment, m.equipment_id)
+                if eq2:
+                    data["name"] = eq2.name
+            if not data["name"]:
+                data["name"] = m.name
 
     by_equipment = []
     for key, data in eq_map.items():
@@ -323,7 +483,7 @@ async def get_intervention_kpis(
 
     return {
         "total_interventions": len(items),
-        "period_days": days,
+        "period_days": window_days,
         "mttr_minutes": mttr,
         "mtbf_hours": mtbf,
         "avg_response_time_minutes": avg_response,

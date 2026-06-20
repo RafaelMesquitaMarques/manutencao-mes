@@ -4,7 +4,7 @@ import 'ag-grid-community/styles/ag-theme-alpine.css';
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AgGridReact } from 'ag-grid-react';
-import type { ColDef, ICellRendererParams } from 'ag-grid-community';
+import type { CellClickedEvent, CellValueChangedEvent, ColDef, ICellRendererParams } from 'ag-grid-community';
 import {
   Package, AlertTriangle, Search, Filter, Plus,
   RefreshCw, Download, ChevronDown, X, Boxes,
@@ -15,9 +15,11 @@ import {
   fetchStockItems,
   fetchInventoryCategories,
   fetchInventoryDashboard,
+  updateStockItem,
   type StockItemFilters,
 } from '../../api/inventory';
 import { fetchSupplierList } from '../../api/suppliers';
+import ExcelSetFilter from '../../components/grid/ExcelSetFilter';
 import type { StockItem, InventoryDashboard, Supplier } from '../../types';
 
 // ── Cell renderers ────────────────────────────────────────────────────────────
@@ -130,11 +132,14 @@ export default function InventoryList() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Columns flex to fill the viewport; when their minimum widths don't fit,
+  // the grid's own horizontal scrollbar (always visible at the bottom of the
+  // table area) takes over.
   const colDefs = useMemo<ColDef<StockItem>[]>(() => [
     {
       field: 'code',
       headerName: t('inventory.code', 'Part No.'),
-      width: 145,
+      width: 130,
       pinned: 'left',
       cellClass: 'font-mono text-xs text-indigo-300 font-semibold',
       filter: 'agTextColumnFilter',
@@ -143,76 +148,148 @@ export default function InventoryList() {
       field: 'description',
       headerName: t('inventory.description', 'Description'),
       flex: 3,
-      minWidth: 300,
+      minWidth: 240,
       filter: 'agTextColumnFilter',
       cellClass: 'text-sm text-gray-200',
+      tooltipField: 'description',
     },
     {
       field: 'category',
       headerName: t('inventory.category', 'Category'),
-      width: 160,
+      flex: 1,
+      minWidth: 112,
       cellRenderer: CategoryCellRenderer,
-      filter: 'agTextColumnFilter',
+      filter: ExcelSetFilter,
+      tooltipField: 'category',
     },
     {
       field: 'part_class',
       headerName: t('inventory.partClass', 'Part Class'),
-      width: 160,
+      flex: 1,
+      minWidth: 100,
       cellClass: 'text-xs text-gray-400',
-      filter: 'agTextColumnFilter',
+      filter: ExcelSetFilter,
+      tooltipField: 'part_class',
     },
     {
       field: 'quantity',
       headerName: t('inventory.quantity', 'Qty in stock'),
-      width: 145,
+      flex: 1,
+      minWidth: 118,
       cellRenderer: QuantityCellRenderer,
       sort: 'asc',
       comparator: (a, b) => a - b,
+      filter: 'agNumberColumnFilter',
     },
     {
       field: 'min_quantity',
       headerName: t('inventory.minQty', 'Min qty'),
-      width: 100,
-      cellClass: 'text-xs font-mono text-gray-400',
+      flex: 0.7,
+      minWidth: 88,
+      editable: true,
+      filter: 'agNumberColumnFilter',
+      cellClass: 'text-xs font-mono text-gray-300',
       valueFormatter: ({ value }) => (value != null ? String(value) : '—'),
-    },
-    {
-      field: 'unit',
-      headerName: t('inventory.unit', 'Unit'),
-      width: 90,
-      cellClass: 'text-xs text-gray-500',
-    },
-    {
-      colId: 'location',
-      headerName: t('inventory.location', 'Location'),
-      width: 160,
-      cellRenderer: LocationCellRenderer,
+      valueParser: ({ newValue }) => {
+        const v = parseFloat(String(newValue ?? '').replace(',', '.'));
+        return Number.isFinite(v) && v >= 0 ? v : null;
+      },
+      headerTooltip: t('inventory.editHint', 'Double-click to edit'),
     },
     {
       field: 'unit_cost',
       headerName: t('inventory.cost', 'Unit cost'),
-      width: 110,
-      cellClass: 'text-xs font-mono text-gray-400',
+      flex: 0.8,
+      minWidth: 105,
+      editable: true,
+      filter: 'agNumberColumnFilter',
+      cellClass: 'text-xs font-mono text-emerald-300',
       valueFormatter: ({ value }) =>
         value != null ? `$${Number(value).toFixed(2)}` : '—',
+      valueParser: ({ newValue }) => {
+        const v = parseFloat(String(newValue ?? '').replace('$', '').replace(',', '.'));
+        return Number.isFinite(v) && v >= 0 ? v : null;
+      },
+      headerTooltip: t('inventory.costEditHint', 'Double-click to edit'),
+    },
+    {
+      field: 'average_cost',
+      headerName: t('inventory.avgCost', 'Avg. cost'),
+      flex: 0.8,
+      minWidth: 105,
+      filter: 'agNumberColumnFilter',
+      cellClass: 'text-xs font-mono text-sky-300',
+      valueFormatter: ({ value }) =>
+        value != null ? `$${Number(value).toFixed(2)}` : '—',
+      headerTooltip: t('inventory.avgCostHint', 'Weighted average of all received purchases'),
+    },
+    {
+      field: 'last_purchase_cost',
+      headerName: t('inventory.lastPurchase', 'Last purchase'),
+      flex: 0.85,
+      minWidth: 120,
+      filter: 'agNumberColumnFilter',
+      cellClass: 'text-xs font-mono text-amber-200',
+      valueFormatter: ({ value }) =>
+        value != null ? `$${Number(value).toFixed(2)}` : '—',
+      headerTooltip: t('inventory.lastPurchaseHint', 'Unit cost of the most recent receipt'),
+      tooltipValueGetter: (p) => {
+        const d = (p.data as StockItem | undefined)?.last_purchase_date;
+        return d ? `${t('inventory.lastPurchase', 'Last purchase')}: ${d}` : '';
+      },
+    },
+    {
+      colId: 'location',
+      headerName: t('inventory.location', 'Location'),
+      flex: 1,
+      minWidth: 125,
+      cellRenderer: LocationCellRenderer,
+      valueGetter: (p) => [p.data?.warehouse, p.data?.location].filter(Boolean).join(' / '),
+      filter: ExcelSetFilter,
     },
     {
       field: 'supplier_name',
       headerName: t('inventory.supplier', 'Supplier'),
-      width: 160,
-      cellClass: 'text-xs text-gray-400',
-      valueFormatter: ({ value }) => value ?? '—',
-      filter: 'agTextColumnFilter',
+      flex: 1.2,
+      minWidth: 135,
+      editable: true,
+      cellEditor: 'agSelectCellEditor',
+      cellEditorParams: { values: ['', ...suppliers.map(s => s.name)] },
+      cellClass: 'text-xs text-gray-300',
+      valueFormatter: ({ value }) => value || '—',
+      filter: ExcelSetFilter,
+      headerTooltip: t('inventory.editHint', 'Double-click to edit'),
     },
-  ], [t]);
+  ], [t, suppliers]);
 
   const defaultColDef = useMemo<ColDef>(() => ({
     sortable: true,
     resizable: true,
+    floatingFilter: true,
   }), []);
 
-  const onRowClicked = ({ data }: { data?: StockItem }) => {
-    if (data) navigate(`/inventory/${data.id}`);
+  const EDITABLE_FIELDS = ['unit_cost', 'min_quantity', 'supplier_name'];
+
+  // Navigate on cell click, except on the inline-editable columns
+  const onCellClicked = ({ data, colDef: col }: CellClickedEvent<StockItem>) => {
+    if (data && !EDITABLE_FIELDS.includes(col.field ?? '')) navigate(`/inventory/${data.id}`);
+  };
+
+  const onCellValueChanged = async ({ data, colDef: col, newValue, oldValue }: CellValueChangedEvent<StockItem>) => {
+    const field = col.field ?? '';
+    if (!EDITABLE_FIELDS.includes(field) || newValue === oldValue) return;
+    try {
+      if (field === 'supplier_name') {
+        const supplier = suppliers.find(s => s.name === newValue);
+        await updateStockItem(data.id, { supplier_id: supplier?.id ?? null });
+        data.supplier_id = supplier?.id ?? null;
+      } else {
+        await updateStockItem(data.id, { [field]: newValue });
+      }
+    } catch {
+      (data as unknown as Record<string, unknown>)[field] = oldValue;
+      gridRef.current?.api.refreshCells({ columns: [field], force: true });
+    }
   };
 
   const exportCSV = () => gridRef.current?.api.exportDataAsCsv();
@@ -380,26 +457,29 @@ export default function InventoryList() {
         )}
       </div>
 
-      {/* ── AG Grid ── */}
-      <div className="ag-theme-alpine-dark w-full">
+      {/* ── AG Grid — viewport-sized so the horizontal scrollbar stays visible ── */}
+      <div
+        className="ag-theme-alpine-dark w-full"
+        style={{ height: 'calc(100vh - 400px)', minHeight: 360 }}
+      >
         <AgGridReact<StockItem>
           ref={gridRef}
+          reactiveCustomComponents
           rowData={items}
           columnDefs={colDefs}
           defaultColDef={defaultColDef}
-          domLayout="autoHeight"
           animateRows
           rowSelection="single"
-          onRowClicked={onRowClicked}
+          onCellClicked={onCellClicked}
+          onCellValueChanged={onCellValueChanged}
           rowClass="cursor-pointer"
           rowClassRules={{
             'ag-row-low-stock': (params) => params.data?.is_low_stock ?? false,
           }}
           overlayLoadingTemplate='<span class="text-gray-400 text-sm">Loading…</span>'
           overlayNoRowsTemplate='<span class="text-gray-500 text-sm">No items found</span>'
-          loading={loading}
-          suppressCellFocus
           getRowId={({ data }) => data.id}
+          alwaysShowHorizontalScroll
           pagination
           paginationPageSize={100}
           paginationPageSizeSelector={[50, 100, 200, 500]}

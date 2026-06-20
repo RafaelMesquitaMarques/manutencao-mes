@@ -34,6 +34,11 @@ export const deleteUser = async (userId: string): Promise<void> => {
   await api.delete(`/api/users/${userId}`);
 };
 
+/** Hard delete — fails with 409 when the user has operational history. */
+export const deleteUserPermanently = async (userId: string): Promise<void> => {
+  await api.delete(`/api/users/${userId}/permanent`);
+};
+
 export const fetchUserPermissions = async (userId: string): Promise<UserPermission[]> => {
   const { data } = await api.get<UserPermission[]>(`/api/users/${userId}/permissions`);
   return data;

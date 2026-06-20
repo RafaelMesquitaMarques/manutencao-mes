@@ -5,10 +5,12 @@ import { Plus, Users, RefreshCw, CheckCircle2 } from 'lucide-react';
 import { fetchTechniciansFull } from '../../api/workOrders';
 import type { TechnicianFull } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import { usePermission } from '../../hooks/usePermission';
 
 const TechnicianList = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const canCreate = usePermission('technicians', 'create');
 
   const [technicians, setTechnicians] = useState<TechnicianFull[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -36,10 +38,12 @@ const TechnicianList = () => {
           <h1 className="text-2xl font-bold text-white">{t('technicians.title')}</h1>
           <p className="text-gray-500 text-sm mt-1">{t('technicians.subtitle')}</p>
         </div>
-        <button onClick={() => navigate('/technicians/new')} className="btn-primary flex-shrink-0">
-          <Plus size={16} />
-          {t('technicians.newTech')}
-        </button>
+        {canCreate && (
+          <button onClick={() => navigate('/technicians/new')} className="btn-primary flex-shrink-0">
+            <Plus size={16} />
+            {t('technicians.newTech')}
+          </button>
+        )}
       </div>
 
       {isLoading ? (
@@ -68,16 +72,16 @@ const TechnicianList = () => {
         </div>
       ) : (
         <div className="glass-card overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="overflow-auto max-h-[calc(100vh-210px)]">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-white/[0.04]">
-                  <th className="table-header-cell">{t('common.actions')}</th>
-                  <th className="table-header-cell">{t('technicians.employeeNumber')}</th>
-                  <th className="table-header-cell">{t('technicians.specialty')}</th>
-                  <th className="table-header-cell">{t('technicians.shift')}</th>
-                  <th className="table-header-cell text-right">{t('technicians.hourlyRate')}</th>
-                  <th className="table-header-cell">{t('technicians.active')}</th>
+                <tr>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('common.actions')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('technicians.employeeNumber')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('technicians.specialty')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('technicians.shift')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] text-right">{t('technicians.hourlyRate')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('technicians.active')}</th>
                 </tr>
               </thead>
               <tbody>

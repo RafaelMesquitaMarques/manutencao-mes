@@ -73,6 +73,19 @@ export const fetchTicket = async (id: string): Promise<MaintenanceTicket> => {
   return data;
 };
 
+/** Open tickets with no technician — claimable on unsupervised shifts. */
+export const fetchAvailableTickets = async (): Promise<MaintenanceTicket[]> => {
+  const { data } = await api.get<Paginated<MaintenanceTicket>>('/api/tickets/', {
+    params: { status: 'open', unassigned: 'true', limit: '50' },
+  });
+  return data.items ?? [];
+};
+
+/** Self-assign an unassigned ticket (creates the linked WO). */
+export const claimTicket = async (ticketId: string): Promise<void> => {
+  await api.post(`/api/tickets/${ticketId}/claim`);
+};
+
 export const updateTicketStatus = async (
   id: string,
   payload: {
@@ -146,6 +159,8 @@ export const createTicket = async (payload: {
   problem_type?: string;
   description?: string;
   estimated_downtime_minutes?: number;
+  machine_stopped?: boolean;
+  force?: boolean;
 }): Promise<MaintenanceTicket> => {
   const { data } = await api.post<MaintenanceTicket>('/api/tickets/', payload);
   return data;
@@ -163,8 +178,8 @@ export const deleteTicket = async (id: string): Promise<void> => {
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 export const fetchMaintenanceDashboard =
-  async (): Promise<MaintenanceDashboardData> => {
-    const { data } = await api.get<MaintenanceDashboardData>('/api/maintenance/dashboard');
+  async (filters?: import('../types').DashboardFilters): Promise<MaintenanceDashboardData> => {
+    const { data } = await api.get<MaintenanceDashboardData>('/api/maintenance/dashboard', { params: filters });
     return data;
   };
 

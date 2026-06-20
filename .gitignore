@@ -5,3 +5,6 @@ backups/
 node_modules/
 dist/
 .vite/
+Thumbs.db
+acess twilio.txt
+*.credentials

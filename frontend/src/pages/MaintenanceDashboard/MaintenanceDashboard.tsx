@@ -1,14 +1,17 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { Bell, Ticket, AlertTriangle, Clock, RefreshCw, BarChart2, Wrench, TrendingUp, Zap, Timer, CalendarClock, ListChecks, CheckCircle2, Percent, ArrowRight } from 'lucide-react';
+import { Bell, Ticket, AlertTriangle, Clock, RefreshCw, BarChart2, Wrench, TrendingUp, Zap, Timer, CalendarClock, ListChecks, CheckCircle2, Percent, ArrowRight, LineChart } from 'lucide-react';
 import ReactECharts from 'echarts-for-react';
 import { fetchMaintenanceDashboard } from '../../api/maintenance';
 import { fetchPmDashboard } from '../../api/maintenancePlans';
-import type { MaintenanceDashboardData, PmDashboard } from '../../types';
+import { fetchMachinesAll } from '../../api/machines';
+import type { MaintenanceDashboardData, PmDashboard, Machine } from '../../types';
 import Spinner from '../../components/ui/Spinner';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
+import { humanDuration } from '../../utils/duration';
 import api from '../../api/axios';
+import DashboardFilters, { DEFAULT_FILTERS, filtersToParams, type FilterState } from '../../components/DashboardFilters';
 
 interface InterventionKpis {
   total_interventions: number;
@@ -87,6 +90,24 @@ function donutOpts(
   };
 }
 
+function trendOpts(data: { label: string; tickets: number; interventions: number }[]): object {
+  return {
+    tooltip: { trigger: 'axis', backgroundColor: '#111827', borderColor: 'rgba(255,255,255,0.1)', textStyle: { color: '#e5e7eb' } },
+    legend:  { top: 0, right: 8, textStyle: { color: CHART_TEXT, fontSize: 11 }, icon: 'roundRect' },
+    grid:    { left: 16, right: 16, top: 32, bottom: 30, containLabel: true },
+    xAxis:   { type: 'category', data: data.map((d) => d.label), axisLabel: { color: CHART_TEXT, fontSize: 10 }, axisLine: { lineStyle: { color: CHART_LINE } } },
+    yAxis:   { type: 'value', axisLabel: { color: CHART_TEXT, fontSize: 11 }, splitLine: { lineStyle: { color: CHART_LINE } }, minInterval: 1 },
+    series: [
+      { name: 'Tickets', type: 'line', smooth: true, showSymbol: false, data: data.map((d) => d.tickets),
+        lineStyle: { color: '#3b82f6', width: 2 }, itemStyle: { color: '#3b82f6' },
+        areaStyle: { color: 'rgba(59,130,246,0.12)' } },
+      { name: 'Interventions', type: 'line', smooth: true, showSymbol: false, data: data.map((d) => d.interventions),
+        lineStyle: { color: '#10b981', width: 2 }, itemStyle: { color: '#10b981' },
+        areaStyle: { color: 'rgba(16,185,129,0.12)' } },
+    ],
+  };
+}
+
 const PIE_COLORS  = ['#3b82f6','#f59e0b','#10b981','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316','#64748b'];
 
 export default function MaintenanceDashboard() {
@@ -94,29 +115,83 @@ export default function MaintenanceDashboard() {
   const [data, setData]       = useState<MaintenanceDashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [kpiData, setKpiData] = useState<InterventionKpis | null>(null);
-  const [kpiPeriod, setKpiPeriod] = useState<7 | 30 | 90>(30);
   const [pmData, setPmData] = useState<PmDashboard | null>(null);
+  const [machines, setMachines] = useState<Machine[]>([]);
+  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
+
+  // The /api/machines list carries duplicate rows for the same physical machine
+  // (a canonical equipment-linked row + an orphan code-less row auto-created on
+  // the floor). Collapse them to one entry per name for the dropdown, preferring
+  // the row that actually carries the data (equipment-linked / coded), and keep a
+  // map so a selection expands to every id sharing that name when filtering.
+  const { dedupedMachines, idGroups } = useMemo(() => {
+    const score = (m: Machine) => (m.equipment_id ? 2 : 0) + (m.code ? 1 : 0);
+    const groups = new Map<string, Machine[]>();
+    for (const m of machines) {
+      if (m.is_active === false) continue;
+      const key = (m.display_name || m.name || '').trim().toLowerCase() || m.id;
+      const arr = groups.get(key);
+      if (arr) arr.push(m); else groups.set(key, [m]);
+    }
+    const deduped: Machine[] = [];
+    const map: Record<string, string[]> = {};
+    for (const rows of groups.values()) {
+      const canonical = [...rows].sort((a, b) => score(b) - score(a))[0];
+      deduped.push(canonical);
+      map[canonical.id] = rows.map((r) => r.id);
+    }
+    deduped.sort((a, b) => (a.display_name || a.name).localeCompare(b.display_name || b.name));
+    return { dedupedMachines: deduped, idGroups: map };
+  }, [machines]);
+
+  const params = useMemo(() => {
+    const base = filtersToParams(filters);
+    if (base.machine_ids) {
+      const expanded = filters.machineIds.flatMap((id) => idGroups[id] ?? [id]);
+      base.machine_ids = Array.from(new Set(expanded)).join(',');
+    }
+    return base;
+  }, [filters, idGroups]);
+  const paramKey = useMemo(() => new URLSearchParams(params).toString(), [params]);
+
+  // Monotonic id so only the most recent load() writes state — guards against
+  // out-of-order responses overwriting newer-filter data on rapid filter changes.
+  const loadSeq = useRef(0);
 
   const load = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    try {
-      const d = await fetchMaintenanceDashboard();
-      setData(d);
-    } finally {
-      if (!silent) setLoading(false);
+    const seq = ++loadSeq.current;
+    if (!silent) {
+      setLoading(true);
+      // Drop section data so a slow/failed sub-request can't keep showing the
+      // previous filter's KPI/PM numbers next to the new filter.
+      setKpiData(null);
+      setPmData(null);
     }
-  }, []);
+    try {
+      // All three honour the active period + machine filter; run together so a
+      // partial failure surfaces in the auto-refresh error state.
+      const [dash, kpi, pm] = await Promise.allSettled([
+        fetchMaintenanceDashboard(params),
+        api.get('/api/maintenance/intervention-kpis', { params }).then((r) => r.data),
+        fetchPmDashboard(params),
+      ]);
+      if (seq !== loadSeq.current) return;   // superseded by a newer load()
+      if (dash.status === 'fulfilled') setData(dash.value);
+      if (kpi.status === 'fulfilled') setKpiData(kpi.value);
+      if (pm.status === 'fulfilled') setPmData(pm.value);
+      if (dash.status === 'rejected' || kpi.status === 'rejected' || pm.status === 'rejected') {
+        throw new Error('partial dashboard refresh failure');
+      }
+    } finally {
+      if (!silent && seq === loadSeq.current) setLoading(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paramKey]);
+
+  useEffect(() => { load().catch(() => {}); }, [load]);
 
   useEffect(() => {
-    api.get(`/api/maintenance/intervention-kpis?days=${kpiPeriod}`)
-      .then(r => setKpiData(r.data))
-      .catch(() => {});
-  }, [kpiPeriod]);
-
-  useEffect(() => { load(); }, [load]);
-
-  useEffect(() => {
-    fetchPmDashboard().then(setPmData).catch(() => {});
+    fetchMachinesAll().then(setMachines).catch(() => {});
   }, []);
 
   const { lastUpdatedAt, isRefreshing, hasError, manualRefresh } = useAutoRefresh(
@@ -166,6 +241,16 @@ export default function MaintenanceDashboard() {
         </div>
       </div>
 
+      {/* Filter bar — period + machines, applies to KPIs, charts and interventions */}
+      <div className="glass-card p-3 flex items-center justify-between gap-3 flex-wrap relative z-50">
+        <DashboardFilters value={filters} machines={dedupedMachines} onChange={setFilters} />
+        {data && (
+          <span className="text-xs text-gray-600 font-mono">
+            {data.period.start} → {data.period.end}
+          </span>
+        )}
+      </div>
+
       {/* KPI cards */}
       <div className="grid grid-cols-2 xl:grid-cols-5 gap-3 md:gap-4">
         <KPICard
@@ -202,7 +287,7 @@ export default function MaintenanceDashboard() {
         />
         <KPICard
           title={t('maintenanceDash.avgResolution')}
-          value={`${d.avg_resolution_hours}h`}
+          value={d.avg_resolution_seconds != null ? humanDuration(d.avg_resolution_seconds) : '—'}
           icon={Clock}
           iconBg="bg-green-500/15"
           iconColor="text-green-400"
@@ -267,11 +352,11 @@ export default function MaintenanceDashboard() {
             />
             <KPICard
               title={t('pm.complianceRate')}
-              value={`${pmData.compliance_rate.toFixed(0)}%`}
+              value={pmData.compliance_rate == null ? '—' : `${pmData.compliance_rate.toFixed(0)}%`}
               icon={Percent}
               iconBg="bg-sky-500/15"
-              iconColor="text-sky-400"
-              valueColor="text-sky-400"
+              iconColor={pmData.compliance_rate == null ? 'text-gray-400' : 'text-sky-400'}
+              valueColor={pmData.compliance_rate == null ? 'text-gray-400' : 'text-sky-400'}
             />
           </div>
 
@@ -320,6 +405,17 @@ export default function MaintenanceDashboard() {
         </div>
       )}
 
+      {/* Trend over time */}
+      <div className="glass-card p-5">
+        <h2 className="text-white font-semibold text-sm mb-4 flex items-center gap-2">
+          <LineChart size={16} className="text-blue-400" />
+          {t('maintenanceDash.trendTitle', 'Tendance — tickets & interventions')}
+        </h2>
+        {d.trend && d.trend.some((p) => p.tickets || p.interventions) ? (
+          <ReactECharts option={trendOpts(d.trend)} style={{ height: 240 }} />
+        ) : <Empty />}
+      </div>
+
       {/* Charts row 1 */}
       <div className="grid lg:grid-cols-2 gap-4">
         <div className="glass-card p-5">
@@ -367,19 +463,6 @@ export default function MaintenanceDashboard() {
             <Wrench size={16} className="text-blue-400" />
             KPIs Interventions
           </h2>
-          <div className="flex gap-1">
-            {([7, 30, 90] as const).map(d => (
-              <button
-                key={d}
-                onClick={() => setKpiPeriod(d)}
-                className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${
-                  kpiPeriod === d
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white/[0.05] text-gray-400 hover:bg-white/[0.08]'
-                }`}
-              >{d}j</button>
-            ))}
-          </div>
         </div>
 
         {kpiData && (
@@ -419,7 +502,7 @@ export default function MaintenanceDashboard() {
               />
             </div>
 
-            {kpiData.by_equipment.length > 0 && (
+            {kpiData.by_equipment.some((e) => e.avg_duration_minutes != null) && (
               <div className="glass-card p-5">
                 <h3 className="text-white font-semibold text-sm mb-4">Durée moy. par équipement (min)</h3>
                 <ReactECharts
@@ -436,7 +519,7 @@ export default function MaintenanceDashboard() {
             )}
 
             <p className="text-xs text-gray-600 text-right">
-              {kpiData.total_interventions} interventions sur les {kpiPeriod} derniers jours
+              {kpiData.total_interventions} interventions · {kpiData.period_days} {t('maintenanceDash.daysWindow', 'jours')}
             </p>
           </>
         )}

@@ -10,6 +10,7 @@ from app.db.session import get_db
 from app.models.models import User, Equipment, EquipmentStatus
 from app.schemas.equipment import EquipmentCreate, EquipmentUpdate, EquipmentOut, EquipmentListResponse
 from app.core.security import get_current_user
+from app.services.equipment_machine_sync import ensure_machine_for_equipment
 
 router = APIRouter()
 
@@ -19,6 +20,9 @@ async def list_equipment(
     plant_id: Optional[UUID] = None,
     status: Optional[EquipmentStatus] = None,
     criticality: Optional[str] = None,
+    asset_type: Optional[str] = None,
+    department: Optional[str] = None,
+    family: Optional[str] = None,
     search: Optional[str] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, le=200),
@@ -29,10 +33,16 @@ async def list_equipment(
 
     if plant_id:
         query = query.where(Equipment.plant_id == plant_id)
+    if asset_type:
+        query = query.where(Equipment.asset_type == asset_type)
     if status:
         query = query.where(Equipment.status == status)
     if criticality:
         query = query.where(Equipment.criticality == criticality)
+    if department:
+        query = query.where(Equipment.department == department)
+    if family:
+        query = query.where(Equipment.family == family)
     if search:
         query = query.where(
             Equipment.name.ilike(f"%{search}%") |
@@ -70,6 +80,8 @@ async def create_equipment(
     current_user: User = Depends(get_current_user),
 ):
     equip = Equipment(**data.model_dump())
+    db.add(equip)
+    await db.flush()  # assign equip.id before generating the QR / kiosk
 
     # Auto-generate QR Code
     qr = qrcode.make(f"equip:{equip.id}")
@@ -77,7 +89,9 @@ async def create_equipment(
     qr.save(buf, format="PNG")
     equip.qr_code = base64.b64encode(buf.getvalue()).decode()
 
-    db.add(equip)
+    # Production equipment automatically gets its kiosk/Machine
+    await ensure_machine_for_equipment(db, equip)
+
     await db.commit()
     await db.refresh(equip)
     return equip
@@ -98,6 +112,9 @@ async def update_equipment(
     for field, value in data.model_dump(exclude_none=True).items():
         setattr(equip, field, value)
 
+    # keep the kiosk/Machine in sync with the (possibly changed) classification
+    await ensure_machine_for_equipment(db, equip)
+
     await db.commit()
     await db.refresh(equip)
     return equip
@@ -114,6 +131,7 @@ async def delete_equipment(
     if not equip:
         raise HTTPException(status_code=404, detail="Equipment not found")
     equip.active = False  # soft delete
+    await ensure_machine_for_equipment(db, equip)  # deactivate its kiosk too
     await db.commit()
 
 

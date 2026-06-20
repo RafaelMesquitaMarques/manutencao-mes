@@ -2,10 +2,12 @@ import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Briefcase, Play, CheckCircle2, Clock, AlertTriangle,
-  ChevronRight, RefreshCw, PauseCircle,
+  ChevronRight, RefreshCw, PauseCircle, Hand, Inbox,
 } from 'lucide-react';
 import { fetchMyWorkOrders, startWorkOrder, holdWorkOrder, resumeWorkOrder, completeWorkOrderFull } from '../../api/workOrders';
-import type { WorkOrder, Priority, WorkOrderStatus } from '../../types';
+import { fetchAvailableTickets, claimTicket } from '../../api/maintenance';
+import { fetchEscalationSettings } from '../../api/escalation';
+import type { WorkOrder, Priority, WorkOrderStatus, MaintenanceTicket } from '../../types';
 import Spinner from '../../components/ui/Spinner';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
@@ -40,9 +42,12 @@ const EMPTY_FORM: CompleteForm = { root_cause: '', solution_applied: '' };
 
 export default function MyWorkPage() {
   const [wos, setWOs]           = useState<WorkOrder[]>([]);
+  const [available, setAvailable] = useState<MaintenanceTicket[]>([]);
+  const [selfAssignOn, setSelfAssignOn] = useState(true);
   const [loading, setLoading]   = useState(true);
   const [actionId, setActionId]     = useState<string | null>(null);
   const [completeId, setCompleteId] = useState<string | null>(null);
+  const [claimErr, setClaimErr] = useState('');
   const [form, setForm]         = useState<CompleteForm>(EMPTY_FORM);
   const [formErr, setFormErr]   = useState('');
   const [tick, setTick]         = useState(0);
@@ -50,14 +55,44 @@ export default function MyWorkPage() {
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const items = await fetchMyWorkOrders();
-      setWOs(items.filter((w) => w.status !== 'completed' && w.status !== 'cancelled'));
-    } catch {
-      if (!silent) setWOs([]);
+      const [items, avail, cfg] = await Promise.allSettled([
+        fetchMyWorkOrders(),
+        fetchAvailableTickets(),
+        fetchEscalationSettings(),
+      ]);
+      if (items.status === 'fulfilled') {
+        setWOs(items.value.filter((w) => w.status !== 'completed' && w.status !== 'cancelled'));
+      } else if (!silent) {
+        setWOs([]);
+      }
+      // Preventive maintenance is always assigned — never claimable here.
+      if (avail.status === 'fulfilled') setAvailable(avail.value.filter((t) => t.problem_type !== 'preventive_request'));
+      if (cfg.status === 'fulfilled') setSelfAssignOn(cfg.value.settings.technician_self_assign);
     } finally {
       if (!silent) setLoading(false);
     }
   }, []);
+
+  const handleClaim = async (ticketId: string) => {
+    setActionId(ticketId);
+    setClaimErr('');
+    try {
+      await claimTicket(ticketId);
+      await load(true);
+    } catch (err: unknown) {
+      const resp = (err as { response?: { status?: number; data?: { detail?: string } } })?.response;
+      if (resp?.status === 409) {
+        setClaimErr('Ce ticket vient d\'être pris par un autre technicien.');
+      } else if (resp?.data?.detail === 'Your account has no technician profile') {
+        setClaimErr('Votre compte n\'a pas de profil technicien — seuls les techniciens peuvent prendre un ticket.');
+      } else {
+        setClaimErr(resp?.data?.detail ?? 'Échec — réessayez.');
+      }
+      await load(true);
+    } finally {
+      setActionId(null);
+    }
+  };
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
@@ -147,14 +182,62 @@ export default function MyWorkPage() {
 
       {loading ? (
         <div className="flex items-center justify-center h-40"><Spinner size="lg" /></div>
-      ) : wos.length === 0 ? (
-        <div className="glass-card flex flex-col items-center justify-center h-48 gap-3">
-          <CheckCircle2 size={36} className="text-green-700" />
-          <p className="text-gray-400 font-medium">All caught up!</p>
-          <p className="text-gray-600 text-sm">No active work orders assigned to you</p>
-        </div>
       ) : (
         <>
+          {/* Unassigned tickets — claimable (shifts without a supervisor).
+              Hidden when the supervisor turned self-assignment off. */}
+          {selfAssignOn && available.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-amber-500 px-1 flex items-center gap-1.5">
+                <Inbox size={13} />
+                Tickets disponibles — premier arrivé, premier servi
+              </h2>
+              {claimErr && <p className="text-xs text-amber-400 px-1">{claimErr}</p>}
+              {available.map((t) => (
+                <div key={t.id} className="glass-card p-4 space-y-3 border-l-2 border-l-amber-500/60">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-mono text-purple-400">{t.ticket_number}</span>
+                        {t.opened_at && (
+                          <span className="text-[10px] text-gray-500 flex items-center gap-1">
+                            <Clock size={10} />
+                            {elapsedStr(t.opened_at)}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-white font-medium mt-1 text-sm leading-snug">
+                        {t.machine_name ?? 'Machine'}
+                      </p>
+                      {t.description && (
+                        <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{t.description}</p>
+                      )}
+                    </div>
+                    <span className={`text-xs font-mono border px-1.5 py-0.5 rounded flex-shrink-0 ${PRIORITY_BADGE[t.priority as Priority] ?? PRIORITY_BADGE.medium}`}>
+                      {t.priority}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => handleClaim(t.id)}
+                    disabled={actionId === t.id}
+                    className="btn-primary w-full py-3 text-sm font-semibold flex items-center justify-center gap-2"
+                  >
+                    <Hand size={16} />
+                    {actionId === t.id ? 'Attribution…' : 'Prendre ce ticket'}
+                  </button>
+                </div>
+              ))}
+            </section>
+          )}
+
+          {wos.length === 0 ? (
+            <div className="glass-card flex flex-col items-center justify-center h-48 gap-3">
+              <CheckCircle2 size={36} className="text-green-700" />
+              <p className="text-gray-400 font-medium">All caught up!</p>
+              <p className="text-gray-600 text-sm">No active work orders assigned to you</p>
+            </div>
+          ) : (
+            <>
           <WOGroup
             title="In Progress"
             wos={inProgress}
@@ -185,6 +268,8 @@ export default function MyWorkPage() {
             actionId={actionId}
             tick={tick}
           />
+            </>
+          )}
         </>
       )}
 

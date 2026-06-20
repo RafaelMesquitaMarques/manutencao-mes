@@ -9,6 +9,7 @@ import { fetchAlerts, fetchMachines, assignAlert, convertAlertToTicket, deleteAl
 import type { MaintenanceAlert, Machine, AlertPriority, AlertStatus } from '../../types';
 import Spinner from '../../components/ui/Spinner';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
+import { usePermission } from '../../hooks/usePermission';
 
 const SLA_MINUTES: Record<AlertPriority, number> = {
   critical: 10, high: 30, medium: 120, low: 480,
@@ -57,6 +58,9 @@ const isResolved = (a: MaintenanceAlert) =>
 export default function AlertList() {
   const { t }    = useTranslation();
   const navigate = useNavigate();
+  const canCreate = usePermission('alerts', 'create');
+  const canUpdate = usePermission('alerts', 'update');
+  const canDelete = usePermission('alerts', 'delete');
 
   const [alerts, setAlerts]         = useState<MaintenanceAlert[]>([]);
   const [machines, setMachines]     = useState<Machine[]>([]);
@@ -168,10 +172,12 @@ export default function AlertList() {
             />
             {t('alerts.showResolved', 'Resolved')}
           </label>
-          <Link to="/alerts/new" className="btn-primary">
-            <Plus size={15} />
-            {t('alerts.newAlert')}
-          </Link>
+          {canCreate && (
+            <Link to="/alerts/new" className="btn-primary">
+              <Plus size={15} />
+              {t('alerts.newAlert')}
+            </Link>
+          )}
         </div>
       </div>
 
@@ -305,18 +311,20 @@ export default function AlertList() {
                             <span className="text-xs text-gray-600 font-mono">
                               {alert.status === 'resolved' ? '✓ Resolved' : 'Cancelled'}
                             </span>
-                            <button
-                              onClick={() => handleDelete(alert.id)}
-                              disabled={deletingId === alert.id}
-                              title="Delete alert"
-                              className="btn-danger py-1 px-2 text-xs ml-1"
-                            >
-                              <Trash2 size={11} />
-                            </button>
+                            {canDelete && (
+                              <button
+                                onClick={() => handleDelete(alert.id)}
+                                disabled={deletingId === alert.id}
+                                title="Delete alert"
+                                className="btn-danger py-1 px-2 text-xs ml-1"
+                              >
+                                <Trash2 size={11} />
+                              </button>
+                            )}
                           </div>
                         ) : (
                           <div className="flex items-center gap-1.5">
-                            {alert.status === 'new_alert' && !alert.ticket_id && (
+                            {canUpdate && alert.status === 'new_alert' && !alert.ticket_id && (
                               <button
                                 onClick={() => handleAssign(alert.id)}
                                 disabled={actionId === alert.id}
@@ -335,7 +343,7 @@ export default function AlertList() {
                                 <Clock size={12} />
                                 <span className="hidden sm:inline">{t('alerts.viewTicket')}</span>
                               </button>
-                            ) : (
+                            ) : canUpdate ? (
                               <button
                                 onClick={() => handleConvert(alert.id)}
                                 disabled={actionId === alert.id}
@@ -345,7 +353,7 @@ export default function AlertList() {
                                 <ArrowRightCircle size={12} />
                                 <span className="hidden sm:inline">{t('alerts.convertToTicket')}</span>
                               </button>
-                            )}
+                            ) : null}
                           </div>
                         )}
                       </td>

@@ -25,6 +25,23 @@ import type {
   InventorySearchItem,
 } from '../../api/machineOperator';
 
+// Web Speech API is not in the standard DOM typings — minimal local shape
+interface SpeechRecognitionLike {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: (event: SpeechRecognitionEventLike) => void;
+  onend: () => void;
+  start: () => void;
+  stop: () => void;
+}
+
+interface SpeechRecognitionEventLike {
+  results: { length: number } & Record<number, Record<number, { transcript: string }>>;
+}
+
+type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
+
 function useClock() {
   const [now, setNow] = useState(new Date());
   useEffect(() => {
@@ -399,7 +416,7 @@ export default function MachineOperatorPage() {
 
   // Voice transcription
   const [isRecording, setIsRecording] = useState(false);
-  const recognitionRef = useRef<unknown>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   const now = useClock();
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -490,23 +507,21 @@ export default function MachineOperatorPage() {
   // Voice transcription
   const toggleRecording = () => {
     if (isRecording) {
-      (recognitionRef.current as { stop: () => void } | null)?.stop();
+      recognitionRef.current?.stop();
       setIsRecording(false);
       return;
     }
-    const SpeechRecognition =
-      (window as Record<string, unknown>).SpeechRecognition as (new () => {
-        lang: string; continuous: boolean; interimResults: boolean;
-        onresult: (e: { results: { [k: number]: { [k: number]: { transcript: string } } } }) => void;
-        onend: () => void; start: () => void; stop: () => void;
-      }) | undefined ||
-      (window as Record<string, unknown>).webkitSpeechRecognition as typeof SpeechRecognition;
+    const win = window as unknown as {
+      SpeechRecognition?: SpeechRecognitionCtor;
+      webkitSpeechRecognition?: SpeechRecognitionCtor;
+    };
+    const RecognitionCtor = win.SpeechRecognition ?? win.webkitSpeechRecognition;
 
-    if (!SpeechRecognition) {
+    if (!RecognitionCtor) {
       alert('Reconnaissance vocale non supportée. Utilisez Chrome.');
       return;
     }
-    const recognition = new SpeechRecognition();
+    const recognition = new RecognitionCtor();
     recognition.lang = 'fr-CA';
     recognition.continuous = true;
     recognition.interimResults = false;

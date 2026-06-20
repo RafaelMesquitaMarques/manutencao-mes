@@ -31,6 +31,33 @@ export const fetchWorkOrders = async (
   return Array.isArray(data) ? data : (data.items ?? []);
 };
 
+/**
+ * Fetches every work order (backend caps a page at 200). The first page also
+ * reports the total, so the remaining pages are fetched concurrently instead of
+ * one-after-another — turning ~42 serial round-trips into a few parallel waves.
+ */
+export const fetchAllWorkOrders = async (
+  params?: Record<string, string>
+): Promise<WorkOrder[]> => {
+  const pageSize = 200;
+  const getPage = (skip: number) =>
+    api
+      .get<PaginatedResponse<WorkOrder>>('/api/wo/', {
+        params: { ...params, limit: String(pageSize), skip: String(skip) },
+      })
+      .then((r) => r.data);
+
+  const first = await getPage(0);
+  const firstItems = first.items ?? [];
+  const total = first.total ?? firstItems.length;
+  if (firstItems.length >= total) return firstItems;
+
+  const skips: number[] = [];
+  for (let skip = pageSize; skip < total; skip += pageSize) skips.push(skip);
+  const rest = await Promise.all(skips.map((skip) => getPage(skip).then((d) => d.items ?? [])));
+  return [firstItems, ...rest].flat();
+};
+
 export const fetchMyWorkOrders = async (
   status?: string
 ): Promise<WorkOrder[]> => {
@@ -97,9 +124,25 @@ export const holdWorkOrder = async (id: string): Promise<WorkOrder> => {
 
 export const assignWorkOrder = async (
   id: string,
-  executor_id: string
+  technician_ids: string[]
 ): Promise<WorkOrder> => {
-  const { data } = await api.patch<WorkOrder>(`/api/wo/${id}/assign`, { executor_id });
+  const { data } = await api.patch<WorkOrder>(`/api/wo/${id}/assign`, { technician_ids });
+  return data;
+};
+
+export const addWOTechnician = async (
+  id: string,
+  technicianId: string
+): Promise<WorkOrder> => {
+  const { data } = await api.post<WorkOrder>(`/api/wo/${id}/technicians/${technicianId}`);
+  return data;
+};
+
+export const removeWOTechnician = async (
+  id: string,
+  technicianId: string
+): Promise<WorkOrder> => {
+  const { data } = await api.delete<WorkOrder>(`/api/wo/${id}/technicians/${technicianId}`);
   return data;
 };
 
@@ -163,11 +206,6 @@ export const fetchTechnicians = async (): Promise<Technician[]> => {
 export const fetchTechniciansFull = async (): Promise<TechnicianFull[]> => {
   const { data } = await api.get<PaginatedResponse<TechnicianFull>>('/api/technicians/');
   return data.items ?? [];
-};
-
-export const fetchMyTechnicianProfile = async (): Promise<TechnicianFull> => {
-  const { data } = await api.get<TechnicianFull>('/api/technicians/me');
-  return data;
 };
 
 export const createTechnician = async (payload: TechnicianCreate): Promise<TechnicianFull> => {
@@ -269,24 +307,45 @@ export const toggleWOAction = async (
   return data;
 };
 
+export const reorderWorkOrders = async (woIds: string[]): Promise<void> => {
+  await api.patch('/api/wo/board/reorder', { wo_ids: woIds });
+};
+
+export const setWOActionProof = async (
+  workOrderId: string,
+  actionId: string,
+  url: string | null
+): Promise<WOAction> => {
+  const { data } = await api.patch<WOAction>(`/api/wo/${workOrderId}/actions/${actionId}/proof`, { url });
+  return data;
+};
+
 // ─── KPIs ─────────────────────────────────────────────────────────────────────
 
-export const fetchKPISummary = async (period_days = 30): Promise<KPISummary> => {
-  const { data } = await api.get<KPISummary>('/api/kpis/summary', { params: { period_days } });
+export const fetchKPISummary = async (period_days = 30, machine_id?: string): Promise<KPISummary> => {
+  const { data } = await api.get<KPISummary>('/api/kpis/summary', {
+    params: { period_days, ...(machine_id ? { machine_id } : {}) },
+  });
   return data;
 };
 
-export const fetchBacklog = async (): Promise<BacklogData> => {
-  const { data } = await api.get<BacklogData>('/api/kpis/backlog');
+export const fetchBacklog = async (machine_id?: string): Promise<BacklogData> => {
+  const { data } = await api.get<BacklogData>('/api/kpis/backlog', {
+    params: machine_id ? { machine_id } : {},
+  });
   return data;
 };
 
-export const fetchMTTR = async (period_days = 90): Promise<MTTRItem[]> => {
-  const { data } = await api.get<MTTRItem[]>('/api/kpis/mttr', { params: { period_days } });
+export const fetchMTTR = async (period_days = 90, machine_id?: string): Promise<MTTRItem[]> => {
+  const { data } = await api.get<MTTRItem[]>('/api/kpis/mttr', {
+    params: { period_days, ...(machine_id ? { machine_id } : {}) },
+  });
   return Array.isArray(data) ? data : [];
 };
 
-export const fetchCostByType = async (period_days = 30): Promise<CostItem[]> => {
-  const { data } = await api.get<CostItem[]>('/api/kpis/cost', { params: { period_days } });
+export const fetchCostByType = async (period_days = 30, machine_id?: string): Promise<CostItem[]> => {
+  const { data } = await api.get<CostItem[]>('/api/kpis/cost', {
+    params: { period_days, ...(machine_id ? { machine_id } : {}) },
+  });
   return Array.isArray(data) ? data : [];
 };

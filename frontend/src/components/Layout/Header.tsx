@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, Link } from 'react-router-dom';
 import { Menu, Globe, ChevronDown, LogOut, User as UserIcon, Lock, Shield } from 'lucide-react';
@@ -37,6 +38,11 @@ interface HeaderProps {
   onMenuToggle: () => void;
 }
 
+interface MenuPos {
+  top: number;
+  right: number;
+}
+
 const Header = ({ onMenuToggle }: HeaderProps) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -44,23 +50,68 @@ const Header = ({ onMenuToggle }: HeaderProps) => {
 
   const [langOpen, setLangOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
-  const langRef = useRef<HTMLDivElement>(null);
-  const userRef = useRef<HTMLDivElement>(null);
+  const [langPos, setLangPos] = useState<MenuPos>({ top: 0, right: 0 });
+  const [userPos, setUserPos] = useState<MenuPos>({ top: 0, right: 0 });
+
+  const langBtnRef = useRef<HTMLButtonElement>(null);
+  const userBtnRef = useRef<HTMLButtonElement>(null);
+  const langMenuRef = useRef<HTMLDivElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
 
   const currentLang = LANGUAGES.find((l) => i18n.language?.startsWith(l.code)) ?? LANGUAGES[0];
   const role = (user?.role ?? 'operator') as UserRole;
   const initials = (user?.name ?? 'U').split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase();
 
+  // Anchor a menu under its trigger button. Menus render in a portal on <body>,
+  // so they escape the header's (backdrop-blur) stacking context and always sit
+  // above page content and modals — logout is never trapped behind the page.
+  const posFrom = (el: HTMLElement | null): MenuPos => {
+    if (!el) return { top: 56, right: 8 };
+    const r = el.getBoundingClientRect();
+    return { top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) };
+  };
+
+  const toggleLang = () => {
+    if (!langOpen) { setLangPos(posFrom(langBtnRef.current)); setUserOpen(false); }
+    setLangOpen((o) => !o);
+  };
+  const toggleUser = () => {
+    if (!userOpen) { setUserPos(posFrom(userBtnRef.current)); setLangOpen(false); }
+    setUserOpen((o) => !o);
+  };
+
+  // Close on outside click (account for the portaled menu living outside the header).
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (langRef.current && !langRef.current.contains(e.target as Node)) setLangOpen(false);
-      if (userRef.current && !userRef.current.contains(e.target as Node)) setUserOpen(false);
+      const tgt = e.target as Node;
+      if (langBtnRef.current && !langBtnRef.current.contains(tgt) && (!langMenuRef.current || !langMenuRef.current.contains(tgt))) {
+        setLangOpen(false);
+      }
+      if (userBtnRef.current && !userBtnRef.current.contains(tgt) && (!userMenuRef.current || !userMenuRef.current.contains(tgt))) {
+        setUserOpen(false);
+      }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  // Keep menus anchored to their button if the viewport changes while open.
+  useEffect(() => {
+    if (!langOpen && !userOpen) return;
+    const update = () => {
+      if (langOpen) setLangPos(posFrom(langBtnRef.current));
+      if (userOpen) setUserPos(posFrom(userBtnRef.current));
+    };
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [langOpen, userOpen]);
+
   const handleLogout = () => {
+    setUserOpen(false);
     logout();
     navigate('/login');
   };
@@ -81,108 +132,116 @@ const Header = ({ onMenuToggle }: HeaderProps) => {
       {/* Right */}
       <div className="flex items-center gap-2">
         {/* Language switcher */}
-        <div ref={langRef} className="relative">
-          <button
-            onClick={() => setLangOpen(!langOpen)}
-            className="flex items-center gap-1.5 text-gray-400 hover:text-gray-200 text-sm
-                       bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.08]
-                       px-2.5 py-1.5 rounded-lg transition-all duration-150"
-          >
-            <Globe size={14} />
-            <span className="font-mono font-semibold text-xs">{currentLang.label}</span>
-            <ChevronDown size={12} className={`transition-transform ${langOpen ? 'rotate-180' : ''}`} />
-          </button>
+        <button
+          ref={langBtnRef}
+          onClick={toggleLang}
+          className="flex items-center gap-1.5 text-gray-400 hover:text-gray-200 text-sm
+                     bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.08]
+                     px-2.5 py-1.5 rounded-lg transition-all duration-150"
+        >
+          <Globe size={14} />
+          <span className="font-mono font-semibold text-xs">{currentLang.label}</span>
+          <ChevronDown size={12} className={`transition-transform ${langOpen ? 'rotate-180' : ''}`} />
+        </button>
 
-          {langOpen && (
-            <div className="absolute right-0 top-full mt-1.5 w-36 bg-[#111827] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden animate-slide-in">
-              {LANGUAGES.map((lang) => (
-                <button
-                  key={lang.code}
-                  onClick={() => {
-                    i18n.changeLanguage(lang.code);
-                    updateMe({ language: lang.code }).catch(() => {});
-                    setLangOpen(false);
-                  }}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-sm transition-colors
-                    ${currentLang.code === lang.code
-                      ? 'text-blue-400 bg-blue-500/10'
-                      : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
-                    }`}
-                >
-                  <span className="font-mono font-semibold text-xs w-5">{lang.label}</span>
-                  <span className="text-gray-400 text-xs">{lang.name}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        {langOpen && createPortal(
+          <div
+            ref={langMenuRef}
+            style={{ position: 'fixed', top: langPos.top, right: langPos.right, zIndex: 200 }}
+            className="w-36 bg-[#111827] border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-slide-in"
+          >
+            {LANGUAGES.map((lang) => (
+              <button
+                key={lang.code}
+                onClick={() => {
+                  i18n.changeLanguage(lang.code);
+                  updateMe({ language: lang.code }).catch(() => {});
+                  setLangOpen(false);
+                }}
+                className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-sm transition-colors
+                  ${currentLang.code === lang.code
+                    ? 'text-blue-400 bg-blue-500/10'
+                    : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
+                  }`}
+              >
+                <span className="font-mono font-semibold text-xs w-5">{lang.label}</span>
+                <span className="text-gray-400 text-xs">{lang.name}</span>
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
 
         {/* User menu */}
-        <div ref={userRef} className="relative">
-          <button
-            onClick={() => setUserOpen(!userOpen)}
-            className="flex items-center gap-2 text-gray-400 hover:text-gray-200
-                       bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.08]
-                       pl-2 pr-3 py-1.5 rounded-lg transition-all duration-150"
-          >
-            <div className="w-6 h-6 rounded-full bg-blue-600/30 border border-blue-500/30 flex items-center justify-center text-blue-400 font-bold text-[10px]">
-              {initials}
-            </div>
-            <span className="text-sm font-medium text-gray-300 hidden sm:block max-w-[120px] truncate">
-              {user?.name ?? user?.email ?? 'User'}
-            </span>
-            <ChevronDown size={12} className={`transition-transform hidden sm:block ${userOpen ? 'rotate-180' : ''}`} />
-          </button>
+        <button
+          ref={userBtnRef}
+          onClick={toggleUser}
+          className="flex items-center gap-2 text-gray-400 hover:text-gray-200
+                     bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.08]
+                     pl-2 pr-3 py-1.5 rounded-lg transition-all duration-150"
+        >
+          <div className="w-6 h-6 rounded-full bg-blue-600/30 border border-blue-500/30 flex items-center justify-center text-blue-400 font-bold text-[10px]">
+            {initials}
+          </div>
+          <span className="text-sm font-medium text-gray-300 hidden sm:block max-w-[120px] truncate">
+            {user?.name ?? user?.email ?? 'User'}
+          </span>
+          <ChevronDown size={12} className={`transition-transform hidden sm:block ${userOpen ? 'rotate-180' : ''}`} />
+        </button>
 
-          {userOpen && (
-            <div className="absolute right-0 top-full mt-1.5 w-52 bg-[#111827] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden animate-slide-in">
-              <div className="px-3 py-2.5 border-b border-white/[0.06]">
-                <p className="text-white text-sm font-medium truncate">{user?.name}</p>
-                <p className="text-gray-500 text-xs truncate mt-0.5">{user?.email}</p>
-                {user?.role && (
-                  <span className={`text-[10px] font-medium mt-1 inline-block ${ROLE_COLORS[role]}`}>
-                    {ROLE_LABELS[role]}
-                  </span>
-                )}
-              </div>
-              <Link
-                to="/settings/profile"
-                onClick={() => setUserOpen(false)}
-                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/[0.05] transition-colors"
-              >
-                <UserIcon size={14} />
-                My Profile
-              </Link>
-              <Link
-                to="/settings/change-password"
-                onClick={() => setUserOpen(false)}
-                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/[0.05] transition-colors"
-              >
-                <Lock size={14} />
-                Change Password
-              </Link>
-              {user?.role === 'admin' && (
-                <Link
-                  to="/settings/users"
-                  onClick={() => setUserOpen(false)}
-                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/[0.05] transition-colors"
-                >
-                  <Shield size={14} />
-                  User Management
-                </Link>
+        {userOpen && createPortal(
+          <div
+            ref={userMenuRef}
+            style={{ position: 'fixed', top: userPos.top, right: userPos.right, zIndex: 200 }}
+            className="w-52 bg-[#111827] border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-slide-in"
+          >
+            <div className="px-3 py-2.5 border-b border-white/[0.06]">
+              <p className="text-white text-sm font-medium truncate">{user?.name}</p>
+              <p className="text-gray-500 text-xs truncate mt-0.5">{user?.email}</p>
+              {user?.role && (
+                <span className={`text-[10px] font-medium mt-1 inline-block ${ROLE_COLORS[role]}`}>
+                  {ROLE_LABELS[role]}
+                </span>
               )}
-              <div className="border-t border-white/[0.06]">
-                <button
-                  onClick={handleLogout}
-                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-red-400 hover:text-red-300 hover:bg-red-500/5 transition-colors"
-                >
-                  <LogOut size={14} />
-                  {t('nav.logout')}
-                </button>
-              </div>
             </div>
-          )}
-        </div>
+            <Link
+              to="/settings/profile"
+              onClick={() => setUserOpen(false)}
+              className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/[0.05] transition-colors"
+            >
+              <UserIcon size={14} />
+              My Profile
+            </Link>
+            <Link
+              to="/settings/change-password"
+              onClick={() => setUserOpen(false)}
+              className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/[0.05] transition-colors"
+            >
+              <Lock size={14} />
+              Change Password
+            </Link>
+            {user?.role === 'admin' && (
+              <Link
+                to="/settings/users"
+                onClick={() => setUserOpen(false)}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/[0.05] transition-colors"
+              >
+                <Shield size={14} />
+                User Management
+              </Link>
+            )}
+            <div className="border-t border-white/[0.06]">
+              <button
+                onClick={handleLogout}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-red-400 hover:text-red-300 hover:bg-red-500/5 transition-colors"
+              >
+                <LogOut size={14} />
+                {t('nav.logout')}
+              </button>
+            </div>
+          </div>,
+          document.body,
+        )}
       </div>
     </header>
   );

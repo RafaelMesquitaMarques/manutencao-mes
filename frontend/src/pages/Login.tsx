@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Factory, Mail, Lock, Globe, ChevronDown, AlertCircle } from 'lucide-react';
+import { Mail, Lock, Globe, ChevronDown, AlertCircle } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { login } from '../api/auth';
 import type { User } from '../types';
@@ -100,12 +100,12 @@ const Login = () => {
         <div className="bg-[#0d1421]/90 backdrop-blur-sm border border-white/[0.08] rounded-2xl p-8 shadow-2xl">
           {/* Brand */}
           <div className="flex items-center gap-3.5 mb-8">
-            <div className="w-11 h-11 rounded-xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-600/30 flex-shrink-0">
-              <Factory size={22} className="text-white" />
-            </div>
+            <img src="/mirai-icon.png" alt="Kaizo" className="w-12 h-12 object-contain flex-shrink-0" />
             <div>
-              <h1 className="text-white font-bold text-lg leading-none">Foliot MES</h1>
-              <p className="text-gray-600 text-[11px] mt-1 leading-none">Manufacturing Execution System</p>
+              <h1 className="font-brand text-white text-xl font-bold uppercase tracking-[0.18em] leading-none">
+                K<span className="bg-gradient-to-r from-cyan-400 via-blue-500 to-indigo-500 bg-clip-text text-transparent">AI</span>ZO
+              </h1>
+              <p className="text-gray-600 text-[11px] mt-1.5 leading-none">Manufacturing Execution System</p>
             </div>
           </div>
 

@@ -73,8 +73,9 @@ export const createMaintenancePlan = async (payload: MaintenancePlanCreatePayloa
   return data;
 };
 
-export type MaintenancePlanUpdatePayload = Partial<Omit<MaintenancePlanCreatePayload, 'equipment_id' | 'recommended_parts'>> & {
+export type MaintenancePlanUpdatePayload = Partial<Omit<MaintenancePlanCreatePayload, 'equipment_id' | 'recommended_parts' | 'pm_template_id'>> & {
   is_active?: boolean;
+  pm_template_id?: string | null;   // null unlinks the procedure template
 };
 
 export const updateMaintenancePlan = async (id: string, payload: MaintenancePlanUpdatePayload): Promise<MaintenancePlan> => {
@@ -133,8 +134,7 @@ export const fetchPmCalendar = async (
   return Array.isArray(data) ? data : [];
 };
 
-export const fetchPmDashboard = async (plant_id?: string): Promise<PmDashboard> => {
-  const params = plant_id ? { plant_id } : undefined;
+export const fetchPmDashboard = async (params?: Record<string, string>): Promise<PmDashboard> => {
   const { data } = await api.get<PmDashboard>('/api/plans/dashboard', { params });
   return data;
 };

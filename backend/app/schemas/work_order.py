@@ -47,7 +47,10 @@ class WorkOrderUpdate(BaseModel):
 
 
 class WOAssign(BaseModel):
-    executor_id: UUID
+    # Legacy single-technician assignment; ignored when technician_ids is given.
+    executor_id: Optional[UUID] = None
+    # Full replacement list — first entry becomes the primary technician.
+    technician_ids: Optional[List[UUID]] = None
 
 
 class WOSchedule(BaseModel):
@@ -87,6 +90,8 @@ class WorkOrderOut(BaseModel):
     downtime_minutes: Optional[int] = None
     repair_hours: Optional[float] = None
     completion_ratio: Optional[float] = None
+    checklist_enforcement: Optional[str] = "advisory"
+    board_order: Optional[int] = None
     total_cost: Optional[float] = None
     execution_mode: Optional[ExecutionMode] = None
     classification: Optional[str] = None
@@ -111,6 +116,7 @@ class WorkOrderOut(BaseModel):
     total_minutes: Optional[int] = None
     actual_downtime_minutes: Optional[int] = None
     intervention_parts: Optional[List] = None
+    technicians: Optional[List] = None
     plan_id: Optional[UUID] = None
     occurrence_id: Optional[UUID] = None
 

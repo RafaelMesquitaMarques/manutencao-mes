@@ -1,6 +1,10 @@
 import asyncio
-from fastapi import FastAPI
+import logging
+import os
+from datetime import datetime, timezone, timedelta
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from sqlalchemy import text
 
@@ -11,13 +15,19 @@ from app.api.routes import (
     auth, plants, equipment, work_orders,
     maintenance_plans, inventory, alerts, iot, users, kpis, technicians,
     tickets, maintenance_dashboard, machines, stop_categories, job_orders,
-    suppliers as suppliers_module,
+    suppliers as suppliers_module, reports, escalation, factory_map,
 )
 from app.api.routes.machine_operator import router as machine_operator_router
 from app.api.routes.intervention_type_settings import router as intervention_types_router
 from app.api.routes.safety_checklist_settings import router as safety_checklist_router
 from app.api.routes.parts_approval import router as parts_approval_router
 from app.api.routes.pm_template_settings import router as pm_template_settings_router
+from app.api.routes.intelligence import router as intelligence_router
+from app.api.routes.uploads import router as uploads_router
+from app.api.routes.robot_cells import router as robot_cells_router
+from app.core.permissions import resource_guard
+
+logger = logging.getLogger(__name__)
 
 
 async def _escalation_loop() -> None:
@@ -539,6 +549,146 @@ async def _run_migrations() -> None:
         "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ",
         "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS completed_by_id UUID REFERENCES users(id) ON DELETE SET NULL",
         "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0",
+        # Phase: multi-technician work orders — backfill join table from executor_id
+        """
+        INSERT INTO work_order_technicians (work_order_id, technician_id, is_primary)
+        SELECT wo.id, wo.executor_id, TRUE
+        FROM work_orders wo
+        JOIN technicians t ON t.id = wo.executor_id
+        WHERE wo.executor_id IS NOT NULL
+        ON CONFLICT DO NOTHING
+        """,
+        # Heal tickets whose assignment drifted from their linked WO
+        """
+        UPDATE maintenance_tickets mt
+        SET assigned_to_id = wo.assigned_to_id
+        FROM work_orders wo
+        WHERE (wo.ticket_id = mt.id OR mt.work_order_id = wo.id)
+          AND wo.assigned_to_id IS NOT NULL
+          AND mt.assigned_to_id IS DISTINCT FROM wo.assigned_to_id
+        """,
+        # Phase: per-machine reports — explicit Machine -> Equipment link
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS equipment_id UUID REFERENCES equipment(id) ON DELETE SET NULL",
+        # Backfill: machines auto-provisioned from equipment share the same UUID
+        "UPDATE machines SET equipment_id = id WHERE equipment_id IS NULL AND id IN (SELECT id FROM equipment)",
+        # Backfill: match remaining machines to equipment by code
+        """
+        UPDATE machines m
+        SET equipment_id = e.id
+        FROM equipment e
+        WHERE m.equipment_id IS NULL
+          AND m.code IS NOT NULL
+          AND m.code = e.code
+        """,
+        # Phase: ticket lifecycle SMS notifications
+        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS notify_on_ticket_opened BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS notify_on_ticket_completed BOOLEAN DEFAULT TRUE",
+        # Phase: supervisor-controlled technician self-assignment
+        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS technician_self_assign BOOLEAN DEFAULT TRUE",
+        # Phase: PM template SOP — expected result per step (media live in pm_task_media, created by create_all)
+        "ALTER TABLE pm_template_tasks ADD COLUMN IF NOT EXISTS expected_result TEXT",
+        # Phase: checklist rigor on the work order (advisory | required | strict)
+        "ALTER TABLE pm_templates ADD COLUMN IF NOT EXISTS enforcement VARCHAR(20) DEFAULT 'advisory'",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checklist_enforcement VARCHAR(20) DEFAULT 'advisory'",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS board_order INTEGER",
+        # Phase: auxiliary (non-productive) equipment — maintenance-only assets
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS asset_type VARCHAR(20) DEFAULT 'production'",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS subtype VARCHAR(100)",
+        # Phase: equipment classification fields (promoted from the maintenance Excel import)
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS department VARCHAR(200)",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS family VARCHAR(200)",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS pm_strategy VARCHAR(300)",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS cleaning_priority VARCHAR(50)",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS function_label VARCHAR(300)",
+        # One-time backfill from the import's specifications JSON (guarded by IS NULL)
+        """
+        UPDATE equipment SET
+            department = COALESCE(department, NULLIF(specifications->>'division', '')),
+            family = COALESCE(family, NULLIF(specifications->>'famille', '')),
+            pm_strategy = COALESCE(pm_strategy, NULLIF(specifications->>'pm_strategy', '')),
+            cleaning_priority = COALESCE(cleaning_priority, NULLIF(specifications->>'cleaning_priority', ''))
+        WHERE specifications IS NOT NULL
+          AND (department IS NULL OR family IS NULL OR pm_strategy IS NULL OR cleaning_priority IS NULL)
+        """,
+        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS expected_result TEXT",
+        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS template_task_id UUID",
+        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS proof_photo_url VARCHAR(1000)",
+        # Phase: parts pricing — snapshot stock price on intervention parts
+        "ALTER TABLE intervention_parts ADD COLUMN IF NOT EXISTS unit_cost DOUBLE PRECISION",
+        "ALTER TABLE intervention_parts ADD COLUMN IF NOT EXISTS total_cost DOUBLE PRECISION",
+        """
+        UPDATE intervention_parts ip
+        SET unit_cost = s.unit_cost,
+            total_cost = s.unit_cost * COALESCE(ip.quantity_used, 1)
+        FROM stock_items s
+        WHERE ip.stock_item_id = s.id
+          AND ip.unit_cost IS NULL
+          AND s.unit_cost IS NOT NULL
+        """,
+        # Phase: average cost + last purchase cost on stock items
+        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS average_cost DOUBLE PRECISION",
+        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS last_purchase_cost DOUBLE PRECISION",
+        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS last_purchase_date DATE",
+        # Phase: serial number on machines + equipment
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS serial_number VARCHAR(200)",
+        # ── Factory map / digital-twin layout ──
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS pos_x DOUBLE PRECISION",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS pos_y DOUBLE PRECISION",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS pos_w DOUBLE PRECISION",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS pos_h DOUBLE PRECISION",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS rotation_deg DOUBLE PRECISION",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS icon_url VARCHAR(500)",
+        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS floor_plan_url VARCHAR(500)",
+        # backfill the machine→plant link from its equipment (one-time, guarded)
+        "UPDATE machines SET plant_id = e.plant_id FROM equipment e WHERE machines.equipment_id = e.id AND machines.plant_id IS NULL",
+        # equipment carries the map position (the factory map is asset-based, not machine-based)
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS pos_x DOUBLE PRECISION",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS pos_y DOUBLE PRECISION",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS pos_w DOUBLE PRECISION",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS pos_h DOUBLE PRECISION",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS rotation_deg DOUBLE PRECISION",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS icon_url VARCHAR(500)",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS model_url VARCHAR(500)",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS height_3d DOUBLE PRECISION",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS model_scale DOUBLE PRECISION",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS scale_y DOUBLE PRECISION",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS scale_z DOUBLE PRECISION",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS block_kind VARCHAR(40)",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS parent_equipment_id UUID REFERENCES equipment(id)",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS orbit_x DOUBLE PRECISION",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS orbit_y DOUBLE PRECISION",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS orbit_w DOUBLE PRECISION",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS orbit_h DOUBLE PRECISION",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS serial_number VARCHAR(200)",
+        # Map props can optionally link to a real equipment (live status / click-through)
+        "ALTER TABLE map_props ADD COLUMN IF NOT EXISTS equipment_id UUID REFERENCES equipment(id)",
+        # One-time backfill from received purchases (inventory_movements 'addition').
+        # Guarded by IS NULL so it only fills items not yet computed.
+        """
+        UPDATE stock_items s
+        SET average_cost = sub.avg_cost
+        FROM (
+            SELECT stock_item_id,
+                   SUM(unit_cost * quantity) / NULLIF(SUM(quantity), 0) AS avg_cost
+            FROM inventory_movements
+            WHERE movement_type = 'addition' AND unit_cost IS NOT NULL AND quantity > 0
+            GROUP BY stock_item_id
+        ) sub
+        WHERE s.id = sub.stock_item_id AND s.average_cost IS NULL
+        """,
+        """
+        UPDATE stock_items s
+        SET last_purchase_cost = lm.unit_cost,
+            last_purchase_date = lm.created_at::date
+        FROM (
+            SELECT DISTINCT ON (stock_item_id) stock_item_id, unit_cost, created_at
+            FROM inventory_movements
+            WHERE movement_type = 'addition' AND unit_cost IS NOT NULL
+            ORDER BY stock_item_id, created_at DESC
+        ) lm
+        WHERE s.id = lm.stock_item_id AND s.last_purchase_cost IS NULL
+        """,
     ]
     async with engine.begin() as conn:
         for stmt in stmts:
@@ -592,6 +742,32 @@ async def _seed_stop_categories(conn) -> None:
         """))
 
 
+async def _intelligence_cron() -> None:
+    """Generate maintenance intelligence insights every 8 hours, all languages."""
+    while True:
+        await asyncio.sleep(8 * 3600)
+        async with AsyncSessionLocal() as db:
+            for lang in ("en", "fr", "es"):
+                try:
+                    from app.services.intelligence_calculator import build_findings
+                    from app.services.intelligence_ai import generate_insight_text
+                    from app.models.models import AIInsight
+                    findings = await build_findings(db=db, period_days=7)
+                    text_out, ai = await generate_insight_text(findings, lang, "full_report")
+                    insight = AIInsight(
+                        insight_type="full_report", language=lang,
+                        period_start=datetime.now(timezone.utc) - timedelta(days=7),
+                        period_end=datetime.now(timezone.utc),
+                        period_days=7, findings_json=findings,
+                        insight_text=text_out, ai_generated=ai,
+                        generated_by_model="claude-sonnet-4-6" if ai else None,
+                    )
+                    db.add(insight)
+                    await db.commit()
+                except Exception as e:
+                    logger.error("Intelligence cron %s: %s", lang, e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
@@ -600,9 +776,11 @@ async def lifespan(app: FastAPI):
     await _backfill_ticket_alerts()
     task = asyncio.create_task(_escalation_loop())
     pm_task = asyncio.create_task(_pm_loop())
+    intel_task = asyncio.create_task(_intelligence_cron())
     yield
     task.cancel()
     pm_task.cancel()
+    intel_task.cancel()
     await engine.dispose()
 
 
@@ -613,18 +791,22 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Auth is header-based (Bearer JWT, no cookies), so credentials aren't needed.
+# A wildcard origin with credentials is invalid in browsers — only enable credentials
+# when explicit origins are configured for production.
+_cors_origins = settings.cors_origins_list
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_origins != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(auth.router,                   prefix="/api/auth",          tags=["Authentication"])
 app.include_router(plants.router,                 prefix="/api/plants",        tags=["Plants"])
-app.include_router(equipment.router,              prefix="/api/equipment",     tags=["Equipment"])
-app.include_router(work_orders.router,            prefix="/api/wo",            tags=["Work Orders"])
+app.include_router(equipment.router,              prefix="/api/equipment",     tags=["Equipment"],            dependencies=[Depends(resource_guard("equipment"))])
+app.include_router(work_orders.router,            prefix="/api/wo",            tags=["Work Orders"],          dependencies=[Depends(resource_guard("work_orders"))])
 app.include_router(maintenance_plans.router,      prefix="/api/plans",         tags=["Maintenance Plans"])
 app.include_router(inventory.router,              prefix="/api/inventory",     tags=["Inventory"])
 app.include_router(alerts.router,                 prefix="/api/alerts",        tags=["Maintenance Alerts"])
@@ -633,8 +815,12 @@ app.include_router(maintenance_dashboard.router,  prefix="/api/maintenance",   t
 app.include_router(iot.router,                    prefix="/api/iot",           tags=["IoT / Sensors"])
 app.include_router(users.router,                  prefix="/api/users",         tags=["Users"])
 app.include_router(kpis.router,                   prefix="/api/kpis",          tags=["KPIs"])
-app.include_router(technicians.router,            prefix="/api/technicians",   tags=["Technicians"])
+app.include_router(reports.router,                prefix="/api/reports",       tags=["Reports"])
+app.include_router(escalation.router,             prefix="/api/escalation",    tags=["Escalation"])
+app.include_router(technicians.router,            prefix="/api/technicians",   tags=["Technicians"],          dependencies=[Depends(resource_guard("technicians"))])
 app.include_router(machines.router,               prefix="/api/machines",      tags=["Machines"])
+app.include_router(factory_map.router,            prefix="/api/factory-map",   tags=["Factory Map"])
+app.include_router(robot_cells_router,            prefix="/api/robot-cells",   tags=["Robot Cells"])
 app.include_router(stop_categories.router,        prefix="/api/stop-categories", tags=["Stop Categories"])
 app.include_router(job_orders.router,             prefix="/api/job-orders",      tags=["Job Orders"])
 app.include_router(suppliers_module.supplier_router, prefix="/api/suppliers",       tags=["Suppliers"])
@@ -644,6 +830,12 @@ app.include_router(intervention_types_router)
 app.include_router(safety_checklist_router)
 app.include_router(parts_approval_router)
 app.include_router(pm_template_settings_router)
+app.include_router(intelligence_router)
+app.include_router(uploads_router)
+
+# Serve uploaded media (photos/videos for SOP steps). Behind nginx /api/ → backend.
+os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+app.mount("/api/media", StaticFiles(directory=settings.UPLOAD_DIR), name="media")
 
 
 @app.get("/api/health", tags=["System"])

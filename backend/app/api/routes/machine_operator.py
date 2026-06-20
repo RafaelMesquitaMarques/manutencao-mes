@@ -158,6 +158,37 @@ async def call_maintenance(machine_id: str, body: CallBody, db: AsyncSession = D
     if existing:
         return {"status": "already_active", "intervention": _intervention_dict(existing)}
 
+    # An office-created ticket may already be open for this machine without an
+    # intervention yet (e.g. a planned-maintenance ticket). Adopt it instead of
+    # creating a duplicate ticket — the machine page then shows "waiting for
+    # mechanic" against that same ticket.
+    prior_r = await db.execute(
+        select(MaintenanceTicket)
+        .where(
+            MaintenanceTicket.machine_id == machine.id,
+            MaintenanceTicket.status.notin_([TicketStatus.completed, TicketStatus.cancelled]),
+        )
+        .order_by(MaintenanceTicket.opened_at.desc())
+        .limit(1)
+    )
+    prior = prior_r.scalar_one_or_none()
+    if prior:
+        intervention = MachineIntervention(
+            machine_id=machine.id,
+            equipment_id=equipment.id if equipment else None,
+            ticket_id=prior.id,
+            status=_STATUS_WAITING,
+            operator_note=body.operator_note,
+        )
+        db.add(intervention)
+        await db.commit()
+        await db.refresh(intervention)
+        return {
+            "status": "adopted",
+            "intervention": _intervention_dict(intervention),
+            "ticket_number": prior.ticket_number,
+        }
+
     alert = MaintenanceAlert(
         alert_number=await _next_alert_number(db),
         machine_id=machine.id,
@@ -194,6 +225,10 @@ async def call_maintenance(machine_id: str, body: CallBody, db: AsyncSession = D
         operator_note=body.operator_note,
     )
     db.add(intervention)
+
+    from app.services.notification_service import NotificationService
+    await NotificationService(db).notify_ticket_opened(ticket, machine.name)
+
     await db.commit()
     await db.refresh(intervention)
     return {"status": "called", "intervention": _intervention_dict(intervention)}
@@ -522,16 +557,18 @@ async def add_intervention_part(machine_id: str, body: AddPartBody, db: AsyncSes
         except ValueError:
             pass
 
-    # If stock_item given, copy its description/code if not supplied
+    # If stock_item given, copy its description/code and snapshot the price
     item_code = body.item_code
     item_description = body.item_description
     unit = body.unit
+    unit_cost = None
     if stock_id:
         stock = await db.get(StockItem, stock_id)
         if stock:
             item_code = item_code or stock.code
-            item_description = item_description or stock.name
+            item_description = item_description or stock.description or stock.name
             unit = unit or stock.unit
+            unit_cost = stock.unit_cost
 
     part = InterventionPart(
         intervention_id=inv_id,
@@ -540,6 +577,8 @@ async def add_intervention_part(machine_id: str, body: AddPartBody, db: AsyncSes
         item_description=item_description,
         quantity_used=body.quantity_used,
         unit=unit,
+        unit_cost=unit_cost,
+        total_cost=round(unit_cost * body.quantity_used, 2) if unit_cost is not None else None,
         approval_status="pending",
     )
     db.add(part)
@@ -553,6 +592,8 @@ async def add_intervention_part(machine_id: str, body: AddPartBody, db: AsyncSes
         "item_description": part.item_description,
         "quantity_used": part.quantity_used,
         "unit": part.unit,
+        "unit_cost": part.unit_cost,
+        "total_cost": part.total_cost,
         "approval_status": part.approval_status,
         "added_at": part.added_at.isoformat() if part.added_at else None,
     }

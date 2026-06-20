@@ -8,7 +8,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import (
-    MaintenancePlan, PlanOccurrence, PmTemplateTask,
+    MaintenancePlan, PlanOccurrence, PmTemplate, PmTemplateTask,
     WorkOrder, WorkOrderType, WorkOrderStatus, WorkOrderPriority, WorkOrderSource,
     WOAction, Equipment, Technician, User,
     OccurrenceStatus, OccurrenceCompliance, RecurrenceEndType, PmFrequency,
@@ -123,17 +123,22 @@ async def create_next_occurrence(db: AsyncSession, plan: MaintenancePlan) -> Opt
 # ─── Work order + ticket generation ──────────────────────────────────────────────
 
 async def _next_wo_number(db: AsyncSession) -> str:
+    from app.services.numbering import next_number
     year = datetime.now(timezone.utc).year
-    r = await db.execute(
-        select(func.count(WorkOrder.id)).where(func.extract("year", WorkOrder.opened_at) == year)
-    )
-    return f"WO-{year}-{(r.scalar() + 1):05d}"
+    return await next_number(db, WorkOrder.wo_number, f"WO-{year}")
 
 
 async def generate_wo_and_ticket(db: AsyncSession, plan: MaintenancePlan, occurrence: PlanOccurrence) -> WorkOrder:
     """Create the work order (and linked ticket) for a PM occurrence."""
     equipment = await db.get(Equipment, plan.equipment_id)
     priority = _safe_enum(WorkOrderPriority, plan.priority, WorkOrderPriority.medium)
+
+    # A PM is always assigned (the generation is gated on a technician), so the
+    # WO/ticket are never claimable in My Work.
+    tech_user_id = None
+    if plan.assigned_technician_id:
+        tech = await db.get(Technician, plan.assigned_technician_id)
+        tech_user_id = tech.user_id if tech else None
 
     title = f"[PM] {plan.name}"
     if equipment:
@@ -145,6 +150,7 @@ async def generate_wo_and_ticket(db: AsyncSession, plan: MaintenancePlan, occurr
         plan_id=plan.id,
         occurrence_id=occurrence.id,
         executor_id=plan.assigned_technician_id,
+        assigned_to_id=tech_user_id,
         type=WorkOrderType.preventive,
         priority=priority,
         status=WorkOrderStatus.open,
@@ -159,6 +165,9 @@ async def generate_wo_and_ticket(db: AsyncSession, plan: MaintenancePlan, occurr
 
     # Build the PM checklist on the WO from the linked template's tasks
     if plan.pm_template_id:
+        tpl = await db.get(PmTemplate, plan.pm_template_id)
+        if tpl and tpl.enforcement:
+            wo.checklist_enforcement = tpl.enforcement
         tasks_result = await db.execute(
             select(PmTemplateTask)
             .where(PmTemplateTask.template_id == plan.pm_template_id)
@@ -169,6 +178,8 @@ async def generate_wo_and_ticket(db: AsyncSession, plan: MaintenancePlan, occurr
                 work_order_id=wo.id,
                 action_type="checklist",
                 description=task.description,
+                expected_result=task.expected_result,
+                template_task_id=task.id,
                 is_required=task.is_required,
                 sort_order=task.sort_order,
             ))
@@ -176,18 +187,25 @@ async def generate_wo_and_ticket(db: AsyncSession, plan: MaintenancePlan, occurr
     occurrence.work_order_id = wo.id
     await db.flush()
 
-    # Create a linked maintenance ticket via the tested ticket-creation path
+    # Create a linked maintenance ticket via the tested ticket-creation path.
+    # assigned_to_id → not claimable; machine_stopped=False → planned PM doesn't
+    # flip the machine page to "waiting for mechanic"; force → skip the
+    # duplicate-open-ticket guard.
     try:
         ticket = await TicketService(db).create_ticket(TicketCreate(
             machine_id=plan.equipment_id,
             priority=_safe_enum(AlertPriority, plan.priority, AlertPriority.medium),
             problem_type=AlertProblemType.preventive_request,
             description=f"Preventive maintenance — {plan.name} ({occurrence.scheduled_date.isoformat()})",
-        ))
+            assigned_to_id=tech_user_id,
+            machine_stopped=False,
+            force=True,
+        ), created_by="PM")
         ticket.work_order_id = wo.id
         wo.ticket_id = ticket.id
         await db.commit()
-    except ValueError:
+    except Exception:
+        # Ticket is best-effort — keep the (already-flushed) work order regardless.
         await db.commit()
 
     await db.refresh(wo)
@@ -227,7 +245,8 @@ async def on_work_order_completed(db: AsyncSession, wo: WorkOrder) -> Optional[W
 
     next_occurrence = await create_next_occurrence(db, plan)
     new_wo = None
-    if next_occurrence:
+    # Only auto-generate the next WO if the plan still has an assigned technician.
+    if next_occurrence and plan.assigned_technician_id:
         new_wo = await generate_wo_and_ticket(db, plan, next_occurrence)
 
     await db.commit()
@@ -259,10 +278,13 @@ async def check_overdue_occurrences(db: AsyncSession) -> int:
     notifier = NotificationService(db)
     notified = 0
 
+    from app.services.notification_service import get_escalation_settings
+    esc = await get_escalation_settings(db)
+
     for occ in occurrences:
         target_date = occ.override_date or occ.scheduled_date
         occ.days_late = max((today - target_date).days, 0)
-        if occ.overdue_alert_sent:
+        if occ.overdue_alert_sent or not esc.notify_on_pm_overdue:
             continue
 
         plan = await db.get(MaintenancePlan, occ.plan_id)

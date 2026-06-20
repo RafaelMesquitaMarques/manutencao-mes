@@ -1,4 +1,4 @@
-import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import ReactECharts from 'echarts-for-react';
 import { useTranslation } from 'react-i18next';
 
 interface ChartData {
@@ -14,66 +14,45 @@ const STATUS_COLORS: Record<string, string> = {
   on_hold: '#a855f7',
 };
 
-const CustomTooltip = ({
-  active,
-  payload,
-}: {
-  active?: boolean;
-  payload?: { name: string; value: number; payload: { fill: string; pct: number } }[];
-}) => {
-  if (active && payload && payload.length) {
-    const { name, value, payload: p } = payload[0];
-    return (
-      <div className="bg-[#1f2937] border border-white/10 rounded-lg px-3 py-2 shadow-xl">
-        <p className="text-gray-400 text-xs mb-1">{name}</p>
-        <p className="font-mono font-semibold text-sm" style={{ color: p.fill }}>
-          {value} &nbsp;<span className="text-gray-500 text-xs font-normal">({p.pct}%)</span>
-        </p>
-      </div>
-    );
-  }
-  return null;
-};
-
+// Matches the donut style used on the Maintenance Dashboard: ring on the left,
+// vertical legend on the right, item tooltip with count + percentage.
 const WODonutChart = ({ data }: { data: ChartData[] }) => {
   const { t } = useTranslation();
-  const total = data.reduce((s, d) => s + d.count, 0);
 
   const chartData = data.map((d) => ({
     name: t(`status.${d.status}`, d.status),
     value: d.count,
-    fill: STATUS_COLORS[d.status] ?? '#6b7280',
-    pct: total > 0 ? Math.round((d.count / total) * 100) : 0,
+    itemStyle: { color: STATUS_COLORS[d.status] ?? '#6b7280' },
   }));
 
-  return (
-    <ResponsiveContainer width="100%" height={210}>
-      <PieChart>
-        <Pie
-          data={chartData}
-          cx="50%"
-          cy="45%"
-          innerRadius={58}
-          outerRadius={86}
-          paddingAngle={3}
-          dataKey="value"
-          strokeWidth={0}
-        >
-          {chartData.map((entry, i) => (
-            <Cell key={i} fill={entry.fill} />
-          ))}
-        </Pie>
-        <Tooltip content={<CustomTooltip />} />
-        <Legend
-          iconSize={7}
-          iconType="circle"
-          formatter={(value) => (
-            <span style={{ color: '#9ca3af', fontSize: 11, fontFamily: 'Inter' }}>{value}</span>
-          )}
-        />
-      </PieChart>
-    </ResponsiveContainer>
-  );
+  const option = {
+    tooltip: {
+      trigger: 'item',
+      backgroundColor: '#111827',
+      borderColor: 'rgba(255,255,255,0.1)',
+      textStyle: { color: '#e5e7eb' },
+      formatter: '{b}: {c} ({d}%)',
+    },
+    legend: {
+      orient: 'vertical',
+      right: 16,
+      top: 'center',
+      textStyle: { color: '#9ca3af', fontSize: 11 },
+    },
+    series: [
+      {
+        type: 'pie',
+        radius: ['45%', '70%'],
+        center: ['35%', '50%'],
+        data: chartData,
+        label: { show: false },
+        labelLine: { show: false },
+        emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' } },
+      },
+    ],
+  };
+
+  return <ReactECharts option={option} style={{ height: 210 }} />;
 };
 
 export default WODonutChart;

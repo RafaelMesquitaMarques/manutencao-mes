@@ -401,6 +401,7 @@ async def search_stock_items(
                 "description": i.description or "",
                 "unit": i.unit or "",
                 "quantity": float(i.quantity) if i.quantity is not None else 0.0,
+                "unit_cost": float(i.unit_cost) if i.unit_cost is not None else None,
             }
             for i in items
         ]
@@ -424,6 +425,9 @@ def _item_out(i: StockItem, supplier_name: Optional[str] = None) -> dict:
         "quantity": qty,
         "min_quantity": float(i.min_quantity) if i.min_quantity is not None else None,
         "unit_cost": float(i.unit_cost) if i.unit_cost is not None else None,
+        "average_cost": float(i.average_cost) if i.average_cost is not None else None,
+        "last_purchase_cost": float(i.last_purchase_cost) if i.last_purchase_cost is not None else None,
+        "last_purchase_date": str(i.last_purchase_date) if i.last_purchase_date else None,
         "warehouse": i.warehouse or "",
         "location": i.location or "",
         "supplier_id": str(i.supplier_id) if i.supplier_id else None,

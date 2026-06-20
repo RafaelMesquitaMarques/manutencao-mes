@@ -2,14 +2,19 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactECharts from 'echarts-for-react';
 import { Activity, Clock, CheckSquare, DollarSign } from 'lucide-react';
-import { fetchKPISummary, fetchBacklog, fetchMTTR, fetchCostByType } from '../../api/workOrders';
-import type { KPISummary, BacklogData, MTTRItem, CostItem } from '../../types';
+import { fetchKPISummary, fetchBacklog, fetchMTTR, fetchCostByType, fetchEquipment } from '../../api/workOrders';
+import type { KPISummary, BacklogData, MTTRItem, CostItem, Equipment } from '../../types';
+import { humanHours } from '../../utils/duration';
 
 const PERIOD_OPTIONS = [
   { value: 30, label: '30 days' },
   { value: 90, label: '90 days' },
   { value: 180, label: '180 days' },
 ];
+
+function fmtMttr(hours: number): string {
+  return hours > 0 ? humanHours(hours) : '—';
+}
 
 const COST_TYPE_LABELS: Record<string, string> = {
   labor: 'Labor',
@@ -18,11 +23,14 @@ const COST_TYPE_LABELS: Record<string, string> = {
   contracts: 'Contracts',
   rentals: 'Rentals',
   other: 'Other',
+  parts_used: 'Parts Used (stock)',
 };
 
 export default function KPIDashboard() {
   const { t } = useTranslation();
   const [period, setPeriod] = useState(30);
+  const [machines, setMachines] = useState<Equipment[]>([]);
+  const [machineId, setMachineId] = useState<string>('');
   const [summary, setSummary] = useState<KPISummary | null>(null);
   const [backlog, setBacklog] = useState<BacklogData | null>(null);
   const [mttr, setMttr] = useState<MTTRItem[]>([]);
@@ -30,12 +38,22 @@ export default function KPIDashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Drive the picker off the Equipment catalog (production only) — same source as
+    // the Equipment page and Machine Reports — so it has no duplicate/orphan or
+    // no-longer-existing machine rows. KPI endpoints filter by equipment_id too.
+    fetchEquipment({ asset_type: 'production', limit: '200' })
+      .then((items) => setMachines(items.filter((e) => e.active).sort((a, b) => a.name.localeCompare(b.name))))
+      .catch(() => setMachines([]));
+  }, []);
+
+  useEffect(() => {
     setLoading(true);
+    const mid = machineId || undefined;
     Promise.allSettled([
-      fetchKPISummary(period),
-      fetchBacklog(),
-      fetchMTTR(period),
-      fetchCostByType(period),
+      fetchKPISummary(period, mid),
+      fetchBacklog(mid),
+      fetchMTTR(period, mid),
+      fetchCostByType(period, mid),
     ]).then(([s, b, m, c]) => {
       if (s.status === 'fulfilled') setSummary(s.value);
       if (b.status === 'fulfilled') setBacklog(b.value);
@@ -43,7 +61,7 @@ export default function KPIDashboard() {
       if (c.status === 'fulfilled') setCosts(c.value);
       setLoading(false);
     });
-  }, [period]);
+  }, [period, machineId]);
 
   const backlogOption = {
     backgroundColor: 'transparent',
@@ -149,20 +167,34 @@ export default function KPIDashboard() {
           <h1 className="text-2xl font-bold text-white">{t('kpis.title')}</h1>
           <p className="text-gray-500 text-sm mt-0.5">{t('kpis.subtitle')}</p>
         </div>
-        <div className="flex gap-1 bg-[#0d1421] border border-white/[0.06] rounded-lg p-1">
-          {PERIOD_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => setPeriod(opt.value)}
-              className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
-                period === opt.value
-                  ? 'bg-blue-600 text-white'
-                  : 'text-gray-400 hover:text-gray-200'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-3">
+          <select
+            value={machineId}
+            onChange={(e) => setMachineId(e.target.value)}
+            className="bg-[#0d1421] border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500"
+          >
+            <option value="">{t('kpis.allMachines')}</option>
+            {machines.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}{m.code ? ` (${m.code})` : ''}
+              </option>
+            ))}
+          </select>
+          <div className="flex gap-1 bg-[#0d1421] border border-white/[0.06] rounded-lg p-1">
+            {PERIOD_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => setPeriod(opt.value)}
+                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                  period === opt.value
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -171,7 +203,7 @@ export default function KPIDashboard() {
         <KPICard
           icon={<Clock size={20} className="text-blue-400" />}
           label={t('kpis.mttr')}
-          value={loading ? '—' : `${summary?.mttr_hours ?? 0}h`}
+          value={loading ? '—' : fmtMttr(summary?.mttr_hours ?? 0)}
           sub={t('kpis.avgRepair')}
           color="blue"
         />

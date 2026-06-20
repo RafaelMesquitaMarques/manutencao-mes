@@ -265,7 +265,7 @@ export default function InventoryDetail() {
           </DetailCard>
 
           {/* Reorder */}
-          <DetailCard title="Reorder" icon={<AlertTriangle size={14} className="text-amber-400" />}>
+          <DetailCard title={t('inventory.reorder', 'Reorder')} icon={<AlertTriangle size={14} className="text-amber-400" />}>
             <Field label={t('inventory.minQty', 'Min qty')}>
               {editing ? (
                 <input type="number" className={inputCls} value={draft.min_quantity ?? ''} onChange={e => setDraft(d => ({ ...d, min_quantity: e.target.value ? parseFloat(e.target.value) : null }))} />
@@ -273,12 +273,27 @@ export default function InventoryDetail() {
                 <span className={item.min_quantity != null ? 'font-semibold' : 'text-gray-500'}>{item.min_quantity ?? 'Not set'}</span>
               )}
             </Field>
+          </DetailCard>
+
+          {/* Costs */}
+          <DetailCard title={t('inventory.costs', 'Costs')} icon={<DollarSign size={14} className="text-emerald-400" />}>
             <Field label={t('inventory.cost', 'Unit cost')}>
               {editing ? (
                 <input type="number" step="0.01" className={inputCls} value={draft.unit_cost ?? ''} onChange={e => setDraft(d => ({ ...d, unit_cost: e.target.value ? parseFloat(e.target.value) : null }))} />
               ) : (
-                <span>{item.unit_cost != null ? `$${item.unit_cost.toFixed(2)}` : '—'}</span>
+                <span className="font-mono text-emerald-300">{item.unit_cost != null ? `$${item.unit_cost.toFixed(2)}` : '—'}</span>
               )}
+            </Field>
+            <Field label={t('inventory.avgCost', 'Avg. cost')}>
+              <span className="font-mono text-sky-300">{item.average_cost != null ? `$${item.average_cost.toFixed(2)}` : '—'}</span>
+            </Field>
+            <Field label={t('inventory.lastPurchase', 'Last purchase')}>
+              <span className="font-mono text-amber-200">
+                {item.last_purchase_cost != null ? `$${item.last_purchase_cost.toFixed(2)}` : '—'}
+                {item.last_purchase_date && (
+                  <span className="text-gray-500 text-xs ml-1">({item.last_purchase_date})</span>
+                )}
+              </span>
             </Field>
           </DetailCard>
 

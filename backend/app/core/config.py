@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic_settings import BaseSettings
 
 
@@ -21,9 +23,26 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     DEBUG: bool = True
 
+    # CORS — comma-separated allowed origins. "*" allows all (fine for dev / same-origin
+    # behind nginx). In production set explicit origins, e.g. "https://mes.foliot.com".
+    CORS_ORIGINS: str = "*"
+
+    # Twilio SMS (leave empty to run in simulation mode)
+    TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_AUTH_TOKEN: str = ""
+    TWILIO_FROM_NUMBER: str = ""
+
+    # Anthropic API key for the Maintenance Intelligence AI layer.
+    # If unset, the module runs in calculator-only mode (structured fallback text).
+    anthropic_api_key: Optional[str] = None
+
     # Upload
-    MAX_UPLOAD_MB: int = 20
+    MAX_UPLOAD_MB: int = 200   # allows short SOP videos; override via env if needed
     UPLOAD_DIR: str = "/app/uploads"
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()] or ["*"]
 
     class Config:
         env_file = ".env"

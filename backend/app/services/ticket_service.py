@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Optional
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -6,8 +7,8 @@ from sqlalchemy import select, func
 from app.models.models import (
     MaintenanceTicket, TicketComment, TicketStatus, Machine,
     WorkOrder, WorkOrderType, WorkOrderStatus, WorkOrderPriority, WorkOrderSource,
-    Equipment, Technician, User,
-    MaintenanceAlert, AlertStatus, AlertProblemType,
+    Equipment, Technician, User, LaborRecord, MachineIntervention,
+    MaintenanceAlert, AlertStatus, AlertProblemType, AlertPriority,
 )
 from app.schemas.maintenance import TicketCreate, TicketClose, CommentCreate
 
@@ -30,18 +31,115 @@ _BACKFILL_STATUS_MAP: dict = {
 }
 
 
-async def _next_alert_number(db: AsyncSession) -> str:
-    year = datetime.now(timezone.utc).year
+_OPEN_TICKET_STATUSES = (TicketStatus.completed, TicketStatus.cancelled)
+_ACTIVE_INTERVENTION_STATUSES = ("waiting", "in_progress")
+
+
+class DuplicateTicketError(Exception):
+    """An open ticket already exists for the machine and the caller did not
+    explicitly confirm creating a second one (``force``). Carries the existing
+    ticket details so the API can return them for the confirmation prompt."""
+
+    def __init__(self, existing: dict):
+        self.existing = existing
+        super().__init__("An open ticket already exists for this machine")
+
+
+async def _open_ticket_for_machine(db: AsyncSession, machine_id) -> Optional[MaintenanceTicket]:
+    """Most recent ticket for the machine that is neither completed nor cancelled."""
     r = await db.execute(
-        select(func.count(MaintenanceAlert.id)).where(
-            func.extract("year", MaintenanceAlert.created_at) == year
+        select(MaintenanceTicket)
+        .where(
+            MaintenanceTicket.machine_id == machine_id,
+            MaintenanceTicket.status.notin_(_OPEN_TICKET_STATUSES),
+        )
+        .order_by(MaintenanceTicket.opened_at.desc())
+        .limit(1)
+    )
+    return r.scalar_one_or_none()
+
+
+async def _has_active_intervention(db: AsyncSession, machine_id) -> bool:
+    r = await db.execute(
+        select(MachineIntervention.id)
+        .where(
+            MachineIntervention.machine_id == machine_id,
+            MachineIntervention.status.in_(_ACTIVE_INTERVENTION_STATUSES),
+        )
+        .limit(1)
+    )
+    return r.scalar_one_or_none() is not None
+
+
+async def _next_alert_number(db: AsyncSession) -> str:
+    from app.services.numbering import next_number
+    year = datetime.now(timezone.utc).year
+    return await next_number(db, MaintenanceAlert.alert_number, f"ALT-{year}")
+
+
+async def _close_linked_wo(ticket: MaintenanceTicket, db: AsyncSession) -> None:
+    """Ticket finished → finish its linked WO too, so the Labor Scheduler and
+    My Work never show stale in-progress work. No-op when the WO is already
+    closed (which is the case when the completion came from the WO itself)."""
+    if not ticket.work_order_id:
+        return
+    wo = await db.get(WorkOrder, ticket.work_order_id)
+    if not wo or wo.status in (WorkOrderStatus.completed, WorkOrderStatus.cancelled):
+        return
+
+    now = datetime.now(timezone.utc)
+    if ticket.status == TicketStatus.cancelled:
+        wo.status = WorkOrderStatus.cancelled
+    else:
+        wo.status = WorkOrderStatus.completed
+        if not wo.completed_at:
+            wo.completed_at = ticket.completed_at or now
+
+    # Stamp any in-flight labor records
+    r = await db.execute(
+        select(LaborRecord).where(
+            LaborRecord.work_order_id == wo.id,
+            LaborRecord.stopped_at.is_(None),
         )
     )
-    return f"ALT-{year}-{(r.scalar() + 1):05d}"
+    for rec in r.scalars().all():
+        rec.stopped_at = now
+        if rec.started_at:
+            started = rec.started_at if rec.started_at.tzinfo else rec.started_at.replace(tzinfo=timezone.utc)
+            rec.hours_worked = round((now - started).total_seconds() / 3600, 4)
+            if rec.hourly_rate:
+                rec.labor_cost = round(rec.hourly_rate * rec.hours_worked, 2)
+
+    # Repair time fallback from the WO's own start
+    if wo.status == WorkOrderStatus.completed and not wo.repair_hours and wo.started_at:
+        started = wo.started_at if wo.started_at.tzinfo else wo.started_at.replace(tzinfo=timezone.utc)
+        end = wo.completed_at if wo.completed_at.tzinfo else wo.completed_at.replace(tzinfo=timezone.utc)
+        minutes = int((end - started).total_seconds() / 60)
+        if minutes > 0:
+            wo.total_minutes = minutes
+            wo.repair_hours = round(minutes / 60.0, 4)
+
+    # Close the machine's active intervention as well
+    from app.services.intervention_sync import on_wo_finished
+    await on_wo_finished(db, wo)
 
 
 async def sync_alert_from_ticket(ticket: MaintenanceTicket, db: AsyncSession) -> None:
     """Sync linked alert status whenever ticket status changes."""
+    # Lifecycle notification — every completion path goes through here.
+    # notify_ticket_completed dedupes via the notification log, so repeated
+    # sync calls never double-send.
+    if ticket.status == TicketStatus.completed:
+        from app.services.notification_service import NotificationService
+        machine = await db.get(Machine, ticket.machine_id)
+        await NotificationService(db).notify_ticket_completed(
+            ticket, machine.name if machine else None
+        )
+
+    # Ticket → WO sync (the WO → ticket direction lives in work_orders.py)
+    if ticket.status in (TicketStatus.completed, TicketStatus.cancelled):
+        await _close_linked_wo(ticket, db)
+
     if not ticket.alert_id:
         return
     alert = await db.get(MaintenanceAlert, ticket.alert_id)
@@ -53,13 +151,9 @@ async def sync_alert_from_ticket(ticket: MaintenanceTicket, db: AsyncSession) ->
 
 
 async def _next_ticket_number(db: AsyncSession) -> str:
+    from app.services.numbering import next_number
     year = datetime.now(timezone.utc).year
-    r = await db.execute(
-        select(func.count(MaintenanceTicket.id)).where(
-            func.extract("year", MaintenanceTicket.opened_at) == year
-        )
-    )
-    return f"TKT-{year}-{(r.scalar() + 1):05d}"
+    return await next_number(db, MaintenanceTicket.ticket_number, f"TKT-{year}")
 
 
 class TicketService:
@@ -76,6 +170,28 @@ class TicketService:
             machine = Machine(id=equipment.id, name=equipment.name, code=equipment.code, is_active=True)
             self.db.add(machine)
             await self.db.flush()
+
+        # ── Duplicate guard ─────────────────────────────────────────────────────
+        # If an open ticket already exists for this machine, warn instead of
+        # silently creating a second one. The caller resends with force=True to
+        # confirm. Prevents the "two tickets for the same machine" regression.
+        if not getattr(data, "force", False):
+            existing = await _open_ticket_for_machine(self.db, data.machine_id)
+            if existing:
+                opened = existing.opened_at
+                if opened and opened.tzinfo is None:
+                    opened = opened.replace(tzinfo=timezone.utc)
+                minutes_ago = (
+                    int((datetime.now(timezone.utc) - opened).total_seconds() / 60)
+                    if opened else None
+                )
+                raise DuplicateTicketError({
+                    "code":          "duplicate_open_ticket",
+                    "ticket_id":     str(existing.id),
+                    "ticket_number": existing.ticket_number,
+                    "status":        existing.status.value if hasattr(existing.status, "value") else str(existing.status),
+                    "minutes_ago":   minutes_ago,
+                })
 
         alert_id = data.alert_id
         new_alert = None
@@ -111,6 +227,33 @@ class TicketService:
         if new_alert is not None:
             new_alert.ticket_id = ticket.id
 
+        # ── Machine stopped → reflect on the machine/kiosk page ──────────────────
+        # Create a "waiting" intervention so the machine page switches to
+        # "En attente de mécanicien". Skipped for planned maintenance
+        # (machine_stopped=False) and when an active intervention already exists.
+        if getattr(data, "machine_stopped", True):
+            if not await _has_active_intervention(self.db, data.machine_id):
+                self.db.add(MachineIntervention(
+                    machine_id=data.machine_id,
+                    equipment_id=machine.equipment_id,
+                    ticket_id=ticket.id,
+                    status="waiting",
+                    operator_note=getattr(data, "description", None),
+                ))
+                await self.db.flush()
+
+        from app.services.notification_service import NotificationService
+        notif = NotificationService(self.db)
+        if data.priority == AlertPriority.critical:
+            await notif.notify_new_critical(
+                ref_number=ticket.ticket_number,
+                description=getattr(data, "description", None),
+                machine_name=machine.name,
+                alert_id=alert_id,
+                ticket_id=ticket.id,
+            )
+        await notif.notify_ticket_opened(ticket, machine.name)
+
         await self.db.commit()
         await self.db.refresh(ticket)
         return ticket
@@ -129,6 +272,10 @@ class TicketService:
         if data.estimated_downtime_minutes is not None:
             ticket.estimated_downtime_minutes = data.estimated_downtime_minutes
         await sync_alert_from_ticket(ticket, self.db)
+
+        from app.services.intervention_sync import on_ticket_closed
+        await on_ticket_closed(self.db, ticket)
+
         await self.db.commit()
         await self.db.refresh(ticket)
         return ticket
@@ -182,13 +329,9 @@ class TicketService:
         if not equip:
             raise ValueError("No active equipment found to link work order")
 
+        from app.services.numbering import next_number
         year = datetime.now(timezone.utc).year
-        r = await self.db.execute(
-            select(func.count(WorkOrder.id)).where(
-                func.extract("year", WorkOrder.opened_at) == year
-            )
-        )
-        wo_number = f"WO-{year}-{(r.scalar() + 1):05d}"
+        wo_number = await next_number(self.db, WorkOrder.wo_number, f"WO-{year}")
 
         priority_map = {
             "critical": WorkOrderPriority.critical,
@@ -202,6 +345,7 @@ class TicketService:
         wo = WorkOrder(
             wo_number=wo_number,
             equipment_id=equip.id,
+            machine_id=ticket.machine_id,
             created_by_id=created_by_id,
             type=WorkOrderType.corrective,
             priority=priority_map.get(pval, WorkOrderPriority.medium),
@@ -268,13 +412,9 @@ class TicketService:
         if not equip:
             raise ValueError("No active equipment found to link work order")
 
+        from app.services.numbering import next_number
         year = datetime.now(timezone.utc).year
-        r = await self.db.execute(
-            select(func.count(WorkOrder.id)).where(
-                func.extract("year", WorkOrder.opened_at) == year
-            )
-        )
-        wo_number = f"WO-{year}-{(r.scalar() + 1):05d}"
+        wo_number = await next_number(self.db, WorkOrder.wo_number, f"WO-{year}")
 
         priority_map = {
             "critical": WorkOrderPriority.critical,
@@ -311,6 +451,10 @@ class TicketService:
             ticket.started_at = datetime.now(timezone.utc)
 
         await sync_alert_from_ticket(ticket, self.db)
+
+        from app.services.notification_service import NotificationService
+        await NotificationService(self.db).notify_ticket_assigned(ticket, user, machine_name)
+
         await self.db.commit()
         await self.db.refresh(ticket)
         await self.db.refresh(wo)

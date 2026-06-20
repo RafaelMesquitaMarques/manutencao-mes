@@ -18,6 +18,8 @@ class MachineOut(BaseModel):
     id:                      UUID
     name:                    str
     code:                    Optional[str] = None
+    serial_number:           Optional[str] = None
+    equipment_id:            Optional[UUID] = None
     department:              Optional[str] = None
     location:                Optional[str] = None
     is_active:               bool
@@ -58,6 +60,8 @@ class MachineListResponse(BaseModel):
 class MachineCreate(BaseModel):
     name: str
     code: Optional[str] = None
+    serial_number: Optional[str] = None
+    equipment_id: Optional[UUID] = None
     department: Optional[str] = None
     location: Optional[str] = None
     page_slug: Optional[str] = None
@@ -66,6 +70,8 @@ class MachineCreate(BaseModel):
 class MachinePatch(BaseModel):
     name: Optional[str] = None
     code: Optional[str] = None
+    serial_number: Optional[str] = None
+    equipment_id: Optional[UUID] = None
     department: Optional[str] = None
     location: Optional[str] = None
     is_active: Optional[bool] = None
@@ -93,6 +99,7 @@ class MachinePageData(BaseModel):
     id:                      UUID
     name:                    str
     code:                    Optional[str] = None
+    serial_number:           Optional[str] = None
     department:              Optional[str] = None
     location:                Optional[str] = None
     is_active:               bool
@@ -135,6 +142,7 @@ class MachineOperatorUpdate(BaseModel):
 
 
 class MachineConfigUpdate(BaseModel):
+    serial_number:           Optional[str]   = None
     display_name:            Optional[str]   = None
     page_language:           Optional[str]   = None
     custom_color:            Optional[str]   = None
@@ -514,6 +522,12 @@ class TicketCreate(BaseModel):
     problem_type:               Optional[AlertProblemType] = None
     description:                Optional[str]           = None
     machine_page_source:        bool                    = False
+    # True  → machine is down: create a "waiting" intervention so the machine/kiosk
+    #         page switches to "En attente de mécanicien".
+    # False → planned maintenance: machine keeps running, no intervention created.
+    machine_stopped:            bool                    = True
+    # Bypass the duplicate-open-ticket guard (user confirmed a second ticket).
+    force:                      bool                    = False
 
 
 class TicketUpdate(BaseModel):
@@ -561,6 +575,7 @@ class TicketOut(BaseModel):
     status:                     TicketStatus
     assigned_to_id:             Optional[UUID]      = None
     assigned_to_name:           Optional[str]       = None
+    assigned_technicians:       Optional[List[Any]] = None
     work_order_id:              Optional[UUID]      = None
     work_order_number:          Optional[str]       = None
     work_order_status:          Optional[str]       = None

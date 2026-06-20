@@ -6,6 +6,7 @@ import { fetchMaintenancePlans, type PlanFilters } from '../../api/maintenancePl
 import { fetchEquipment } from '../../api/workOrders';
 import type { MaintenancePlan, Equipment, PmFrequency } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import { usePermission } from '../../hooks/usePermission';
 
 const FREQUENCIES: PmFrequency[] = ['daily', 'weekly', 'monthly', 'quarterly', 'semiannual', 'annual'];
 
@@ -21,6 +22,7 @@ const ALL = '';
 export default function PlanList() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const canCreate = usePermission('pm_calendar', 'create');
 
   const [plans, setPlans] = useState<MaintenancePlan[]>([]);
   const [equipmentList, setEquipmentList] = useState<Equipment[]>([]);
@@ -72,10 +74,12 @@ export default function PlanList() {
           <h1 className="text-2xl font-bold text-white">{t('pm.plans')}</h1>
           <p className="text-gray-500 text-sm mt-1">{t('pm.plansSubtitle')}</p>
         </div>
-        <button onClick={() => navigate('/maintenance/plans/new')} className="btn-primary flex-shrink-0">
-          <Plus size={16} />
-          {t('pm.newPlan')}
-        </button>
+        {canCreate && (
+          <button onClick={() => navigate('/maintenance/plans/new')} className="btn-primary flex-shrink-0">
+            <Plus size={16} />
+            {t('pm.newPlan')}
+          </button>
+        )}
       </div>
 
       {/* KPI cards */}

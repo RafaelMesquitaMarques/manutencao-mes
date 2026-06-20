@@ -60,6 +60,10 @@ services:
       MQTT_PORT: 1883
       SECRET_KEY: ${SECRET_KEY:-troque-esta-chave-em-producao}
       ENVIRONMENT: ${ENVIRONMENT:-development}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - uploads_data:/app/uploads
     depends_on:
@@ -115,7 +119,8 @@ services:
         upstream frontend { server frontend:3000; }
         server {
           listen 80;
-          location /api/ { proxy_pass http://backend/api/; proxy_set_header Host $$host; }
+          client_max_body_size 250M;
+          location /api/ { proxy_pass http://backend/api/; proxy_set_header Host $$host; proxy_http_version 1.1; proxy_set_header Upgrade $$http_upgrade; proxy_set_header Connection $$http_connection; proxy_read_timeout 3600s; }
           location /docs { proxy_pass http://backend/docs; }
           location /openapi.json { proxy_pass http://backend/openapi.json; }
           location / { proxy_pass http://frontend/; proxy_set_header Host $$host; proxy_set_header Upgrade $$http_upgrade; proxy_set_header Connection upgrade; }
