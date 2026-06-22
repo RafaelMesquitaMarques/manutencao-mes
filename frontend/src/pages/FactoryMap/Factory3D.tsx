@@ -3,10 +3,7 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, Html, Edges, useTexture, useGLTF, useAnimations, TransformControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
-
-const STATUS_COLORS: Record<string, string> = {
-  running: '#22c55e', stopped: '#ef4444', maintenance: '#f59e0b', planned_stop: '#f59e0b', idle: '#6b7280',
-};
+import { STATUS_HEX as STATUS_COLORS } from '../../utils/statusColors';
 const SCALE = 0.05;
 const FLOOR_W = 1600;
 
@@ -304,9 +301,12 @@ export const PROP_CATALOG: { kind: string; label: string; w: number; h: number; 
   { kind: 'cobot',          label: 'Cobot (animated)', w: 90,  h: 90,  height: 3.0 },
   { kind: 'box',            label: 'Block',            w: 120, h: 120, height: 2.0 },
 ];
+// Note: 'beam_saw' is NOT in the prop catalog on purpose — it is a 3D shape you
+// assign to an existing production machine (via the per-machine shape selector),
+// not a decorative block you drop on the map.
 const propHeight = (kind: string): number => PROP_CATALOG.find((c) => c.kind === kind)?.height ?? 2;
 // block_kinds that render as a procedural mesh (the rest fall back to box/photo)
-const PROCEDURAL_KINDS = new Set(['cobot', 'conveyor', 'lift_table', 'work_table', 'rack', 'dust_collector']);
+const PROCEDURAL_KINDS = new Set(['cobot', 'conveyor', 'lift_table', 'work_table', 'rack', 'dust_collector', 'beam_saw']);
 
 // Wood panels riding the belt — translate along +X and wrap, simulating flow.
 function ConveyorFlow({ w, d, y, animate }: { w: number; d: number; y: number; animate: boolean }) {
@@ -457,6 +457,107 @@ function DustCollectorMesh({ w, d, h, color, id, name, onSelect }: BoxProps) {
   );
 }
 
+/** Biesse Selco panel/beam saw — stylized placeholder.
+ * Cutting line runs along X. Back (−Z): loading table with rollers, a gantry beam
+ * on end posts and a pusher carriage. Centre: tall cutting body with a pressure-beam
+ * hood, dark cutting slot and the signature green Biesse corner panels. Front (+Z):
+ * low air/outfeed tables and an HMI screen on a post. Top stripe carries the live
+ * status colour. */
+function BeamSawMesh({ w, d, h, color, id, name, onSelect }: BoxProps) {
+  const bodyGrey = '#dfe2e6', midGrey = '#b9bec5', dark = '#3a3f47', steel = '#9aa0a8', green = '#76b82a';
+  const bodyW = w * 0.58, bodyD = d * 0.30;
+  const tableH = h * 0.30;                      // surface height of the feed/air tables
+  const rollers = Math.max(4, Math.min(10, Math.round(w / 0.9)));
+  return (
+    <group {...boxHandlers(id, onSelect)}>
+      {/* ── Rear loading table (−Z) ── */}
+      <mesh position={[0, tableH * 0.5, -d * 0.33]} castShadow receiveShadow>
+        <boxGeometry args={[w * 0.9, tableH, d * 0.34]} />
+        <meshStandardMaterial color={steel} metalness={0.35} roughness={0.55} />
+      </mesh>
+      {Array.from({ length: rollers }).map((_, i) => {
+        const x = -w * 0.42 + (i + 0.5) * (w * 0.84 / rollers);
+        return (
+          <mesh key={`r${i}`} position={[x, tableH + h * 0.015, -d * 0.33]} rotation={[Math.PI / 2, 0, 0]} castShadow>
+            <cylinderGeometry args={[h * 0.018, h * 0.018, d * 0.30, 8]} />
+            <meshStandardMaterial color="#c2c7cd" metalness={0.6} roughness={0.4} />
+          </mesh>
+        );
+      })}
+      {/* gantry: end posts + cross beam over the loading table + pusher carriage */}
+      {[-1, 1].map((s) => (
+        <mesh key={`gp${s}`} position={[s * w * 0.44, tableH + h * 0.28, -d * 0.33]} castShadow>
+          <boxGeometry args={[w * 0.035, h * 0.56, d * 0.05]} />
+          <meshStandardMaterial color={dark} metalness={0.4} roughness={0.5} />
+        </mesh>
+      ))}
+      <mesh position={[0, tableH + h * 0.56, -d * 0.33]} castShadow>
+        <boxGeometry args={[w * 0.93, h * 0.07, d * 0.06]} />
+        <meshStandardMaterial color={dark} metalness={0.5} roughness={0.4} />
+      </mesh>
+      <mesh position={[-w * 0.12, tableH + h * 0.56, -d * 0.28]} castShadow>
+        <boxGeometry args={[w * 0.12, h * 0.1, d * 0.1]} />
+        <meshStandardMaterial color="#5b6066" metalness={0.4} roughness={0.5} />
+      </mesh>
+
+      {/* ── Main cutting body (centre) ── */}
+      <mesh position={[0, h * 0.5, 0]} castShadow receiveShadow>
+        <boxGeometry args={[bodyW, h, bodyD]} />
+        <meshStandardMaterial color={bodyGrey} metalness={0.1} roughness={0.5} />
+      </mesh>
+      {/* pressure-beam hood across the front upper face + dark cutting slot */}
+      <mesh position={[0, h * 0.74, bodyD * 0.5 + d * 0.02]} castShadow>
+        <boxGeometry args={[bodyW * 1.02, h * 0.26, d * 0.05]} />
+        <meshStandardMaterial color={midGrey} metalness={0.2} roughness={0.5} />
+      </mesh>
+      <mesh position={[0, h * 0.56, bodyD * 0.5 + d * 0.03]}>
+        <boxGeometry args={[bodyW * 0.9, h * 0.05, d * 0.015]} />
+        <meshStandardMaterial color="#22262b" />
+      </mesh>
+      {/* signature green Biesse corner panels */}
+      {[-1, 1].map((s) => (
+        <mesh key={`gr${s}`} position={[s * bodyW * 0.5, h * 0.42, bodyD * 0.5 + d * 0.006]} castShadow>
+          <boxGeometry args={[w * 0.045, h * 0.82, d * 0.09]} />
+          <meshStandardMaterial color={green} roughness={0.5} />
+        </mesh>
+      ))}
+      {/* status accent stripe on top of the body */}
+      <mesh position={[0, h * 1.01, 0]}>
+        <boxGeometry args={[bodyW * 0.96, h * 0.035, bodyD * 0.9]} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.35} />
+      </mesh>
+
+      {/* ── Front air/outfeed tables (+Z) ── */}
+      <mesh position={[-w * 0.05, tableH, d * 0.34]} castShadow receiveShadow>
+        <boxGeometry args={[w * 0.6, h * 0.07, d * 0.32]} />
+        <meshStandardMaterial color="#cfd3d9" metalness={0.1} roughness={0.6} />
+      </mesh>
+      <mesh position={[w * 0.3, tableH * 0.96, d * 0.3]} castShadow receiveShadow>
+        <boxGeometry args={[w * 0.26, h * 0.07, d * 0.24]} />
+        <meshStandardMaterial color="#cfd3d9" metalness={0.1} roughness={0.6} />
+      </mesh>
+      {[[-w * 0.28, d * 0.42], [w * 0.18, d * 0.42], [w * 0.4, d * 0.36]].map(([lx, lz], i) => (
+        <mesh key={`lg${i}`} position={[lx, tableH * 0.5, lz]} castShadow>
+          <boxGeometry args={[w * 0.02, tableH, d * 0.02]} />
+          <meshStandardMaterial color={dark} />
+        </mesh>
+      ))}
+
+      {/* ── HMI operator screen on a post (front-left) ── */}
+      <mesh position={[-w * 0.4, tableH + h * 0.18, d * 0.16]} castShadow>
+        <boxGeometry args={[w * 0.015, h * 0.36, d * 0.015]} />
+        <meshStandardMaterial color="#5b6066" metalness={0.3} roughness={0.5} />
+      </mesh>
+      <mesh position={[-w * 0.38, tableH + h * 0.4, d * 0.18]} rotation={[0.25, 0.35, 0]} castShadow>
+        <boxGeometry args={[w * 0.13, h * 0.16, d * 0.012]} />
+        <meshStandardMaterial color="#1f6feb" emissive="#1f6feb" emissiveIntensity={0.4} roughness={0.3} />
+      </mesh>
+
+      <Label y={h + 0.7} text={name} />
+    </group>
+  );
+}
+
 /** Renders the placeholder shape for a block `kind` (used until a .glb is uploaded). */
 function ProceduralShape({ kind, w, d, h, color, id, name, onSelect, animate }: BoxProps & { kind: string; animate?: boolean }) {
   switch (kind) {
@@ -465,6 +566,7 @@ function ProceduralShape({ kind, w, d, h, color, id, name, onSelect, animate }: 
     case 'work_table': return <WorkTableMesh w={w} d={d} h={h} color={color} id={id} name={name} onSelect={onSelect} />;
     case 'rack': return <RackMesh w={w} d={d} h={h} color={color} id={id} name={name} onSelect={onSelect} />;
     case 'dust_collector': return <DustCollectorMesh w={w} d={d} h={h} color={color} id={id} name={name} onSelect={onSelect} />;
+    case 'beam_saw': return <BeamSawMesh w={w} d={d} h={h} color={color} id={id} name={name} onSelect={onSelect} />;
     case 'cobot': return <CobotMesh w={w} d={d} h={h} color={color} id={id} name={name} onSelect={onSelect} animate={animate} />;
     default: return <PlainMesh w={w} d={d} h={h} color={color} id={id} name={name} onSelect={onSelect} />;
   }
@@ -503,17 +605,20 @@ const PropBlock = forwardRef<THREE.Group, { p: P3D; cx: number; cy: number; onSe
     const color = linked ? (STATUS_COLORS[p.status as string] ?? STATUS_COLORS.idle) : '#64748b';
     const animate = (linked ? p.status === 'running' : true) && !editMode;   // freeze while editing
     const label = p.label ?? p.kind;
-    const alert = linked && (p.status === 'stopped' || p.status === 'maintenance' || p.status === 'planned_stop');
+    const psx = p.model_scale ?? 1;
+    const psy = p.scale_y ?? p.model_scale ?? 1;
+    const psz = p.scale_z ?? p.model_scale ?? 1;
+    const alert = linked && p.status !== 'running' && p.status !== 'idle';
     const fallback = <ProceduralShape kind={p.kind} w={w} d={d} h={h} color={color} id={p.id} name={label} onSelect={onSelect} animate={animate} />;
     return (
       <group ref={ref} position={[x, 0, z]} rotation={[0, -((p.rotation_deg ?? 0) * Math.PI) / 180, 0]}
-        scale={[p.model_scale ?? 1, p.scale_y ?? p.model_scale ?? 1, p.scale_z ?? p.model_scale ?? 1]}>
+        scale={[psx, psy, psz]}>
         {p.model_url ? (
           <Suspense fallback={fallback}>
             <GltfModel url={p.model_url} w={w} d={d} h={h} color={color} id={p.id} name={label} onSelect={onSelect} animate={animate} />
           </Suspense>
         ) : fallback}
-        {alert && <AlertBeacon y={h + 1.2} color={color} />}
+        {alert && <AlertBeacon y={h + 1.0 / psy} color={color} parentScale={[psx, psy, psz]} />}
       </group>
     );
   },
@@ -552,12 +657,18 @@ function SelectedProp({ p, cx, cy, mode, onCommit }: { p: P3D; cx: number; cy: n
 
 /** Pulsing beacon floating above a machine that needs attention (stopped / in
  * maintenance / open ticket) — the live "control room" cue. */
-function AlertBeacon({ y, color }: { y: number; color: string }) {
+// The beacon lives inside the machine/prop group, which may be scaled (model_scale,
+// scale_y, scale_z). We counter-scale per axis so the beacon stays a constant world
+// size AND undistorted; the caller passes `y = h + gap/scaleY` so the gap above the
+// (scaled) top is constant regardless of how tall the block was scaled.
+function AlertBeacon({ y, color, parentScale = [1, 1, 1] }: { y: number; color: string; parentScale?: [number, number, number] }) {
   const ref = useRef<THREE.Group>(null);
   useFrame((state) => {
     if (!ref.current) return;
     const p = 0.5 + 0.5 * Math.sin(state.clock.elapsedTime * 4);
-    ref.current.scale.setScalar(0.85 + p * 0.35);
+    const pulse = 0.85 + p * 0.35;
+    const [sx, sy, sz] = parentScale;
+    ref.current.scale.set(pulse / (sx || 1), pulse / (sy || 1), pulse / (sz || 1));
   });
   return (
     <group ref={ref} position={[0, y, 0]}>
@@ -577,13 +688,16 @@ const MachineBox = forwardRef<THREE.Group, { m: M3D; cx: number; cy: number; onS
     const x = ((m.pos_x + m.pos_w / 2) - cx) * SCALE;
     const z = ((m.pos_y + m.pos_h / 2) - cy) * SCALE;
     const color = STATUS_COLORS[m.status] ?? STATUS_COLORS.idle;
+    const sx = m.model_scale ?? 1;
+    const sy = m.scale_y ?? m.model_scale ?? 1;
+    const sz = m.scale_z ?? m.model_scale ?? 1;
     const animate = m.status === 'running' && !editMode;   // freeze while editing → easy to position
     // Explicit choice wins; 'auto'/empty falls back to the name heuristic, then box.
     const kind = m.block_kind && m.block_kind !== 'auto' ? m.block_kind : (isCobot(m) ? 'cobot' : '');
     const fallback = <PlainMesh w={w} d={d} h={h} color={color} id={m.id} name={m.name} onSelect={onSelect} />;
     return (
       <group ref={ref} position={[x, 0, z]} rotation={[0, -((m.rotation_deg ?? 0) * Math.PI) / 180, 0]}
-        scale={[m.model_scale ?? 1, m.scale_y ?? m.model_scale ?? 1, m.scale_z ?? m.model_scale ?? 1]}>
+        scale={[sx, sy, sz]}>
         {m.model_url ? (
           <Suspense fallback={fallback}>
             <GltfModel url={m.model_url} w={w} d={d} h={h} color={color} id={m.id} name={m.name} onSelect={onSelect} animate={animate} />
@@ -596,8 +710,8 @@ const MachineBox = forwardRef<THREE.Group, { m: M3D; cx: number; cy: number; onS
             <PhotoMesh url={m.icon_url} w={w} d={d} h={h} color={color} id={m.id} name={m.name} onSelect={onSelect} />
           </Suspense>
         ) : fallback}
-        {(m.status === 'stopped' || m.status === 'maintenance' || m.status === 'planned_stop') && (
-          <AlertBeacon y={h + 1.4} color={color} />
+        {(m.status === 'stopped' || m.status === 'maintenance' || m.status === 'planned_stop' || m.status === 'intervention' || m.status === 'unjustified') && (
+          <AlertBeacon y={h + 1.2 / sy} color={color} parentScale={[sx, sy, sz]} />
         )}
       </group>
     );
@@ -637,7 +751,17 @@ function SelectedMachine({ m, cx, cy, mode, onCommit }: { m: M3D; cx: number; cy
   );
 }
 
-export interface KpiInfo { backlog_count: number; mttr_hours: number; pm_compliance_pct: number; total_cost_cad: number }
+export interface KpiInfo {
+  availability_pct?: number;
+  parts_per_hour?: number;
+  quality_pct?: number;
+  oee_pct?: number;
+  operator?: string | null;
+}
+
+const pct = (v?: number | null) => (v != null ? `${Math.round(v)}%` : '—');
+const statusLabel = (s?: string | null) =>
+  s ? s.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase()) : '—';
 
 // Floating live-KPI card above the machine the user clicked (View mode).
 function KpiBillboard({ m, cx, cy, kpi }: { m: M3D; cx: number; cy: number; kpi: KpiInfo | null }) {
@@ -646,9 +770,9 @@ function KpiBillboard({ m, cx, cy, kpi }: { m: M3D; cx: number; cy: number; kpi:
   const z = ((m.pos_y + m.pos_h / 2) - cy) * SCALE;
   const color = STATUS_COLORS[m.status] ?? STATUS_COLORS.idle;
   const cell = (label: string, value: string) => (
-    <div style={{ background: '#0d1421', border: '1px solid #1f2937', borderRadius: 4, padding: '2px 5px' }}>
+    <div style={{ background: '#0d1421', border: '1px solid #1f2937', borderRadius: 4, padding: '2px 5px', minWidth: 0 }}>
       <div style={{ fontSize: 7, color: '#64748b', lineHeight: 1.1 }}>{label}</div>
-      <div style={{ fontSize: 10, color: '#e5e7eb', fontWeight: 600, lineHeight: 1.2 }}>{value}</div>
+      <div style={{ fontSize: 10, color: '#e5e7eb', fontWeight: 600, lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
     </div>
   );
   return (
@@ -662,10 +786,12 @@ function KpiBillboard({ m, cx, cy, kpi }: { m: M3D; cx: number; cy: number; kpi:
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 3 }}>
             {kpi ? (
               <>
-                {cell('Open WOs', String(kpi.backlog_count))}
-                {cell('MTTR', `${kpi.mttr_hours.toFixed(1)}h`)}
-                {cell('PM', `${kpi.pm_compliance_pct.toFixed(0)}%`)}
-                {cell('Cost 30d', `$${Math.round(kpi.total_cost_cad).toLocaleString()}`)}
+                {cell('OEE', pct(kpi.oee_pct))}
+                {cell('Availability', pct(kpi.availability_pct))}
+                {cell('Parts/h', kpi.parts_per_hour != null ? String(Math.round(kpi.parts_per_hour)) : '—')}
+                {cell('Quality', pct(kpi.quality_pct))}
+                {cell('Status', statusLabel(m.status))}
+                {cell('Operator', kpi.operator || '—')}
               </>
             ) : (
               <div style={{ gridColumn: '1 / 3', fontSize: 9, color: '#64748b' }}>…</div>

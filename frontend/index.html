@@ -3,10 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Shim `process` for browser. react-grid-layout / react-draggable call a
+         debug log() that reads process.env.* — undefined under Vite, which threw
+         "process is not defined" on every drag/resize start and silently aborted it. -->
+    <script>window.process = window.process || { env: {} };</script>
     <title>Foliot MES — Manufacturing Execution System</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Saira+SemiCondensed:wght@500;600;700;800&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div id="root"></div>

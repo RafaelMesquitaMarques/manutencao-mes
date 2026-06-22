@@ -95,9 +95,30 @@ class MesService:
             )
             self.db.add(log)
         log.reject_count = max(0, (log.reject_count or 0) + delta)
+        # Persist the per-shift OEE snapshot so historical dashboards can chart
+        # quality/OEE trends per shift (not just the live aggregate). Quality is the
+        # reject-driven factor; it populates as soon as a produced count exists.
+        self._recompute_oee(log)
         await self.db.commit()
         await self.db.refresh(log)
         return await self.get_today_rejects(machine_id)
+
+    @staticmethod
+    def _recompute_oee(log: MachineProductionLog) -> None:
+        """Recompute performance/quality/OEE on a production-log row from its own
+        counts. OEE = Availability × Performance × Quality.
+          performance = actual / target (capped at 100%)
+          quality     = (actual − rejects) / actual
+          availability comes from the row (filled by the stop/production feed)."""
+        actual = float(log.actual_count or 0)
+        target = float(log.target_count or 0)
+        rejects = float(log.reject_count or 0)
+        perf = min(actual / target, 1.0) if target > 0 else 0.0
+        qual = ((actual - rejects) / actual) if actual > 0 else 0.0
+        avail = float(log.availability_pct or 0.0) / 100.0
+        log.performance_pct = round(perf * 100, 1)
+        log.quality_pct = round(qual * 100, 1)
+        log.oee_pct = round(avail * perf * qual * 100, 1)
 
     async def get_availability(self, machine_id: UUID, for_date: date) -> float:
         """Availability % for a date: planned production time (from the

@@ -25,7 +25,7 @@ async def list_equipment(
     family: Optional[str] = None,
     search: Optional[str] = None,
     skip: int = Query(0, ge=0),
-    limit: int = Query(50, le=200),
+    limit: int = Query(50, le=2000),   # selectors (parent machine, PM clone targets) pull the whole catalog
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):

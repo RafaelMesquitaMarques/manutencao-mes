@@ -20,7 +20,7 @@ from app.api.routes import (
 from app.api.routes.machine_operator import router as machine_operator_router
 from app.api.routes.intervention_type_settings import router as intervention_types_router
 from app.api.routes.safety_checklist_settings import router as safety_checklist_router
-from app.api.routes.parts_approval import router as parts_approval_router
+from app.api.routes.wo_approval import router as wo_approval_router
 from app.api.routes.pm_template_settings import router as pm_template_settings_router
 from app.api.routes.intelligence import router as intelligence_router
 from app.api.routes.uploads import router as uploads_router
@@ -92,6 +92,7 @@ async def _run_migrations() -> None:
         # Phase: machine page v2 — MES panel
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS current_operator_id UUID REFERENCES users(id)",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS current_job_number VARCHAR(100)",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS kiosk_layout JSON",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS last_stop_at TIMESTAMPTZ",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS last_start_at TIMESTAMPTZ",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS page_language VARCHAR(10) NOT NULL DEFAULT 'fr'",
@@ -689,13 +690,77 @@ async def _run_migrations() -> None:
         ) lm
         WHERE s.id = lm.stock_item_id AND s.last_purchase_cost IS NULL
         """,
+        # Phase: WO-level approval — supervisor/director approves completed work
+        # (whole intervention OR whole formal work order), not just individual parts.
+        # A marker table makes the historical "grandfather" backfill run exactly once,
+        # so a genuinely-pending completed item is never auto-approved on the next boot.
+        """
+        CREATE TABLE IF NOT EXISTS _kaizo_migrations (
+            key VARCHAR(100) PRIMARY KEY,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        # Floor work order = MachineIntervention
+        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS approval_status VARCHAR(20) NOT NULL DEFAULT 'pending'",
+        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS approved_by_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ",
+        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS approval_note TEXT",
+        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS rejection_reason TEXT",
+        # Office work order = work_orders
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS approval_status VARCHAR(20) NOT NULL DEFAULT 'pending'",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS approved_by_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS approval_note TEXT",
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS rejection_reason TEXT",
+        # One-time grandfather: everything already completed at rollout (incl. thousands of
+        # imported historical WOs) is marked approved so the queue isn't flooded; only future
+        # completions require sign-off. Interventions still holding pending parts stay queued.
+        """
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM _kaizo_migrations WHERE key = 'grandfather_approval_2026_06_21') THEN
+            UPDATE machine_interventions mi
+              SET approval_status = 'approved', approved_at = COALESCE(mi.approved_at, mi.completed_at)
+              WHERE mi.approval_status = 'pending' AND mi.status = 'completed'
+                AND NOT EXISTS (
+                    SELECT 1 FROM intervention_parts ip
+                    WHERE ip.intervention_id = mi.id AND ip.approval_status = 'pending'
+                );
+            UPDATE work_orders
+              SET approval_status = 'approved', approved_at = COALESCE(approved_at, completed_at)
+              WHERE approval_status = 'pending' AND status = 'completed';
+            INSERT INTO _kaizo_migrations(key) VALUES ('grandfather_approval_2026_06_21');
+          END IF;
+        END $$
+        """,
     ]
     async with engine.begin() as conn:
         for stmt in stmts:
             await conn.execute(text(stmt))
-        # Mark pre-existing global stop categories
+        # Mark pre-existing global stop categories (IS DISTINCT FROM also catches NULL,
+        # otherwise the kiosk's global fallback finds nothing and stop reasons go blank).
         await conn.execute(text(
-            "UPDATE stop_categories SET is_global = TRUE WHERE machine_id IS NULL AND is_global = FALSE"
+            "UPDATE stop_categories SET is_global = TRUE WHERE machine_id IS NULL AND is_global IS DISTINCT FROM TRUE"
+        ))
+        # Coalesce NULL boolean flags on stop categories so StopCategoryOut never 500s.
+        await conn.execute(text(
+            "UPDATE stop_categories SET comment_required = COALESCE(comment_required, FALSE), "
+            "triggers_maintenance = COALESCE(triggers_maintenance, FALSE), is_active = COALESCE(is_active, TRUE)"
+        ))
+        # Canonical color per stop type (planned=blue, unplanned=red, maintenance=yellow)
+        # for the standard/global categories, so the kiosk timeline, config page and stop
+        # modal stay consistent. Per-machine custom categories keep their own color.
+        await conn.execute(text(
+            "UPDATE stop_categories SET color = CASE type "
+            "WHEN 'planned' THEN '#3b82f6' WHEN 'unplanned' THEN '#ef4444' "
+            "WHEN 'maintenance' THEN '#eab308' ELSE color END "
+            "WHERE machine_id IS NULL"
+        ))
+        # Same for reject categories (global fallback + NULL bool flags).
+        await conn.execute(text(
+            "UPDATE reject_categories SET is_global = TRUE WHERE machine_id IS NULL AND is_global IS DISTINCT FROM TRUE"
+        ))
+        await conn.execute(text(
+            "UPDATE reject_categories SET comment_required = COALESCE(comment_required, FALSE), is_active = COALESCE(is_active, TRUE)"
         ))
         await _seed_stop_categories(conn)
         await _seed_suppliers(conn)
@@ -828,7 +893,7 @@ app.include_router(suppliers_module.po_router,       prefix="/api/supplier-order
 app.include_router(machine_operator_router)
 app.include_router(intervention_types_router)
 app.include_router(safety_checklist_router)
-app.include_router(parts_approval_router)
+app.include_router(wo_approval_router)
 app.include_router(pm_template_settings_router)
 app.include_router(intelligence_router)
 app.include_router(uploads_router)

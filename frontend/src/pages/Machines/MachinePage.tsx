@@ -1,34 +1,62 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { AlertTriangle, CheckCircle2, X, Play, ChevronLeft, User } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, X, Play, ChevronLeft, ChevronRight, User } from 'lucide-react';
 import {
   fetchMachinePage, fetchTodayStops, fetchMESData, fetchMachineOperators,
   updateMachineStatus, updateMachineJob, updateMachineOperator,
   createMachineStop, closeMachineStop, fetchMachineStopCategories,
-  fetchMachineRejectCategories, logReject,
+  fetchMachineRejectCategories, logReject, reclassifyStop,
 } from '../../api/machines';
 import { openTicketField, closeTicket } from '../../api/maintenance';
+import { callMaintenance } from '../../api/machineOperator';
+import { MaintenancePanel } from '../MachineView/MachineOperatorPage';
 import type {
   MachinePageData, MachineStatus, MachineStopOut, StopCategoryOut,
   StopSubcategoryOut, MachineOperatorOut, MESDataExtended,
   RejectCategoryOut, RejectSubcategoryOut,
 } from '../../types';
 import { IconRenderer } from '../../components/ui/IconLibrary';
+import GridLayout, { WidthProvider, type Layout } from 'react-grid-layout';
+import 'react-grid-layout/css/styles.css';
+import 'react-resizable/css/styles.css';
+import { useRole } from '../../hooks/usePermission';
+import api from '../../api/axios';
+import { STATUS_HEX, statusColor } from '../../utils/statusColors';
+
+const RGL = WidthProvider(GridLayout);
+// Default arrangement of the kiosk panels (12-col grid). Saved per machine in kiosk_layout.
+const DEFAULT_KIOSK_LAYOUT: Layout[] = [
+  { i: 'status', x: 0, y: 0, w: 4, h: 6 },
+  { i: 'job', x: 4, y: 0, w: 4, h: 6 },
+  { i: 'stop', x: 8, y: 0, w: 4, h: 6 },
+  { i: 'timeline', x: 0, y: 6, w: 12, h: 6 },
+  { i: 'production', x: 0, y: 9, w: 7, h: 6 },
+  { i: 'gauge', x: 7, y: 9, w: 5, h: 10 },
+  { i: 'rejects', x: 0, y: 15, w: 7, h: 5 },
+  { i: 'maintenance', x: 7, y: 19, w: 5, h: 10 },
+];
 
 // ── Local i18n (machine page has its own language setting) ────────────────────
 
 const I18N = {
   en: {
     running: 'RUNNING', stopped: 'STOPPED', maintenance: 'MAINTENANCE',
-    idle: 'IDLE', planned_stop: 'PLANNED STOP',
+    idle: 'IDLE', planned_stop: 'PLANNED STOP', unjustified: 'NOT JUSTIFIED', intervention: 'INTERVENTION',
     newStop: 'NEW STOP', restart: 'RESTART',
     jobNumber: 'Job Number', noJob: 'No job',
     operator: 'Operator', noOperator: 'No operator',
     selectCategory: 'Select stop reason',
     selectSubcategory: 'Select reason',
+    changeCause: 'Change stop cause',
+    noSubcategory: 'No sub-reason',
     comment: 'Comment (optional)',
     commentPlaceholder: 'Add a comment...',
     confirmStop: 'CONFIRM STOP',
+    confirmReject: 'CONFIRM REJECT',
+    quantity: 'Quantity',
+    editLayoutBtn: 'Edit layout',
+    saveLayoutBtn: 'Save layout',
+    resetLayoutBtn: 'Reset',
     confirmMaintenance: 'CONFIRM — NOTIFY MAINTENANCE',
     stoppedAt: 'Stop detected at',
     maintenanceWillBeNotified: 'Maintenance team will be notified',
@@ -59,15 +87,22 @@ const I18N = {
   },
   fr: {
     running: 'EN MARCHE', stopped: 'ARRÊTÉE', maintenance: 'MAINTENANCE',
-    idle: 'INACTIF', planned_stop: 'ARRÊT PLANIFIÉ',
+    idle: 'INACTIF', planned_stop: 'ARRÊT PLANIFIÉ', unjustified: 'NON JUSTIFIÉ', intervention: 'EN INTERVENTION',
     newStop: 'NOUVEL ARRÊT', restart: 'REDÉMARRER',
     jobNumber: 'N° de job', noJob: 'Aucun job',
     operator: 'Opérateur', noOperator: 'Aucun opérateur',
     selectCategory: 'Sélectionner la raison',
     selectSubcategory: 'Sélectionner la raison',
+    changeCause: 'Changer la cause de l\'arrêt',
+    noSubcategory: 'Sans sous-raison',
     comment: 'Commentaire (optionnel)',
     commentPlaceholder: 'Ajouter un commentaire...',
     confirmStop: 'CONFIRMER L\'ARRÊT',
+    confirmReject: 'CONFIRMER LE REJET',
+    quantity: 'Quantité',
+    editLayoutBtn: 'Éditer la disposition',
+    saveLayoutBtn: 'Enregistrer',
+    resetLayoutBtn: 'Réinitialiser',
     confirmMaintenance: 'CONFIRMER — NOTIFIER MAINTENANCE',
     stoppedAt: 'Arrêt détecté à',
     maintenanceWillBeNotified: 'L\'équipe de maintenance sera notifiée',
@@ -98,15 +133,22 @@ const I18N = {
   },
   es: {
     running: 'EN MARCHA', stopped: 'DETENIDA', maintenance: 'MANTENIMIENTO',
-    idle: 'INACTIVO', planned_stop: 'PARADA PLANIFICADA',
+    idle: 'INACTIVO', planned_stop: 'PARADA PLANIFICADA', unjustified: 'SIN JUSTIFICAR', intervention: 'EN INTERVENCIÓN',
     newStop: 'NUEVA PARADA', restart: 'REINICIAR',
     jobNumber: 'N° de trabajo', noJob: 'Sin trabajo',
     operator: 'Operador', noOperator: 'Sin operador',
     selectCategory: 'Seleccionar razón',
     selectSubcategory: 'Seleccionar razón',
+    changeCause: 'Cambiar causa de la parada',
+    noSubcategory: 'Sin sub-razón',
     comment: 'Comentario (opcional)',
     commentPlaceholder: 'Agregar un comentario...',
     confirmStop: 'CONFIRMAR PARADA',
+    confirmReject: 'CONFIRMAR RECHAZO',
+    quantity: 'Cantidad',
+    editLayoutBtn: 'Editar disposición',
+    saveLayoutBtn: 'Guardar',
+    resetLayoutBtn: 'Restablecer',
     confirmMaintenance: 'CONFIRMAR — NOTIFICAR MANTENIMIENTO',
     stoppedAt: 'Parada detectada a las',
     maintenanceWillBeNotified: 'Se notificará al equipo de mantenimiento',
@@ -138,21 +180,77 @@ const I18N = {
 } as const;
 type Lang = keyof typeof I18N;
 
+// Status pill / dot classes — must mirror the canonical palette in utils/statusColors.
 const STATUS_COLOR: Record<string, string> = {
-  running:      'text-blue-400 bg-blue-500/15 border-blue-500/40',
-  stopped:      'text-pink-400 bg-pink-500/15 border-pink-500/40',
-  maintenance:  'text-amber-400 bg-amber-500/15 border-amber-500/40',
+  running:      'text-green-400 bg-green-500/15 border-green-500/40',
+  planned_stop: 'text-blue-400 bg-blue-500/15 border-blue-500/40',
+  stopped:      'text-red-400 bg-red-500/15 border-red-500/40',
+  maintenance:  'text-yellow-400 bg-yellow-500/15 border-yellow-500/40',
+  intervention: 'text-purple-400 bg-purple-500/15 border-purple-500/40',
+  unjustified:  'text-pink-400 bg-pink-500/15 border-pink-500/40',
   idle:         'text-gray-400 bg-gray-500/15 border-gray-500/30',
-  planned_stop: 'text-slate-400 bg-slate-500/15 border-slate-500/30',
 };
 const STATUS_DOT: Record<string, string> = {
-  running: 'bg-blue-400', stopped: 'bg-pink-400', maintenance: 'bg-amber-400',
-  idle: 'bg-gray-500', planned_stop: 'bg-slate-400',
+  running: 'bg-green-400', planned_stop: 'bg-blue-400', stopped: 'bg-red-400',
+  maintenance: 'bg-yellow-400', intervention: 'bg-purple-400', unjustified: 'bg-pink-400', idle: 'bg-gray-500',
 };
-const STATUS_BG: Record<string, string> = {
-  running: '#3b82f6', stopped: '#ec4899', maintenance: '#f59e0b',
-  idle: '#6b7280', planned_stop: '#94a3b8',
+const STATUS_BG = STATUS_HEX;
+
+// ── Timeline palette (by stop type) ──────────────────────────────────────────
+// running = green, planned = blue, unplanned = red, maintenance = yellow,
+// MES-detected stop not yet justified (no category) = pink.
+const RUNNING_COLOR = '#22c55e';
+const UNJUSTIFIED_COLOR = '#ec4899';
+const INTERVENTION_COLOR = '#a855f7'; // technician working (purple); maintenance wait stays yellow
+const STOP_TYPE_COLORS: Record<string, string> = {
+  planned: '#3b82f6', unplanned: '#ef4444', maintenance: '#eab308',
 };
+function stopColor(stop: MachineStopOut): string {
+  if (!stop.category) return UNJUSTIFIED_COLOR;
+  return STOP_TYPE_COLORS[stop.category.type] || stop.category.color || '#6b7280';
+}
+
+const SHIFT_LABELS: Record<string, { en: string; fr: string; es: string }> = {
+  morning:   { en: 'Day shift',       fr: 'Quart de jour',  es: 'Turno de día' },
+  afternoon: { en: 'Afternoon shift', fr: 'Quart de soir',  es: 'Turno de tarde' },
+  night:     { en: 'Night shift',     fr: 'Quart de nuit',  es: 'Turno de nuit' },
+  day:       { en: 'Day',             fr: 'Journée',        es: 'Día' },
+};
+
+export type ShiftWindow = { key: string; start: Date; end: Date };
+
+// Build the ordered list of concrete shift windows around `ref` (yesterday→tomorrow),
+// from the machine's shifts_config ({key:{start:"HH:MM",end:"HH:MM"}}). Overnight shifts
+// (end ≤ start) roll past midnight. Falls back to full-day windows when none configured.
+function buildShiftWindows(
+  shiftsConfig: Record<string, { start: string; end: string }> | null | undefined,
+  ref: Date,
+): ShiftWindow[] {
+  const defs = Object.entries(shiftsConfig || {})
+    .map(([key, c]) => {
+      const [sh, sm] = String(c?.start ?? '').split(':').map(Number);
+      const [eh, em] = String(c?.end ?? '').split(':').map(Number);
+      if ([sh, sm, eh, em].some((n) => Number.isNaN(n))) return null;
+      return { key, sh, sm, eh, em };
+    })
+    .filter(Boolean) as { key: string; sh: number; sm: number; eh: number; em: number }[];
+  const out: ShiftWindow[] = [];
+  for (let d = -1; d <= 1; d++) {
+    const base = new Date(ref); base.setHours(0, 0, 0, 0); base.setDate(base.getDate() + d);
+    if (!defs.length) {
+      const end = new Date(base); end.setDate(end.getDate() + 1);
+      out.push({ key: 'day', start: base, end });
+      continue;
+    }
+    for (const def of defs) {
+      const start = new Date(base); start.setHours(def.sh, def.sm, 0, 0);
+      const end = new Date(base); end.setHours(def.eh, def.em, 0, 0);
+      if (end.getTime() <= start.getTime()) end.setDate(end.getDate() + 1);
+      out.push({ key: def.key, start, end });
+    }
+  }
+  return out.sort((a, b) => a.start.getTime() - b.start.getTime());
+}
 
 function useTimer(sinceIso?: string | null): string {
   const [elapsed, setElapsed] = useState(0);
@@ -178,7 +276,7 @@ function AvailabilityGauge({ pct, target, color }: { pct: number; target: number
   const tx = cx + r * Math.cos(Math.PI + targetAngle);
   const ty = cy + r * Math.sin(Math.PI + targetAngle);
   return (
-    <svg viewBox="0 0 140 90" className="w-full">
+    <svg viewBox="0 0 140 90" className="w-full max-w-[360px] mx-auto block">
       <path d={`M ${cx - r},${cy} A ${r},${r} 0 0,1 ${cx + r},${cy}`}
         fill="none" stroke="#1e293b" strokeWidth="14" strokeLinecap="round" />
       <path d={`M ${cx - r},${cy} A ${r},${r} 0 0,1 ${cx + r},${cy}`}
@@ -199,44 +297,113 @@ function AvailabilityGauge({ pct, target, color }: { pct: number; target: number
   );
 }
 
-function StopTimeline({ stops, accentColor }: { stops: MachineStopOut[]; accentColor: string }) {
-  const now = Date.now();
-  const midnightMs = new Date().setHours(0, 0, 0, 0);
-  const dayMs = 24 * 3600 * 1000;
-  const elapsedMs = now - midnightMs;
+// Shift-aware machine-stops timeline. The axis is ONE shift window (start→end, from
+// the machine's shifts_config); it follows the clock and auto-switches shift. Running
+// time is green; stops are colored by type (planned=blue, unplanned=red, maintenance=
+// yellow, unjustified MES stop=pink). Supervisor+ can step to past shifts with ◀ ▶.
+function StopTimeline({
+  win, stops, nowMs, lang, canNavigate, atCurrent, canGoBack, onPrev, onNext, onSegmentClick, hint,
+}: {
+  win: ShiftWindow | null;
+  stops: MachineStopOut[];
+  nowMs: number;
+  lang: Lang;
+  canNavigate: boolean;
+  atCurrent: boolean;
+  canGoBack: boolean;
+  onPrev: () => void;
+  onNext: () => void;
+  onSegmentClick?: (stop: MachineStopOut) => void;
+  hint?: string;
+}) {
+  if (!win) return null;
+  const startMs = win.start.getTime();
+  const endMs = win.end.getTime();
+  const span = Math.max(1, endMs - startMs);
+  const locale = lang === 'fr' ? 'fr-CA' : lang === 'es' ? 'es-ES' : 'en-CA';
+  const pct = (ms: number) => Math.min(100, Math.max(0, ((ms - startMs) / span) * 100));
+
+  const elapsedEnd = atCurrent ? Math.min(endMs, nowMs) : endMs;
+  const runningPct = pct(elapsedEnd);
+  const nowInWindow = atCurrent && nowMs >= startMs && nowMs <= endMs;
+
+  const spanH = span / 3_600_000;
+  const stepH = spanH > 12 ? 3 : 1;
+  const ticks: { ms: number; label: string }[] = [];
+  const firstTick = new Date(win.start); firstTick.setMinutes(0, 0, 0);
+  if (firstTick.getTime() < startMs) firstTick.setHours(firstTick.getHours() + 1);
+  for (let tMs = firstTick.getTime(); tMs <= endMs; tMs += stepH * 3_600_000) {
+    ticks.push({ ms: tMs, label: new Date(tMs).toTimeString().slice(0, 5) });
+  }
+
+  const hm = (d: Date) => d.toTimeString().slice(0, 5);
+  const shiftName = (SHIFT_LABELS[win.key] || SHIFT_LABELS.day)[lang] ?? win.key;
+  const dateLabel = new Intl.DateTimeFormat(locale, { weekday: 'short', day: 'numeric', month: 'short' }).format(win.start);
+  const endHM = hm(win.end);
+  const rangeLabel = `${hm(win.start)} – ${endHM === '00:00' ? '24:00' : endHM}`;
+  const arrowBtn = 'w-7 h-7 flex items-center justify-center rounded-lg border border-white/10 text-gray-300 hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-not-allowed';
 
   return (
-    <div className="relative h-8 rounded-lg overflow-hidden bg-[#1e293b]">
-      {/* Running (blue) background up to now */}
-      <div
-        className="absolute left-0 top-0 h-full rounded-lg"
-        style={{ width: `${(elapsedMs / dayMs) * 100}%`, backgroundColor: STATUS_BG.running + '40' }}
-      />
-      {stops.map((stop) => {
-        const s = new Date(stop.started_at).getTime() - midnightMs;
-        const e = stop.ended_at ? new Date(stop.ended_at).getTime() - midnightMs : elapsedMs;
-        const left = Math.max(0, s / dayMs * 100);
-        const width = Math.max(0.3, (e - s) / dayMs * 100);
-        const color = stop.category?.color ?? '#ec4899';
-        return (
-          <div
-            key={stop.id}
-            className="absolute top-0 h-full"
-            style={{ left: `${left}%`, width: `${width}%`, backgroundColor: color }}
-            title={`${stop.category?.name ?? 'Stop'}: ${stop.started_at.slice(11, 16)} – ${stop.ended_at ? stop.ended_at.slice(11, 16) : 'ongoing'}`}
-          />
-        );
-      })}
-      {/* Time labels */}
-      {[0, 6, 12, 18, 24].map((h) => (
-        <span
-          key={h}
-          className="absolute top-1 text-[8px] text-gray-700 font-mono select-none"
-          style={{ left: `${(h / 24) * 100}%`, transform: 'translateX(-50%)' }}
-        >
-          {String(h).padStart(2, '0')}:00
-        </span>
-      ))}
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-bold text-white truncate">{shiftName}</p>
+          <p className="text-[11px] text-gray-500 truncate">{dateLabel} · {rangeLabel}</p>
+        </div>
+        {canNavigate && (
+          <div className="flex items-center gap-1 shrink-0">
+            <button onClick={onPrev} disabled={!canGoBack} className={arrowBtn}><ChevronLeft size={16} /></button>
+            <button onClick={onNext} disabled={atCurrent} className={arrowBtn}><ChevronRight size={16} /></button>
+          </div>
+        )}
+      </div>
+
+      <div className="relative h-14 rounded-lg overflow-hidden bg-[#1e293b]">
+        <div className="absolute left-0 top-0 h-full" style={{ width: `${runningPct}%`, backgroundColor: RUNNING_COLOR }} />
+        {stops.flatMap((stop) => {
+          const s = new Date(stop.started_at).getTime();
+          const e = stop.ended_at ? new Date(stop.ended_at).getTime() : elapsedEnd;
+          const clickable = !!onSegmentClick;
+          // A maintenance stop splits into the yellow "wait" (call→technician start)
+          // and the purple "intervention" (start→end). Everything else is one segment.
+          const ivStart = stop.intervention_started_at ? new Date(stop.intervention_started_at).getTime() : null;
+          const isMaint = stop.category?.type === 'maintenance';
+          const segs: { a: number; b: number; color: string }[] = [];
+          if (isMaint && ivStart && ivStart > s) {
+            segs.push({ a: s, b: Math.min(ivStart, e), color: stopColor(stop) });
+            if (ivStart < e) segs.push({ a: ivStart, b: e, color: INTERVENTION_COLOR });
+          } else if (isMaint && ivStart) {
+            segs.push({ a: s, b: e, color: INTERVENTION_COLOR });
+          } else {
+            segs.push({ a: s, b: e, color: stopColor(stop) });
+          }
+          const waitTxt = stop.wait_minutes != null ? ` · attente ${Math.round(stop.wait_minutes)} min` : '';
+          return segs.map((sg, idx) => {
+            const left = pct(sg.a);
+            const width = Math.max(0.6, pct(sg.b) - left);
+            return (
+              <div
+                key={`${stop.id}-${idx}`}
+                onClick={clickable ? () => onSegmentClick!(stop) : undefined}
+                className={`absolute top-0 h-full transition-[filter] ${clickable ? 'cursor-pointer hover:brightness-125 hover:ring-2 hover:ring-white hover:z-10' : ''}`}
+                style={{ left: `${left}%`, width: `${width}%`, backgroundColor: sg.color }}
+                title={`${stop.category?.name ?? 'Arrêt non justifié'}: ${hm(new Date(stop.started_at))}–${stop.ended_at ? hm(new Date(stop.ended_at)) : '…'}${waitTxt}${clickable ? ' — ' + (hint ?? '') : ''}`}
+              />
+            );
+          });
+        })}
+        {nowInWindow && (
+          <div className="absolute top-0 h-full w-0.5 bg-white/80" style={{ left: `${pct(nowMs)}%` }} />
+        )}
+      </div>
+
+      <div className="relative h-3">
+        {ticks.map((tk, i) => (
+          <span key={i} className="absolute top-0 text-[9px] text-gray-500 font-mono select-none" style={{ left: `${pct(tk.ms)}%`, transform: 'translateX(-50%)' }}>
+            {tk.label}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -249,6 +416,8 @@ export default function MachinePage() {
   const [machine, setMachine] = useState<MachinePageData | null>(null);
   const [mes, setMes]         = useState<MESDataExtended | null>(null);
   const [stops, setStops]     = useState<MachineStopOut[]>([]);
+  const [timelineStops, setTimelineStops] = useState<MachineStopOut[]>([]);
+  const [shiftOffset, setShiftOffset] = useState(0); // 0 = current shift; negative = past (supervisor nav)
   const [operators, setOps]   = useState<MachineOperatorOut[]>([]);
   const [categories, setCats] = useState<StopCategoryOut[]>([]);
   const [rejectCats, setRejectCats] = useState<RejectCategoryOut[]>([]);
@@ -268,6 +437,11 @@ export default function MachinePage() {
   const [showOpList, setShowOpList]   = useState(false);
   const [confirmedTicket, setConfirmedTicket] = useState<string | null>(null);
 
+  // Kiosk layout editor (supervisor+): drag/resize panels, saved per machine
+  const canEditLayout = useRole('supervisor', 'plant_manager', 'director', 'admin');
+  const [editLayout, setEditLayout] = useState(false);
+  const [layout, setLayout] = useState<Layout[]>(DEFAULT_KIOSK_LAYOUT);
+
   // Stop modal state
   const [showModal, setShowModal]           = useState(false);
   const [modalStep, setModalStep]           = useState<ModalStep>('categories');
@@ -277,6 +451,12 @@ export default function MachinePage() {
   const [currentStopId, setCurrentStopId]   = useState<string | null>(null);
   const [modalBusy, setModalBusy]           = useState(false);
   const [stopTime, setStopTime]             = useState<string>('');
+
+  // Reclassify-stop modal — click a stop on the timeline to change its cause.
+  // A stop never becomes "running" here (anti-cheat); maintenance only relabels (no ticket).
+  const [reclassTarget, setReclassTarget] = useState<MachineStopOut | null>(null);
+  const [reclassCat, setReclassCat]       = useState<StopCategoryOut | null>(null);
+  const [reclassBusy, setReclassBusy]     = useState(false);
 
   // Ticket close state
   const [closingTicketId, setClosingTicketId] = useState<string | null>(null);
@@ -292,6 +472,66 @@ export default function MachinePage() {
   const isRunning = machine?.current_status === 'running';
   const statusSince = isRunning ? machine?.last_start_at : machine?.last_stop_at;
   const timerStr = useTimer(statusSince);
+
+  // ── Shift-aware timeline window ────────────────────────────────────────────
+  // Re-derived each render (useTimer re-renders every 1s → the "now" marker moves
+  // and the window auto-advances when a shift boundary is crossed).
+  const nowMs = Date.now();
+  const shiftWins = buildShiftWindows(machine?.shifts_config, new Date(nowMs));
+  let curIdx = shiftWins.findIndex((w) => nowMs >= w.start.getTime() && nowMs < w.end.getTime());
+  if (curIdx < 0) {
+    for (let i = shiftWins.length - 1; i >= 0; i--) {
+      if (shiftWins[i].start.getTime() <= nowMs) { curIdx = i; break; }
+    }
+    if (curIdx < 0) curIdx = 0;
+  }
+  // Operators can't navigate; supervisors step backward only (no future shifts).
+  const offset = canEditLayout ? Math.min(0, Math.max(shiftOffset, -curIdx)) : 0;
+  const displayIdx = curIdx + offset;
+  const displayWin = shiftWins[displayIdx] ?? null;
+  const winStartISO = displayWin?.start.toISOString();
+  const winEndISO = displayWin?.end.toISOString();
+
+  // Fetch the displayed window's stops (refreshes every 30s; refetches on navigation).
+  useEffect(() => {
+    if (!slug || !winStartISO || !winEndISO) return;
+    let active = true;
+    const loadWin = () =>
+      fetchTodayStops(slug, { start: winStartISO, end: winEndISO })
+        .then((s) => { if (active) setTimelineStops(s); })
+        .catch(() => {});
+    loadWin();
+    const id = setInterval(loadWin, 30_000);
+    return () => { active = false; clearInterval(id); };
+  }, [slug, winStartISO, winEndISO]);
+
+  const doReclassify = async (catId: string | null, subId?: string | null) => {
+    if (!slug || !reclassTarget) return;
+    setReclassBusy(true);
+    try {
+      await reclassifyStop(slug, reclassTarget.id, { stop_category_id: catId, stop_subcategory_id: subId ?? null });
+      setReclassTarget(null);
+      setReclassCat(null);
+      if (winStartISO && winEndISO) {
+        fetchTodayStops(slug, { start: winStartISO, end: winEndISO }).then(setTimelineStops).catch(() => {});
+      }
+      fetchMachinePage(slug).then(setMachine).catch(() => {});
+    } finally {
+      setReclassBusy(false);
+    }
+  };
+
+  // Apply the machine's saved panel layout once it loads
+  useEffect(() => {
+    const saved = machine?.kiosk_layout;
+    if (Array.isArray(saved) && saved.length) setLayout(saved as Layout[]);
+  }, [machine?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const saveLayout = useCallback(async (next: Layout[]) => {
+    if (!machine) return;
+    const clean = next.map(({ i, x, y, w, h }) => ({ i, x, y, w, h }));
+    try { await api.patch(`/api/machines/${machine.id}`, { kiosk_layout: clean }); } catch { /* ignore */ }
+  }, [machine]);
 
   const load = useCallback(() => {
     if (!slug) return;
@@ -337,7 +577,11 @@ export default function MachinePage() {
 
   const handleCategorySelect = async (cat: StopCategoryOut) => {
     setSelectedCat(cat);
-    if (cat.type === 'unplanned' && cat.subcategories.length > 0) {
+    setSelectedSub(null);
+    // Any category with subcategories shows the sub-reason step first (planned included),
+    // so the chosen sub-reason is recorded. Only categories with NO subcategories skip
+    // straight to the confirm step.
+    if (cat.subcategories && cat.subcategories.length > 0) {
       setModalStep('subcategories');
     } else if (cat.type === 'maintenance') {
       setModalStep('confirm-maintenance');
@@ -348,7 +592,11 @@ export default function MachinePage() {
 
   const handleSubcategorySelect = (sub: StopSubcategoryOut) => {
     setSelectedSub(sub);
-    setModalStep('confirm-unplanned');
+    if (selectedCat?.type === 'maintenance' || sub.triggers_maintenance) {
+      setModalStep('confirm-maintenance');
+    } else {
+      setModalStep('confirm-unplanned');
+    }
   };
 
   const submitStop = async (triggersMaintenance = false) => {
@@ -364,6 +612,10 @@ export default function MachinePage() {
       setCurrentStopId(res.id);
       if (res.ticket_number) {
         setConfirmedTicket(res.ticket_number);
+        // "Chamar manutenção" is a stop reason: the stop already opened a ticket; now
+        // create the "waiting for mechanic" intervention (adopts that ticket) so the
+        // embedded MaintenancePanel drives the mechanic flow on this same kiosk.
+        try { await callMaintenance(machine.id, stopComment || undefined); } catch { /* non-blocking */ }
       }
       setShowModal(false);
       load();
@@ -483,11 +735,30 @@ export default function MachinePage() {
   const statusCls = STATUS_COLOR[status] || STATUS_COLOR.running;
   const statusDot = STATUS_DOT[status] || STATUS_DOT.running;
   const statusLabel = t[status as keyof typeof t] as string || status.toUpperCase();
+  const frameColor = statusColor(status); // kiosk frame follows machine status
   const openTickets = machine.open_tickets ?? [];
   const todayStopCount = stops.length;
 
   return (
     <div className="min-h-screen bg-[#0a0f1a] text-white flex flex-col" style={machine.custom_color ? { '--accent': machine.custom_color } as any : {}}>
+
+      {/* Status frame around the whole kiosk — color follows machine status
+          (green=running, blue=planned, red=unplanned, yellow=maintenance, pink=unjustified). */}
+      <div
+        className="pointer-events-none fixed inset-0 z-[55] transition-colors duration-500"
+        style={{ boxShadow: `inset 0 0 0 7px ${frameColor}` }}
+      />
+
+      {/* Edit-mode affordances for the draggable/resizable kiosk grid */}
+      <style>{`
+        .kiosk-grid.editing .react-grid-item { outline: 2px dashed rgba(96,165,250,0.6); outline-offset: -2px; border-radius: 1rem; }
+        .kiosk-grid.editing .react-grid-item > div:last-child { padding-top: 2.25rem; }
+        .kiosk-grid .react-resizable-handle { z-index: 50; touch-action: none; }
+        .kiosk-grid.editing .react-resizable-handle-se { width: 26px; height: 26px; background-image: none; border-right: 4px solid rgba(96,165,250,0.95); border-bottom: 4px solid rgba(96,165,250,0.95); border-bottom-right-radius: 6px; }
+        .kiosk-grid.editing .react-resizable-handle-e { width: 12px; background-image: none; border-right: 4px solid rgba(96,165,250,0.7); }
+        .kiosk-grid.editing .react-resizable-handle-s { height: 12px; background-image: none; border-bottom: 4px solid rgba(96,165,250,0.7); }
+        .kiosk-grid .react-grid-placeholder { background: rgba(59,130,246,0.35); border-radius: 1rem; }
+      `}</style>
 
       {/* ── Confirmed ticket banner ── */}
       {confirmedTicket && (
@@ -500,11 +771,50 @@ export default function MachinePage() {
         </div>
       )}
 
-      {/* ── Top row: Status + Job + Stop/Restart ── */}
-      <div className="grid grid-cols-3 gap-4 p-4 pb-2">
+      {/* ── Kiosk layout editor toolbar (supervisor+) ── */}
+      {canEditLayout && (
+        <div className="flex items-center justify-end gap-2 px-4 pt-3">
+          {editLayout ? (
+            <>
+              <button
+                onClick={() => setLayout(DEFAULT_KIOSK_LAYOUT)}
+                className="px-3 py-1.5 rounded-lg text-sm font-semibold text-gray-300 border border-white/10 hover:bg-white/[0.05]"
+              >{t.resetLayoutBtn}</button>
+              <button
+                onClick={() => { saveLayout(layout); setEditLayout(false); }}
+                className="px-4 py-1.5 rounded-lg text-sm font-bold text-white bg-blue-600 hover:bg-blue-500"
+              >{t.saveLayoutBtn}</button>
+            </>
+          ) : (
+            <button
+              onClick={() => setEditLayout(true)}
+              className="px-3 py-1.5 rounded-lg text-sm font-semibold text-blue-300 border border-blue-500/30 bg-blue-500/10 hover:bg-blue-500/20"
+            >{t.editLayoutBtn}</button>
+          )}
+        </div>
+      )}
 
-        {/* Panel 1 — Status + Timer + Operator */}
-        <div className="bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex flex-col gap-3">
+      {/* ── Editable kiosk panels (drag/resize when editing) ── */}
+      <RGL
+        className={`kiosk-grid${editLayout ? ' editing' : ''}`}
+        layout={layout}
+        cols={12}
+        rowHeight={28}
+        margin={[16, 16]}
+        containerPadding={[16, 16]}
+        isDraggable={editLayout}
+        isResizable={editLayout}
+        isBounded
+        draggableHandle=".kiosk-drag"
+        compactType="vertical"
+        resizeHandles={['se', 'e', 's']}
+        onLayoutChange={(l) => { if (editLayout) setLayout(l); }}
+      >
+
+        {/* Panel — Status + Timer + Operator */}
+        <div key="status" className="h-full relative">
+          {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {statusLabel}</div>}
+          <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex flex-col gap-3">
           <div className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border w-fit text-xl font-black ${statusCls}`}>
             <span className={`w-3 h-3 rounded-full animate-pulse ${statusDot}`} />
             {statusLabel}
@@ -551,11 +861,14 @@ export default function MachinePage() {
               {todayStopCount} {t.stopCount}
             </p>
           </div>
+          </div>
         </div>
 
-        {/* Panel 2 — Job number (if enabled) */}
+        {/* Panel — Job number (if enabled) */}
         {machine.show_job_number && (
-          <div className="bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex flex-col justify-between">
+          <div key="job" className="h-full relative">
+            {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.jobNumber}</div>}
+            <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex flex-col justify-between">
             <p className="text-sm font-semibold text-gray-500 uppercase tracking-widest">{t.jobNumber}</p>
             <div>
               <p className="text-3xl font-bold text-white mb-4">
@@ -579,10 +892,13 @@ export default function MachinePage() {
               </div>
             </div>
           </div>
+        </div>
         )}
 
-        {/* Panel 3 — STOP / RESTART */}
-        <div className="bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex flex-col items-center justify-center gap-4">
+        {/* Panel — STOP / RESTART */}
+        <div key="stop" className="h-full relative">
+          {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.newStop}</div>}
+          <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex flex-col items-center justify-center gap-4">
           {isRunning ? (
             <button
               onClick={openStopModal}
@@ -600,21 +916,35 @@ export default function MachinePage() {
               <span className="text-sm font-black tracking-wider">{t.restart}</span>
             </button>
           )}
+          </div>
         </div>
-      </div>
 
-      {/* ── Panel 4: Timeline ── */}
-      <div className="mx-4 bg-[#0d1421] rounded-2xl border border-white/[0.06] p-4">
-        <p className="text-xs text-gray-600 uppercase tracking-widest mb-3 font-semibold">{t.todayTimeline}</p>
-        <StopTimeline stops={stops} accentColor={accentColor} />
-      </div>
+        {/* Panel — Timeline */}
+        <div key="timeline" className="h-full relative">
+          {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.todayTimeline}</div>}
+          <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-4">
+            <p className="text-xs text-gray-600 uppercase tracking-widest mb-3 font-semibold">{t.todayTimeline}</p>
+            <StopTimeline
+              win={displayWin}
+              stops={timelineStops}
+              nowMs={nowMs}
+              lang={lang}
+              canNavigate={canEditLayout}
+              atCurrent={offset === 0}
+              canGoBack={displayIdx > 0}
+              onPrev={() => setShiftOffset((o) => o - 1)}
+              onNext={() => setShiftOffset((o) => Math.min(0, o + 1))}
+              onSegmentClick={editLayout ? undefined : (stop) => { setReclassTarget(stop); setReclassCat(null); }}
+              hint={t.changeCause}
+            />
+          </div>
+        </div>
 
-      {/* ── Middle row: Production chart + Availability ── */}
-      <div className={`grid gap-4 p-4 pb-2 ${machine.show_availability_gauge ? 'grid-cols-2' : 'grid-cols-1'}`}>
-
-        {/* Panel 5 — Production (mock) */}
+        {/* Panel — Production (mock) */}
         {machine.show_production_panel && (
-          <div className="bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 relative overflow-hidden">
+          <div key="production" className="h-full relative">
+            {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.production}</div>}
+            <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 relative overflow-hidden">
             <p className="text-xs text-gray-600 uppercase tracking-widest mb-2 font-semibold">{t.production}</p>
             <div className="flex gap-8">
               <div>
@@ -639,27 +969,30 @@ export default function MachinePage() {
                 <span className="text-xs text-gray-700 font-mono border border-gray-800 px-3 py-1.5 rounded-full">{t.mesComingSoon}</span>
               </div>
             )}
+            </div>
           </div>
         )}
 
-        {/* Panel 6 — Availability gauge */}
+        {/* Panel — Availability gauge */}
         {machine.show_availability_gauge && (
-          <div className="bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5">
+          <div key="gauge" className="h-full relative">
+            {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.availability}</div>}
+            <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5">
             <p className="text-xs text-gray-600 uppercase tracking-widest mb-1 font-semibold">{t.availability}</p>
             <AvailabilityGauge
               pct={mes?.availability_pct ?? 0}
               target={machine.target_availability_pct ?? 70}
               color={accentColor}
             />
+            </div>
           </div>
         )}
-      </div>
 
-      {/* ── Bottom row: Rejects ── */}
-      {machine.show_reject_panel && (
-        <div className="grid grid-cols-2 gap-4 px-4 pb-4">
-          {/* Panel 7 — Reject count */}
-          <div className="bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex items-center justify-between">
+        {/* Panel — Reject count */}
+        {machine.show_reject_panel && (
+          <div key="rejects" className="h-full relative">
+            {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.rejects}</div>}
+            <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex items-center justify-between">
             <div>
               <p className="text-xs text-gray-600 uppercase tracking-widest mb-1 font-semibold">{t.rejects}</p>
               <p className="text-6xl font-black text-red-400">{mes?.reject_count ?? 0}</p>
@@ -670,15 +1003,16 @@ export default function MachinePage() {
                 className="w-16 h-16 rounded-full bg-red-600/20 hover:bg-red-600/30 border-2 border-red-500/40 text-red-400 text-3xl font-black transition-all active:scale-90"
               >+1</button>
             </div>
+            </div>
           </div>
+        )}
 
-          {/* Active tickets (if any) */}
-          <div className="bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 overflow-y-auto max-h-48">
-            {openTickets.length === 0 ? (
-              <div className="h-full flex items-center justify-center">
-                <p className="text-gray-700 text-sm">No active maintenance</p>
-              </div>
-            ) : (
+        {/* Panel — Active maintenance (full mechanic intervention flow) */}
+        <div key="maintenance" className="h-full relative">
+          {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ Maintenance</div>}
+          <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5">
+            <MaintenancePanel machineId={machine.id} embedded />
+            {false && (
               <div className="space-y-2">
                 <p className="text-xs text-gray-600 uppercase tracking-widest font-semibold mb-2">{t.activeTickets}</p>
                 {openTickets.map((ticket) => (
@@ -742,7 +1076,7 @@ export default function MachinePage() {
             )}
           </div>
         </div>
-      )}
+      </RGL>
 
       {/* ── Reject Category Modal ── */}
       {showRejectModal && (
@@ -752,7 +1086,7 @@ export default function MachinePage() {
               <h2 className="text-2xl font-black text-white">{t.rejects}</h2>
               <p className="text-gray-400 text-base mt-1">{machine?.display_name || machine?.name}</p>
             </div>
-            {rejectStep !== 'categories' && (
+            {rejectStep !== 'categories' && rejectCats.length > 0 && (
               <button onClick={() => setRejectStep(rejectStep === 'quantity' && selectedRejectSub ? 'subcategories' : 'categories')}
                 className="flex items-center gap-2 text-gray-400 hover:text-white text-base font-medium">
                 <ChevronLeft size={20} /> {t.backToMachines}
@@ -804,7 +1138,7 @@ export default function MachinePage() {
                   </div>
                 )}
                 <div>
-                  <label className="block text-sm text-gray-500 uppercase tracking-wide mb-2">Quantity</label>
+                  <label className="block text-sm text-gray-500 uppercase tracking-wide mb-2">{t.quantity}</label>
                   <div className="flex items-center gap-4 justify-center">
                     <button onClick={() => setRejectQty((q) => Math.max(1, q - 1))}
                       className="w-14 h-14 rounded-full bg-gray-700 hover:bg-gray-600 text-white text-2xl font-black transition-all active:scale-90">−</button>
@@ -823,7 +1157,7 @@ export default function MachinePage() {
                 )}
                 <button onClick={submitReject} disabled={rejectBusy}
                   className="w-full py-5 rounded-2xl font-black text-xl text-white bg-red-600 hover:bg-red-500 transition-all active:scale-95 disabled:opacity-50">
-                  {rejectBusy ? '...' : `${t.confirmStop} — ${rejectQty}`}
+                  {rejectBusy ? '...' : `${t.confirmReject} — ${rejectQty}`}
                 </button>
               </div>
             )}
@@ -973,6 +1307,82 @@ export default function MachinePage() {
                 >
                   {modalBusy ? '...' : t.confirmStop}
                 </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Reclassify-stop modal — click a timeline segment to change its cause.
+          Only the cause changes; a stop is never turned back into running time. ── */}
+      {reclassTarget && (
+        <div className="fixed inset-0 z-50 bg-black/90 flex flex-col">
+          <div className="flex items-center justify-between px-8 py-6 border-b border-white/[0.06]">
+            <div>
+              <h2 className="text-2xl font-black text-white">{t.changeCause}</h2>
+              <p className="text-gray-400 text-base mt-1">
+                {new Date(reclassTarget.started_at).toTimeString().slice(0, 5)}
+                {'–'}
+                {reclassTarget.ended_at ? new Date(reclassTarget.ended_at).toTimeString().slice(0, 5) : '…'}
+                {reclassTarget.category?.name ? ` · ${reclassTarget.category.name}` : ''}
+              </p>
+            </div>
+            {reclassCat && (
+              <button onClick={() => setReclassCat(null)} className="flex items-center gap-2 text-gray-400 hover:text-white text-base font-medium">
+                <ChevronLeft size={20} /> {t.backToMachines}
+              </button>
+            )}
+            <button onClick={() => { setReclassTarget(null); setReclassCat(null); }}>
+              <X size={28} className="text-gray-600 hover:text-gray-300" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-8 py-8">
+            {!reclassCat && (
+              <div className="space-y-6">
+                <p className="text-xl text-gray-400 font-semibold">{t.selectCategory}</p>
+                <div className="flex flex-wrap gap-6 justify-center">
+                  {categories.map((cat) => (
+                    <button
+                      key={cat.id}
+                      disabled={reclassBusy}
+                      onClick={() => { if (cat.subcategories && cat.subcategories.length) setReclassCat(cat); else doReclassify(cat.id); }}
+                      className="flex flex-col items-center gap-3 p-6 rounded-3xl border-2 transition-all active:scale-95 hover:scale-105 disabled:opacity-50"
+                      style={{ borderColor: cat.color + '80', backgroundColor: cat.color + '15', minWidth: '140px', minHeight: '140px' }}
+                    >
+                      <IconRenderer icon={cat.icon} color={cat.color} size={36} />
+                      <span className="text-base font-bold text-white text-center leading-snug">{cat.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {reclassCat && (
+              <div className="space-y-6">
+                <p className="text-xl text-gray-400 font-semibold">{reclassCat.name} — {t.selectSubcategory}</p>
+                <div className="flex flex-wrap gap-6 justify-center">
+                  {reclassCat.subcategories.map((sub: StopSubcategoryOut) => (
+                    <button
+                      key={sub.id}
+                      disabled={reclassBusy}
+                      onClick={() => doReclassify(reclassCat.id, sub.id)}
+                      className="flex flex-col items-center gap-3 p-6 rounded-3xl border-2 border-white/10 bg-white/[0.04] hover:bg-white/[0.08] transition-all active:scale-95 hover:scale-105 disabled:opacity-50"
+                      style={{ minWidth: '140px', minHeight: '140px' }}
+                    >
+                      <IconRenderer icon={sub.icon || 'wrench'} color={sub.color || '#6b7280'} size={36} />
+                      <span className="text-base font-bold text-white text-center">{sub.name}</span>
+                    </button>
+                  ))}
+                  <button
+                    disabled={reclassBusy}
+                    onClick={() => doReclassify(reclassCat.id, null)}
+                    className="flex flex-col items-center justify-center gap-3 p-6 rounded-3xl border-2 border-white/10 bg-white/[0.02] hover:bg-white/[0.06] transition-all active:scale-95 disabled:opacity-50"
+                    style={{ minWidth: '140px', minHeight: '140px' }}
+                  >
+                    <span className="text-base font-bold text-gray-300 text-center">{t.noSubcategory}</span>
+                  </button>
+                </div>
               </div>
             )}
           </div>

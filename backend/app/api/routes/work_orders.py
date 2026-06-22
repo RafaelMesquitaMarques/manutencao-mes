@@ -563,6 +563,7 @@ async def update_work_order(
         elif new_status == WorkOrderStatus.completed and not wo.completed_at:
             await _enforce_checklist_for_completion(wo, db)
             update_data["completed_at"] = datetime.now(timezone.utc)
+            wo.approval_status = "pending"   # completed work must be signed off in WO Approval
         elif new_status == WorkOrderStatus.on_hold:
             await _close_open_labor_records(work_order_id, db)
 
@@ -774,6 +775,7 @@ async def complete_work_order(
     now = datetime.now(timezone.utc)
     wo.status = WorkOrderStatus.completed
     wo.completed_at = now
+    wo.approval_status = "pending"   # completed work must be signed off in WO Approval
     if root_cause:
         wo.root_cause = root_cause
     if solution_applied:

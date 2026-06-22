@@ -5,7 +5,7 @@ import {
   LayoutDashboard, ClipboardList, Wrench, Users, BarChart3,
   Settings, Factory, CalendarDays, CalendarCheck, CalendarClock, Bell, Ticket,
   Activity, Shield, Briefcase, X, UserCog, Package, Building2, ShoppingCart,
-  ChevronsLeft, ChevronsRight, Brain, Map as MapIcon, type LucideIcon,
+  ChevronsLeft, ChevronsRight, Brain, Map as MapIcon, ClipboardCheck, type LucideIcon,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import type { UserRole } from '../../types';
@@ -51,7 +51,7 @@ const CORE_GROUPS: NavGroup[] = [
       { to: '/maintenance/dashboard',      icon: Activity,     key: 'maintenanceDashboard', roles: TECH_UP },
       { to: '/maintenance/supervisor',     icon: Shield,       key: 'supervisorView',       roles: SUPERVISOR_UP },
       { to: '/factory-map',                icon: MapIcon,      key: 'factoryMap',           roles: SUPERVISOR_UP },
-      { to: '/maintenance/parts-approval', icon: Package,      key: 'partsApproval',        roles: SUPERVISOR_UP },
+      { to: '/maintenance/wo-approval',    icon: ClipboardCheck, key: 'woApproval',          roles: SUPERVISOR_UP },
       { to: '/schedule',                icon: CalendarDays, key: 'schedule',             roles: TECH_UP },
       { to: '/pm-calendar',             icon: CalendarCheck, key: 'pmCalendar',          roles: TECH_UP },
       { to: '/maintenance/plans',       icon: CalendarClock, key: 'maintenancePlans',    roles: TECH_UP },
@@ -144,8 +144,19 @@ const Sidebar = ({ onClose }: SidebarProps) => {
             className={`object-contain ${collapsed ? 'h-9 w-auto' : 'h-11 w-auto'}`}
           />
           {!collapsed && (
-            <span className="font-brand text-lg font-bold uppercase tracking-[0.16em] text-white truncate">
-              K<span className="bg-gradient-to-r from-cyan-400 via-blue-500 to-indigo-500 bg-clip-text text-transparent">AI</span>ZO
+            <span className="font-brand text-xl font-semibold uppercase tracking-[0.14em] text-white truncate">
+              K
+              <svg viewBox="0 0 80 100" aria-hidden="true" className="inline-block h-[0.82em] w-auto align-[-0.08em] mx-[0.06em]">
+                <defs>
+                  <linearGradient id="kaizoA-sidebar" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0" stopColor="#22d3ee" />
+                    <stop offset="0.55" stopColor="#3b82f6" />
+                    <stop offset="1" stopColor="#6366f1" />
+                  </linearGradient>
+                </defs>
+                <path d="M37 11 Q40 2 43 11 L76 96 L49 96 L40 54 L31 96 L4 96 Z" fill="url(#kaizoA-sidebar)" />
+              </svg>
+              <span className="bg-gradient-to-r from-cyan-400 via-blue-500 to-indigo-500 bg-clip-text text-transparent">I</span>ZO
             </span>
           )}
         </div>

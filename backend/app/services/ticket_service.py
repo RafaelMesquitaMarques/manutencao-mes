@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 
 from app.models.models import (
     MaintenanceTicket, TicketComment, TicketStatus, Machine,
@@ -163,13 +163,36 @@ class TicketService:
     async def create_ticket(self, data: TicketCreate, created_by: str = "") -> MaintenanceTicket:
         machine = await self.db.get(Machine, data.machine_id)
         if not machine:
-            # Equipment IDs are accepted directly — auto-provision a Machine row if needed
+            # The ticket form sends an *equipment* id. A Machine usually already
+            # exists for it (auto-synced with its own PK + equipment_id link), so
+            # look it up by equipment_id or code before creating — otherwise the
+            # insert collides on the unique machines.code constraint.
             equipment = await self.db.get(Equipment, data.machine_id)
             if not equipment:
                 raise ValueError("Machine not found")
-            machine = Machine(id=equipment.id, name=equipment.name, code=equipment.code, is_active=True)
-            self.db.add(machine)
-            await self.db.flush()
+            machine = (
+                await self.db.execute(
+                    select(Machine).where(
+                        or_(
+                            Machine.equipment_id == equipment.id,
+                            Machine.code == equipment.code,
+                        )
+                    )
+                )
+            ).scalars().first()
+            if machine:
+                # Point the ticket at the real machine row
+                data.machine_id = machine.id
+            else:
+                machine = Machine(
+                    id=equipment.id,
+                    name=equipment.name,
+                    code=equipment.code,
+                    equipment_id=equipment.id,
+                    is_active=True,
+                )
+                self.db.add(machine)
+                await self.db.flush()
 
         # ── Duplicate guard ─────────────────────────────────────────────────────
         # If an open ticket already exists for this machine, warn instead of

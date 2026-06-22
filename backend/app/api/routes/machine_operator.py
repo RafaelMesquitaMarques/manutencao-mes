@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.models.models import (
-    Equipment, Machine, MachineIntervention, MaintenanceTicket,
+    Equipment, Machine, MachineStatus, MachineIntervention, MaintenanceTicket,
     TicketStatus, AlertPriority, MaintenanceAlert, AlertStatus, AlertProblemType,
     InterventionType, SafetyChecklist, SafetyChecklistItem,
     InterventionChecklistResponse, InterventionPart, StockItem, User,
@@ -181,6 +181,7 @@ async def call_maintenance(machine_id: str, body: CallBody, db: AsyncSession = D
             operator_note=body.operator_note,
         )
         db.add(intervention)
+        machine.current_status = MachineStatus.maintenance   # kiosk/twin reflect "in maintenance"
         await db.commit()
         await db.refresh(intervention)
         return {
@@ -225,6 +226,7 @@ async def call_maintenance(machine_id: str, body: CallBody, db: AsyncSession = D
         operator_note=body.operator_note,
     )
     db.add(intervention)
+    machine.current_status = MachineStatus.maintenance   # kiosk/twin reflect "in maintenance"
 
     from app.services.notification_service import NotificationService
     await NotificationService(db).notify_ticket_opened(ticket, machine.name)
@@ -256,6 +258,10 @@ async def start_intervention(machine_id: str, body: StartBody, db: AsyncSession 
     if intervention.called_at and intervention.started_at:
         delta = intervention.started_at - intervention.called_at
         intervention.response_time_minutes = round(delta.total_seconds() / 60, 2)
+
+    # Technician is now working on the machine → status/color goes purple
+    # (was yellow/maintenance during the wait). Frame, 3D mats and 2D nodes follow.
+    machine.current_status = MachineStatus.intervention
 
     if intervention.ticket_id:
         ticket = await db.get(MaintenanceTicket, intervention.ticket_id)
@@ -350,6 +356,8 @@ async def complete_intervention(machine_id: str, body: CompleteBody, db: AsyncSe
             await sync_alert_from_ticket(ticket, db)
 
     machine.last_maintenance_at = now
+    if machine.current_status in (MachineStatus.maintenance, MachineStatus.intervention):
+        machine.current_status = MachineStatus.running     # intervention done → back in production
     await db.commit()
     await db.refresh(intervention)
     return {

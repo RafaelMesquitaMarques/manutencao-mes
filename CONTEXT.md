@@ -2,8 +2,14 @@
 
 > **Purpose of this file:** Single source of truth for AI coding sessions and onboarding.
 > Read this before touching any module. Keep it updated as architecture evolves.
-> **Last full sync: 2026-06-20.** Sections 0, 3, 5, 6, 9, 14 reflect the current code; older
+> **Last full sync: 2026-06-21.** Sections 0, 3, 5, 6, 9, 14 reflect the current code; older
 > sections may still describe the original 06-06 baseline — trust the code when they disagree.
+>
+> ⚠️ **Project location (2026-06-21):** the repo now lives at **`C:\KAIZO`** (moved off the
+> network drive `Z:\manutencao-mes\manutencao-mes`, whose per-folder quota filled up). **Build and
+> run Docker from `C:\KAIZO`.** The Compose project name is pinned (`name: manutencao-mes` in
+> `docker-compose.yml`) so the existing data volumes (`manutencao-mes_db_data`, etc.) are reused —
+> do NOT run compose from a differently-named folder or it creates empty volumes. See Section 4.
 
 ---
 
@@ -16,13 +22,14 @@ Since the 06-06 baseline below, the codebase roughly **tripled**: ~70 ORM tables
 
 **Modules live today (beyond CMMS core):**
 - **Maintenance flow** — Alerts ↔ Tickets ↔ Work Orders fully linked; alert auto-created with each ticket; SLA escalation engine with configurable `escalation_settings`/`escalation_contacts`.
-- **Machine / MES operator** — per-machine kiosk page (`/machine/:id`), stop justification (stop categories/subcategories), reject logging, production logs, OF/job orders, MES panel.
+- **WO Approval** (formerly "Parts Approval") — supervisor/director signs off **every completed work order** (floor `MachineIntervention` + office `work_orders`), work done + parts, in one action. Queue de-duplicates the intervention/WO twin; `/api/wo-approval`, page `/maintenance/wo-approval`.
+- **Machine / MES operator** — **unified per-machine kiosk** at `/machines/:slug` (the old `/machine/:id` intervention page now redirects here; `MachineOperatorPage`'s flow is embedded as `<MaintenancePanel embedded>`). One screen for operator + mechanic: status/timer, OF/job, stop justification (stop categories/subcategories, "call maintenance" is a stop reason), reject logging, production, availability gauge, and the full intervention flow. **Supervisor+ can drag/resize the panels** ("Éditer la disposition" → `react-grid-layout`, saved per machine in `machines.kiosk_layout`).
 - **Intervention workflow** — intervention types per machine, safety checklist on start, parts consumed during intervention, supervisor approval, voice transcription on closing note.
 - **PM / TPM** — PM templates (reusable SOPs with photo/video/link steps), recurring plans → `plan_occurrences`, PM calendar, PM dashboard. Driven by `pm_service` + `_pm_loop` cron.
-- **Inventory** — full catalog + `inventory_movements` (stock deduction on intervention), low-stock, parts approval flow.
+- **Inventory** — full catalog + `inventory_movements` (stock deduction on intervention), low-stock; parts sign-off folded into WO Approval (above).
 - **Suppliers & Purchasing** — suppliers + purchase orders (`/api/suppliers`, `/api/supplier-orders`).
-- **Factory Map / digital twin base** — React Flow 2D editable map of production assets with live status (`/factory-map`), `factory_zones` + `map_props`, asset positions on `equipment`.
-- **Robot Cells** — read-only telemetry for FANUC CRX cobots (`robot_cells` + states/samples/alarms), ingest service + simulator.
+- **Factory Map / digital twin base** — React Flow 2D + Three.js 3D editable map of production assets with live status (`/factory-map`), `factory_zones` + `map_props`, asset positions on `equipment`. Per-machine card shows live **OEE / Availability / Parts-per-hour / Quality / Status / Operator** (from `/api/kpis/summary` + `machine_production_logs`).
+- **Robot Cells** — read-only telemetry for FANUC CRX cobots (`robot_cells` + states/samples/alarms), ingest service + simulator. 16 placed cobots registered as cells with per-cell `ingest_token` (transport/auth to finalize with integrator).
 - **Intelligence (Mirai)** — tool-use AI agent (`/api/intelligence`, anthropic SDK opus-4-8) + `intelligence_ai`/`intelligence_calculator`; AI insights/recommendations/risk-score tables; `_intelligence_cron`.
 - **Identity & access** — user invitations, password reset / forced first-login change, **permissions enforcement** (allow-list override or role default; backend `resource_guard`, frontend `RequireView`/`can()`).
 - **Reports** — `/api/reports`, machine reports page.
@@ -174,8 +181,12 @@ manutencao-mes/
 
 ## 4. Running the Stack
 
+> **Run all of this from `C:\KAIZO`** (the repo's new home — see header note). `docker-compose.yml`
+> pins `name: manutencao-mes`, so containers stay `mes_*` and volumes stay `manutencao-mes_*`
+> regardless of the folder name. The old `Z:\manutencao-mes\manutencao-mes` copy is stale — ignore it.
+
 ```bash
-# Start everything
+# Start everything (from C:\KAIZO)
 docker compose up -d
 
 # Rebuild one service after code changes
@@ -184,6 +195,8 @@ docker compose up --build --no-deps -d backend
 
 # IMPORTANT: use `up -d`, NOT `restart` — restart reuses old container config
 # (command: overrides in docker-compose.yml are only picked up on `up`)
+# After recreating mes_frontend, ALSO restart nginx (stale upstream IP → 502):
+docker compose restart nginx
 
 # Logs
 docker compose logs -f backend
@@ -443,7 +456,7 @@ All registered under `/api`. Guarded routers use `resource_guard(<resource>)`:
 /api/reports         /api/escalation        /api/technicians*      /api/machines
 /api/factory-map     /api/robot-cells       /api/stop-categories   /api/job-orders
 /api/suppliers       /api/supplier-orders   /api/machine-operator  /api/intervention-types
-/api/safety-checklist  /api/parts-approval  /api/pm-templates      /api/intelligence
+/api/safety-checklist  /api/wo-approval     /api/pm-templates      /api/intelligence
 /api/uploads (→ /api/media)
 ```
 *= permission-guarded: `equipment`, `work_orders`, `technicians`.
@@ -701,7 +714,8 @@ MQTT_PORT=1883
 | Issue | File | Fix |
 |---|---|---|
 | DB needs reset after English column rename | Run: `docker exec mes_db psql -U mesadmin -d manutencao -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"` then rebuild backend + seed | Run this manually — auto-mode blocked it |
-| `docker-compose.yml` has deprecated `version:` key | `docker-compose.yml` line 1 | Remove `version: "3.9"` line |
+| `docker-compose.yml` deprecated `version:` key | `docker-compose.yml` | ✅ Done — replaced with `name: manutencao-mes` (pins Compose project so volumes are reused after the move to `C:\KAIZO`). |
+| `process is not defined` breaks any `react-grid-layout`/`react-draggable` drag & resize under Vite | `frontend/index.html` | ✅ Fixed — `<script>window.process = window.process \|\| { env: {} };</script>` in `<head>`. RGL's debug `log()` reads `process.env.*`, which throws in the browser (Vite has no `process`) and silently aborts every drag/resize. Keep this shim. NOTE: synthetic `dispatchEvent` mouse events do NOT reliably drive react-draggable — verify drag with real input or by calling the element's `onMouseDown` prop directly. |
 
 ---
 
@@ -804,3 +818,148 @@ Roughly tripled the codebase. Key feature commits, newest first:
 
 > This entry is reconstructed from commit messages + current code, not a live session log.
 > When in doubt, the code in `backend/app/models/models.py` and `frontend/src/App.tsx` is authoritative.
+
+### Session 2026-06-21 — WO Approval, ticket fix, cobot cells, OEE card, brand font
+
+**Completed:**
+- **Brand wordmark** — KAIZO switched from Saira SemiCondensed to **Oxanium** (`font-brand` token in `tailwind.config.js` + Google Fonts import); the "A" is a gradient peaked SVG glyph (Sidebar + Login).
+- **Parts Approval → WO Approval** — supervisor/director now approves the whole completed work order (work done + parts), across **both** sources: floor `MachineIntervention` and office `work_orders`.
+  - Approval columns (`approval_status`/`approved_by_id`/`approved_at`/`approval_note`/`rejection_reason`) added to **both** `machine_interventions` and `work_orders` (migration in `main.py _run_migrations`).
+  - Completion sets `approval_status='pending'` (intervention complete; `work_orders` complete + PATCH→completed paths).
+  - Queue = completed+pending interventions ∪ work_orders, **de-duplicated** by `ticket_id` (machine-linked WO spawns an intervention twin → shown once). Intervention approve consumes pending parts' stock; WO approve is a pure sign-off (`wo_parts` already deducted on add).
+  - **One-time grandfather** guarded by new marker table `_kaizo_migrations` (key `grandfather_approval_2026_06_21`) — marked all already-completed interventions + ~7944 imported WOs as `approved` so the queue isn't flooded; the marker prevents re-approving genuinely-pending items on reboot.
+  - Backend `api/routes/wo_approval.py` (replaced `parts_approval.py`); frontend `pages/Supervisor/WOApproval.tsx` at `/maintenance/wo-approval` (legacy `/parts-approval` still routes there); nav `nav.woApproval` + `woApproval.*` i18n (en/fr/es).
+- **Ticket creation bug fixed** — `ticket_service.create_ticket` received an *equipment* id, missed the auto-synced Machine (own PK + `equipment_id` link) and tried to insert a Machine with a duplicate `code` (`machines_code_key` violation → "Error creating ticket"). Now resolves the existing Machine by `equipment_id`/`code` before creating and repoints `data.machine_id`.
+- **Robot cells** — the **16 cobots already placed on the factory map** registered as `robot_cells` via `POST /api/robot-cells/`, each with a per-cell `ingest_token` (deliverable for the integrator). No telemetry injected; end-to-end verified then cleaned (16 cells, 0 states/samples). Real IP/model/line + 2 unplaced cobots pending.
+- **Factory-map machine card** — replaced Open WOs/MTTR/PM/Cost with **OEE / Availability / Parts-per-hour / Quality / Status / Operator** (3D `KpiBillboard` + 2D panel). `/api/kpis/summary?machine_id=` gained `parts_per_hour`, `quality_pct`, `oee_pct`, `current_status`, `operator` (OEE = Avail×Perf×Qual from `machine_production_logs`; reads 0 until the plant feeds production, then lights up automatically).
+
+### Session 2026-06-21 (cont.) — Unified kiosk + draggable layout, the `process` Vite bug, project moved to C:\KAIZO
+
+**Unified operator kiosk.** Merged the two operator pages into one: `/machines/:slug` (`MachinePage`) is
+now the single kiosk; the mechanic flow from `MachineOperatorPage` is exported as
+`MaintenancePanel({ machineId, embedded })` and embedded. `/machine/:id` redirects to `/machines/:id`
+(backend resolves a machine by id **or** slug). "Call maintenance" became a stop-justification reason.
+
+**Per-machine layout editor.** Supervisor+ ("Éditer la disposition") can drag/resize the 8 kiosk panels
+(status, job, stop, timeline, production, gauge, rejects, maintenance) via **react-grid-layout**
+(`RGL = WidthProvider(GridLayout)`, 12 cols, `compactType="vertical"`, `isBounded`, full-width
+`.kiosk-drag` bar handle, enlarged se/e/s resize handles). Saved per machine in **`machines.kiosk_layout`**
+(JSON column; migration in `main.py`; `MachinePageData.kiosk_layout` + `MachinePatch.kiosk_layout`;
+persisted via `PATCH /api/machines/{id}`). No saved layout → `DEFAULT_KIOSK_LAYOUT`.
+
+**THE bug that made drag/resize do nothing (now fixed):** `ReferenceError: process is not defined`.
+react-grid-layout/react-draggable's internal `log()` reads `process.env.*`; under Vite `process` is
+undefined, so `handleDragStart` threw at the start of every drag/resize and silently aborted — drag AND
+resize dead, everything else rendering fine, no obvious console error during normal use. **Fix:**
+`<script>window.process = window.process || { env: {} };</script>` in `frontend/index.html <head>`.
+Verified live (real kiosk panel dragged; nginx serves the shim). Diagnosed with the preview-browser MCP
+running a local Vite against the Docker backend. (See Section 13.)
+
+**Smaller kiosk fixes:** reject modal now says **CONFIRMER LE REJET** (was "…L'ARRÊT") with a working
+Retour and a `t.quantity` label; a machine in intervention shows **maintenance** instead of "EN MARCHE"
+(`call_maintenance` sets `current_status=maintenance`, `complete_intervention` resets to `running`, and
+`_machine_to_page_data` forces effective status to maintenance whenever an open ticket exists — covers
+office-created tickets too).
+
+**Project moved Z: → C:\KAIZO.** The network drive `Z:` hit a per-folder quota (writes failed `ENOSPC`
+despite TBs of raw free space; trigger was a partial local `node_modules` I created, since removed).
+Copied the repo to **`C:\KAIZO`** (no `node_modules`; added `frontend/.dockerignore`). Pinned
+**`name: manutencao-mes`** in `docker-compose.yml` (removed obsolete `version:`) so the same containers
+and data volumes are reused — verified all 8 `mes_*` containers + volumes intact. **Build/run from
+`C:\KAIZO` from now on.**
+
+### Session 2026-06-21 (cont.) — Shift-aware stop timeline with type colors
+
+Rebuilt the kiosk's **CHRONOLOGIE** panel (`StopTimeline` in `MachinePage.tsx`) to match the old vendor's
+shift view:
+- **Colors are by stop `type`** (so they're always consistent): running=green `#22c55e`, planned=blue
+  `#3b82f6`, unplanned=red `#ef4444`, maintenance=yellow `#eab308`. A stop with **no category yet**
+  (MES-detected, not justified) = **pink `#ec4899`**. Helper `stopColor()` + `STOP_TYPE_COLORS`.
+  Backend migration (`main.py`) also forces the **global** stop categories' stored `color` to match by
+  type, so the config page + stop modal agree (per-machine custom categories keep their color).
+- **Axis = ONE shift window** (start→end) from the machine's `shifts_config` (Configuration → Work
+  Shifts). It follows the clock (live "now" marker, green fill over elapsed time) and auto-switches when
+  a shift boundary passes. `buildShiftWindows()` builds yesterday→tomorrow windows; overnight shifts roll
+  past midnight; falls back to a full-day 00:00–24:00 "Journée" window when `shifts_config` is empty.
+  Header shows shift name + date + range; hourly ticks (3-h step when span > 12 h).
+- **Navigation ◀ ▶ is supervisor-only** (`useRole`); operators see only the current shift live and can't
+  go back. Can step to past shifts/days; "next" is disabled at the current shift (no future).
+- Plumbing: `MachinePageData` now returns `shifts_config`; `GET /api/machines/{ref}/stops/today` accepts
+  optional `start`/`end` ISO params (overlap query) for the navigation fetch; `fetchTodayStops(ref, range?)`.
+- Verified end-to-end in a headless browser (local Vite → Docker backend): injected one stop of each type
+  + one with no category → bar showed green/blue/red/yellow/**pink** correctly, now-marker, ticks,
+  shift header, and ◀ ▶ stepping days; test data cleaned up after.
+
+### Session 2026-06-21 (cont.) — Unified status palette everywhere
+
+The status palette now has **one source of truth**: `frontend/src/utils/statusColors.ts`
+(`STATUS_HEX` + `statusColor()` + `STATUS_LABEL`). Same colors wherever color reflects machine status:
+- **3D map** (`Factory3D.tsx`) floor mats / blocks / beacons / KPI card, and **2D map**
+  (`FactoryMap.tsx`) nodes + legend + minimap — both now `import { STATUS_HEX as STATUS_COLORS }`
+  (were local maps with maintenance/planned both amber). Legend no longer hides `planned_stop`.
+- **Kiosk** (`MachinePage.tsx`): status pill + dot rewritten to the palette, and a **colored frame
+  around the whole page** (`fixed inset-0`, `box-shadow: inset 0 0 0 7px <statusColor>`, z-55,
+  pointer-events-none) that follows `current_status`. Accent (gauge, buttons) also follows status.
+- Palette: running=green `#22c55e`, planned_stop=blue `#3b82f6`, stopped=red `#ef4444`,
+  maintenance=yellow `#eab308`, **unjustified=pink `#ec4899`**, idle=gray `#6b7280`.
+- **Backend now sets `current_status` by stop type** (`machines.py` create-stop): maintenance→
+  `maintenance`, planned→`planned_stop`, unplanned→`stopped`, **no category → `unjustified`** (pink).
+  New `MachineStatus.unjustified` enum value (VARCHAR col, no DB migration). The "unjustified" state is
+  the hook for the future MES auto-stop feed (operator then justifies → status flips to the chosen type).
+- Verified in-browser: kiosk frame+pill+accent green when running, and **pink** when status set to
+  `unjustified` (pill "NON JUSTIFIÉ"). Machine restored to running after.
+
+### Session 2026-06-22 — Clickable timeline: reclassify a stop's cause
+
+The kiosk timeline bar is now **thicker** (`h-14`, ~56px; default `timeline` panel height bumped to 6) and
+its **stop segments are clickable** to change the stop's cause:
+- Click a segment → "Changer la cause" modal (reuses the stop categories → subcategories grid). Picking a
+  cause calls `PATCH /api/machines/{ref}/stops/{stop_id}/reclassify` (`reclassifyStop()` in `api/machines.ts`).
+- **Anti-cheat:** a stop is NEVER turned back into running — there's no "running" option, only causes. The
+  reclassify endpoint only updates `stop_category_id`/`stop_subcategory_id`; if the stop is still **open** it
+  re-derives `current_status` from the new type (planned→blue, unplanned→red, maintenance→yellow, none→pink),
+  but it does **NOT** create a maintenance ticket (relabel only).
+- **Scope (by visibility, not a role check):** operator reclassifies only current-shift stops (all they can
+  see); supervisor+ reaches past shifts via the ◀ ▶ nav, so they can reclassify those too. `onSegmentClick`
+  is disabled while the layout editor is on (so dragging a panel doesn't fire a click).
+- i18n keys `changeCause` / `noSubcategory` (en/fr/es).
+- **Gotcha re-confirmed:** the local Vite preview went blank after many HMR cycles (stale optimized-deps,
+  surfaced as a `<StopTimeline>` runtime throw) — NOT a code bug. The freshly-built **Docker** frontend
+  rendered fine; verified the full click→reclassify→persist round-trip on `http://localhost` (port 80).
+  When the preview blanks mid-session, rebuild/restart Vite or test against Docker rather than chasing it.
+
+### Session 2026-06-22 — Maintenance wait time + purple intervention + MTTA
+
+The maintenance lifecycle now has two distinct colors and tracks the response (wait) time:
+- **maintenance = yellow** while the call waits for a technician; **intervention = purple** (`#a855f7`,
+  new `MachineStatus.intervention`) once the technician starts. `start_intervention` sets the machine to
+  `intervention`; `complete_intervention` resets `maintenance`|`intervention` → `running`. Purple
+  propagates everywhere via `statusColors.ts` (kiosk frame/pill, 3D mats, 2D nodes).
+- **Timeline splits a maintenance stop** into the yellow wait (call→start) and the purple intervention
+  (start→end). The stops endpoint (`/stops/today`) now joins the intervention by `ticket_id` and returns
+  `intervention_started_at` / `intervention_completed_at` / `wait_minutes` on each `MachineStopOut`; the
+  kiosk renders two sub-segments when a maintenance stop has a started intervention.
+- **Response/wait time** was already stored (`machine_interventions.response_time_minutes`, set at start).
+  Surfaced as **MTTA** in `/api/kpis/summary` (`mtta_minutes` = avg call→start) + a "Response time" card on
+  the KPI dashboard.
+- Verified the full flow end-to-end via the API on a throwaway machine (call→maintenance/yellow →
+  start→intervention/purple with `intervention_started_at`+`wait_minutes` populated → complete→running),
+  then deleted the test stop/ticket/intervention and confirmed the machine was restored.
+
+### Session 2026-06-22 — Rejects feed Quality/OEE + per-shift history; planned-stop sub-reason fix
+
+- **Sub-reason step bug:** `handleCategorySelect` only opened the subcategories step for `unplanned`
+  categories, so a **planned** stop (or any category with sub-reasons) skipped straight to confirm. Now
+  any category with subcategories shows the sub-reason step first; the chosen sub is saved in
+  `machine_stops.stop_subcategory_id` (was always wired — the UI just never let you pick it).
+- **Rejects → Quality/OEE storage (where it's recorded):**
+  - `reject_logs` = granular per-event history (machine/date/shift/job/category/sub/qty/operator/ts). The
+    kiosk +1 → `POST /reject-logs` (`log_reject`) always writes here → detailed reject reports/dashboards.
+  - `machine_production_logs` (machine × date × shift) = the OEE rollup the dashboards read; `increment_rejects`
+    bumps `reject_count` (creates the row if missing) and now calls `_recompute_oee` to **persist
+    performance/quality/oee on that shift row** → per-shift history for trend dashboards (not just the live
+    aggregate in `/api/kpis/summary`).
+  - quality = (actual − rejects) / actual; OEE = Availability × Performance × Quality. Needs `actual_count`
+    (produced pieces) from the future plant production feed — until then a reject is stored but quality stays
+    0 (no denominator), then lights up automatically. Verified actual=100/reject=4/target=120/avail=80 →
+    perf 83.3, quality 96, OEE 64; test data cleaned up. (No `reject_categories` seeded yet → "uncategorized".)

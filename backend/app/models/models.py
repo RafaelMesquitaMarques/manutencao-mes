@@ -97,10 +97,12 @@ class EquipmentStatus(str, enum.Enum):
 
 class MachineStatus(str, enum.Enum):
     running      = "running"
-    stopped      = "stopped"
+    stopped      = "stopped"        # unplanned / generic stop (red)
     maintenance  = "maintenance"
     idle         = "idle"
     planned_stop = "planned_stop"
+    unjustified  = "unjustified"    # MES-detected stop, no reason entered yet (pink)
+    intervention = "intervention"   # technician actively working on the machine (purple)
 
 class StopCategoryType(str, enum.Enum):
     planned     = "planned"
@@ -447,6 +449,14 @@ class WorkOrder(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # WO-level approval — supervisor / maintenance director signs off completed work
+    # (mirrors MachineIntervention so office-created WOs also flow through approval).
+    approval_status  = Column(String(20), default="pending")  # pending | approved | rejected
+    approved_by_id   = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    approved_at      = Column(DateTime(timezone=True), nullable=True)
+    approval_note    = Column(Text, nullable=True)
+    rejection_reason = Column(Text, nullable=True)
 
     equipment       = relationship("Equipment", back_populates="work_orders")
     created_by      = relationship("User", back_populates="created_work_orders",  foreign_keys=[created_by_id])
@@ -943,6 +953,7 @@ class Machine(Base):
     hourly_rate_currency     = Column(SAEnum(HourlyRateCurrency, native_enum=False), default=HourlyRateCurrency.CAD)
     target_count_per_shift   = Column(Integer, nullable=True)
     shifts_config            = Column(JSON, nullable=True)
+    kiosk_layout             = Column(JSON, nullable=True)   # per-machine resizable panel layout (react-grid-layout)
     # ── Factory map / digital-twin layout ──
     plant_id                 = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
     pos_x                    = Column(Float, nullable=True)   # top-down map coordinates
@@ -1562,6 +1573,13 @@ class MachineIntervention(Base):
     called_by_name                = Column(String(200), nullable=True)
     started_by_name               = Column(String(200), nullable=True)
     completed_by_name             = Column(String(200), nullable=True)
+    # WO-level approval — supervisor / maintenance director signs off the whole
+    # completed intervention (work done + parts used), not just individual parts.
+    approval_status               = Column(String(20), default="pending")  # pending | approved | rejected
+    approved_by_id                = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    approved_at                   = Column(DateTime(timezone=True), nullable=True)
+    approval_note                 = Column(Text, nullable=True)
+    rejection_reason              = Column(Text, nullable=True)
 
 
 class SafetyChecklist(Base):

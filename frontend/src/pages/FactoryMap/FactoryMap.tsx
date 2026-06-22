@@ -10,11 +10,12 @@ import {
   Camera, Wrench, RotateCw, RotateCcw, Trash2, X, Plus, ExternalLink, Box, ArrowUpDown,
 } from 'lucide-react';
 import api from '../../api/axios';
+import { STATUS_HEX as STATUS_COLORS } from '../../utils/statusColors';
 import { uploadFile } from '../../api/uploads';
 import {
   fetchFactoryMap, saveMachineLayout, saveFloorPlan, createZone, saveZone, deleteZone,
   createProp, saveProp, deleteProp,
-  type MapMachine, type MapProp,
+  type MapMachine, type MapProp, type MachineLayout,
 } from '../../api/factoryMap';
 import { fetchKPISummary } from '../../api/workOrders';
 import type { KPISummary } from '../../types';
@@ -23,11 +24,9 @@ import { useAuthStore } from '../../store/authStore';
 
 interface Plant { id: string; code: string; name: string; }
 
-const STATUS_COLORS: Record<string, string> = {
-  running: '#22c55e', stopped: '#ef4444', maintenance: '#f59e0b', planned_stop: '#f59e0b', idle: '#6b7280',
-};
 const STATUS_LABEL: Record<string, string> = {
-  running: 'Running', stopped: 'Stopped', maintenance: 'Maintenance', planned_stop: 'Planned stop', idle: 'Idle',
+  running: 'Running', stopped: 'Stopped', maintenance: 'Maintenance',
+  planned_stop: 'Planned stop', unjustified: 'Unjustified', idle: 'Idle',
 };
 
 // How an item is drawn in 3D. 'auto' keeps the current behaviour (model/photo/box);
@@ -43,11 +42,73 @@ function orbitRectFor(m: { pos_x: number | null; pos_y: number | null; pos_w: nu
   };
 }
 
+// A cobot/conveyor "orbits" a host machine and auto-links to it by position.
+// Mirror the backend rule (factory_map.py): match by block_kind OR subtype text,
+// because seeded cobots carry subtype='Cobot' with block_kind still null.
+function isOrbitChild(m: { block_kind: string | null; subtype: string | null }): boolean {
+  const bk = (m.block_kind ?? '').toLowerCase();
+  const st = (m.subtype ?? '').toLowerCase();
+  return bk === 'cobot' || bk === 'conveyor' || st.includes('cobot') || st.includes('conveyor');
+}
+
+function rectContains(r: { x: number; y: number; w: number; h: number }, cx: number, cy: number): boolean {
+  return cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h;
+}
+
+// Self-heal the saved layout against the orbit invariants, returning the patches to persist
+// (and mutating `machines` in place so the very next render already shows the healed state):
+//  1. An orbit must surround its own machine — if the machine drifted outside it (e.g. the orbit
+//     was dragged away under the old behaviour), drop the explicit orbit_* so it re-hugs the machine.
+//  2. A cobot/conveyor's parent_equipment_id must match the orbit it currently sits in (nearest centre).
+function healOrbitLayout(machines: MapMachine[]): Array<{ id: string; patch: MachineLayout }> {
+  const patches: Array<{ id: string; patch: MachineLayout }> = [];
+  const hosts = machines.filter((m) => (m.asset_type ?? 'production') === 'production' && m.pos_x != null && m.pos_y != null);
+
+  // 1. re-anchor orbits that drifted fully off their machine (the old "drag orbit away" bug).
+  //    Only reset when the machine footprint no longer overlaps the orbit at all, so intentional
+  //    asymmetric shapes that still cover the machine are preserved.
+  for (const h of hosts) {
+    if (h.orbit_x == null && h.orbit_y == null && h.orbit_w == null && h.orbit_h == null) continue;
+    const r = orbitRectFor(h);
+    const px = h.pos_x ?? 0, py = h.pos_y ?? 0, pw = h.pos_w ?? 152, ph = h.pos_h ?? 64;
+    const overlaps = px < r.x + r.w && px + pw > r.x && py < r.y + r.h && py + ph > r.y;
+    if (!overlaps) {
+      h.orbit_x = null; h.orbit_y = null; h.orbit_w = null; h.orbit_h = null;
+      patches.push({ id: h.id, patch: { orbit_x: null, orbit_y: null, orbit_w: null, orbit_h: null } });
+    }
+  }
+
+  // 2. fill in MISSING links: a cobot/conveyor with no parent that sits in an orbit gets linked.
+  //    Conservative on purpose — never override or clear an existing parent, so manual choices
+  //    (and deliberate unlinks) survive. Re-linking on geometry change is handled live by the
+  //    drag/resize handlers; this pass only repairs the "never got linked" state.
+  for (const c of machines) {
+    if (!isOrbitChild(c) || c.parent_equipment_id != null || c.pos_x == null || c.pos_y == null) continue;
+    const cx = c.pos_x + (c.pos_w ?? 152) / 2;
+    const cy = c.pos_y + (c.pos_h ?? 64) / 2;
+    let best: string | null = null, bestDist = Infinity;
+    for (const h of hosts) {
+      if (h.id === c.id) continue;
+      const r = orbitRectFor(h);
+      if (rectContains(r, cx, cy)) {
+        const dist = (cx - (r.x + r.w / 2)) ** 2 + (cy - (r.y + r.h / 2)) ** 2;
+        if (dist < bestDist) { bestDist = dist; best = h.id; }
+      }
+    }
+    if (best != null) {
+      c.parent_equipment_id = best;
+      patches.push({ id: c.id, patch: { parent_equipment_id: best } });
+    }
+  }
+  return patches;
+}
+
 const BLOCK_KINDS: { key: string; label: string }[] = [
   { key: 'auto', label: 'Auto' },
   { key: 'cobot', label: 'Cobot (animated)' },
   { key: 'conveyor', label: 'Conveyor' },
   { key: 'lift_table', label: 'Lift table' },
+  { key: 'beam_saw', label: 'Beam saw (Selco)' },
   { key: 'box', label: 'Plain box' },
 ];
 
@@ -209,8 +270,15 @@ export default function FactoryMap() {
   const propModelTargetRef = useRef<string | null>(null);
   // auto-link-by-orbit, accessed via ref so the early drag/commit handlers always call the latest
   const autoLinkRef = useRef<(id: string, x: number, y: number, w: number, h: number) => void>(() => {});
+  // relink the cobots/conveyors sitting in a host's orbit after that orbit's geometry changes
+  const reconcileChildrenRef = useRef<(hostId: string, rect: { x: number; y: number; w: number; h: number }) => void>(() => {});
   const editModeRef = useRef(editMode);
   useEffect(() => { editModeRef.current = editMode; }, [editMode]);
+  // latest nodes, for handlers that fire outside React's render closure (drag/resize commits)
+  const nodesRef = useRef<Node[]>([]);
+  useEffect(() => { nodesRef.current = nodes; }, [nodes]);
+  // a machine being dragged carries its orbit along: capture both start positions on drag start
+  const dragRef = useRef<{ machineId: string; mStart: { x: number; y: number }; orbitId: string | null; oStart: { x: number; y: number }; oSize: { w: number; h: number } } | null>(null);
   // reflect Edit/View: machine nodes get the flag; orbit rectangles only show in Edit
   useEffect(() => {
     setNodes((nds) => nds.map((n) => {
@@ -319,14 +387,18 @@ export default function FactoryMap() {
       if ((m.asset_type ?? 'production') === 'production') {
         const r = orbitRectFor(m);
         out.push({
+          // An orbit belongs to its machine — never independently draggable (it would drift away).
+          // Reshape it with the resize handles; it follows the machine when the machine is moved.
           id: `orbit-${m.id}`, type: 'orbit', position: { x: r.x, y: r.y }, width: r.w, height: r.h,
-          zIndex: 0, hidden: !editModeRef.current, deletable: false,
+          zIndex: 0, hidden: !editModeRef.current, deletable: false, draggable: false,
           data: {
             machineId: m.id, machineName: m.name,
             onResize: (p: ResizeParams) => {
               const patch = { orbit_x: Math.round(p.x), orbit_y: Math.round(p.y), orbit_w: Math.round(p.width), orbit_h: Math.round(p.height) };
               saveMachineLayout(m.id, patch).catch(() => {});
               setNodes((nds) => nds.map((n) => n.id === m.id ? { ...n, data: { ...n.data, machine: { ...(n.data as MachineNodeData).machine, ...patch } } } : n));
+              // a redrawn orbit may now cover (or release) cobots — relink them
+              reconcileChildrenRef.current(m.id, { x: p.x, y: p.y, w: p.width, h: p.height });
             },
           },
         });
@@ -362,6 +434,15 @@ export default function FactoryMap() {
     try {
       const data = await fetchFactoryMap(id, assetFilter);
       setFloorPlanUrl(data.floor_plan_url);
+      // Enforce the orbit invariants once per edit-mode load: re-anchor drifted orbits and
+      // link cobots to whatever orbit they sit in. Mutates data.machines so buildNodes renders
+      // the healed state immediately; persists the diffs in the background. Edit-mode only —
+      // viewers may lack machines:update and the WS reload would re-fire it pointlessly.
+      if (editModeRef.current) {
+        for (const { id: mid, patch } of healOrbitLayout(data.machines)) {
+          saveMachineLayout(mid, patch).catch(() => {});
+        }
+      }
       setNodes(buildNodes(data));
       setUnplaced(data.machines.filter((m) => !m.placed));
       setProps(data.props ?? []);
@@ -370,7 +451,8 @@ export default function FactoryMap() {
     }
   }, [buildNodes, setNodes, assetFilter]);
 
-  useEffect(() => { if (plantId) load(plantId); }, [plantId, load]);
+  // Reload on plant change and on edit-mode toggle — entering edit mode triggers the orbit self-heal.
+  useEffect(() => { if (plantId) load(plantId); }, [plantId, load, editMode]);
 
   useEffect(() => {
     if (editMode || !plantId) return;
@@ -407,22 +489,51 @@ export default function FactoryMap() {
     return () => { closed = true; if (retry) clearTimeout(retry); ws?.close(); };
   }, [editMode, plantId, token, applyStatus]);
 
-  const onNodeDragStop = useCallback((_: unknown, node: Node) => {
-    if (node.id === 'floorplan') return;
-    if (node.type === 'orbit') {
-      const mid = (node.data as OrbitNodeData).machineId;
-      const patch = { orbit_x: Math.round(node.position.x), orbit_y: Math.round(node.position.y) };
-      saveMachineLayout(mid, patch).catch(() => {});
-      setNodes((nds) => nds.map((n) => n.id === mid ? { ...n, data: { ...n.data, machine: { ...(n.data as MachineNodeData).machine, ...patch } } } : n));
-      return;
-    }
-    const pos = { pos_x: Math.round(node.position.x), pos_y: Math.round(node.position.y) };
-    if (node.type === 'zone') saveZone((node.data as ZoneNodeData).zone.id, pos).catch(() => {});
-    else {
-      saveMachineLayout(node.id, pos).catch(() => {});
-      autoLinkRef.current(node.id, node.position.x, node.position.y, node.width ?? 152, node.height ?? 64);
-    }
+  // Capture both the machine's and its orbit's start positions so the orbit can ride along.
+  const onNodeDragStart = useCallback((_: unknown, node: Node) => {
+    if (node.type !== 'machine') { dragRef.current = null; return; }
+    const orbit = nodesRef.current.find((n) => n.id === `orbit-${node.id}`);
+    dragRef.current = {
+      machineId: node.id, mStart: { ...node.position },
+      orbitId: orbit?.id ?? null,
+      oStart: orbit ? { ...orbit.position } : { x: 0, y: 0 },
+      oSize: { w: orbit?.width ?? 0, h: orbit?.height ?? 0 },
+    };
   }, []);
+
+  // While the machine drags, its orbit follows live by the same delta.
+  const onNodeDrag = useCallback((_: unknown, node: Node) => {
+    const d = dragRef.current;
+    if (!d || d.machineId !== node.id || !d.orbitId) return;
+    const dx = node.position.x - d.mStart.x, dy = node.position.y - d.mStart.y;
+    setNodes((nds) => nds.map((n) => n.id === d.orbitId ? { ...n, position: { x: d.oStart.x + dx, y: d.oStart.y + dy } } : n));
+  }, [setNodes]);
+
+  const onNodeDragStop = useCallback((_: unknown, node: Node) => {
+    if (node.id === 'floorplan' || node.type === 'orbit') { dragRef.current = null; return; }
+    const pos = { pos_x: Math.round(node.position.x), pos_y: Math.round(node.position.y) };
+    if (node.type === 'zone') { saveZone((node.data as ZoneNodeData).zone.id, pos).catch(() => {}); return; }
+
+    // Machine moved: persist its position and auto-link it if it is itself an orbit child.
+    saveMachineLayout(node.id, pos).catch(() => {});
+    autoLinkRef.current(node.id, node.position.x, node.position.y, node.width ?? 152, node.height ?? 64);
+
+    // Carry the orbit along by the same delta, persist it, and relink any cobots it now covers.
+    const d = dragRef.current;
+    if (d && d.machineId === node.id && d.orbitId) {
+      const dx = node.position.x - d.mStart.x, dy = node.position.y - d.mStart.y;
+      const ox = Math.round(d.oStart.x + dx), oy = Math.round(d.oStart.y + dy);
+      const opatch = { orbit_x: ox, orbit_y: oy };
+      saveMachineLayout(node.id, opatch).catch(() => {});
+      setNodes((nds) => nds.map((n) => {
+        if (n.id === d.orbitId) return { ...n, position: { x: ox, y: oy } };
+        if (n.id === node.id) return { ...n, data: { ...n.data, machine: { ...(n.data as MachineNodeData).machine, ...opatch } } };
+        return n;
+      }));
+      reconcileChildrenRef.current(node.id, { x: ox, y: oy, w: d.oSize.w, h: d.oSize.h });
+    }
+    dragRef.current = null;
+  }, [setNodes]);
 
   const onNodeClick: NodeMouseHandler = useCallback((_, node) => {
     if (editMode || node.id === 'floorplan' || node.type === 'zone') return;
@@ -592,11 +703,26 @@ export default function FactoryMap() {
   const autoLinkByOrbit = useCallback((id: string, posX: number, posY: number, w: number, h: number) => {
     const node = nodes.find((n) => n.id === id);
     const mm = node ? (node.data as MachineNodeData).machine : null;
-    if (!mm || (mm.block_kind !== 'cobot' && mm.block_kind !== 'conveyor')) return;
+    if (!mm || !isOrbitChild(mm)) return;
     const parentId = findOrbitParent(posX + w / 2, posY + h / 2, id);
     if ((mm.parent_equipment_id ?? null) !== (parentId ?? null)) setParent(id, parentId);
   }, [nodes, findOrbitParent, setParent]);
   useEffect(() => { autoLinkRef.current = autoLinkByOrbit; }, [autoLinkByOrbit]);
+
+  // After a host's orbit is reshaped/moved, relink the cobots inside it and release ones that left.
+  const reconcileHostChildren = useCallback((hostId: string, rect: { x: number; y: number; w: number; h: number }) => {
+    for (const n of nodesRef.current) {
+      if (n.type !== 'machine' || n.id === hostId) continue;
+      const mm = (n.data as MachineNodeData).machine;
+      if (!isOrbitChild(mm)) continue;
+      const cx = n.position.x + (n.width ?? 152) / 2, cy = n.position.y + (n.height ?? 64) / 2;
+      const inside = rectContains(rect, cx, cy);
+      const cur = mm.parent_equipment_id ?? null;
+      if (inside && cur !== hostId) setParent(n.id, hostId);
+      else if (!inside && cur === hostId) setParent(n.id, null);
+    }
+  }, [setParent]);
+  useEffect(() => { reconcileChildrenRef.current = reconcileHostChildren; }, [reconcileHostChildren]);
 
   const addProp = useCallback(async (kind: string) => {
     if (!plantId) return;
@@ -693,7 +819,7 @@ export default function FactoryMap() {
         </button>
 
         <div className="flex items-center gap-3 ml-auto text-xs text-gray-400 flex-wrap">
-          {Object.entries(STATUS_LABEL).filter(([k]) => k !== 'planned_stop').map(([k, label]) => (
+          {Object.entries(STATUS_LABEL).map(([k, label]) => (
             <span key={k} className="flex items-center gap-1.5">
               <span style={{ width: 10, height: 10, borderRadius: '50%', background: STATUS_COLORS[k], display: 'inline-block' }} />
               {label}{statusCounts[k] ? ` (${statusCounts[k]})` : ''}
@@ -741,7 +867,7 @@ export default function FactoryMap() {
           ) : (
           <ReactFlow
             nodes={nodes} onNodesChange={onNodesChange} nodeTypes={nodeTypes}
-            onNodeDragStop={onNodeDragStop} onNodeClick={onNodeClick}
+            onNodeDragStart={onNodeDragStart} onNodeDrag={onNodeDrag} onNodeDragStop={onNodeDragStop} onNodeClick={onNodeClick}
             nodesDraggable={editMode} nodesConnectable={false} elementsSelectable={editMode}
             colorMode="dark" fitView minZoom={0.2} proOptions={{ hideAttribution: true }} style={{ background: 'transparent' }}
           >
@@ -850,10 +976,10 @@ export default function FactoryMap() {
                 ) : kpi ? (
                   <div className="grid grid-cols-2 gap-2">
                     {[
-                      { label: 'Open WOs', value: String(kpi.backlog_count), tone: kpi.backlog_count > 0 ? 'text-amber-300' : 'text-gray-200' },
-                      { label: 'MTTR', value: `${kpi.mttr_hours.toFixed(1)} h`, tone: 'text-gray-200' },
-                      { label: 'PM compliance', value: `${kpi.pm_compliance_pct.toFixed(0)}%`, tone: kpi.pm_compliance_pct >= 90 ? 'text-green-400' : kpi.pm_compliance_pct >= 70 ? 'text-amber-300' : 'text-red-400' },
-                      { label: 'Cost (30d)', value: `$${kpi.total_cost_cad.toLocaleString()}`, tone: 'text-gray-200' },
+                      { label: 'OEE', value: kpi.oee_pct != null ? `${Math.round(kpi.oee_pct)}%` : '—', tone: 'text-gray-200' },
+                      { label: 'Availability', value: kpi.availability_pct != null ? `${Math.round(kpi.availability_pct)}%` : '—', tone: 'text-gray-200' },
+                      { label: 'Parts / h', value: kpi.parts_per_hour != null ? String(Math.round(kpi.parts_per_hour)) : '—', tone: 'text-gray-200' },
+                      { label: 'Quality', value: kpi.quality_pct != null ? `${Math.round(kpi.quality_pct)}%` : '—', tone: 'text-gray-200' },
                     ].map((m) => (
                       <div key={m.label} className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-2">
                         <p className="text-[10px] text-gray-500">{m.label}</p>

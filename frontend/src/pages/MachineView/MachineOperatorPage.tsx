@@ -392,8 +392,18 @@ function PartsPanel({ machineId, interventionId }: PartsPanelProps) {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
+// Standalone route wrapper (kept for backward-compat; /machine/:id redirects to the
+// unified kiosk, but this still renders the full-screen intervention view if reached).
 export default function MachineOperatorPage() {
   const { machine_id } = useParams<{ machine_id: string }>();
+  if (!machine_id) return null;
+  return <MaintenancePanel machineId={machine_id} />;
+}
+
+// Intervention flow as an embeddable panel. `embedded` strips the full-screen chrome
+// (header/footer/side info) so it can live inside the unified MES kiosk (MachinePage).
+export function MaintenancePanel({ machineId, embedded = false }: { machineId: string; embedded?: boolean }) {
+  const machine_id = machineId;
   const [state, setState] = useState<MachineOperatorState | null>(null);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
@@ -548,24 +558,27 @@ export default function MachineOperatorPage() {
   const statusBorder = isIdle ? 'border-green-700/40' : isWaiting ? 'border-amber-700/40' : 'border-blue-700/40';
 
   if (loading) return (
-    <div className="h-screen flex items-center justify-center bg-[#0d1117]">
-      <Loader2 className="animate-spin text-gray-500" size={48} />
+    <div className={embedded ? 'flex items-center justify-center py-10' : 'h-screen flex items-center justify-center bg-[#0d1117]'}>
+      <Loader2 className="animate-spin text-gray-500" size={embedded ? 24 : 48} />
     </div>
   );
 
-  if (!state) return (
-    <div style={{ background: '#0d1117', height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
-      <span style={{ color: '#f85149', fontSize: '16px' }}>⚠ {error ?? 'Machine introuvable'}</span>
-      <span style={{ color: '#6e7681', fontSize: '12px', fontFamily: 'monospace' }}>{machine_id}</span>
-      <button onClick={() => window.location.reload()}
-        style={{ marginTop: '8px', padding: '8px 16px', background: '#21262d', color: '#e6edf3', border: '0.5px solid #30363d', borderRadius: '6px', cursor: 'pointer' }}>
-        Retry
-      </button>
-    </div>
-  );
+  if (!state) {
+    if (embedded) return <p className="text-gray-600 text-sm py-4">⚠ {error ?? 'Machine introuvable'}</p>;
+    return (
+      <div style={{ background: '#0d1117', height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
+        <span style={{ color: '#f85149', fontSize: '16px' }}>⚠ {error ?? 'Machine introuvable'}</span>
+        <span style={{ color: '#6e7681', fontSize: '12px', fontFamily: 'monospace' }}>{machine_id}</span>
+        <button onClick={() => window.location.reload()}
+          style={{ marginTop: '8px', padding: '8px 16px', background: '#21262d', color: '#e6edf3', border: '0.5px solid #30363d', borderRadius: '6px', cursor: 'pointer' }}>
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   return (
-    <div className="h-screen flex flex-col bg-[#0d1117] text-white overflow-hidden select-none">
+    <div className={embedded ? '' : 'h-screen flex flex-col bg-[#0d1117] text-white overflow-hidden select-none'}>
 
       {/* Safety checklist modal */}
       {showChecklist && pendingInterventionId && checklistItems.length > 0 && (
@@ -586,47 +599,64 @@ export default function MachineOperatorPage() {
         />
       )}
 
-      {/* TOP BAR */}
-      <header className="flex items-center justify-between px-8"
-        style={{ height: '13%', background: '#111318', borderBottom: '1px solid #21262d' }}>
-        <div>
-          <p className="text-3xl font-bold leading-none">{state.machine.name}</p>
-          <p className="text-gray-500 text-sm font-mono mt-1">{state.machine.code}</p>
-        </div>
-        <div className={`text-center px-6 py-2 rounded-xl border ${statusBorder}`}>
-          <p className={`text-xl font-semibold ${statusColor}`}>{statusLabel}</p>
-          {intervention && (
-            <p className="text-xs text-gray-500 mt-0.5">depuis {elapsed(intervention.called_at)}</p>
-          )}
-        </div>
-        <div className="text-right">
-          <p className="text-gray-400 text-sm">{formatDate(now)}</p>
-          {state.machine.location && <p className="text-gray-600 text-xs mt-0.5">{state.machine.location}</p>}
-        </div>
-      </header>
+      {/* TOP BAR (full-screen only) */}
+      {!embedded && (
+        <header className="flex items-center justify-between px-8"
+          style={{ height: '13%', background: '#111318', borderBottom: '1px solid #21262d' }}>
+          <div>
+            <p className="text-3xl font-bold leading-none">{state.machine.name}</p>
+            <p className="text-gray-500 text-sm font-mono mt-1">{state.machine.code}</p>
+          </div>
+          <div className={`text-center px-6 py-2 rounded-xl border ${statusBorder}`}>
+            <p className={`text-xl font-semibold ${statusColor}`}>{statusLabel}</p>
+            {intervention && (
+              <p className="text-xs text-gray-500 mt-0.5">depuis {elapsed(intervention.called_at)}</p>
+            )}
+          </div>
+          <div className="text-right">
+            <p className="text-gray-400 text-sm">{formatDate(now)}</p>
+            {state.machine.location && <p className="text-gray-600 text-xs mt-0.5">{state.machine.location}</p>}
+          </div>
+        </header>
+      )}
 
       {/* BODY */}
-      <main className="flex-1 flex items-center justify-center px-8 gap-8" style={{ height: '78%' }}>
+      <main className={embedded ? 'flex flex-col gap-4' : 'flex-1 flex items-center justify-center px-8 gap-8'}
+        style={embedded ? undefined : { height: '78%' }}>
 
-        {/* Left info panel */}
-        <div className="flex flex-col gap-4 h-full py-6" style={{ width: '240px', flexShrink: 0 }}>
-          <InfoCard label="Équipement" value={state.equipment?.name ?? state.machine.name} />
-          <InfoCard label="Département" value={state.machine.department || '—'} />
-          <InfoCard
-            label="Dernière maintenance"
-            value={state.last_maintenance_days_ago !== null ? `il y a ${state.last_maintenance_days_ago} j` : '—'}
-          />
-          <InfoCard label="Tickets ouverts" value={String(state.open_tickets_count)} alert={state.open_tickets_count > 0} />
-        </div>
-
-        <div className="h-3/4 w-px" style={{ background: '#21262d' }} />
+        {/* Left info panel (full-screen only) */}
+        {!embedded && (
+          <>
+            <div className="flex flex-col gap-4 h-full py-6" style={{ width: '240px', flexShrink: 0 }}>
+              <InfoCard label="Équipement" value={state.equipment?.name ?? state.machine.name} />
+              <InfoCard label="Département" value={state.machine.department || '—'} />
+              <InfoCard
+                label="Dernière maintenance"
+                value={state.last_maintenance_days_ago !== null ? `il y a ${state.last_maintenance_days_ago} j` : '—'}
+              />
+              <InfoCard label="Tickets ouverts" value={String(state.open_tickets_count)} alert={state.open_tickets_count > 0} />
+            </div>
+            <div className="h-3/4 w-px" style={{ background: '#21262d' }} />
+          </>
+        )}
 
         {/* Action zone */}
-        <div className="flex-1 flex flex-col items-center justify-center gap-6 max-w-xl overflow-y-auto">
+        <div className={embedded ? 'w-full flex flex-col gap-4' : 'flex-1 flex flex-col items-center justify-center gap-6 max-w-xl overflow-y-auto'}>
           {error && <p className="text-red-400 text-sm bg-red-500/10 px-4 py-2 rounded-lg">{error}</p>}
 
-          {/* STATE 1 — idle */}
-          {isIdle && (
+          {/* STATE 1 — idle. In the kiosk, "call maintenance" is a stop-justification
+              option, so the embedded panel just shows there's nothing active. */}
+          {isIdle && (embedded ? (
+            state.open_tickets_count > 0 ? (
+              <button disabled={acting}
+                onClick={() => act(() => callMaintenance(machine_id, note || undefined))}
+                className="w-full py-3 rounded-xl text-sm font-bold transition-all active:scale-95 disabled:opacity-50 bg-amber-700/30 border border-amber-500/40 text-amber-300">
+                {acting ? <Loader2 className="animate-spin mx-auto" size={18} /> : '🔧 Prendre en charge la maintenance'}
+              </button>
+            ) : (
+              <p className="text-gray-600 text-sm">Aucune maintenance active</p>
+            )
+          ) : (
             <>
               <div className="text-center mb-2">
                 <AlertTriangle className="mx-auto text-gray-600 mb-3" size={48} />
@@ -644,7 +674,7 @@ export default function MachineOperatorPage() {
                 {acting ? <Loader2 className="animate-spin mx-auto" size={28} /> : '🔧 Appeler la maintenance'}
               </button>
             </>
-          )}
+          ))}
 
           {/* STATE 2 — waiting */}
           {isWaiting && (
@@ -790,10 +820,10 @@ export default function MachineOperatorPage() {
           )}
         </div>
 
-        <div className="h-3/4 w-px" style={{ background: '#21262d' }} />
+        {!embedded && <div className="h-3/4 w-px" style={{ background: '#21262d' }} />}
 
         {/* Last intervention panel */}
-        <div style={{ width: '220px', flexShrink: 0 }} className="flex flex-col gap-3 py-6">
+        <div style={embedded ? undefined : { width: '220px', flexShrink: 0 }} className="flex flex-col gap-3 py-6">
           <p className="text-xs text-gray-600 uppercase tracking-widest font-semibold">Dernière intervention</p>
           {state.last_intervention ? (
             <>
@@ -819,15 +849,17 @@ export default function MachineOperatorPage() {
         </div>
       </main>
 
-      {/* FOOTER */}
-      <footer className="flex items-center justify-between px-8"
-        style={{ height: '9%', background: '#111318', borderTop: '1px solid #21262d' }}>
-        <p className="text-gray-700 text-sm font-mono">Foliot MES · Poste opérateur</p>
-        <p className="text-3xl font-mono font-bold text-gray-300">{formatClock(now)}</p>
-        <p className="text-gray-700 text-sm">
-          {state.equipment ? `${state.equipment.hour_meter.toLocaleString()} h` : ''}
-        </p>
-      </footer>
+      {/* FOOTER (full-screen only) */}
+      {!embedded && (
+        <footer className="flex items-center justify-between px-8"
+          style={{ height: '9%', background: '#111318', borderTop: '1px solid #21262d' }}>
+          <p className="text-gray-700 text-sm font-mono">Foliot MES · Poste opérateur</p>
+          <p className="text-3xl font-mono font-bold text-gray-300">{formatClock(now)}</p>
+          <p className="text-gray-700 text-sm">
+            {state.equipment ? `${state.equipment.hour_meter.toLocaleString()} h` : ''}
+          </p>
+        </footer>
+      )}
     </div>
   );
 }

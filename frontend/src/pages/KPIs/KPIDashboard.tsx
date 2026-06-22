@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactECharts from 'echarts-for-react';
-import { Activity, Clock, CheckSquare, DollarSign } from 'lucide-react';
+import { Activity, Clock, CheckSquare, DollarSign, Gauge, Timer } from 'lucide-react';
 import { fetchKPISummary, fetchBacklog, fetchMTTR, fetchCostByType, fetchEquipment } from '../../api/workOrders';
 import type { KPISummary, BacklogData, MTTRItem, CostItem, Equipment } from '../../types';
 import { humanHours } from '../../utils/duration';
@@ -199,13 +199,34 @@ export default function KPIDashboard() {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+        <KPICard
+          icon={<Gauge size={20} className="text-green-400" />}
+          label={t('kpis.availability', 'Availability')}
+          value={loading || summary?.availability_pct == null ? '—' : `${summary.availability_pct}%`}
+          sub={t('kpis.uptime', 'Uptime in period')}
+          color="green"
+        />
+        <KPICard
+          icon={<Timer size={20} className="text-cyan-400" />}
+          label={t('kpis.mtbf', 'MTBF')}
+          value={loading || summary?.mtbf_hours == null ? '—' : fmtMttr(summary.mtbf_hours)}
+          sub={t('kpis.meanBetweenFailures', 'Mean time between failures')}
+          color="blue"
+        />
         <KPICard
           icon={<Clock size={20} className="text-blue-400" />}
           label={t('kpis.mttr')}
           value={loading ? '—' : fmtMttr(summary?.mttr_hours ?? 0)}
           sub={t('kpis.avgRepair')}
           color="blue"
+        />
+        <KPICard
+          icon={<Clock size={20} className="text-yellow-400" />}
+          label={t('kpis.mtta', 'Response time')}
+          value={loading || summary?.mtta_minutes == null ? '—' : `${Math.round(summary.mtta_minutes)} min`}
+          sub={t('kpis.avgResponse', 'Avg call → technician start')}
+          color="amber"
         />
         <KPICard
           icon={<Activity size={20} className="text-amber-400" />}

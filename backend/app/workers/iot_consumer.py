@@ -75,6 +75,10 @@ async def process_reading(session: AsyncSession, sensor_code: str, payload: dict
     if alert:
         session.add(alert)
         log.warning(f"ALERT [{alert.severity}] {alert.message}")
+        # FUTURE — auto corrective WO from sensor alert (DEFERRED by decision 2026-06-20:
+        # vibration/temperature do NOT auto-create WOs yet). Infra ready: Alert has
+        # equipment_id/severity/work_order_id. To enable, call a service here that creates
+        # a corrective WO (from_iot=True), links alert.work_order_id, and dedups per equipment.
 
     await session.commit()
     log.debug(f"Reading stored: {sensor_code} = {value} {sensor.unit}")

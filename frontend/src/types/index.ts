@@ -457,9 +457,19 @@ export interface PmDashboard {
 
 export interface KPISummary {
   mttr_hours: number;
+  mtta_minutes?: number;
+  mtbf_hours?: number;
+  availability_pct?: number;
+  downtime_hours?: number;
+  failures?: number;
   backlog_count: number;
   pm_compliance_pct: number;
   total_cost_cad: number;
+  parts_per_hour?: number;
+  quality_pct?: number;
+  oee_pct?: number;
+  current_status?: string | null;
+  operator?: string | null;
   period_days: number;
 }
 
@@ -706,6 +716,9 @@ export interface MachineStopOut {
   subcategory?: {
     id: string; name: string; icon: string; color?: string; triggers_maintenance: boolean;
   };
+  intervention_started_at?:   string;
+  intervention_completed_at?: string;
+  wait_minutes?:              number;
 }
 
 export interface MachineOperatorOut {
@@ -745,6 +758,7 @@ export interface TicketForMachine {
 
 export interface MachinePageData extends Machine {
   open_tickets: TicketForMachine[];
+  kiosk_layout?: { i: string; x: number; y: number; w: number; h: number }[] | null;
 }
 
 export interface StopCreateRequest {

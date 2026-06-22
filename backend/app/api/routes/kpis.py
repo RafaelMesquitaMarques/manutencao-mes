@@ -9,7 +9,7 @@ from app.db.session import get_db
 from app.models.models import (
     WorkOrder, WorkOrderStatus, WorkOrderType,
     Equipment, LaborRecord, WOCost, User, Machine, MachineIntervention,
-    WOPart, InterventionPart,
+    WOPart, InterventionPart, MachineStop, MachineProductionLog,
 )
 from app.core.security import get_current_user
 
@@ -118,6 +118,20 @@ async def get_kpi_summary(
         repair_samples.append(float(r.intervention_duration_minutes) / 60.0)
     mttr = sum(repair_samples) / len(repair_samples) if repair_samples else 0.0
 
+    # MTTA — mean time to attend: how long maintenance waits between the call and
+    # the technician starting the intervention (response/wait time).
+    resp_rows = (await db.execute(
+        select(MachineIntervention.response_time_minutes).where(
+            and_(
+                i_cond,
+                MachineIntervention.response_time_minutes.isnot(None),
+                MachineIntervention.called_at >= since,
+            )
+        )
+    )).all()
+    resp_samples = [float(r.response_time_minutes) for r in resp_rows]
+    mtta_minutes = sum(resp_samples) / len(resp_samples) if resp_samples else 0.0
+
     backlog_r = await db.execute(
         select(func.count(WorkOrder.id)).where(
             and_(
@@ -159,11 +173,92 @@ async def get_kpi_summary(
     total_cost = float(cost_r.scalar() or 0.0)
     total_cost += await _parts_cost(db, since, m_cond, i_cond)
 
+    # ── Availability & MTBF ──────────────────────────────────────────────────
+    # Downtime = corrective-WO downtime + operator-logged machine stops in the period.
+    wo_downtime = (await db.execute(
+        select(func.sum(WorkOrder.downtime_hours)).where(
+            and_(m_cond, WorkOrder.downtime_hours.isnot(None), WorkOrder.opened_at >= since)
+        )
+    )).scalar() or 0.0
+    stop_cond = (MachineStop.machine_id == machine_id) if machine_id else true()
+    stop_minutes = (await db.execute(
+        select(func.sum(MachineStop.duration_minutes)).where(
+            and_(stop_cond, MachineStop.started_at >= since, MachineStop.duration_minutes.isnot(None))
+        )
+    )).scalar() or 0
+    downtime_hours = float(wo_downtime) + float(stop_minutes) / 60.0
+
+    # Failures = corrective work orders opened in the period (drives MTBF).
+    failures = (await db.execute(
+        select(func.count(WorkOrder.id)).where(
+            and_(m_cond, WorkOrder.type == WorkOrderType.corrective, WorkOrder.opened_at >= since)
+        )
+    )).scalar() or 0
+
+    # Capacity = (1 machine | all machines) × calendar hours of the period.
+    if machine_id:
+        scope_machines = 1
+    else:
+        scope_machines = (await db.execute(select(func.count(Machine.id)))).scalar() or 1
+    capacity_hours = max(scope_machines, 1) * period_days * 24.0
+    operating_hours = max(capacity_hours - downtime_hours, 0.0)
+    availability = round(operating_hours / capacity_hours * 100, 1) if capacity_hours > 0 else 0.0
+    mtbf_hours = round(operating_hours / failures, 1) if failures > 0 else round(operating_hours, 1)
+
+    # ── Production KPIs + live status (machine-scoped) ───────────────────────
+    # Parts/hour, quality and OEE come from machine_production_logs (fed by the
+    # shop floor). They read 0 until the plant sends production data, then the
+    # card lights up automatically. Status/operator are the machine's live state.
+    parts_per_hour = 0.0
+    quality_pct = 0.0
+    oee_pct = 0.0
+    current_status = None
+    operator = None
+    if machine_id:
+        machine = await db.get(Machine, machine_id)
+        if machine:
+            current_status = (
+                machine.current_status.value
+                if hasattr(machine.current_status, "value")
+                else str(machine.current_status or "")
+            )
+            operator = machine.current_operator
+        prod = (await db.execute(
+            select(
+                func.coalesce(func.sum(MachineProductionLog.actual_count), 0),
+                func.coalesce(func.sum(MachineProductionLog.reject_count), 0),
+                func.coalesce(func.sum(MachineProductionLog.target_count), 0),
+            ).where(and_(
+                MachineProductionLog.machine_id == machine_id,
+                MachineProductionLog.date >= since.date(),
+            ))
+        )).first()
+        total_actual = float(prod[0] or 0)
+        total_reject = float(prod[1] or 0)
+        total_target = float(prod[2] or 0)
+        if operating_hours > 0:
+            parts_per_hour = round(total_actual / operating_hours, 1)
+        if total_actual > 0:
+            quality_pct = round((total_actual - total_reject) / total_actual * 100, 1)
+        # OEE = Availability × Performance × Quality (performance capped at 100%)
+        performance = min(total_actual / total_target, 1.0) if total_target > 0 else 0.0
+        oee_pct = round((availability / 100.0) * performance * (quality_pct / 100.0) * 100, 1)
+
     return {
         "mttr_hours": round(float(mttr), 2),
+        "mtta_minutes": round(float(mtta_minutes), 1),
+        "mtbf_hours": mtbf_hours,
+        "availability_pct": availability,
+        "downtime_hours": round(downtime_hours, 2),
+        "failures": int(failures),
         "backlog_count": int(backlog),
         "pm_compliance_pct": pm_compliance,
         "total_cost_cad": round(float(total_cost), 2),
+        "parts_per_hour": parts_per_hour,
+        "quality_pct": quality_pct,
+        "oee_pct": oee_pct,
+        "current_status": current_status,
+        "operator": operator,
         "period_days": period_days,
     }
 

@@ -950,7 +950,7 @@ function PmTemplatesConfigTab({ equipmentId }: { equipmentId: string }) {
   }, [equipmentId]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { fetchEquipment({ limit: '500' }).then(setAllEquipment).catch(() => {}); }, []);
+  useEffect(() => { fetchEquipment({ limit: '1000' }).then(setAllEquipment).catch(() => {}); }, []);
 
   const openClone = (id: string) => { setCloneFor(id); setCloneTargets([]); setCloneMsg(''); };
   const toggleCloneTarget = (id: string) =>
@@ -2177,7 +2177,10 @@ function ParentMachineRow({ equipmentId, currentParentId, onSaved }: {
   const [draft, setDraft] = useState(currentParentId ?? '');
   const [saving, setSaving] = useState(false);
   const [machines, setMachines] = useState<Equipment[]>([]);
-  useEffect(() => { fetchEquipment({ limit: '500' }).then(setMachines).catch(() => {}); }, []);
+  // Parents are production machines (orbit hosts). Fetch only those: ~dozens, and it keeps us
+  // under the endpoint's limit cap (le=200) — requesting all equipment (>200) 422s and the list
+  // silently came back empty.
+  useEffect(() => { fetchEquipment({ asset_type: 'production', limit: '200' }).then(setMachines).catch(() => {}); }, []);
   const parentName = machines.find((m) => m.id === currentParentId)?.name ?? null;
   const options = machines
     .filter((m) => m.id !== equipmentId && (m.subtype ?? '').toLowerCase() !== 'cobot' && (m.subtype ?? '').toLowerCase() !== 'conveyor')

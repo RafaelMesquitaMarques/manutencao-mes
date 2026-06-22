@@ -235,10 +235,10 @@ export default function SupervisorDashboard() {
               {lastUpdatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
             </span>
           )}
-          <Link to="/maintenance/parts-approval"
+          <Link to="/maintenance/wo-approval"
             className="btn-secondary py-1.5 px-3 flex items-center gap-1.5 text-sm">
             <Package size={14} />
-            Parts Approval
+            {t('nav.woApproval')}
           </Link>
           <button onClick={manualRefresh} disabled={loading || isRefreshing} className="btn-secondary py-1.5 px-3 flex items-center gap-1.5">
             <RefreshCw size={14} className={(loading || isRefreshing) ? 'animate-spin' : ''} />

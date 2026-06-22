@@ -101,8 +101,22 @@ export const closeMachineStop = async (
   await axios.patch(`/api/machines/${ref}/stops/${stopId}/close`, payload);
 };
 
-export const fetchTodayStops = async (ref: string): Promise<MachineStopOut[]> => {
-  const { data } = await axios.get<MachineStopOut[]>(`/api/machines/${ref}/stops/today`);
+export const fetchTodayStops = async (
+  ref: string,
+  range?: { start: string; end: string },
+): Promise<MachineStopOut[]> => {
+  const { data } = await axios.get<MachineStopOut[]>(`/api/machines/${ref}/stops/today`, {
+    params: range ? { start: range.start, end: range.end } : undefined,
+  });
+  return data;
+};
+
+export const reclassifyStop = async (
+  ref: string,
+  stopId: string,
+  body: { stop_category_id?: string | null; stop_subcategory_id?: string | null; comments?: string },
+): Promise<{ status: string }> => {
+  const { data } = await axios.patch(`/api/machines/${ref}/stops/${stopId}/reclassify`, body);
   return data;
 };
 

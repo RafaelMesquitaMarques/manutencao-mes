@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
 import { fetchMyPermissions } from './api/auth';
 import ProtectedRoute from './pages/ProtectedRoute';
@@ -42,7 +42,6 @@ import MaintenanceDashboard from './pages/MaintenanceDashboard/MaintenanceDashbo
 import SupervisorDashboard from './pages/MaintenanceDashboard/SupervisorDashboard';
 import MachinePage from './pages/Machines/MachinePage';
 import FactoryMap from './pages/FactoryMap/FactoryMap';
-import MachineOperatorPage from './pages/MachineView/MachineOperatorPage';
 import MyWorkPage from './pages/MyWork/MyWorkPage';
 import UsersSetup from './pages/Settings/UsersSetup';
 import EscalationSettingsPage from './pages/Settings/EscalationSettings';
@@ -53,7 +52,13 @@ import ForcedChangePassword from './pages/Settings/ForcedChangePassword';
 import AcceptInvite from './pages/AcceptInvite';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
-import PartsApproval from './pages/Supervisor/PartsApproval';
+import WOApproval from './pages/Supervisor/WOApproval';
+
+// Old standalone intervention URL → unified kiosk (machine ref resolves by id or slug).
+function MachineIdRedirect() {
+  const { machine_id } = useParams<{ machine_id: string }>();
+  return <Navigate to={`/machines/${machine_id}`} replace />;
+}
 
 const App = () => {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -76,7 +81,9 @@ const App = () => {
         }
       />
       <Route path="/machines/:slug" element={<MachinePage />} />
-      <Route path="/machine/:machine_id" element={<MachineOperatorPage />} />
+      {/* Unified kiosk: the old standalone intervention page now redirects into MachinePage
+          (which embeds the mechanic flow). A machine ref resolves by id OR slug server-side. */}
+      <Route path="/machine/:machine_id" element={<MachineIdRedirect />} />
       <Route path="/accept-invite" element={<AcceptInvite />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
@@ -124,7 +131,9 @@ const App = () => {
         <Route path="maintenance/dashboard"      element={<RequireView resource="maintenance"><MaintenanceDashboard /></RequireView>} />
         <Route path="maintenance/supervisor"     element={<RequireView resource="supervisor_view"><SupervisorDashboard /></RequireView>} />
         <Route path="factory-map"                element={<RequireView resource="machines"><FactoryMap /></RequireView>} />
-        <Route path="maintenance/parts-approval" element={<PartsApproval />} />
+        <Route path="maintenance/wo-approval" element={<WOApproval />} />
+        {/* legacy path → keep old links working */}
+        <Route path="maintenance/parts-approval" element={<WOApproval />} />
         <Route path="machines"              element={<Navigate to="/equipment" replace />} />
         <Route path="my-work"               element={<MyWorkPage />} />
         <Route path="settings/machines"           element={<Navigate to="/equipment" replace />} />

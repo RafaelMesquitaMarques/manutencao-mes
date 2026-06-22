@@ -1,4 +1,7 @@
-version: "3.9"
+# Pinned so volumes/containers stay under the original project name
+# even though the folder is now C:\KAIZO (was Z:\manutencao-mes\manutencao-mes).
+# This preserves the existing data volumes (manutencao-mes_db_data, etc.).
+name: manutencao-mes
 
 services:
 

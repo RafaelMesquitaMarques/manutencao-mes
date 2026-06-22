@@ -77,6 +77,7 @@ class MachinePatch(BaseModel):
     is_active: Optional[bool] = None
     page_slug: Optional[str] = None
     shifts_config: Optional[dict] = None
+    kiosk_layout: Optional[list] = None
 
 
 # ── Machine page ───────────────────────────────────────────────────────────────
@@ -123,6 +124,8 @@ class MachinePageData(BaseModel):
     hourly_rate:             Optional[float] = None
     hourly_rate_currency:    Optional[str] = "CAD"
     target_count_per_shift:  Optional[int] = None
+    kiosk_layout:            Optional[list] = None
+    shifts_config:           Optional[dict] = None
     open_tickets:            List[TicketForMachine] = []
 
 
@@ -401,6 +404,11 @@ class MachineStopOut(BaseModel):
     ticket_id:        Optional[UUID]     = None
     category:         Optional[StopCategoryMini] = None
     subcategory:      Optional[StopSubcategoryMini] = None
+    # Linked maintenance intervention timing — lets the timeline split a maintenance
+    # stop into the yellow "wait" (call→start) and the purple "intervention" (start→end).
+    intervention_started_at:   Optional[datetime] = None
+    intervention_completed_at: Optional[datetime] = None
+    wait_minutes:              Optional[float]    = None
 
 
 # ── Machine Operators ─────────────────────────────────────────────────────────

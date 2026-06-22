@@ -15,7 +15,7 @@ from app.models.models import (
     MachineStop, MachineOperator, StopCategory, StopSubcategory,
     RejectCategory, RejectSubcategory, RejectLog,
     AlertShift, JobOrder, JobOrderSource, MachineProductionLog,
-    MachineHistory, Technician,
+    MachineHistory, Technician, MachineIntervention,
 )
 from app.schemas.maintenance import (
     MachineOut, MachineListResponse, MachinePageData, TicketForMachine,
@@ -74,6 +74,10 @@ async def _get_machine(ref: str, db: AsyncSession) -> Machine:
 
 def _machine_to_page_data(machine: Machine, open_tickets: list) -> MachinePageData:
     cstatus = machine.current_status.value if hasattr(machine.current_status, "value") else str(machine.current_status or MachineStatus.running)
+    # An active maintenance ticket/intervention means the machine is NOT simply "running"
+    # — reflect it in the kiosk header (matches the factory-map effective status).
+    if open_tickets and cstatus == "running":
+        cstatus = "maintenance"
     cshift  = machine.current_shift.value if machine.current_shift and hasattr(machine.current_shift, "value") else (str(machine.current_shift) if machine.current_shift else None)
     clang   = machine.page_language.value if machine.page_language and hasattr(machine.page_language, "value") else (str(machine.page_language) if machine.page_language else "fr")
     currency = machine.hourly_rate_currency.value if machine.hourly_rate_currency and hasattr(machine.hourly_rate_currency, "value") else (str(machine.hourly_rate_currency) if machine.hourly_rate_currency else "CAD")
@@ -102,6 +106,8 @@ def _machine_to_page_data(machine: Machine, open_tickets: list) -> MachinePageDa
         display_name=machine.display_name,
         hourly_rate=getattr(machine, "hourly_rate", None),
         hourly_rate_currency=currency,
+        kiosk_layout=getattr(machine, "kiosk_layout", None),
+        shifts_config=getattr(machine, "shifts_config", None),
         open_tickets=open_tickets,
     )
 
@@ -390,16 +396,20 @@ async def create_stop(
     machine = await _get_machine(ref, db)
     now = datetime.now(timezone.utc)
 
-    # Determine if this stop triggers maintenance
+    # Resolve the category type — drives both the maintenance trigger and the machine
+    # status color (planned→blue, unplanned→red, maintenance→yellow, none→pink).
     triggers = False
+    cat_type = None
+    if data.stop_category_id:
+        cat = await db.get(StopCategory, data.stop_category_id)
+        if cat:
+            cat_type = cat.type.value if hasattr(cat.type, "value") else str(cat.type)
     if data.stop_subcategory_id:
         sub = await db.get(StopSubcategory, data.stop_subcategory_id)
         if sub and sub.triggers_maintenance:
             triggers = True
-    elif data.stop_category_id:
-        cat = await db.get(StopCategory, data.stop_category_id)
-        if cat and cat.type.value == "maintenance":
-            triggers = True
+    if not triggers and cat_type == "maintenance":
+        triggers = True
 
     shift_val = None
     if data.shift:
@@ -436,8 +446,12 @@ async def create_stop(
         ticket_number = ticket.ticket_number
         machine.current_status = MachineStatus.maintenance
         machine.last_maintenance_at = now
+    elif cat_type == "planned":
+        machine.current_status = MachineStatus.planned_stop
+    elif cat_type is None:
+        machine.current_status = MachineStatus.unjustified  # stop with no reason → pink
     else:
-        machine.current_status = MachineStatus.stopped
+        machine.current_status = MachineStatus.stopped       # unplanned → red
 
     machine.last_stop_at = now
     db.add(stop)
@@ -488,16 +502,76 @@ async def close_stop(
     return {"status": "ok", "duration_minutes": stop.duration_minutes}
 
 
-@router.get("/{ref}/stops/today", response_model=List[MachineStopOut])
-async def today_stops(ref: str, db: AsyncSession = Depends(get_db)):
+@router.patch("/{ref}/stops/{stop_id}/reclassify")
+async def reclassify_stop(
+    ref: str,
+    stop_id: UUID,
+    data: MachineStopClose,
+    db: AsyncSession = Depends(get_db),
+):
+    """Change the CAUSE of an existing stop (clicked on the kiosk timeline).
+    A stop never becomes "running" again here (anti-cheat) and no maintenance
+    ticket is created — this only relabels the stop's category/subcategory. If the
+    stop is still ongoing, the machine's live status/color reflects the new cause."""
     machine = await _get_machine(ref, db)
-    today = date.today()
+    stop = await db.get(MachineStop, stop_id)
+    if not stop or stop.machine_id != machine.id:
+        raise HTTPException(404, "Stop not found")
+
+    stop.stop_category_id = data.stop_category_id
+    stop.stop_subcategory_id = data.stop_subcategory_id
+    if data.comments is not None:
+        stop.comments = data.comments
+    if data.justified_by:
+        stop.justified_by = data.justified_by
+
+    # Reflect the new cause in the machine's live status only while the stop is open.
+    if stop.ended_at is None:
+        cat_type = None
+        if stop.stop_category_id:
+            cat = await db.get(StopCategory, stop.stop_category_id)
+            if cat:
+                cat_type = cat.type.value if hasattr(cat.type, "value") else str(cat.type)
+        if cat_type == "maintenance":
+            machine.current_status = MachineStatus.maintenance
+        elif cat_type == "planned":
+            machine.current_status = MachineStatus.planned_stop
+        elif cat_type is None:
+            machine.current_status = MachineStatus.unjustified
+        else:
+            machine.current_status = MachineStatus.stopped
+
+    await db.commit()
+    return {"status": "ok"}
+
+
+@router.get("/{ref}/stops/today", response_model=List[MachineStopOut])
+async def today_stops(
+    ref: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Stops for the machine. Defaults to today; pass ISO `start`/`end` to fetch a
+    specific window (used by the kiosk timeline's shift navigation, supervisor+)."""
+    machine = await _get_machine(ref, db)
+    conds = [MachineStop.machine_id == machine.id]
+    if start and end:
+        try:
+            start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+            # Include stops that overlap the window (started before end AND not ended before start)
+            conds.append(MachineStop.started_at < end_dt)
+            conds.append(
+                (MachineStop.ended_at.is_(None)) | (MachineStop.ended_at > start_dt)
+            )
+        except (ValueError, TypeError):
+            conds.append(func.date(MachineStop.started_at) == date.today())
+    else:
+        conds.append(func.date(MachineStop.started_at) == date.today())
     r = await db.execute(
         select(MachineStop)
-        .where(
-            MachineStop.machine_id == machine.id,
-            func.date(MachineStop.started_at) == today,
-        )
+        .where(*conds)
         .order_by(MachineStop.started_at)
     )
     stops = r.scalars().all()
@@ -519,6 +593,19 @@ async def today_stops(ref: str, db: AsyncSession = Depends(get_db)):
                     id=sub.id, name=sub.name, icon=sub.icon, color=sub.color,
                     triggers_maintenance=sub.triggers_maintenance,
                 )
+        # Linked intervention timing (for the timeline's yellow wait → purple work split).
+        interv_started = interv_completed = wait_min = None
+        if s.ticket_id:
+            iv = (await db.execute(
+                select(MachineIntervention)
+                .where(MachineIntervention.ticket_id == s.ticket_id)
+                .order_by(MachineIntervention.called_at.desc())
+                .limit(1)
+            )).scalar_one_or_none()
+            if iv:
+                interv_started = iv.started_at
+                interv_completed = iv.completed_at
+                wait_min = iv.response_time_minutes
         result.append(MachineStopOut(
             id=s.id, machine_id=s.machine_id,
             started_at=s.started_at, ended_at=s.ended_at,
@@ -526,6 +613,9 @@ async def today_stops(ref: str, db: AsyncSession = Depends(get_db)):
             comments=s.comments, justified_by=s.justified_by,
             ticket_id=s.ticket_id,
             category=cat_mini, subcategory=sub_mini,
+            intervention_started_at=interv_started,
+            intervention_completed_at=interv_completed,
+            wait_minutes=wait_min,
         ))
     return result
 
@@ -702,17 +792,18 @@ async def get_machine_stop_categories(ref: str, db: AsyncSession = Depends(get_d
             id=c.id, machine_id=c.machine_id, name=c.name,
             name_en=getattr(c, "name_en", None), name_fr=getattr(c, "name_fr", None), name_es=getattr(c, "name_es", None),
             type=c.type, icon=c.icon, color=c.color,
-            comment_required=getattr(c, "comment_required", False),
-            triggers_maintenance=getattr(c, "triggers_maintenance", False),
-            is_active=c.is_active, is_global=getattr(c, "is_global", False),
+            comment_required=bool(getattr(c, "comment_required", False)),
+            triggers_maintenance=bool(getattr(c, "triggers_maintenance", False)),
+            is_active=c.is_active if c.is_active is not None else True,
+            is_global=bool(getattr(c, "is_global", False)),
             sort_order=c.sort_order,
             subcategories=[StopSubcategoryOut(
                 id=s.id, category_id=s.category_id, name=s.name,
                 name_en=getattr(s, "name_en", None), name_fr=getattr(s, "name_fr", None), name_es=getattr(s, "name_es", None),
                 icon=s.icon, color=s.color,
-                comment_required=getattr(s, "comment_required", False),
-                triggers_maintenance=s.triggers_maintenance,
-                is_active=s.is_active, sort_order=s.sort_order,
+                comment_required=bool(getattr(s, "comment_required", False)),
+                triggers_maintenance=bool(getattr(s, "triggers_maintenance", False)),
+                is_active=s.is_active if s.is_active is not None else True, sort_order=s.sort_order,
             ) for s in subs],
         ))
     return result
@@ -869,13 +960,14 @@ async def get_machine_reject_categories(ref: str, db: AsyncSession = Depends(get
         result.append(RejectCategoryOut(
             id=c.id, machine_id=c.machine_id, name=c.name,
             name_en=c.name_en, name_fr=c.name_fr, name_es=c.name_es,
-            icon=c.icon, color=c.color, comment_required=c.comment_required,
-            is_active=c.is_active, is_global=c.is_global, sort_order=c.sort_order,
+            icon=c.icon, color=c.color, comment_required=bool(c.comment_required),
+            is_active=c.is_active if c.is_active is not None else True,
+            is_global=bool(c.is_global), sort_order=c.sort_order,
             subcategories=[RejectSubcategoryOut(
                 id=s.id, category_id=s.category_id, name=s.name,
                 name_en=s.name_en, name_fr=s.name_fr, name_es=s.name_es,
-                icon=s.icon, color=s.color, comment_required=s.comment_required,
-                is_active=s.is_active, sort_order=s.sort_order,
+                icon=s.icon, color=s.color, comment_required=bool(s.comment_required),
+                is_active=s.is_active if s.is_active is not None else True, sort_order=s.sort_order,
             ) for s in subs],
         ))
     return result

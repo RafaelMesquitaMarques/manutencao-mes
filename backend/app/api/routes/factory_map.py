@@ -154,7 +154,10 @@ async def get_factory_map(
     equipment = (await db.execute(eq_query)).scalars().all()
 
     machines = (await db.execute(select(Machine))).scalars().all()
-    machine_by_eq = {str(m.equipment_id): m for m in machines if m.equipment_id}
+    # Only ACTIVE machines attach live status to their asset; the equipment↔machine
+    # auto-sync leaves inactive (is_active=False) machine shells when an asset switches
+    # production→auxiliary, and those must not make a cobot look like a machine.
+    machine_by_eq = {str(m.equipment_id): m for m in machines if m.equipment_id and m.is_active}
 
     # open ticket per machine (for the live badge)
     open_rows = (await db.execute(
@@ -183,11 +186,18 @@ async def get_factory_map(
         return s
 
     # Parent machines can be outside the current asset_type filter → fetch their status.
+    # Use the EFFECTIVE status (incl. open maintenance call) so a machine that is amber from a
+    # ticket — not just one whose stored status flipped — still pulls its cobots/conveyors down.
     parent_ids = {e.parent_equipment_id for e in equipment if e.parent_equipment_id}
     parent_status: dict = {}
     if parent_ids:
         for pe in (await db.execute(select(Equipment).where(Equipment.id.in_(parent_ids)))).scalars().all():
-            parent_status[pe.id] = _own_status(pe.id, pe.status.value if pe.status else None, machine_by_eq.get(str(pe.id)))
+            pm = machine_by_eq.get(str(pe.id))
+            p_ticket = open_by_machine.get(str(pm.id)) if pm else None
+            parent_status[pe.id] = _effective_status(
+                _own_status(pe.id, pe.status.value if pe.status else None, pm),
+                p_ticket is not None,
+            )
 
     items = []
     for e in equipment:
@@ -390,7 +400,10 @@ async def _status_payload(db: AsyncSession, plant_id) -> list[dict]:
         select(Equipment).where(Equipment.plant_id == plant_id, Equipment.active == True)
     )).scalars().all()
     machines = (await db.execute(select(Machine))).scalars().all()
-    machine_by_eq = {str(m.equipment_id): m for m in machines if m.equipment_id}
+    # Only ACTIVE machines attach live status to their asset; the equipment↔machine
+    # auto-sync leaves inactive (is_active=False) machine shells when an asset switches
+    # production→auxiliary, and those must not make a cobot look like a machine.
+    machine_by_eq = {str(m.equipment_id): m for m in machines if m.equipment_id and m.is_active}
     open_rows = (await db.execute(
         select(MaintenanceTicket.machine_id, MaintenanceTicket.id, MaintenanceTicket.ticket_number)
         .where(MaintenanceTicket.status.in_(_OPEN_TICKET_STATUSES))
@@ -418,7 +431,12 @@ async def _status_payload(db: AsyncSession, plant_id) -> list[dict]:
     parent_status: dict = {}
     if parent_ids:
         for pe in (await db.execute(select(Equipment).where(Equipment.id.in_(parent_ids)))).scalars().all():
-            parent_status[pe.id] = _own(pe.id, pe.status.value if pe.status else None, machine_by_eq.get(str(pe.id)))
+            pm = machine_by_eq.get(str(pe.id))
+            p_ticket = open_by_machine.get(str(pm.id)) if pm else None
+            parent_status[pe.id] = _effective_status(
+                _own(pe.id, pe.status.value if pe.status else None, pm),
+                p_ticket is not None,
+            )
 
     out = []
     for e in equipment:
