@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams } from 'react-router-dom';
 import { AlertTriangle, CheckCircle2, X, Play, ChevronLeft, ChevronRight, User, Clock, Cog } from 'lucide-react';
 import {
@@ -443,9 +444,12 @@ export function StopTimeline({
         const W = 240;
         const left = tip.x + 16 + W > window.innerWidth ? tip.x - 16 - W : tip.x + 16;
         const top = Math.min(tip.y + 16, window.innerHeight - 160);
-        return (
+        // Rendered via a portal to <body> so the fixed tooltip escapes the
+        // react-grid-layout panel's CSS transform (a transformed ancestor becomes
+        // the containing block for `fixed`, which pushed the card down & behind).
+        return createPortal(
           <div
-            className="fixed z-[80] pointer-events-none rounded-lg border border-white/10 bg-[#2b2f36]/95 px-3 py-2 text-xs text-gray-200 shadow-xl backdrop-blur-sm"
+            className="fixed z-[9999] pointer-events-none rounded-lg border border-white/10 bg-[#2b2f36]/95 px-3 py-2 text-xs text-gray-200 shadow-xl backdrop-blur-sm"
             style={{ left, top, minWidth: W, maxWidth: W }}
           >
             <div className="text-[11px] text-gray-400">{hms(s)} - {tip.stop.ended_at ? hms(e) : '…'}</div>
@@ -473,7 +477,8 @@ export function StopTimeline({
             {onSegmentClick && hint && (
               <div className="mt-1.5 border-t border-white/10 pt-1.5 text-[10px] text-gray-400">{hint}</div>
             )}
-          </div>
+          </div>,
+          document.body,
         );
       })()}
     </div>
