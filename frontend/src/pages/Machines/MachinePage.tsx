@@ -805,14 +805,6 @@ export default function MachinePage() {
     load();
   };
 
-  // Signal-driven machines: the stop button (when stopped) lets the operator set or
-  // change the reason on the detected open stop — reuses the reclassify modal.
-  const openStopReason = () => {
-    const open = [...timelineStops, ...stops].find((s) => !s.ended_at);
-    if (open) { setReclassCat(null); setReclassTarget(open); }
-    else openStopModal();
-  };
-
   const handleJobSubmit = async () => {
     if (!slug) return;
     await updateMachineJob(slug, jobInput || null);
@@ -1081,9 +1073,10 @@ export default function MachinePage() {
                 <span className="text-[10px] text-green-500/70 leading-tight">{t.autoRestart}</span>
               </div>
             ) : (
-              // Signal-driven & stopped: let the operator set/change the stop reason.
+              // Signal-driven & stopped: add a NEW stop with its own reason (does
+              // not reclassify the current one). create_stop closes the open stop.
               <button
-                onClick={openStopReason}
+                onClick={openStopModal}
                 className="w-36 h-36 rounded-full border-4 border-red-500/60 bg-red-500/15 hover:bg-red-500/25 text-red-400 flex flex-col items-center justify-center gap-1 transition-all active:scale-95 shadow-2xl shadow-red-500/10"
               >
                 <span className="text-4xl">⏹</span>

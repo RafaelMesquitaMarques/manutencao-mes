@@ -399,6 +399,25 @@ async def create_stop(
     machine = await _get_machine(ref, db)
     now = datetime.now(timezone.utc)
 
+    # A machine has one active stop at a time. Creating a new stop SEGMENTS the
+    # downtime: close any currently-open stop first, so "a new stop with another
+    # reason" (e.g. justifying a signal-detected stop with a different cause) never
+    # double-counts downtime or leaves two overlapping open stops. Maintenance
+    # stops with a live ticket are left alone (their own flow owns them).
+    open_stops = (await db.execute(
+        select(MachineStop).where(
+            MachineStop.machine_id == machine.id,
+            MachineStop.ended_at.is_(None),
+            MachineStop.ticket_id.is_(None),
+        )
+    )).scalars().all()
+    for prev in open_stops:
+        prev.ended_at = now
+        st = prev.started_at
+        if st and st.tzinfo is None:
+            st = st.replace(tzinfo=timezone.utc)
+        prev.duration_minutes = max(int((now - st).total_seconds() / 60), 0) if st else None
+
     # Resolve the category type — drives both the maintenance trigger and the machine
     # status color (planned→blue, unplanned→red, maintenance→yellow, none→pink).
     triggers = False
