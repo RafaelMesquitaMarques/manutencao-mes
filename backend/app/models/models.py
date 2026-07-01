@@ -1223,6 +1223,20 @@ class MachineProductionLog(Base):
     machine = relationship("Machine", back_populates="production_logs")
 
 
+class MachineProductionHourly(Base):
+    """Real per-hour production counts (ADAM feed) for the pieces/hour chart.
+    Complements machine_production_logs (which is per-shift, for OEE): this keeps
+    the actual hour each part was produced so the chart shows the true curve
+    instead of a synthetic spread. `hour` is truncated to the hour, in UTC."""
+    __tablename__ = "machine_production_hourly"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    machine_id   = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False, index=True)
+    hour         = Column(DateTime(timezone=True), nullable=False, index=True)
+    count        = Column(Integer, default=0)
+    reject_count = Column(Integer, default=0)
+
+
 class MaintenanceAlert(Base):
     __tablename__ = "maintenance_alerts"
 

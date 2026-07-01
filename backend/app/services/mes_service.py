@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.models.models import (
-    Machine, MachineStop, MachineProductionLog, AlertShift,
+    Machine, MachineStop, MachineProductionLog, MachineProductionHourly, AlertShift,
     StopCategory, StopCategoryType,
 )
 
@@ -142,6 +142,24 @@ class MesService:
             "quality_pct": log.quality_pct,
             "oee_pct": log.oee_pct,
         }
+
+    async def add_hourly_count(self, machine_id: UUID, hour_utc: datetime,
+                               count: int, reject: int = 0) -> None:
+        """Add parts to the real per-hour bucket (ADAM feed) for the pieces/hour
+        chart. `hour_utc` must be truncated to the hour (UTC). Does NOT commit."""
+        r = await self.db.execute(
+            select(MachineProductionHourly).where(
+                MachineProductionHourly.machine_id == machine_id,
+                MachineProductionHourly.hour == hour_utc,
+            )
+        )
+        bucket = r.scalar_one_or_none()
+        if not bucket:
+            bucket = MachineProductionHourly(
+                machine_id=machine_id, hour=hour_utc, count=0, reject_count=0)
+            self.db.add(bucket)
+        bucket.count = (bucket.count or 0) + max(0, count)
+        bucket.reject_count = max(0, (bucket.reject_count or 0) + reject)
 
     @staticmethod
     def _recompute_oee(log: MachineProductionLog) -> None:

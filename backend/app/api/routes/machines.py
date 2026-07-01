@@ -15,7 +15,7 @@ from app.models.models import (
     User, MachineStatus, AlertPriority,
     MachineStop, MachineOperator, StopCategory, StopSubcategory,
     RejectCategory, RejectSubcategory, RejectLog,
-    AlertShift, JobOrder, JobOrderSource, MachineProductionLog,
+    AlertShift, JobOrder, JobOrderSource, MachineProductionLog, MachineProductionHourly,
     MachineHistory, Technician, MachineIntervention,
 )
 from app.schemas.maintenance import (
@@ -642,6 +642,13 @@ async def ingest_production_count(
         machine.id, payload.count, payload.reject, shift_enum,
         default_target=machine.target_count_per_shift or 480, log_date=log_date,
     )
+    # Record the REAL hour each part was produced (UTC-truncated) so the pieces/hour
+    # chart shows the true curve, not a synthetic spread of the shift total.
+    ts_aware = payload.ts or datetime.now(timezone.utc)
+    if ts_aware.tzinfo is None:
+        ts_aware = ts_aware.replace(tzinfo=timezone.utc)
+    hour_utc = ts_aware.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    await svc.add_hourly_count(machine.id, hour_utc, payload.count, payload.reject)
     # Parts flowing ⇒ the machine is producing: keep the live status green.
     await apply_production_signal(db, machine, True)
     await db.commit()
@@ -872,6 +879,29 @@ async def production_hourly(
         q = q.where(MachineProductionLog.shift == shift_enum)
     total = int((await db.execute(q)).scalar() or 0)
 
+    # REAL per-hour buckets (ADAM feed) within the window. Each part is bucketed by
+    # the hour it was actually produced, so the chart shows the true curve.
+    real = (await db.execute(
+        select(MachineProductionHourly.hour, MachineProductionHourly.count).where(
+            MachineProductionHourly.machine_id == machine.id,
+            MachineProductionHourly.hour >= win_start,
+            MachineProductionHourly.hour < win_end,
+        )
+    )).all()
+    if real:
+        by_hour: dict = {}
+        for h, c in real:
+            hh = h if h.tzinfo else h.replace(tzinfo=timezone.utc)
+            key = hh.replace(minute=0, second=0, microsecond=0)
+            by_hour[key] = by_hour.get(key, 0) + int(c or 0)
+        hours = []
+        b = win_start.replace(minute=0, second=0, microsecond=0)
+        while b < win_end:
+            hours.append({"hour": b.isoformat(), "pieces": by_hour.get(b, 0)})
+            b = b + timedelta(hours=1)
+        return {"hours": hours, "shift_total": total or sum(by_hour.values())}
+
+    # No real hourly feed (demo/simulated machines) → synthetic spread of the total.
     seed = (machine.id.int + win_start.date().toordinal()) & 0xFFFFFFFF
     return {"hours": _derive_hourly(total, win_start, win_end, now, seed), "shift_total": total}
 
