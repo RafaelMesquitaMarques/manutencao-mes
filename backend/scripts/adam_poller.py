@@ -34,6 +34,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 
 from pymodbus.client import ModbusTcpClient
 
@@ -70,7 +71,9 @@ def post_count(api_base, ref, token, count):
     """POST produced-part pulses to KAIZO (adds to OEE + marks running).
     Returns the response dict on success, or None on failure."""
     url = f"{api_base.rstrip('/')}/api/machines/{ref}/production-count"
-    body = json.dumps({"count": count}).encode()
+    # Send our LOCAL timestamp (with offset) so the server attributes the parts to
+    # the same shift/date the operator's kiosk shows (shifts are local wall-clock).
+    body = json.dumps({"count": count, "ts": datetime.now().astimezone().isoformat()}).encode()
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("X-Signal-Token", token)

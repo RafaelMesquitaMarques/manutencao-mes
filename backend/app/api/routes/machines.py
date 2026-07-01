@@ -573,20 +573,48 @@ class ProductionCountIn(BaseModel):
     ts: Optional[datetime] = None
 
 
-def _current_shift_enum(machine, now: datetime) -> AlertShift:
-    """Which shift 'now' falls in, from the machine's shifts_config — same rule
-    as production_hourly (win_start hour → shift; full-day window → morning)."""
-    wins = shift_windows(machine.shifts_config, date.today())
-    win_start, win_end = next((w for w in wins if w[0] <= now < w[1]), wins[0])
-    span_h = (win_end - win_start).total_seconds() / 3600.0
-    hour = win_start.hour
-    if span_h >= 20:
+def _shift_bucket(start_hour: int) -> AlertShift:
+    """Map a shift's start hour to the shift enum — SAME buckets production_hourly
+    uses, so a count lands in the shift the kiosk chart reads back."""
+    if 4 <= start_hour < 12:
         return AlertShift.morning
-    if 4 <= hour < 12:
-        return AlertShift.morning
-    if 12 <= hour < 20:
+    if 12 <= start_hour < 20:
         return AlertShift.afternoon
     return AlertShift.night
+
+
+def _wall_clock(ts: Optional[datetime]) -> datetime:
+    """Plant-local wall-clock as a naive datetime. The poller/gateway sends its
+    LOCAL timestamp (with offset); we read the wall clock as-sent so shift/date
+    match what the operator's kiosk shows (its shifts_config is local wall-clock,
+    not UTC). Falls back to UTC now when no ts is provided."""
+    if ts is None:
+        return datetime.now(timezone.utc).replace(tzinfo=None)
+    return ts.replace(tzinfo=None)
+
+
+def _shift_and_date_for(machine, wall: datetime):
+    """(shift, date) a wall-clock instant belongs to, per the machine's
+    shifts_config windows (local wall-clock, overnight-aware)."""
+    cur = wall.hour * 60 + wall.minute
+    for cfg in (machine.shifts_config or {}).values():
+        if not isinstance(cfg, dict):
+            continue
+        try:
+            sh, sm = [int(x) for x in str(cfg.get("start", "")).split(":")[:2]]
+            eh, em = [int(x) for x in str(cfg.get("end", "")).split(":")[:2]]
+        except (ValueError, TypeError):
+            continue
+        s, e = sh * 60 + sm, eh * 60 + em
+        if e > s:                                  # same-day window
+            if s <= cur < e:
+                return _shift_bucket(sh), wall.date()
+        else:                                      # overnight window
+            if cur >= s:
+                return _shift_bucket(sh), wall.date()
+            if cur < e:
+                return _shift_bucket(sh), wall.date() - timedelta(days=1)
+    return AlertShift.morning, wall.date()         # fallback (no window matched)
 
 
 @router.post("/{ref}/production-count")
@@ -607,17 +635,18 @@ async def ingest_production_count(
     if x_signal_token != machine.signal_ingest_token:
         raise HTTPException(status_code=401, detail="Invalid signal token")
 
-    now = datetime.now(timezone.utc)
-    shift_enum = _current_shift_enum(machine, now)
+    wall = _wall_clock(payload.ts)
+    shift_enum, log_date = _shift_and_date_for(machine, wall)
     svc = MesService(db)
     totals = await svc.add_production(
         machine.id, payload.count, payload.reject, shift_enum,
-        default_target=machine.target_count_per_shift or 480,
+        default_target=machine.target_count_per_shift or 480, log_date=log_date,
     )
     # Parts flowing ⇒ the machine is producing: keep the live status green.
     await apply_production_signal(db, machine, True)
     await db.commit()
-    return {"machine_id": str(machine.id), "shift": shift_enum.value, **totals}
+    return {"machine_id": str(machine.id), "shift": shift_enum.value,
+            "date": log_date.isoformat(), **totals}
 
 
 @router.patch("/{ref}/stops/{stop_id}/reclassify")
