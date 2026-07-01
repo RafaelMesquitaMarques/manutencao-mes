@@ -11,7 +11,7 @@ export type WorkOrderStatus = 'open' | 'in_progress' | 'on_hold' | 'completed' |
 export type WorkOrderType = 'corrective' | 'preventive' | 'predictive' | 'inspection' | 'improvement';
 export type Priority = 'low' | 'medium' | 'high' | 'critical';
 export type WorkOrderSource = 'manual' | 'ticket' | 'pm';
-export type MachineStatus = 'running' | 'stopped' | 'maintenance' | 'idle' | 'planned_stop';
+export type MachineStatus = 'running' | 'stopped' | 'maintenance' | 'idle' | 'planned_stop' | 'unjustified' | 'intervention';
 export type StopCategoryType = 'planned' | 'unplanned' | 'maintenance';
 export type OperatorShift = 'morning' | 'afternoon' | 'night' | 'all';
 export type PageLanguage = 'en' | 'fr' | 'es';
@@ -793,6 +793,7 @@ export interface TicketForMachine {
 export interface MachinePageData extends Machine {
   open_tickets: TicketForMachine[];
   kiosk_layout?: { i: string; x: number; y: number; w: number; h: number }[] | null;
+  signal_driven?: boolean;
 }
 
 export interface StopCreateRequest {

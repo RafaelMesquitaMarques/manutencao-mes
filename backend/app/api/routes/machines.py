@@ -110,6 +110,7 @@ def _machine_to_page_data(machine: Machine, open_tickets: list) -> MachinePageDa
         hourly_rate_currency=currency,
         kiosk_layout=getattr(machine, "kiosk_layout", None),
         shifts_config=getattr(machine, "shifts_config", None),
+        signal_driven=bool(getattr(machine, "signal_ingest_token", None)),
         open_tickets=open_tickets,
     )
 
@@ -398,6 +399,25 @@ async def create_stop(
     machine = await _get_machine(ref, db)
     now = datetime.now(timezone.utc)
 
+    # A machine has one active stop at a time. Creating a new stop SEGMENTS the
+    # downtime: close any currently-open stop first, so "a new stop with another
+    # reason" (e.g. justifying a signal-detected stop with a different cause) never
+    # double-counts downtime or leaves two overlapping open stops. Maintenance
+    # stops with a live ticket are left alone (their own flow owns them).
+    open_stops = (await db.execute(
+        select(MachineStop).where(
+            MachineStop.machine_id == machine.id,
+            MachineStop.ended_at.is_(None),
+            MachineStop.ticket_id.is_(None),
+        )
+    )).scalars().all()
+    for prev in open_stops:
+        prev.ended_at = now
+        st = prev.started_at
+        if st and st.tzinfo is None:
+            st = st.replace(tzinfo=timezone.utc)
+        prev.duration_minutes = max(int((now - st).total_seconds() / 60), 0) if st else None
+
     # Resolve the category type — drives both the maintenance trigger and the machine
     # status color (planned→blue, unplanned→red, maintenance→yellow, none→pink).
     triggers = False
@@ -545,6 +565,88 @@ async def ingest_production_signal(
     await db.refresh(machine)
     status = machine.current_status.value if hasattr(machine.current_status, "value") else str(machine.current_status)
     return {"machine_id": str(machine.id), "running": payload.running, "status": status}
+
+
+class ProductionCountIn(BaseModel):
+    count: int = 1          # parts produced since the last reading (pulses)
+    reject: int = 0         # optional rejects to add
+    ts: Optional[datetime] = None
+
+
+def _shift_bucket(start_hour: int) -> AlertShift:
+    """Map a shift's start hour to the shift enum — SAME buckets production_hourly
+    uses, so a count lands in the shift the kiosk chart reads back."""
+    if 4 <= start_hour < 12:
+        return AlertShift.morning
+    if 12 <= start_hour < 20:
+        return AlertShift.afternoon
+    return AlertShift.night
+
+
+def _wall_clock(ts: Optional[datetime]) -> datetime:
+    """Plant-local wall-clock as a naive datetime. The poller/gateway sends its
+    LOCAL timestamp (with offset); we read the wall clock as-sent so shift/date
+    match what the operator's kiosk shows (its shifts_config is local wall-clock,
+    not UTC). Falls back to UTC now when no ts is provided."""
+    if ts is None:
+        return datetime.now(timezone.utc).replace(tzinfo=None)
+    return ts.replace(tzinfo=None)
+
+
+def _shift_and_date_for(machine, wall: datetime):
+    """(shift, date) a wall-clock instant belongs to, per the machine's
+    shifts_config windows (local wall-clock, overnight-aware)."""
+    cur = wall.hour * 60 + wall.minute
+    for cfg in (machine.shifts_config or {}).values():
+        if not isinstance(cfg, dict):
+            continue
+        try:
+            sh, sm = [int(x) for x in str(cfg.get("start", "")).split(":")[:2]]
+            eh, em = [int(x) for x in str(cfg.get("end", "")).split(":")[:2]]
+        except (ValueError, TypeError):
+            continue
+        s, e = sh * 60 + sm, eh * 60 + em
+        if e > s:                                  # same-day window
+            if s <= cur < e:
+                return _shift_bucket(sh), wall.date()
+        else:                                      # overnight window
+            if cur >= s:
+                return _shift_bucket(sh), wall.date()
+            if cur < e:
+                return _shift_bucket(sh), wall.date() - timedelta(days=1)
+    return AlertShift.morning, wall.date()         # fallback (no window matched)
+
+
+@router.post("/{ref}/production-count")
+async def ingest_production_count(
+    ref: str,
+    payload: ProductionCountIn,
+    db: AsyncSession = Depends(get_db),
+    x_signal_token: Optional[str] = Header(None, alias="X-Signal-Token"),
+):
+    """Ingest produced-part pulses from the machine's I/O (Advantech ADAM-6051
+    counter / DI). Each call adds `count` parts (and optional rejects) to today's
+    shift production log, recomputes OEE, and marks the machine running — the
+    production-COUNT counterpart of /production-signal (which only sets status).
+    Same provisional per-machine token auth (X-Signal-Token)."""
+    machine = await _get_machine(ref, db)
+    if not machine.signal_ingest_token:
+        raise HTTPException(status_code=401, detail="Signal ingest not provisioned for this machine")
+    if x_signal_token != machine.signal_ingest_token:
+        raise HTTPException(status_code=401, detail="Invalid signal token")
+
+    wall = _wall_clock(payload.ts)
+    shift_enum, log_date = _shift_and_date_for(machine, wall)
+    svc = MesService(db)
+    totals = await svc.add_production(
+        machine.id, payload.count, payload.reject, shift_enum,
+        default_target=machine.target_count_per_shift or 480, log_date=log_date,
+    )
+    # Parts flowing ⇒ the machine is producing: keep the live status green.
+    await apply_production_signal(db, machine, True)
+    await db.commit()
+    return {"machine_id": str(machine.id), "shift": shift_enum.value,
+            "date": log_date.isoformat(), **totals}
 
 
 @router.patch("/{ref}/stops/{stop_id}/reclassify")

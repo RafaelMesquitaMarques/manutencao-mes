@@ -126,6 +126,7 @@ class MachinePageData(BaseModel):
     target_count_per_shift:  Optional[int] = None
     kiosk_layout:            Optional[list] = None
     shifts_config:           Optional[dict] = None
+    signal_driven:           bool = False   # production status fed by I/O signal (ADAM) → no manual restart
     open_tickets:            List[TicketForMachine] = []
 
 
