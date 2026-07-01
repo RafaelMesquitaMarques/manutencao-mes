@@ -38,11 +38,18 @@ SLAVE_ID = 1   # ADAM unit/slave id (usually 1)
 
 
 def main():
-    ap = argparse.ArgumentParser(description="ADAM-6050 bench test")
+    ap = argparse.ArgumentParser(description="ADAM-6051 production-pulse counter (bench)")
     ap.add_argument("--ip", default="10.0.0.1", help="ADAM IP (default 10.0.0.1)")
     ap.add_argument("--port", type=int, default=502, help="Modbus TCP port (default 502)")
-    ap.add_argument("--interval", type=float, default=0.2, help="poll interval seconds (default 0.2)")
+    ap.add_argument("--interval", type=float, default=0.1, help="poll interval seconds (default 0.1)")
+    ap.add_argument("--channel", type=int, default=0, help="DI channel the pulse is wired to (default 0)")
+    ap.add_argument("--active", choices=["low", "high"], default="low",
+                    help="pulse level: 'low' = idle 1, pressed 0 (our bench). 'high' = idle 0, pressed 1")
     args = ap.parse_args()
+
+    ch = args.channel
+    # A "pulse" (one part produced) is the transition INTO the active level.
+    active_bit = 0 if args.active == "low" else 1
 
     client = ModbusTcpClient(args.ip, port=args.port, timeout=2)
     print(f"Connecting to ADAM at {args.ip}:{args.port} ...")
@@ -50,37 +57,38 @@ def main():
         print("  ✗ Could not connect. Check: cable, ADAM power, your PC IP is on "
               "the same subnet (e.g. 10.0.0.100/255.0.0.0), and `ping` works.")
         return
-    print("  ✓ Connected. Reading DI0..DI11. Trigger a channel by hand to see it react.")
+    print(f"  ✓ Connected. Counting production pulses on DI{ch} "
+          f"(active={args.active}). Press the button = +1 part.")
     print("  (Ctrl+C to stop)\n")
 
-    prev = [0] * DI_COUNT          # last state per channel (for edge detection)
-    edges = [0] * DI_COUNT         # rising-edge count per channel
+    prev = None                    # last state per channel (None until first read)
+    parts = 0                      # production count = pulses on the chosen channel
 
     try:
         while True:
-            rr = client.read_discrete_inputs(address=DI_START, count=DI_COUNT, slave=SLAVE_ID)
+            rr = client.read_discrete_inputs(address=DI_START, count=DI_COUNT, device_id=SLAVE_ID)
             if rr.isError():
                 # Some ADAM units expose DI as coils instead — fall back to FC01.
-                rr = client.read_coils(address=DI_START, count=DI_COUNT, slave=SLAVE_ID)
+                rr = client.read_coils(address=DI_START, count=DI_COUNT, device_id=SLAVE_ID)
             if rr.isError():
                 print(f"  read error: {rr}. Try the Adam/.NET Utility to confirm the unit responds.")
                 time.sleep(1)
                 continue
 
             bits = [1 if b else 0 for b in rr.bits[:DI_COUNT]]
-            for ch in range(DI_COUNT):
-                if prev[ch] == 0 and bits[ch] == 1:   # rising edge = one "pulse"
-                    edges[ch] += 1
-                prev[ch] = bits[ch]
-
-            states = " ".join(f"DI{ch}:{bits[ch]}" for ch in range(DI_COUNT))
-            counts = " ".join(f"c{ch}={edges[ch]}" for ch in range(DI_COUNT) if edges[ch])
-            print(f"\r{states}   | edges: {counts or '-'}        ", end="", flush=True)
+            if prev is None:
+                print(f"  idle state DI{ch} = {bits[ch]}  (expecting {1 - active_bit} at rest)\n")
+            else:
+                # Count only the edge INTO the active level = one pulse = one part.
+                if prev[ch] != active_bit and bits[ch] == active_bit:
+                    parts += 1
+                    print(f"  ● part #{parts}   (DI{ch}: {prev[ch]}->{bits[ch]})")
+            prev = bits
             time.sleep(args.interval)
     except KeyboardInterrupt:
-        print("\n\nStopped. Final edge counts:")
-        for ch in range(DI_COUNT):
-            print(f"  DI{ch}: {edges[ch]} rising edge(s)")
+        print(f"\n\nStopped. Total parts counted on DI{ch}: {parts}")
+        if parts == 0:
+            print("  (no channel ever changed — check the wiring / button)")
     finally:
         client.close()
 

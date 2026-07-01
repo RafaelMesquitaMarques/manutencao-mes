@@ -110,6 +110,7 @@ def _machine_to_page_data(machine: Machine, open_tickets: list) -> MachinePageDa
         hourly_rate_currency=currency,
         kiosk_layout=getattr(machine, "kiosk_layout", None),
         shifts_config=getattr(machine, "shifts_config", None),
+        signal_driven=bool(getattr(machine, "signal_ingest_token", None)),
         open_tickets=open_tickets,
     )
 
@@ -545,6 +546,59 @@ async def ingest_production_signal(
     await db.refresh(machine)
     status = machine.current_status.value if hasattr(machine.current_status, "value") else str(machine.current_status)
     return {"machine_id": str(machine.id), "running": payload.running, "status": status}
+
+
+class ProductionCountIn(BaseModel):
+    count: int = 1          # parts produced since the last reading (pulses)
+    reject: int = 0         # optional rejects to add
+    ts: Optional[datetime] = None
+
+
+def _current_shift_enum(machine, now: datetime) -> AlertShift:
+    """Which shift 'now' falls in, from the machine's shifts_config — same rule
+    as production_hourly (win_start hour → shift; full-day window → morning)."""
+    wins = shift_windows(machine.shifts_config, date.today())
+    win_start, win_end = next((w for w in wins if w[0] <= now < w[1]), wins[0])
+    span_h = (win_end - win_start).total_seconds() / 3600.0
+    hour = win_start.hour
+    if span_h >= 20:
+        return AlertShift.morning
+    if 4 <= hour < 12:
+        return AlertShift.morning
+    if 12 <= hour < 20:
+        return AlertShift.afternoon
+    return AlertShift.night
+
+
+@router.post("/{ref}/production-count")
+async def ingest_production_count(
+    ref: str,
+    payload: ProductionCountIn,
+    db: AsyncSession = Depends(get_db),
+    x_signal_token: Optional[str] = Header(None, alias="X-Signal-Token"),
+):
+    """Ingest produced-part pulses from the machine's I/O (Advantech ADAM-6051
+    counter / DI). Each call adds `count` parts (and optional rejects) to today's
+    shift production log, recomputes OEE, and marks the machine running — the
+    production-COUNT counterpart of /production-signal (which only sets status).
+    Same provisional per-machine token auth (X-Signal-Token)."""
+    machine = await _get_machine(ref, db)
+    if not machine.signal_ingest_token:
+        raise HTTPException(status_code=401, detail="Signal ingest not provisioned for this machine")
+    if x_signal_token != machine.signal_ingest_token:
+        raise HTTPException(status_code=401, detail="Invalid signal token")
+
+    now = datetime.now(timezone.utc)
+    shift_enum = _current_shift_enum(machine, now)
+    svc = MesService(db)
+    totals = await svc.add_production(
+        machine.id, payload.count, payload.reject, shift_enum,
+        default_target=machine.target_count_per_shift or 480,
+    )
+    # Parts flowing ⇒ the machine is producing: keep the live status green.
+    await apply_production_signal(db, machine, True)
+    await db.commit()
+    return {"machine_id": str(machine.id), "shift": shift_enum.value, **totals}
 
 
 @router.patch("/{ref}/stops/{stop_id}/reclassify")

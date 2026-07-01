@@ -103,6 +103,46 @@ class MesService:
         await self.db.refresh(log)
         return await self.get_today_rejects(machine_id)
 
+    async def add_production(self, machine_id: UUID, count: int, reject: int,
+                             shift_enum: AlertShift, default_target: int,
+                             log_date: Optional[date] = None) -> dict:
+        """Add produced parts (and optional rejects) to a shift's production log,
+        creating the row if needed, and recompute its OEE snapshot. Does NOT
+        commit — the caller commits (so status + count land in one transaction).
+        Returns the row's running totals."""
+        d = log_date or date.today()
+        r = await self.db.execute(
+            select(MachineProductionLog).where(
+                MachineProductionLog.machine_id == machine_id,
+                MachineProductionLog.date == d,
+                MachineProductionLog.shift == shift_enum,
+            )
+        )
+        log = r.scalar_one_or_none()
+        if not log:
+            log = MachineProductionLog(
+                machine_id=machine_id, date=d, shift=shift_enum,
+                target_count=int(default_target or 0), actual_count=0, reject_count=0,
+            )
+            self.db.add(log)
+        elif not log.target_count:
+            log.target_count = int(default_target or 0)
+        log.actual_count = (log.actual_count or 0) + max(0, count)
+        log.reject_count = max(0, (log.reject_count or 0) + reject)
+        # Fill availability from the live stop/production feed so the stored OEE
+        # snapshot matches the dashboards (which recompute it dynamically).
+        log.availability_pct = await self.get_availability(machine_id, d)
+        self._recompute_oee(log)
+        return {
+            "actual_count": log.actual_count,
+            "reject_count": log.reject_count,
+            "target_count": log.target_count,
+            "availability_pct": log.availability_pct,
+            "performance_pct": log.performance_pct,
+            "quality_pct": log.quality_pct,
+            "oee_pct": log.oee_pct,
+        }
+
     @staticmethod
     def _recompute_oee(log: MachineProductionLog) -> None:
         """Recompute performance/quality/OEE on a production-log row from its own

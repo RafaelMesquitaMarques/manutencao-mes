@@ -45,6 +45,8 @@ const I18N = {
     running: 'RUNNING', stopped: 'STOPPED', maintenance: 'MAINTENANCE',
     idle: 'IDLE', planned_stop: 'PLANNED STOP', unjustified: 'NOT JUSTIFIED', intervention: 'INTERVENTION',
     newStop: 'NEW STOP', restart: 'RESTART',
+    awaitingSignal: 'Awaiting production signal', autoRestart: 'Restarts automatically',
+    stopDetected: 'Stop detected — select a reason',
     jobNumber: 'Job Number', noJob: 'No job',
     operator: 'Operator', noOperator: 'No operator',
     selectCategory: 'Select stop reason',
@@ -93,6 +95,8 @@ const I18N = {
     running: 'EN MARCHE', stopped: 'ARRÊTÉE', maintenance: 'MAINTENANCE',
     idle: 'INACTIF', planned_stop: 'ARRÊT PLANIFIÉ', unjustified: 'NON JUSTIFIÉ', intervention: 'EN INTERVENTION',
     newStop: 'NOUVEL ARRÊT', restart: 'REDÉMARRER',
+    awaitingSignal: 'En attente du signal de production', autoRestart: 'Redémarrage automatique',
+    stopDetected: 'Arrêt détecté — sélectionnez la raison',
     jobNumber: 'N° de job', noJob: 'Aucun job',
     operator: 'Opérateur', noOperator: 'Aucun opérateur',
     selectCategory: 'Sélectionner la raison',
@@ -141,6 +145,8 @@ const I18N = {
     running: 'EN MARCHA', stopped: 'DETENIDA', maintenance: 'MANTENIMIENTO',
     idle: 'INACTIVO', planned_stop: 'PARADA PLANIFICADA', unjustified: 'SIN JUSTIFICAR', intervention: 'EN INTERVENCIÓN',
     newStop: 'NUEVA PARADA', restart: 'REINICIAR',
+    awaitingSignal: 'Esperando señal de producción', autoRestart: 'Reinicio automático',
+    stopDetected: 'Parada detectada — seleccione una razón',
     jobNumber: 'N° de trabajo', noJob: 'Sin trabajo',
     operator: 'Operador', noOperator: 'Sin operador',
     selectCategory: 'Seleccionar razón',
@@ -630,7 +636,7 @@ export default function MachinePage() {
         .then((s) => { if (active) setTimelineStops(s); })
         .catch(() => {});
     loadWin();
-    const id = setInterval(loadWin, 30_000);
+    const id = setInterval(loadWin, 5_000);
     return () => { active = false; clearInterval(id); };
   }, [slug, winStartISO, winEndISO]);
 
@@ -643,7 +649,7 @@ export default function MachinePage() {
         .then((r) => { if (active) setHourly(r.hours); })
         .catch(() => {});
     load();
-    const id = setInterval(load, 30_000);
+    const id = setInterval(load, 5_000);
     return () => { active = false; clearInterval(id); };
   }, [slug, winStartISO, winEndISO]);
 
@@ -675,9 +681,9 @@ export default function MachinePage() {
     try { await api.patch(`/api/machines/${machine.id}`, { kiosk_layout: clean }); } catch { /* ignore */ }
   }, [machine]);
 
-  const load = useCallback(() => {
+  const load = useCallback((silent = false) => {
     if (!slug) return;
-    setLoading(true);
+    if (!silent) setLoading(true);   // background refreshes stay silent — no full-page loader flash
     Promise.allSettled([
       fetchMachinePage(slug),
       fetchTodayStops(slug),
@@ -702,13 +708,29 @@ export default function MachinePage() {
     }
   }, [slug]);
 
-  useEffect(load, [load]);
+  useEffect(() => { load(); }, [load]);
 
-  // Auto-refresh every 30s
+  // Auto-refresh every 5s, SILENT (no loader flash; the 3D map uses a WS push).
   useEffect(() => {
-    const id = setInterval(load, 30_000);
+    const id = setInterval(() => load(true), 5_000);
     return () => clearInterval(id);
   }, [load]);
+
+  // Auto-open the "stop detected" prompt when the machine turns pink (unjustified)
+  // from the production signal — the operator justifies the detected open stop.
+  // Fires once per detected stop; resets when the machine is running again.
+  const autoPromptedStopId = useRef<string | null>(null);
+  useEffect(() => {
+    if (machine?.current_status === 'running') { autoPromptedStopId.current = null; return; }
+    if (machine?.current_status !== 'unjustified') return;
+    if (reclassTarget || showModal) return;
+    const detected = [...timelineStops, ...stops].find((s) => !s.ended_at && !s.category);
+    if (detected && autoPromptedStopId.current !== detected.id) {
+      autoPromptedStopId.current = detected.id;
+      setReclassCat(null);
+      setReclassTarget(detected);
+    }
+  }, [machine?.current_status, timelineStops, stops, reclassTarget, showModal]);
 
   const openStopModal = () => {
     setStopTime(new Date().toTimeString().slice(0, 8));
@@ -781,6 +803,14 @@ export default function MachinePage() {
       }
     }
     load();
+  };
+
+  // Signal-driven machines: the stop button (when stopped) lets the operator set or
+  // change the reason on the detected open stop — reuses the reclassify modal.
+  const openStopReason = () => {
+    const open = [...timelineStops, ...stops].find((s) => !s.ended_at);
+    if (open) { setReclassCat(null); setReclassTarget(open); }
+    else openStopModal();
   };
 
   const handleJobSubmit = async () => {
@@ -1041,7 +1071,26 @@ export default function MachinePage() {
         <div key="stop" className="h-full relative">
           {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.newStop}</div>}
           <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex flex-col items-center justify-center gap-4">
-          {isRunning ? (
+          {machine?.signal_driven ? (
+            isRunning ? (
+              // Signal-driven & producing: stops are auto-detected — no manual stop
+              // button. Passive "in production" indicator only.
+              <div className="w-36 h-36 rounded-full border-4 border-green-500/40 bg-green-500/10 text-green-400 flex flex-col items-center justify-center gap-1 text-center px-3 cursor-default">
+                <span className="text-4xl">✓</span>
+                <span className="text-sm font-black tracking-wider">{t.running}</span>
+                <span className="text-[10px] text-green-500/70 leading-tight">{t.autoRestart}</span>
+              </div>
+            ) : (
+              // Signal-driven & stopped: let the operator set/change the stop reason.
+              <button
+                onClick={openStopReason}
+                className="w-36 h-36 rounded-full border-4 border-red-500/60 bg-red-500/15 hover:bg-red-500/25 text-red-400 flex flex-col items-center justify-center gap-1 transition-all active:scale-95 shadow-2xl shadow-red-500/10"
+              >
+                <span className="text-4xl">⏹</span>
+                <span className="text-sm font-black tracking-wider">{t.newStop}</span>
+              </button>
+            )
+          ) : isRunning ? (
             <button
               onClick={openStopModal}
               className="w-36 h-36 rounded-full border-4 border-red-500/60 bg-red-500/15 hover:bg-red-500/25 text-red-400 flex flex-col items-center justify-center gap-1 transition-all active:scale-95 shadow-2xl shadow-red-500/10"
@@ -1482,7 +1531,9 @@ export default function MachinePage() {
         <div className="fixed inset-0 z-50 bg-black/90 flex flex-col">
           <div className="flex items-center justify-between px-8 py-6 border-b border-white/[0.06]">
             <div>
-              <h2 className="text-2xl font-black text-white">{t.changeCause}</h2>
+              <h2 className="text-2xl font-black text-white">
+                {(!reclassTarget.ended_at && !reclassTarget.category) ? t.stopDetected : t.changeCause}
+              </h2>
               <p className="text-gray-400 text-base mt-1">
                 {new Date(reclassTarget.started_at).toTimeString().slice(0, 5)}
                 {'–'}
