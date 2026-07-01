@@ -466,11 +466,43 @@ export interface KPISummary {
   pm_compliance_pct: number;
   total_cost_cad: number;
   parts_per_hour?: number;
+  performance_pct?: number;
   quality_pct?: number;
   oee_pct?: number;
   current_status?: string | null;
   operator?: string | null;
   period_days: number;
+}
+
+// Downtime grouped by stop reason (Pareto). Names carried in all locales so the
+// UI localizes; `type` is the TPM bucket (planned | unplanned | maintenance).
+export interface DowntimeParetoItem {
+  name: string | null;
+  name_en: string | null;
+  name_fr: string | null;
+  name_es: string | null;
+  color: string;
+  type: string | null;
+  minutes: number;
+  count: number;
+}
+
+export interface OEETrendPoint {
+  date: string;
+  availability_pct: number | null;
+  performance_pct: number | null;
+  quality_pct: number | null;
+  oee_pct: number | null;
+}
+
+export interface OEEByMachineItem {
+  machine_id: string;
+  name: string;
+  code: string | null;
+  availability_pct: number | null;
+  performance_pct: number | null;
+  quality_pct: number | null;
+  oee_pct: number | null;
 }
 
 export interface BacklogData {
@@ -716,6 +748,8 @@ export interface MachineStopOut {
   subcategory?: {
     id: string; name: string; icon: string; color?: string; triggers_maintenance: boolean;
   };
+  job_number?:      string;
+  operator_name?:   string;
   intervention_started_at?:   string;
   intervention_completed_at?: string;
   wait_minutes?:              number;

@@ -17,6 +17,9 @@ import type {
   BacklogData,
   MTTRItem,
   CostItem,
+  DowntimeParetoItem,
+  OEETrendPoint,
+  OEEByMachineItem,
 } from '../types';
 
 interface PaginatedResponse<T> {
@@ -346,6 +349,27 @@ export const fetchMTTR = async (period_days = 90, machine_id?: string): Promise<
 export const fetchCostByType = async (period_days = 30, machine_id?: string): Promise<CostItem[]> => {
   const { data } = await api.get<CostItem[]>('/api/kpis/cost', {
     params: { period_days, ...(machine_id ? { machine_id } : {}) },
+  });
+  return Array.isArray(data) ? data : [];
+};
+
+export const fetchDowntimePareto = async (period_days = 30, machine_id?: string): Promise<DowntimeParetoItem[]> => {
+  const { data } = await api.get<DowntimeParetoItem[]>('/api/kpis/downtime-pareto', {
+    params: { period_days, ...(machine_id ? { machine_id } : {}) },
+  });
+  return Array.isArray(data) ? data : [];
+};
+
+export const fetchOEETrend = async (period_days = 30, machine_id?: string): Promise<OEETrendPoint[]> => {
+  const { data } = await api.get<OEETrendPoint[]>('/api/kpis/oee-trend', {
+    params: { period_days, ...(machine_id ? { machine_id } : {}) },
+  });
+  return Array.isArray(data) ? data : [];
+};
+
+export const fetchOEEByMachine = async (period_days = 30): Promise<OEEByMachineItem[]> => {
+  const { data } = await api.get<OEEByMachineItem[]>('/api/kpis/oee-by-machine', {
+    params: { period_days },
   });
   return Array.isArray(data) ? data : [];
 };

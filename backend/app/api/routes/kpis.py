@@ -10,6 +10,7 @@ from app.models.models import (
     WorkOrder, WorkOrderStatus, WorkOrderType,
     Equipment, LaborRecord, WOCost, User, Machine, MachineIntervention,
     WOPart, InterventionPart, MachineStop, MachineProductionLog,
+    StopCategory, StopCategoryType,
 )
 from app.core.security import get_current_user
 
@@ -70,6 +71,103 @@ async def _parts_cost(db: AsyncSession, since, m_cond, i_cond) -> float:
         )
     )).scalar() or 0.0
     return float(wo_parts) + float(int_parts)
+
+
+def _shift_minutes(shifts_config, shift_value: str) -> float:
+    """Length of one shift window (minutes) from a machine's shifts_config.
+    Handles overnight shifts (end < start). Falls back to 480 (8 h) when the
+    config is missing or unparseable."""
+    default = 480.0
+    cfg = shifts_config.get(shift_value) if isinstance(shifts_config, dict) else None
+    if not cfg:
+        return default
+    start, end = cfg.get("start"), cfg.get("end")
+    if not start or not end:
+        return default
+    try:
+        sh, sm = (int(x) for x in start.split(":"))
+        eh, em = (int(x) for x in end.split(":"))
+        mins = (eh * 60 + em) - (sh * 60 + sm)
+        if mins <= 0:
+            mins += 24 * 60            # overnight shift (e.g. 23:30 → 07:00)
+        return float(mins)
+    except (ValueError, AttributeError):
+        return default
+
+
+async def _oee_metrics(db: AsyncSession, machine_ids, since) -> dict:
+    """OEE on the TPM planned-time basis, for one machine, a set, or all (None).
+
+    Planned Production Time = scheduled shift time (recorded production shifts ×
+    their shifts_config window) − planned stops. Availability uses unplanned +
+    maintenance stops as downtime. Performance/Quality come from production counts.
+
+    Returns pct values, each None when its basis is absent so the UI shows "—"
+    instead of a misleading 0 — the cards light up automatically once the plant
+    records production and classifies its stops."""
+    log_cond = [MachineProductionLog.date >= since.date()]
+    if machine_ids is not None:
+        log_cond.append(MachineProductionLog.machine_id.in_(list(machine_ids)))
+    logs = (await db.execute(
+        select(
+            MachineProductionLog.machine_id, MachineProductionLog.shift,
+            MachineProductionLog.target_count, MachineProductionLog.actual_count,
+            MachineProductionLog.reject_count,
+        ).where(and_(*log_cond))
+    )).all()
+    none = {"availability_pct": None, "performance_pct": None,
+            "quality_pct": None, "oee_pct": None, "parts_per_hour": None}
+    if not logs:
+        return none
+
+    cfgs = dict((await db.execute(
+        select(Machine.id, Machine.shifts_config)
+        .where(Machine.id.in_({l.machine_id for l in logs}))
+    )).all())
+    scheduled_min = 0.0
+    total_target = total_actual = total_reject = 0
+    for l in logs:
+        sv = l.shift.value if hasattr(l.shift, "value") else str(l.shift)
+        scheduled_min += _shift_minutes(cfgs.get(l.machine_id), sv)
+        total_target += l.target_count or 0
+        total_actual += l.actual_count or 0
+        total_reject += l.reject_count or 0
+
+    stop_cond = [MachineStop.started_at >= since, MachineStop.duration_minutes.isnot(None)]
+    if machine_ids is not None:
+        stop_cond.append(MachineStop.machine_id.in_(list(machine_ids)))
+    stop_rows = (await db.execute(
+        select(StopCategory.type, func.sum(MachineStop.duration_minutes))
+        .select_from(MachineStop)
+        .join(StopCategory, MachineStop.stop_category_id == StopCategory.id, isouter=True)
+        .where(and_(*stop_cond))
+        .group_by(StopCategory.type)
+    )).all()
+    planned_min = downtime_min = 0.0
+    for typ, mins in stop_rows:
+        # Uncategorized stops count as downtime (conservative — they lower availability).
+        if typ == StopCategoryType.planned:
+            planned_min += float(mins or 0)
+        else:
+            downtime_min += float(mins or 0)
+
+    ppt = max(scheduled_min - planned_min, 0.0)
+    run_min = max(ppt - downtime_min, 0.0)
+    availability = (run_min / ppt) if ppt > 0 else None
+    performance = min(total_actual / total_target, 1.0) if total_target > 0 else None
+    quality = ((total_actual - total_reject) / total_actual) if total_actual > 0 else None
+    oee = (availability * performance * quality
+           if None not in (availability, performance, quality) else None)
+
+    def pct(v):
+        return round(v * 100, 1) if v is not None else None
+    return {
+        "availability_pct": pct(availability),
+        "performance_pct": pct(performance),
+        "quality_pct": pct(quality),
+        "oee_pct": pct(oee),
+        "parts_per_hour": round(total_actual / (run_min / 60.0), 1) if run_min > 0 else None,
+    }
 
 
 @router.get("/summary")
@@ -173,8 +271,10 @@ async def get_kpi_summary(
     total_cost = float(cost_r.scalar() or 0.0)
     total_cost += await _parts_cost(db, since, m_cond, i_cond)
 
-    # ── Availability & MTBF ──────────────────────────────────────────────────
-    # Downtime = corrective-WO downtime + operator-logged machine stops in the period.
+    # ── Reliability: downtime, failures, MTBF (maintenance-time basis) ───────
+    # MTBF keeps a calendar-uptime basis (failures over operating time); it must
+    # work even with no production logs. OEE/Availability below use the stricter
+    # planned-time basis. Downtime = corrective-WO downtime + logged stops.
     wo_downtime = (await db.execute(
         select(func.sum(WorkOrder.downtime_hours)).where(
             and_(m_cond, WorkOrder.downtime_hours.isnot(None), WorkOrder.opened_at >= since)
@@ -195,23 +295,18 @@ async def get_kpi_summary(
         )
     )).scalar() or 0
 
-    # Capacity = (1 machine | all machines) × calendar hours of the period.
     if machine_id:
         scope_machines = 1
     else:
         scope_machines = (await db.execute(select(func.count(Machine.id)))).scalar() or 1
     capacity_hours = max(scope_machines, 1) * period_days * 24.0
     operating_hours = max(capacity_hours - downtime_hours, 0.0)
-    availability = round(operating_hours / capacity_hours * 100, 1) if capacity_hours > 0 else 0.0
     mtbf_hours = round(operating_hours / failures, 1) if failures > 0 else round(operating_hours, 1)
 
-    # ── Production KPIs + live status (machine-scoped) ───────────────────────
-    # Parts/hour, quality and OEE come from machine_production_logs (fed by the
-    # shop floor). They read 0 until the plant sends production data, then the
-    # card lights up automatically. Status/operator are the machine's live state.
-    parts_per_hour = 0.0
-    quality_pct = 0.0
-    oee_pct = 0.0
+    # ── OEE (TPM planned-time basis) — one machine or plant-wide ─────────────
+    oee = await _oee_metrics(db, [machine_id] if machine_id else None, since)
+
+    # Live status/operator for a single machine.
     current_status = None
     operator = None
     if machine_id:
@@ -223,40 +318,21 @@ async def get_kpi_summary(
                 else str(machine.current_status or "")
             )
             operator = machine.current_operator
-        prod = (await db.execute(
-            select(
-                func.coalesce(func.sum(MachineProductionLog.actual_count), 0),
-                func.coalesce(func.sum(MachineProductionLog.reject_count), 0),
-                func.coalesce(func.sum(MachineProductionLog.target_count), 0),
-            ).where(and_(
-                MachineProductionLog.machine_id == machine_id,
-                MachineProductionLog.date >= since.date(),
-            ))
-        )).first()
-        total_actual = float(prod[0] or 0)
-        total_reject = float(prod[1] or 0)
-        total_target = float(prod[2] or 0)
-        if operating_hours > 0:
-            parts_per_hour = round(total_actual / operating_hours, 1)
-        if total_actual > 0:
-            quality_pct = round((total_actual - total_reject) / total_actual * 100, 1)
-        # OEE = Availability × Performance × Quality (performance capped at 100%)
-        performance = min(total_actual / total_target, 1.0) if total_target > 0 else 0.0
-        oee_pct = round((availability / 100.0) * performance * (quality_pct / 100.0) * 100, 1)
 
     return {
         "mttr_hours": round(float(mttr), 2),
         "mtta_minutes": round(float(mtta_minutes), 1),
         "mtbf_hours": mtbf_hours,
-        "availability_pct": availability,
+        "availability_pct": oee["availability_pct"],
         "downtime_hours": round(downtime_hours, 2),
         "failures": int(failures),
         "backlog_count": int(backlog),
         "pm_compliance_pct": pm_compliance,
         "total_cost_cad": round(float(total_cost), 2),
-        "parts_per_hour": parts_per_hour,
-        "quality_pct": quality_pct,
-        "oee_pct": oee_pct,
+        "parts_per_hour": oee["parts_per_hour"],
+        "performance_pct": oee["performance_pct"],
+        "quality_pct": oee["quality_pct"],
+        "oee_pct": oee["oee_pct"],
         "current_status": current_status,
         "operator": operator,
         "period_days": period_days,
@@ -406,3 +482,152 @@ async def get_cost_by_type(
     if parts_total:
         out.append({"type": "parts_used", "total": round(parts_total, 2)})
     return out
+
+
+@router.get("/downtime-pareto")
+async def get_downtime_pareto(
+    period_days: int = Query(30, ge=1, le=365),
+    machine_id: Optional[UUID] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Downtime grouped by stop reason (category), worst first — the actionable
+    Pareto. Localized names carried in all three locales; colour is the
+    category's own. Uncategorized stops fall under a null category."""
+    since = datetime.now(timezone.utc) - timedelta(days=period_days)
+    cond = [MachineStop.started_at >= since, MachineStop.duration_minutes.isnot(None)]
+    if machine_id:
+        cond.append(MachineStop.machine_id == machine_id)
+    rows = (await db.execute(
+        select(
+            StopCategory.name, StopCategory.name_en, StopCategory.name_fr,
+            StopCategory.name_es, StopCategory.color, StopCategory.type,
+            func.sum(MachineStop.duration_minutes).label("minutes"),
+            func.count(MachineStop.id).label("count"),
+        )
+        .select_from(MachineStop)
+        .join(StopCategory, MachineStop.stop_category_id == StopCategory.id, isouter=True)
+        .where(and_(*cond))
+        .group_by(StopCategory.name, StopCategory.name_en, StopCategory.name_fr,
+                  StopCategory.name_es, StopCategory.color, StopCategory.type)
+    )).all()
+    items = [
+        {
+            "name": r.name,
+            "name_en": r.name_en, "name_fr": r.name_fr, "name_es": r.name_es,
+            "color": r.color or "#6b7280",
+            "type": r.type.value if hasattr(r.type, "value") else r.type,
+            "minutes": int(r.minutes or 0),
+            "count": int(r.count or 0),
+        }
+        for r in rows
+    ]
+    return sorted(items, key=lambda x: x["minutes"], reverse=True)
+
+
+@router.get("/oee-trend")
+async def get_oee_trend(
+    period_days: int = Query(30, ge=1, le=365),
+    machine_id: Optional[UUID] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Daily Availability / Performance / Quality / OEE over the period, same
+    planned-time methodology as /summary, bucketed per calendar day."""
+    since = datetime.now(timezone.utc) - timedelta(days=period_days)
+    log_cond = [MachineProductionLog.date >= since.date()]
+    if machine_id:
+        log_cond.append(MachineProductionLog.machine_id == machine_id)
+    logs = (await db.execute(
+        select(
+            MachineProductionLog.date, MachineProductionLog.machine_id,
+            MachineProductionLog.shift, MachineProductionLog.target_count,
+            MachineProductionLog.actual_count, MachineProductionLog.reject_count,
+        ).where(and_(*log_cond))
+    )).all()
+    if not logs:
+        return []
+    cfgs = dict((await db.execute(
+        select(Machine.id, Machine.shifts_config)
+        .where(Machine.id.in_({l.machine_id for l in logs}))
+    )).all())
+
+    d_expr = func.date(MachineStop.started_at)
+    stop_cond = [MachineStop.started_at >= since, MachineStop.duration_minutes.isnot(None)]
+    if machine_id:
+        stop_cond.append(MachineStop.machine_id == machine_id)
+    stop_rows = (await db.execute(
+        select(d_expr.label("d"), StopCategory.type, func.sum(MachineStop.duration_minutes))
+        .select_from(MachineStop)
+        .join(StopCategory, MachineStop.stop_category_id == StopCategory.id, isouter=True)
+        .where(and_(*stop_cond))
+        .group_by(d_expr, StopCategory.type)
+    )).all()
+    planned_by_day, downtime_by_day = {}, {}
+    for d, typ, mins in stop_rows:
+        key = str(d)
+        if typ == StopCategoryType.planned:
+            planned_by_day[key] = planned_by_day.get(key, 0.0) + float(mins or 0)
+        else:
+            downtime_by_day[key] = downtime_by_day.get(key, 0.0) + float(mins or 0)
+
+    agg: dict = {}
+    for l in logs:
+        a = agg.setdefault(str(l.date), {"sched": 0.0, "target": 0, "actual": 0, "reject": 0})
+        sv = l.shift.value if hasattr(l.shift, "value") else str(l.shift)
+        a["sched"] += _shift_minutes(cfgs.get(l.machine_id), sv)
+        a["target"] += l.target_count or 0
+        a["actual"] += l.actual_count or 0
+        a["reject"] += l.reject_count or 0
+
+    def pct(v):
+        return round(v * 100, 1) if v is not None else None
+    out = []
+    for key in sorted(agg):
+        a = agg[key]
+        ppt = max(a["sched"] - planned_by_day.get(key, 0.0), 0.0)
+        run = max(ppt - downtime_by_day.get(key, 0.0), 0.0)
+        avail = (run / ppt) if ppt > 0 else None
+        perf = min(a["actual"] / a["target"], 1.0) if a["target"] > 0 else None
+        qual = ((a["actual"] - a["reject"]) / a["actual"]) if a["actual"] > 0 else None
+        oee = (avail * perf * qual if None not in (avail, perf, qual) else None)
+        out.append({"date": key, "availability_pct": pct(avail), "performance_pct": pct(perf),
+                    "quality_pct": pct(qual), "oee_pct": pct(oee)})
+    return out
+
+
+@router.get("/oee-by-machine")
+async def get_oee_by_machine(
+    period_days: int = Query(30, ge=1, le=365),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Per-machine OEE for the period — worst first, so problem machines surface."""
+    since = datetime.now(timezone.utc) - timedelta(days=period_days)
+    mids = [r[0] for r in (await db.execute(
+        select(MachineProductionLog.machine_id)
+        .where(MachineProductionLog.date >= since.date())
+        .group_by(MachineProductionLog.machine_id)
+    )).all()]
+    if not mids:
+        return []
+    machines = {m.id: m for m in (await db.execute(
+        select(Machine).where(Machine.id.in_(mids))
+    )).scalars().all()}
+    items = []
+    for mid in mids:
+        m = machines.get(mid)
+        if not m:
+            continue
+        met = await _oee_metrics(db, [mid], since)
+        items.append({
+            "machine_id": str(mid),
+            "name": m.display_name or m.name,
+            "code": m.code,
+            "availability_pct": met["availability_pct"],
+            "performance_pct": met["performance_pct"],
+            "quality_pct": met["quality_pct"],
+            "oee_pct": met["oee_pct"],
+        })
+    # Worst OEE first (machines with no computable OEE sort last).
+    return sorted(items, key=lambda x: (x["oee_pct"] is None, x["oee_pct"] or 0))
