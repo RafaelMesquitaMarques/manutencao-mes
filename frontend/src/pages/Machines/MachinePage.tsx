@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
 import { AlertTriangle, CheckCircle2, X, Play, ChevronLeft, ChevronRight, User, Clock, Cog } from 'lucide-react';
 import {
@@ -605,7 +606,11 @@ export default function MachinePage() {
   const [intMins, setIntMins]                 = useState('');
   const [techBusy, setTechBusy]               = useState(false);
 
-  const lang: Lang = (machine?.page_language as Lang) || 'fr';
+  // Follow the user's selected UI language (header switcher / i18next), falling
+  // back to the machine's own page_language, then French.
+  const { i18n } = useTranslation();
+  const uiLang = (i18n.language || '').slice(0, 2);
+  const lang: Lang = ((['en', 'fr', 'es'].includes(uiLang) ? uiLang : (machine?.page_language as Lang)) || 'fr') as Lang;
   const t = I18N[lang] || I18N.fr;
   const accentColor = machine?.custom_color || STATUS_BG[machine?.current_status || 'running'] || '#3b82f6';
 
