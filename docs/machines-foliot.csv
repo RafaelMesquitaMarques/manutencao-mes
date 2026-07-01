@@ -1,0 +1,53 @@
+kaizo_code,kaizo_name,type
+MILL-GRO-01,Accord 40,Grooving
+PERC-DRI-19,"CX-220#1 SCM Perçeuse à contrôle numérique, coût 148 133.00$",À classifier
+PERC-DRI-14,CX-220#2,Drill
+COUPE 04,FH6,
+PROTO-SAW-01,"Griggio, Scie a panneaux [Manuel Panel saw]",Saw
+ITAL-BRO-01,HPL1 Brosse de nettoyage,Brosse
+ITAL-COL-01,HPL1 Encolleur,Gluing
+ITAL-PRE-01,HPL1 Presse a stratifier,Presse
+ITAL-TAB-02,HPL1 Table a roulette pour stratifier,Table
+ITAL-BRO-02,HPL2 Brosse de nettoyage,Brosse
+ITAL-COL-02,HPL2 Encoleur,Gluing
+ITAL-PRE-02,HPL2 Presse a stratifier,Presse
+ITAL-TAB-04,HPL2 Table a stratifier,Table
+PARA-EDG-09,Homag KAL 370,Edgebander
+PARA-DRI-01,"Homag MAW, Perceuse à contrôle numérique [CNC boring machine]",Drill
+F1---EDG-01,"Homag ligne, Plaqueuse de chants [Edgebander]",Edgebander
+F1---EDG-03,Ima 2,Edgebander
+PARA-EDG-04,Ima 3,Edgebander
+PARA-EDG-06,Ima 4,Edgebander
+PARA-EDG-07,Ima 5,Edgebander
+PARA-EDG-000,Ima HKA Plaqueuse de chants manuel [Edgebander],Edgebander
+ITAL-PRES-01,Italpresse Mirabel 01 (Neuve),Gluing
+ITAL-PRES-02,Italpresse Mirabel 02 (Vegas),Gluing
+MILL-CUT-01,"Lectra, Découpeuse à textile [Fabric cutting machine]",Cutting Machine
+MACH-CAR-01,Machine à carton PANOTEC,Saw
+FINI-SAW-06,OMGA Scie v235,Saw
+MILL-SAW-01,"Omga Millroom, Scie à panneaux [CNC Panel saw]",Saw
+TIRO-SAW-01,"Omga tiroir, Scie à panneaux [CNC Panel saw]",Saw
+META-DRI-91,Perceuse a colone KING Industriel,Drill
+PERC-TOO-01,"Petits outils, Outillage [tools]",Manuel tools
+COUT-SEW-01,"Pfaff 01, Machine à coudre [Sewing machine]",Sewing machine
+COUT-SEW-02,"Pfaff 02, Machine à coudre [Sewing machine]",Sewing machine
+COUT-SEW-03,"Pfaff 03, Machine à coudre [Sewing machine]",Sewing machine
+COUT-SEW-04,"Pfaff 04, Machine à coudre [Sewing machine]",Sewing machine
+COUT-SEW-05,"Pfaff 05, Machine à coudre [Sewing machine]",Sewing machine
+COUT-SEW-06,"Pfaff 06, Machine à coudre [Sewing machine]",Sewing machine
+COUT-SEW-07,"Pfaff 07, Machine à coudre [Sewing machine]",Sewing machine
+COUT-SEW-08,"Pfaff 08, Machine à coudre [Sewing machine]",Sewing machine
+PERC-DRI-18,Powerflex PWX100,Drill
+WEMH-PRES-MELA,Presse a Melamine,Presse
+PERC-EDG-01,ROVER B,Edgebander
+P 001,Rover,
+PERC-DRI-17,SCM MORBIDELLI M400 2016,Drill
+PARA-SAW-09,SELCO,Saw
+PARA-EDG-08,STEFANI,Edgebander
+PARA-SAW-01,Schelling 3,Saw
+PARA-SAW-02,Schelling 4,Saw
+PARA-SAW-10,"Schelling 6, Scie a panneaux [CNC Panel saw]",Saw
+PERC-DRI-04,TF-54,Drill
+PERC-DRI-15,UX-200#1,Drill
+PERC-DRI-16,UX-200#2,Drill
+PARA-GRO-01,"V grooving, Rainureuse à contrôle numérique [CNC grooving machine]",Grooving

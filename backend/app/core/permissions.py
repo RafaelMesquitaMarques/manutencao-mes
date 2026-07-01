@@ -16,6 +16,7 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "technicians:view", "equipment:view", "my_work:view",
         "alerts:view", "alerts:create", "tickets:view", "tickets:update",
         "maintenance:view", "machines:view", "schedule:view", "pm_calendar:view",
+        "maintenance_plans:view", "inventory:view", "intelligence:view",
     },
     "supervisor": {
         "dashboard:view", "work_orders:view", "work_orders:create", "work_orders:update",
@@ -24,6 +25,9 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "tickets:view", "tickets:create", "tickets:update",
         "maintenance:view", "supervisor_view:view", "machines:view",
         "schedule:view", "schedule:update", "pm_calendar:view", "kpis:view",
+        "maintenance_plans:view", "inventory:view", "intelligence:view",
+        "factory_map:view", "dashboards:view", "wo_approval:view",
+        "suppliers:view", "purchase_orders:view", "machine_reports:view", "settings_escalation:view",
     },
     "maintenance_director": {
         "dashboard:view",
@@ -36,6 +40,9 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "schedule:view", "schedule:create", "schedule:update", "schedule:delete",
         "pm_calendar:view", "pm_calendar:create", "pm_calendar:update",
         "kpis:view", "settings_machines:view", "settings_machines:update",
+        "maintenance_plans:view", "inventory:view", "intelligence:view",
+        "factory_map:view", "dashboards:view", "wo_approval:view",
+        "suppliers:view", "purchase_orders:view", "machine_reports:view", "settings_escalation:view",
     },
     "plant_manager": {
         "dashboard:view",
@@ -48,12 +55,18 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "schedule:view", "schedule:create", "schedule:update", "schedule:delete",
         "pm_calendar:view", "pm_calendar:create", "pm_calendar:update", "pm_calendar:delete",
         "kpis:view", "settings_machines:view", "settings_machines:update", "settings_users:view",
+        "maintenance_plans:view", "inventory:view", "intelligence:view",
+        "factory_map:view", "dashboards:view", "wo_approval:view",
+        "suppliers:view", "purchase_orders:view", "machine_reports:view", "settings_escalation:view",
     },
     "director": {
         "dashboard:view", "work_orders:view", "technicians:view", "equipment:view",
         "my_work:view", "alerts:view", "tickets:view", "maintenance:view",
         "supervisor_view:view", "machines:view", "schedule:view", "pm_calendar:view",
         "kpis:view", "settings_machines:view",
+        "maintenance_plans:view", "inventory:view", "intelligence:view",
+        "factory_map:view", "dashboards:view", "wo_approval:view",
+        "suppliers:view", "purchase_orders:view", "machine_reports:view", "settings_escalation:view",
     },
 }
 
@@ -80,7 +93,7 @@ async def user_can(db: AsyncSession, user: User, resource: str, action: str) -> 
 
 
 # Map HTTP methods to the permission action. GET/HEAD/OPTIONS are reads (not guarded here).
-_WRITE_ACTION = {"POST": "create", "PUT": "update", "PATCH": "update", "DELETE": "delete"}
+_WRITE_ACTION = {"PUT": "update", "PATCH": "update", "DELETE": "delete"}
 
 
 def resource_guard(resource: str):
@@ -92,7 +105,16 @@ def resource_guard(resource: str):
         current_user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ) -> None:
-        action = _WRITE_ACTION.get(request.method)
+        method = request.method
+        if method == "POST":
+            # POST to the collection root (no path params) creates a new resource;
+            # POST to a member route (/{id}/start, /{id}/complete, /{id}/labor, …)
+            # acts on an existing resource → that's an update, not a create. Without
+            # this distinction a technician (who has update but not create) is wrongly
+            # blocked from starting/holding/completing their own work orders.
+            action = "update" if request.path_params else "create"
+        else:
+            action = _WRITE_ACTION.get(method)
         if action is None:
             return
         if not await user_can(db, current_user, resource, action):
@@ -100,6 +122,29 @@ def resource_guard(resource: str):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"You don't have permission to {action} {resource}.",
             )
+    return _guard
+
+
+def role_write_guard(*roles: UserRole):
+    """Router-level dependency: reads (GET/HEAD/OPTIONS) pass with auth only; any
+    write (POST/PUT/PATCH/DELETE) requires one of `roles` (admin always passes).
+    Used where editing is a managerial task but viewing is open — e.g. PM templates:
+    technicians may view the standard procedure but only a supervisor+ may change it."""
+    allowed = set(roles)
+
+    async def _guard(
+        request: Request,
+        current_user: User = Depends(get_current_user),
+    ) -> None:
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return
+        if current_user.role == UserRole.admin or current_user.role in allowed:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only a supervisor or above can modify this resource.",
+        )
+
     return _guard
 
 

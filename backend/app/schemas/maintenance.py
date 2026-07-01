@@ -404,6 +404,8 @@ class MachineStopOut(BaseModel):
     ticket_id:        Optional[UUID]     = None
     category:         Optional[StopCategoryMini] = None
     subcategory:      Optional[StopSubcategoryMini] = None
+    job_number:       Optional[str]      = None
+    operator_name:    Optional[str]      = None
     # Linked maintenance intervention timing — lets the timeline split a maintenance
     # stop into the yellow "wait" (call→start) and the purple "intervention" (start→end).
     intervention_started_at:   Optional[datetime] = None
