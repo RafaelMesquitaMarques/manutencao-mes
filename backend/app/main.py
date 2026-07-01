@@ -25,7 +25,9 @@ from app.api.routes.pm_template_settings import router as pm_template_settings_r
 from app.api.routes.intelligence import router as intelligence_router
 from app.api.routes.uploads import router as uploads_router
 from app.api.routes.robot_cells import router as robot_cells_router
-from app.core.permissions import resource_guard
+from app.api.routes.dashboards import router as dashboards_router
+from app.core.permissions import resource_guard, role_write_guard
+from app.models.models import UserRole
 
 logger = logging.getLogger(__name__)
 
@@ -586,6 +588,10 @@ async def _run_migrations() -> None:
         "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS notify_on_ticket_completed BOOLEAN DEFAULT TRUE",
         # Phase: supervisor-controlled technician self-assignment
         "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS technician_self_assign BOOLEAN DEFAULT TRUE",
+        # Phase: work-order-driven maintenance stop (office/mobile flow feeds Availability/OEE)
+        "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'operator'",
+        # Phase: per-machine production-signal ingest token (ADAM-6050)
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS signal_ingest_token VARCHAR(120)",
         # Phase: PM template SOP — expected result per step (media live in pm_task_media, created by create_all)
         "ALTER TABLE pm_template_tasks ADD COLUMN IF NOT EXISTS expected_result TEXT",
         # Phase: checklist rigor on the work order (advisory | required | strict)
@@ -872,7 +878,7 @@ app.include_router(auth.router,                   prefix="/api/auth",          t
 app.include_router(plants.router,                 prefix="/api/plants",        tags=["Plants"])
 app.include_router(equipment.router,              prefix="/api/equipment",     tags=["Equipment"],            dependencies=[Depends(resource_guard("equipment"))])
 app.include_router(work_orders.router,            prefix="/api/wo",            tags=["Work Orders"],          dependencies=[Depends(resource_guard("work_orders"))])
-app.include_router(maintenance_plans.router,      prefix="/api/plans",         tags=["Maintenance Plans"])
+app.include_router(maintenance_plans.router,      prefix="/api/plans",         tags=["Maintenance Plans"],     dependencies=[Depends(role_write_guard(UserRole.supervisor, UserRole.maintenance_director, UserRole.plant_manager, UserRole.director))])
 app.include_router(inventory.router,              prefix="/api/inventory",     tags=["Inventory"])
 app.include_router(alerts.router,                 prefix="/api/alerts",        tags=["Maintenance Alerts"])
 app.include_router(tickets.router,                prefix="/api/tickets",       tags=["Maintenance Tickets"])
@@ -894,9 +900,16 @@ app.include_router(machine_operator_router)
 app.include_router(intervention_types_router)
 app.include_router(safety_checklist_router)
 app.include_router(wo_approval_router)
-app.include_router(pm_template_settings_router)
+app.include_router(
+    pm_template_settings_router,
+    dependencies=[Depends(role_write_guard(
+        UserRole.supervisor, UserRole.maintenance_director,
+        UserRole.plant_manager, UserRole.director,
+    ))],
+)
 app.include_router(intelligence_router)
 app.include_router(uploads_router)
+app.include_router(dashboards_router, prefix="/api/dashboards", tags=["Dashboards"])
 
 # Serve uploaded media (photos/videos for SOP steps). Behind nginx /api/ → backend.
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)

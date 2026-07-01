@@ -1,9 +1,10 @@
 import re
-from datetime import datetime, timezone, date
+import secrets
+from datetime import datetime, timezone, date, timedelta
 from uuid import UUID
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -34,7 +35,8 @@ from app.schemas.maintenance import (
 )
 from app.core.security import get_current_user
 from app.services.ticket_service import TicketService, _next_ticket_number
-from app.services.mes_service import MesService
+from app.services.mes_service import MesService, shift_windows
+from app.services.intervention_sync import apply_production_signal
 
 router = APIRouter()
 
@@ -502,6 +504,49 @@ async def close_stop(
     return {"status": "ok", "duration_minutes": stop.duration_minutes}
 
 
+class ProductionSignalIn(BaseModel):
+    running: bool
+    ts: Optional[datetime] = None   # reserved: reading timestamp from the gateway
+
+
+@router.post("/{ref}/signal-token")
+async def provision_signal_token(
+    ref: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Generate (or rotate) the production-signal ingest token for a machine. The
+    ADAM-6050 gateway presents it as X-Signal-Token on every reading."""
+    machine = await _get_machine(ref, db)
+    machine.signal_ingest_token = secrets.token_urlsafe(24)
+    await db.commit()
+    return {"machine_id": str(machine.id), "signal_ingest_token": machine.signal_ingest_token}
+
+
+@router.post("/{ref}/production-signal")
+async def ingest_production_signal(
+    ref: str,
+    payload: ProductionSignalIn,
+    db: AsyncSession = Depends(get_db),
+    x_signal_token: Optional[str] = Header(None, alias="X-Signal-Token"),
+):
+    """Ingest one production-status reading from the machine's I/O (Advantech
+    ADAM-6050) and reconcile the live status — the SIGNAL-DRIVEN restart path, no
+    operator action. PROVISIONAL auth: per-machine token, like robot cells; the
+    real transport (Modbus gateway → HTTP/MQTT) gets wired with the integrator.
+    Skeleton for the pilot — no ADAM hardware is connected yet."""
+    machine = await _get_machine(ref, db)
+    if not machine.signal_ingest_token:
+        raise HTTPException(status_code=401, detail="Signal ingest not provisioned for this machine")
+    if x_signal_token != machine.signal_ingest_token:
+        raise HTTPException(status_code=401, detail="Invalid signal token")
+    await apply_production_signal(db, machine, payload.running)
+    await db.commit()
+    await db.refresh(machine)
+    status = machine.current_status.value if hasattr(machine.current_status, "value") else str(machine.current_status)
+    return {"machine_id": str(machine.id), "running": payload.running, "status": status}
+
+
 @router.patch("/{ref}/stops/{stop_id}/reclassify")
 async def reclassify_stop(
     ref: str,
@@ -593,6 +638,11 @@ async def today_stops(
                     id=sub.id, name=sub.name, icon=sub.icon, color=sub.color,
                     triggers_maintenance=sub.triggers_maintenance,
                 )
+        op_name = None
+        if s.operator_id:
+            op = await db.get(MachineOperator, s.operator_id)
+            if op:
+                op_name = op.name
         # Linked intervention timing (for the timeline's yellow wait → purple work split).
         interv_started = interv_completed = wait_min = None
         if s.ticket_id:
@@ -613,6 +663,7 @@ async def today_stops(
             comments=s.comments, justified_by=s.justified_by,
             ticket_id=s.ticket_id,
             category=cat_mini, subcategory=sub_mini,
+            job_number=s.job_number, operator_name=op_name,
             intervention_started_at=interv_started,
             intervention_completed_at=interv_completed,
             wait_minutes=wait_min,
@@ -628,16 +679,99 @@ async def mes_data(ref: str, db: AsyncSession = Depends(get_db)):
     svc = MesService(db)
     availability = await svc.get_availability(machine.id, date.today())
     downtime_min = await svc.get_today_downtime_minutes(machine.id)
-    rejects = await svc.get_today_rejects(machine.id)
+
+    # Real production for today (across shifts), from machine_production_logs.
+    rows = (await db.execute(
+        select(MachineProductionLog).where(
+            MachineProductionLog.machine_id == machine.id,
+            MachineProductionLog.date == date.today(),
+        )
+    )).scalars().all()
+    if rows:
+        produced = sum(r.actual_count or 0 for r in rows)
+        target = sum(r.target_count or 0 for r in rows) or (machine.target_count or 0)
+        rejects = sum(r.reject_count or 0 for r in rows)
+        oee = round(sum(r.oee_pct or 0 for r in rows) / len(rows), 1)
+        return MESDataExtended(
+            production_count=produced, target=target, oee_pct=oee,
+            availability_pct=availability, reject_count=rejects,
+            downtime_today_minutes=downtime_min, is_placeholder=False,
+        )
+    # No production fed yet → keep the placeholder card.
     return MESDataExtended(
         production_count=svc.get_mock_production_count(),
         target=svc.get_mock_target(),
         oee_pct=svc.get_mock_oee(),
         availability_pct=availability,
-        reject_count=rejects,
+        reject_count=await svc.get_today_rejects(machine.id),
         downtime_today_minutes=downtime_min,
         is_placeholder=True,
     )
+
+
+def _derive_hourly(total: int, win_start: datetime, win_end: datetime, now: datetime, seed: int):
+    """Spread a shift's production total across its hour buckets with a stable
+    (seeded) realistic curve. Hours still in the future (after `now`) read 0.
+    Transitional: replace with the real per-hour counter feed (ADAM) later."""
+    import random
+    h = win_start.replace(minute=0, second=0, microsecond=0)
+    buckets = []
+    while h < win_end:
+        buckets.append(h)
+        h = h + timedelta(hours=1)
+    if not buckets:
+        return []
+    rng = random.Random(seed)
+    weights = [rng.uniform(0.55, 1.45) for _ in buckets]
+    s = sum(weights) or 1.0
+    out = []
+    for w, b in zip(weights, buckets):
+        pieces = round(total * w / s) if b <= now else 0
+        out.append({"hour": b.isoformat(), "pieces": max(0, pieces)})
+    return out
+
+
+@router.get("/{ref}/production-hourly")
+async def production_hourly(
+    ref: str, start: Optional[str] = None, end: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Pieces produced per hour for a shift window (defaults to the current shift).
+    Derived from the shift's machine_production_logs total."""
+    machine = await _get_machine(ref, db)
+    now = datetime.now(timezone.utc)
+    if start and end:
+        win_start = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        win_end = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    else:
+        wins = shift_windows(machine.shifts_config, date.today())
+        win_start, win_end = next((w for w in wins if w[0] <= now < w[1]), wins[0])
+    if win_start.tzinfo is None:
+        win_start = win_start.replace(tzinfo=timezone.utc)
+    if win_end.tzinfo is None:
+        win_end = win_end.replace(tzinfo=timezone.utc)
+
+    # Match the production log of the shift this window belongs to.
+    span_h = (win_end - win_start).total_seconds() / 3600.0
+    hour = win_start.hour
+    if span_h >= 20:
+        shift_enum = None                              # full-day fallback → all shifts
+    elif 4 <= hour < 12:
+        shift_enum = AlertShift.morning
+    elif 12 <= hour < 20:
+        shift_enum = AlertShift.afternoon
+    else:
+        shift_enum = AlertShift.night
+    q = select(func.coalesce(func.sum(MachineProductionLog.actual_count), 0)).where(
+        MachineProductionLog.machine_id == machine.id,
+        MachineProductionLog.date == win_start.date(),
+    )
+    if shift_enum is not None:
+        q = q.where(MachineProductionLog.shift == shift_enum)
+    total = int((await db.execute(q)).scalar() or 0)
+
+    seed = (machine.id.int + win_start.date().toordinal()) & 0xFFFFFFFF
+    return {"hours": _derive_hourly(total, win_start, win_end, now, seed), "shift_total": total}
 
 
 # ── Machine config ────────────────────────────────────────────────────────────

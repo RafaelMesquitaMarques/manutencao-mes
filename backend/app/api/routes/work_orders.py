@@ -581,6 +581,8 @@ async def update_work_order(
             await intervention_sync.on_wo_started(db, wo, current_user.name)
         elif wo.status in (WorkOrderStatus.completed, WorkOrderStatus.cancelled):
             await intervention_sync.on_wo_finished(db, wo)
+        elif wo.status == WorkOrderStatus.on_hold:
+            await intervention_sync.on_wo_held(db, wo)
 
     await db.commit()
     await db.refresh(wo)
@@ -1076,7 +1078,7 @@ async def _enforce_checklist_for_completion(wo: WorkOrder, db: AsyncSession) -> 
         if no_proof:
             raise HTTPException(
                 status_code=409,
-                detail=f"{len(no_proof)} étape(s) obligatoire(s) sans photo de preuve — ajoutez la photo avant de clôturer.",
+                detail=f"{len(no_proof)} étape(s) obligatoire(s) sans preuve photo/vidéo — ajoutez la preuve avant de clôturer.",
             )
 
 

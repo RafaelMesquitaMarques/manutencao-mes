@@ -40,10 +40,13 @@ _OPEN_TICKET_STATUSES = [
 
 
 def _effective_status(base: str, open_ticket: bool) -> str:
-    """Map colour priority: a physically stopped machine is red; an open
-    maintenance call turns it amber; otherwise keep the live MES status."""
+    """Map colour priority: a physically stopped machine is red; a technician
+    actively working (intervention) shows purple even while its ticket is still
+    open; otherwise an open maintenance call turns it amber; else the live status."""
     if base == "stopped":
         return "stopped"
+    if base == "intervention":
+        return "intervention"
     if base == "maintenance" or open_ticket:
         return "maintenance"
     return base

@@ -954,6 +954,7 @@ class Machine(Base):
     target_count_per_shift   = Column(Integer, nullable=True)
     shifts_config            = Column(JSON, nullable=True)
     kiosk_layout             = Column(JSON, nullable=True)   # per-machine resizable panel layout (react-grid-layout)
+    signal_ingest_token      = Column(String(120), nullable=True)   # ADAM-6050 production-signal ingest (per machine)
     # ── Factory map / digital-twin layout ──
     plant_id                 = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
     pos_x                    = Column(Float, nullable=True)   # top-down map coordinates
@@ -1176,6 +1177,7 @@ class MachineStop(Base):
     shift               = Column(SAEnum(AlertShift, native_enum=False), nullable=True)
     job_number          = Column(String(100), nullable=True)
     ticket_id           = Column(UUID(as_uuid=True), ForeignKey("maintenance_tickets.id"), nullable=True)
+    source              = Column(String(20), default="operator")   # operator (kiosk) | work_order (office/mobile flow)
     created_at          = Column(DateTime(timezone=True), server_default=func.now())
     updated_at          = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -1773,3 +1775,21 @@ class SparePartRisk(Base):
     insight_id              = Column(UUID(as_uuid=True), ForeignKey("ai_insights.id",
                                                                     ondelete="SET NULL"),
                                     nullable=True)
+
+
+class Dashboard(Base):
+    """A user-built custom dashboard: a free-form grid of widget tiles, each bound
+    to a machine + a widget type (status | stops | production). Opened by slug for
+    TV displays. `tiles` holds both the layout and the bindings:
+        [{ "i": str, "machine_id": uuid, "widget": str, "x": int, "y": int, "w": int, "h": int }]"""
+    __tablename__ = "dashboards"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    slug          = Column(String(140), unique=True, nullable=False, index=True)
+    name          = Column(String(200), nullable=False)
+    plant_id      = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    is_shared     = Column(Boolean, default=True)
+    tiles         = Column(JSON, default=list)
+    created_at    = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at    = Column(DateTime(timezone=True), onupdate=func.now())

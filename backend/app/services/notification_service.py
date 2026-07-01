@@ -16,7 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings as app_settings
 from app.models.models import (
-    EscalationContact, EscalationSettings, NotificationLog, User, UserRole,
+    EscalationContact, EscalationSettings, MaintenanceAlert, NotificationLog,
+    Technician, User, UserRole,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,12 @@ LEVEL_FALLBACK_ROLES = {
     2: UserRole.maintenance_director,
     3: UserRole.plant_manager,
 }
+
+# Claimable-ticket pings to the technician pool are throttled to cut SMS cost/noise:
+# only these priorities blast the pool, and only technicians on the ticket's shift
+# (+ rotating) are pinged. Lower priorities stay claimable in My Work without an SMS.
+CLAIMABLE_MIN_PRIORITIES = {"high", "critical"}
+ALERT_TO_TECH_SHIFT = {"morning": "day", "afternoon": "evening", "night": "night"}
 
 
 async def get_escalation_settings(db: AsyncSession) -> EscalationSettings:
@@ -261,8 +268,78 @@ class NotificationService:
         )
         return r.first() is not None
 
+    async def notify_claimable_to_technicians(self, ticket, machine_name: Optional[str]) -> None:
+        """When self-assignment is ON, alert the technician pool that a new
+        unassigned ticket is up for grabs. Throttled to cut SMS cost/noise: only
+        high/critical tickets blast, and only technicians on the ticket's shift
+        (+ rotating) are pinged. When self-assign is OFF, a supervisor dispatches
+        the work, so nobody is pinged here — mirrors the technician_self_assign
+        rule enforced on POST /tickets/{id}/claim."""
+        esc = await get_escalation_settings(self.db)
+        if not esc.technician_self_assign:
+            return
+        if ticket.assigned_to_id:                       # already taken / dispatched
+            return
+        if await self._already_sent(ticket.id, "claimable_tech"):
+            return
+        # Throttle by priority: lower priorities stay claimable in My Work, no SMS blast.
+        pr = ticket.priority.value if hasattr(ticket.priority, "value") else str(ticket.priority or "")
+        if pr not in CLAIMABLE_MIN_PRIORITIES:
+            return
+        # Restrict to the ticket's shift (from the linked alert) + rotating techs;
+        # unknown shift → everyone. rotating/shift-less techs are always eligible.
+        target_shift = None
+        if ticket.alert_id:
+            alert = await self.db.get(MaintenanceAlert, ticket.alert_id)
+            if alert and alert.shift is not None:
+                ashift = alert.shift.value if hasattr(alert.shift, "value") else str(alert.shift)
+                target_shift = ALERT_TO_TECH_SHIFT.get(ashift)
+        rows = (await self.db.execute(
+            select(User, Technician.shift)
+            .join(Technician, Technician.user_id == User.id)
+            .where(Technician.active == True, User.active == True)
+        )).all()
+
+        def _on_shift(tshift) -> bool:
+            if target_shift is None or tshift is None:
+                return True
+            ts = tshift.value if hasattr(tshift, "value") else str(tshift)
+            return ts in (target_shift, "rotating")
+
+        recipients = [u for (u, tshift) in rows if _on_shift(tshift)]
+        if not recipients and rows:            # never leave high/critical work unannounced
+            recipients = [u for (u, _t) in rows]
+        if not recipients:
+            return
+        where = machine_name or "Machine"
+        subject = f"[MES] Ticket à prendre {ticket.ticket_number} — {where}"
+        body = (
+            f"Nouveau ticket disponible: {ticket.ticket_number}\n"
+            f"Machine: {where}\n"
+            f"Priorité: {pr}\n"
+            f"{ticket.description or ''}\n"
+            f"Ouvrez Mon travail pour le prendre."
+        )
+        sms_text = (
+            f"[MES] Ticket à prendre {ticket.ticket_number} — {where} "
+            f"({pr}). Ouvrez Mon travail."
+        )
+        for u in recipients:
+            if esc.sms_enabled and u.phone:
+                await self.send_sms(
+                    recipient=u.phone, message=sms_text, ticket_id=ticket.id,
+                    recipient_role="claimable_tech", recipient_name=u.name,
+                )
+            if esc.email_enabled and u.email:
+                await self.send_email(
+                    recipient=u.email, subject=subject, body=body, ticket_id=ticket.id,
+                    recipient_role="claimable_tech", recipient_name=u.name,
+                )
+
     async def notify_ticket_opened(self, ticket, machine_name: Optional[str]) -> None:
-        """Every new ticket → SMS/email to the level-0 contact group."""
+        """Every new ticket → SMS/email to the level-0 contact group, plus the
+        technician pool when self-assignment is on (independent of the toggle below)."""
+        await self.notify_claimable_to_technicians(ticket, machine_name)
         esc = await get_escalation_settings(self.db)
         if not esc.notify_on_ticket_opened:
             return
