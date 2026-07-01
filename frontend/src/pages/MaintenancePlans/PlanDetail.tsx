@@ -14,6 +14,7 @@ import { fetchTechniciansFull } from '../../api/workOrders';
 import type { MaintenancePlan, PlanOccurrence, TechnicianFull, OccurrenceStatus, OccurrenceCompliance, PmTemplate } from '../../types';
 import Spinner from '../../components/ui/Spinner';
 import PmStepsEditor from '../../components/pm/PmStepsEditor';
+import { useRole } from '../../hooks/usePermission';
 
 const STATUS_BADGE: Record<OccurrenceStatus, string> = {
   scheduled:   'bg-sky-500/15 text-sky-400 border-sky-500/25',
@@ -59,6 +60,9 @@ export default function PlanDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { t } = useTranslation();
+  // Managing a plan (activate/deactivate/delete, occurrences) is a supervisor+ task;
+  // technicians may view it but not change it.
+  const canManagePlan = useRole('supervisor', 'maintenance_director', 'plant_manager', 'director', 'admin');
 
   const [plan, setPlan] = useState<MaintenancePlan | null>(null);
   const [occurrences, setOccurrences] = useState<PlanOccurrence[]>([]);
@@ -373,17 +377,19 @@ export default function PlanDetail() {
       {/* Procedure (SOP) — illustrated step-by-step */}
       <PlanProcedure plan={plan} onLinked={load} />
 
-      {/* Plan actions */}
-      <div className="flex flex-wrap gap-3">
-        <button onClick={handleToggleActive} disabled={actioning} className="btn-secondary gap-2">
-          <Power size={15} />
-          {plan.is_active ? t('pm.deactivate') : t('pm.activate')}
-        </button>
-        <button onClick={handleDelete} disabled={actioning} className="btn-secondary gap-2 text-red-400 hover:text-red-300">
-          <Trash2 size={15} />
-          {t('common.delete')}
-        </button>
-      </div>
+      {/* Plan actions — supervisor+ only */}
+      {canManagePlan && (
+        <div className="flex flex-wrap gap-3">
+          <button onClick={handleToggleActive} disabled={actioning} className="btn-secondary gap-2">
+            <Power size={15} />
+            {plan.is_active ? t('pm.deactivate') : t('pm.activate')}
+          </button>
+          <button onClick={handleDelete} disabled={actioning} className="btn-secondary gap-2 text-red-400 hover:text-red-300">
+            <Trash2 size={15} />
+            {t('common.delete')}
+          </button>
+        </div>
+      )}
 
       {/* Occurrences */}
       <div className="glass-card p-6 space-y-4">
@@ -448,7 +454,7 @@ export default function PlanDetail() {
                       </td>
                       <td className="px-3 py-2">
                         <div className="flex justify-end gap-1.5">
-                          {isEditing ? (
+                          {canManagePlan && (isEditing ? (
                             <>
                               <input
                                 type="text"
@@ -482,7 +488,7 @@ export default function PlanDetail() {
                                 </>
                               )}
                             </>
-                          )}
+                          ))}
                         </div>
                       </td>
                     </tr>

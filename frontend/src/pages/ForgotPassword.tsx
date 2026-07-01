@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Factory, Mail, AlertCircle, CheckCircle } from 'lucide-react';
 import { forgotPassword } from '../api/auth';
 
 export default function ForgotPassword() {
+  const { t } = useTranslation();
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -17,7 +19,7 @@ export default function ForgotPassword() {
       await forgotPassword(email);
       setSent(true);
     } catch {
-      setError('Something went wrong. Please try again.');
+      setError(t('auth.somethingWrong'));
     } finally {
       setLoading(false);
     }
@@ -33,27 +35,27 @@ export default function ForgotPassword() {
             </div>
             <div>
               <h1 className="text-white font-bold text-lg leading-none">Foliot MES</h1>
-              <p className="text-gray-600 text-[11px] mt-1 leading-none">Reset your password</p>
+              <p className="text-gray-600 text-[11px] mt-1 leading-none">{t('auth.resetYourPassword')}</p>
             </div>
           </div>
 
           {sent ? (
             <div className="text-center py-4">
               <CheckCircle size={40} className="text-green-400 mx-auto mb-3" />
-              <p className="text-white font-semibold mb-1">Check your email</p>
+              <p className="text-white font-semibold mb-1">{t('auth.checkYourEmail')}</p>
               <p className="text-gray-500 text-sm mb-5">
-                If an account with that email exists, a reset link has been sent.
+                {t('auth.resetLinkSent')}
               </p>
               <Link to="/login" className="btn-primary w-full justify-center py-2.5 text-sm inline-flex items-center">
-                Back to Login
+                {t('auth.backToLogin')}
               </Link>
             </div>
           ) : (
             <>
               <div className="mb-6">
-                <h2 className="text-white text-xl font-semibold">Forgot password?</h2>
+                <h2 className="text-white text-xl font-semibold">{t('auth.forgotPasswordTitle')}</h2>
                 <p className="text-gray-500 text-sm mt-1">
-                  Enter your email and we'll send a reset link.
+                  {t('auth.forgotPasswordSubtitle')}
                 </p>
               </div>
 
@@ -66,14 +68,14 @@ export default function ForgotPassword() {
 
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                  <label className="label">Email address</label>
+                  <label className="label">{t('auth.email')}</label>
                   <div className="relative">
                     <Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
                     <input
                       type="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      placeholder="admin@foliot.com"
+                      placeholder={t('auth.emailPlaceholder')}
                       className="input-field pl-9"
                       required
                       disabled={loading}
@@ -89,14 +91,14 @@ export default function ForgotPassword() {
                   {loading ? (
                     <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
                   ) : (
-                    'Send reset link'
+                    t('auth.sendResetLink')
                   )}
                 </button>
               </form>
 
               <p className="text-center mt-5">
                 <Link to="/login" className="text-blue-400 text-sm hover:text-blue-300 transition-colors">
-                  Back to Login
+                  {t('auth.backToLogin')}
                 </Link>
               </p>
             </>

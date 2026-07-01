@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Lock, Eye, EyeOff, AlertCircle, Factory } from 'lucide-react';
 import { forcedChangePassword } from '../../api/auth';
 import { useAuthStore } from '../../store/authStore';
 
 export default function ForcedChangePassword() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const { user, patchUser } = useAuthStore();
   const [newPassword, setNewPassword] = useState('');
@@ -28,7 +30,7 @@ export default function ForcedChangePassword() {
       navigate('/dashboard', { replace: true });
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(msg ?? 'Failed to update password.');
+      setError(msg ?? t('settings.updatePasswordFailed'));
     } finally {
       setLoading(false);
     }
@@ -46,14 +48,16 @@ export default function ForcedChangePassword() {
             </div>
             <div>
               <h1 className="text-white font-bold text-base leading-none">Foliot MES</h1>
-              <p className="text-gray-600 text-[11px] mt-0.5 leading-none">Manufacturing Execution System</p>
+              <p className="text-gray-600 text-[11px] mt-0.5 leading-none">{t('settings.appSubtitle')}</p>
             </div>
           </div>
 
           <div className="mb-5 p-3 bg-amber-500/10 border border-amber-500/25 rounded-lg">
-            <p className="text-amber-400 text-sm font-medium">Password change required</p>
+            <p className="text-amber-400 text-sm font-medium">{t('settings.forcedTitle')}</p>
             <p className="text-amber-400/70 text-xs mt-0.5">
-              {user?.name ? `Hi ${user.name.split(' ')[0]}, an` : 'An'} admin has reset your password. Please set a new one to continue.
+              {user?.name
+                ? t('settings.forcedDescGreeting', { name: user.name.split(' ')[0] })
+                : t('settings.forcedDescNoName')}
             </p>
           </div>
 
@@ -66,14 +70,14 @@ export default function ForcedChangePassword() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="label">New password</label>
+              <label className="label">{t('settings.newPassword')}</label>
               <div className="relative">
                 <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
                 <input
                   type={showNew ? 'text' : 'password'}
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="Min. 8 characters"
+                  placeholder={t('settings.min8chars')}
                   className="input-field pl-9 pr-10"
                   autoFocus
                   required
@@ -89,19 +93,19 @@ export default function ForcedChangePassword() {
                 </button>
               </div>
               {newPassword.length > 0 && newPassword.length < 8 && (
-                <p className="text-red-400 text-xs mt-1">Must be at least 8 characters</p>
+                <p className="text-red-400 text-xs mt-1">{t('settings.mustBe8')}</p>
               )}
             </div>
 
             <div>
-              <label className="label">Confirm new password</label>
+              <label className="label">{t('settings.confirmNewPassword')}</label>
               <div className="relative">
                 <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
                 <input
                   type={showConfirm ? 'text' : 'password'}
                   value={confirm}
                   onChange={(e) => setConfirm(e.target.value)}
-                  placeholder="Repeat password"
+                  placeholder={t('settings.repeatPassword')}
                   className="input-field pl-9 pr-10"
                   required
                   disabled={loading}
@@ -115,7 +119,7 @@ export default function ForcedChangePassword() {
                   {showConfirm ? <EyeOff size={14} /> : <Eye size={14} />}
                 </button>
               </div>
-              {mismatch && <p className="text-red-400 text-xs mt-1">Passwords do not match</p>}
+              {mismatch && <p className="text-red-400 text-xs mt-1">{t('settings.passwordsDoNotMatch')}</p>}
             </div>
 
             <button
@@ -126,10 +130,10 @@ export default function ForcedChangePassword() {
               {loading ? (
                 <>
                   <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                  Updating...
+                  {t('settings.updating')}
                 </>
               ) : (
-                'Set new password'
+                t('settings.setNewPassword')
               )}
             </button>
           </form>

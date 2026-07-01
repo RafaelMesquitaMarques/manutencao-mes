@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { ArrowLeft, User, Shield, Building2, Activity, CheckCircle, AlertCircle, Plus, Trash2, KeyRound, type LucideIcon } from 'lucide-react';
 import { fetchUser, updateUser, fetchUserPermissions, setUserPermissions, fetchUserPlants, assignUserToPlant, removeUserFromPlant, adminResetPassword, deleteUser, deleteUserPermanently } from '../../api/users';
 import api from '../../api/axios';
@@ -8,12 +9,12 @@ import { ROLE_PERMISSIONS } from '../../store/authStore';
 
 type Tab = 'profile' | 'permissions' | 'plants' | 'activity' | 'security';
 
-const TABS: { id: Tab; label: string; Icon: LucideIcon }[] = [
-  { id: 'profile', label: 'Profile', Icon: User },
-  { id: 'permissions', label: 'Permissions', Icon: Shield },
-  { id: 'plants', label: 'Plant Access', Icon: Building2 },
-  { id: 'activity', label: 'Activity', Icon: Activity },
-  { id: 'security', label: 'Security', Icon: KeyRound },
+const TABS: { id: Tab; labelKey: string; Icon: LucideIcon }[] = [
+  { id: 'profile', labelKey: 'users.tabProfile', Icon: User },
+  { id: 'permissions', labelKey: 'users.tabPermissions', Icon: Shield },
+  { id: 'plants', labelKey: 'users.tabPlants', Icon: Building2 },
+  { id: 'activity', labelKey: 'users.tabActivity', Icon: Activity },
+  { id: 'security', labelKey: 'users.tabSecurity', Icon: KeyRound },
 ];
 
 const ALL_ROLES: UserRole[] = [
@@ -21,20 +22,13 @@ const ALL_ROLES: UserRole[] = [
   'plant_manager', 'director', 'admin',
 ];
 
-const ROLE_LABELS: Record<UserRole, string> = {
-  operator: 'Operator',
-  technician: 'Technician',
-  supervisor: 'Supervisor',
-  maintenance_director: 'Maintenance Director',
-  plant_manager: 'Plant Manager',
-  director: 'Director',
-  admin: 'Administrator',
-};
-
 const RESOURCES = [
   'dashboard', 'work_orders', 'technicians', 'equipment', 'my_work',
-  'alerts', 'tickets', 'maintenance', 'supervisor_view', 'machines',
-  'schedule', 'pm_calendar', 'kpis', 'settings_machines', 'settings_users',
+  'alerts', 'tickets', 'maintenance', 'supervisor_view', 'factory_map',
+  'dashboards', 'wo_approval', 'schedule', 'pm_calendar', 'maintenance_plans',
+  'inventory', 'suppliers', 'purchase_orders', 'machines', 'kpis',
+  'machine_reports', 'intelligence', 'settings_machines', 'settings_escalation',
+  'settings_users',
 ];
 
 const ACTIONS = ['view', 'create', 'update', 'delete'];
@@ -42,6 +36,7 @@ const ACTIONS = ['view', 'create', 'update', 'delete'];
 // ─── Profile Tab ──────────────────────────────────────────────────────────────
 
 function ProfileTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserType) => void }) {
+  const { t } = useTranslation();
   const [name, setName] = useState(user.name);
   const [email, setEmail] = useState(user.email);
   const [jobTitle, setJobTitle] = useState(user.job_title ?? '');
@@ -65,7 +60,7 @@ function ProfileTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserTy
       onUpdated(updated);
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(msg ?? 'Failed to update user.');
+      setError(msg ?? t('users.updateUserFailed'));
     } finally {
       setLoading(false);
     }
@@ -76,7 +71,7 @@ function ProfileTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserTy
       {success && (
         <div className="flex items-center gap-2.5 p-3 bg-green-500/10 border border-green-500/25 rounded-lg">
           <CheckCircle size={14} className="text-green-400" />
-          <p className="text-green-400 text-sm">Changes saved.</p>
+          <p className="text-green-400 text-sm">{t('users.changesSaved')}</p>
         </div>
       )}
       {error && (
@@ -88,25 +83,25 @@ function ProfileTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserTy
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <label className="label">Full name</label>
+          <label className="label">{t('settings.fullName')}</label>
           <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="input-field" required disabled={loading} />
         </div>
         <div>
-          <label className="label">Email / login</label>
+          <label className="label">{t('users.emailLogin')}</label>
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="input-field" required disabled={loading} />
         </div>
         <div>
-          <label className="label">Job title</label>
+          <label className="label">{t('users.jobTitle')}</label>
           <input type="text" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} className="input-field" disabled={loading} />
         </div>
         <div>
-          <label className="label">Phone</label>
+          <label className="label">{t('settings.phone')}</label>
           <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} className="input-field" disabled={loading} />
         </div>
         <div>
-          <label className="label">Role</label>
+          <label className="label">{t('users.role')}</label>
           <select value={role} onChange={(e) => setRole(e.target.value as UserRole)} className="input-field" disabled={loading}>
-            {ALL_ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+            {ALL_ROLES.map((r) => <option key={r} value={r}>{t(`roles.${r}`)}</option>)}
           </select>
         </div>
       </div>
@@ -119,14 +114,14 @@ function ProfileTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserTy
           className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500"
           disabled={loading}
         />
-        <span className="text-sm text-gray-300">Require password change on next login</span>
+        <span className="text-sm text-gray-300">{t('users.requirePwChange')}</span>
       </label>
 
       <div className="pt-1">
         <button type="submit" disabled={loading} className="btn-primary py-2 px-5 text-sm">
           {loading ? (
-            <><span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> Saving...</>
-          ) : 'Save changes'}
+            <><span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> {t('settings.saving')}</>
+          ) : t('settings.saveChanges')}
         </button>
       </div>
     </form>
@@ -136,6 +131,7 @@ function ProfileTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserTy
 // ─── Permissions Tab ─────────────────────────────────────────────────────────
 
 function PermissionsTab({ userId, userRole }: { userId: string; userRole: string }) {
+  const { t } = useTranslation();
   const [overrides, setOverrides] = useState<UserPermission[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -192,21 +188,21 @@ function PermissionsTab({ userId, userRole }: { userId: string; userRole: string
   return (
     <div>
       <p className="text-xs text-gray-500 mb-4">
-        Checked = allowed. Saving stores exactly what's checked as this user's permissions.
-        {seeded && <span className="text-amber-400"> Currently showing the <b>{userRole}</b> role defaults — adjust and save to customize.</span>}
-        {' '}Uncheck everything and save to fall back to role defaults. Admin always has full access.
+        {t('users.permChecked')}
+        {seeded && <span className="text-amber-400"> {t('users.permSeededPrefix')} <b>{userRole}</b> {t('users.permSeededSuffix')}</span>}
+        {' '}{t('users.permFallback')}
       </p>
       {success && (
         <div className="mb-4 flex items-center gap-2.5 p-3 bg-green-500/10 border border-green-500/25 rounded-lg">
           <CheckCircle size={14} className="text-green-400" />
-          <p className="text-green-400 text-sm">Permissions saved.</p>
+          <p className="text-green-400 text-sm">{t('users.permSaved')}</p>
         </div>
       )}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-white/[0.06]">
-              <th className="text-left py-2 pr-4 text-gray-500 font-medium text-xs uppercase tracking-wider">Resource</th>
+              <th className="text-left py-2 pr-4 text-gray-500 font-medium text-xs uppercase tracking-wider">{t('users.resource')}</th>
               {ACTIONS.map((a) => (
                 <th key={a} className="text-center py-2 px-3 text-gray-500 font-medium text-xs uppercase tracking-wider">
                   {a}
@@ -242,7 +238,7 @@ function PermissionsTab({ userId, userRole }: { userId: string; userRole: string
       </div>
       <div className="mt-4">
         <button onClick={handleSave} disabled={saving} className="btn-primary py-2 px-5 text-sm">
-          {saving ? 'Saving...' : 'Save overrides'}
+          {saving ? t('settings.saving') : t('users.saveOverrides')}
         </button>
       </div>
     </div>
@@ -254,6 +250,7 @@ function PermissionsTab({ userId, userRole }: { userId: string; userRole: string
 interface PlantItem { id: string; code: string; name: string }
 
 function PlantAccessTab({ userId }: { userId: string }) {
+  const { t } = useTranslation();
   const [allPlants, setAllPlants]           = useState<PlantItem[]>([]);
   const [assignedIds, setAssignedIds]       = useState<Set<string>>(new Set());
   const [loading, setLoading]               = useState(true);
@@ -282,7 +279,7 @@ function PlantAccessTab({ userId }: { userId: string }) {
       setAssignedIds((prev) => new Set([...prev, plantId]));
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(detail ?? 'Failed to assign plant.');
+      setError(detail ?? t('users.assignPlantFailed'));
     } finally {
       setActionId(null);
     }
@@ -295,7 +292,7 @@ function PlantAccessTab({ userId }: { userId: string }) {
       await removeUserFromPlant(userId, plantId);
       setAssignedIds((prev) => { const s = new Set(prev); s.delete(plantId); return s; });
     } catch {
-      setError('Failed to remove plant.');
+      setError(t('users.removePlantFailed'));
     } finally {
       setActionId(null);
     }
@@ -312,7 +309,7 @@ function PlantAccessTab({ userId }: { userId: string }) {
         </div>
       )}
       <div className="flex items-center gap-3 mb-2">
-        <label className="text-xs text-gray-500">Role when assigning:</label>
+        <label className="text-xs text-gray-500">{t('users.roleWhenAssigning')}</label>
         <select
           value={selectedRole}
           onChange={(e) => setSelectedRole(e.target.value as UserRole)}
@@ -324,7 +321,7 @@ function PlantAccessTab({ userId }: { userId: string }) {
         </select>
       </div>
       {allPlants.length === 0 ? (
-        <p className="text-gray-600 text-sm text-center py-4">No plants configured.</p>
+        <p className="text-gray-600 text-sm text-center py-4">{t('users.noPlants')}</p>
       ) : (
         <div className="space-y-2">
           {allPlants.map((plant) => {
@@ -341,7 +338,7 @@ function PlantAccessTab({ userId }: { userId: string }) {
                     disabled={actionId === plant.id}
                     className="btn-danger py-1 px-3 text-xs gap-1"
                   >
-                    <Trash2 size={12} /> Remove
+                    <Trash2 size={12} /> {t('users.remove')}
                   </button>
                 ) : (
                   <button
@@ -349,7 +346,7 @@ function PlantAccessTab({ userId }: { userId: string }) {
                     disabled={actionId === plant.id}
                     className="btn-secondary py-1 px-3 text-xs gap-1"
                   >
-                    <Plus size={12} /> Assign
+                    <Plus size={12} /> {t('users.assign')}
                   </button>
                 )}
               </div>
@@ -364,6 +361,7 @@ function PlantAccessTab({ userId }: { userId: string }) {
 // ─── Security Tab ────────────────────────────────────────────────────────────
 
 function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserType) => void }) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [resetMode, setResetMode] = useState<'idle' | 'choose' | 'generate' | 'manual' | 'done_generate'>('idle');
   const [password, setPassword] = useState('');
@@ -385,10 +383,10 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
     try {
       await deleteUser(user.id);
       onUpdated({ ...user, active: false });
-      setSuccessMsg('User deactivated — they can no longer log in. You can reactivate below.');
+      setSuccessMsg(t('users.userDeactivated'));
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setDangerErr(msg ?? 'Failed to deactivate user.');
+      setDangerErr(msg ?? t('users.deactivateFailed'));
     } finally {
       setDangerBusy(false);
     }
@@ -402,7 +400,7 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
       navigate('/settings/users');
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setDangerErr(msg ?? 'Failed to delete user.');
+      setDangerErr(msg ?? t('users.deleteFailed'));
     } finally {
       setDangerBusy(false);
     }
@@ -414,10 +412,10 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
     try {
       const updated = await updateUser(user.id, { active: true });
       onUpdated(updated);
-      setSuccessMsg('User reactivated — they can log in again.');
+      setSuccessMsg(t('users.userReactivated'));
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setDangerErr(msg ?? 'Failed to reactivate user.');
+      setDangerErr(msg ?? t('users.reactivateFailed'));
     } finally {
       setDangerBusy(false);
     }
@@ -431,22 +429,22 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
       setResetMode('done_generate');
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(msg ?? 'Failed to reset password.');
+      setError(msg ?? t('users.resetFailed'));
     } finally { setLoading(false); }
   };
 
   const handleManual = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password !== confirm) { setError('Passwords do not match.'); return; }
+    if (password !== confirm) { setError(t('users.passwordsNoMatchMsg')); return; }
     setLoading(true); setError('');
     try {
       await adminResetPassword(user.id, 'manual', password);
-      setSuccessMsg('Password updated. User will be required to change it on next login.');
+      setSuccessMsg(t('users.passwordUpdatedMsg'));
       setResetMode('idle');
       setPassword(''); setConfirm('');
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(msg ?? 'Failed to reset password.');
+      setError(msg ?? t('users.resetFailed'));
     } finally { setLoading(false); }
   };
 
@@ -461,20 +459,20 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
       {/* Status info */}
       <div className="grid grid-cols-2 gap-4">
         <div className="p-4 rounded-xl border border-white/[0.06] bg-white/[0.02]">
-          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1.5">Last Login</p>
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1.5">{t('users.lastLogin')}</p>
           <p className="text-sm text-gray-200">
-            {user.last_login_at ? new Date(user.last_login_at).toLocaleString() : 'Never'}
+            {user.last_login_at ? new Date(user.last_login_at).toLocaleString() : t('users.never')}
           </p>
         </div>
         <div className="p-4 rounded-xl border border-white/[0.06] bg-white/[0.02]">
-          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1.5">Password Change</p>
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1.5">{t('users.passwordChange')}</p>
           {user.must_change_password ? (
             <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-1 rounded-full">
-              <AlertCircle size={11} /> Required on next login
+              <AlertCircle size={11} /> {t('users.requiredNextLogin')}
             </span>
           ) : (
             <span className="inline-flex items-center gap-1.5 text-xs font-medium text-green-400 bg-green-500/10 border border-green-500/20 px-2 py-1 rounded-full">
-              <CheckCircle size={11} /> Not required
+              <CheckCircle size={11} /> {t('users.notRequired')}
             </span>
           )}
         </div>
@@ -497,7 +495,7 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
       {/* Reset password section */}
       <div>
         <h3 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
-          <KeyRound size={14} className="text-gray-500" /> Reset Password
+          <KeyRound size={14} className="text-gray-500" /> {t('users.resetPassword')}
         </h3>
 
         {resetMode === 'idle' && (
@@ -505,7 +503,7 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
             onClick={() => setResetMode('choose')}
             className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-amber-400 border border-amber-500/30 hover:bg-amber-500/10 transition-all"
           >
-            <KeyRound size={14} /> Reset password for this user
+            <KeyRound size={14} /> {t('users.resetPwForUser')}
           </button>
         )}
 
@@ -515,30 +513,30 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
               onClick={() => setResetMode('generate')}
               className="w-full p-4 rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] hover:border-blue-500/30 transition-all text-left"
             >
-              <p className="text-white font-medium text-sm">Generate temporary password</p>
-              <p className="text-gray-500 text-xs mt-0.5">System creates a random 8-character password</p>
+              <p className="text-white font-medium text-sm">{t('users.genTempTitle')}</p>
+              <p className="text-gray-500 text-xs mt-0.5">{t('users.genTempDescShort')}</p>
             </button>
             <button
               onClick={() => setResetMode('manual')}
               className="w-full p-4 rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] hover:border-blue-500/30 transition-all text-left"
             >
-              <p className="text-white font-medium text-sm">Set password manually</p>
-              <p className="text-gray-500 text-xs mt-0.5">You choose a new password for this user</p>
+              <p className="text-white font-medium text-sm">{t('users.setManualTitle')}</p>
+              <p className="text-gray-500 text-xs mt-0.5">{t('users.setManualDesc')}</p>
             </button>
-            <button onClick={() => setResetMode('idle')} className="text-xs text-gray-500 hover:text-gray-300 transition-colors">Cancel</button>
+            <button onClick={() => setResetMode('idle')} className="text-xs text-gray-500 hover:text-gray-300 transition-colors">{t('common.cancel')}</button>
           </div>
         )}
 
         {resetMode === 'generate' && (
           <div className="space-y-3">
             <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
-              <p className="text-amber-400 text-sm">A random password will be generated. You must communicate it to the user — it will only be shown once.</p>
+              <p className="text-amber-400 text-sm">{t('users.genWarn')}</p>
             </div>
             <div className="flex gap-3">
               <button onClick={handleGenerate} disabled={loading} className="btn-primary py-2 px-5 text-sm">
-                {loading ? <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : 'Generate & show'}
+                {loading ? <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : t('users.generateShow')}
               </button>
-              <button onClick={() => setResetMode('choose')} className="btn-secondary py-2 px-4 text-sm">Back</button>
+              <button onClick={() => setResetMode('choose')} className="btn-secondary py-2 px-4 text-sm">{t('common.back')}</button>
             </div>
           </div>
         )}
@@ -547,33 +545,32 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
           <div className="space-y-3">
             <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/25 rounded-lg">
               <CheckCircle size={14} className="text-green-400 flex-shrink-0" />
-              <p className="text-green-400 text-sm">Password reset. Share it with the user.</p>
+              <p className="text-green-400 text-sm">{t('users.resetDoneShare')}</p>
             </div>
             <div>
-              <p className="text-xs text-gray-500 mb-1.5">Temporary password (shown once):</p>
+              <p className="text-xs text-gray-500 mb-1.5">{t('users.tempPasswordShownOnce')}</p>
               <div className="flex items-center gap-2 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5">
                 <span className="font-mono text-lg text-white tracking-widest flex-1 select-all">{tempPassword}</span>
-                <button onClick={copyTemp} className="text-gray-400 hover:text-white transition-colors" title="Copy">
+                <button onClick={copyTemp} className="text-gray-400 hover:text-white transition-colors" title={t('users.copy')}>
                   {copied
                     ? <CheckCircle size={16} className="text-green-400" />
                     : <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
                   }
                 </button>
               </div>
-              <p className="text-amber-400 text-xs mt-2">⚠ This password will not be shown again.</p>
+              <p className="text-amber-400 text-xs mt-2">{t('users.tempWarn')}</p>
             </div>
-            <button onClick={() => setResetMode('idle')} className="btn-secondary py-2 px-4 text-sm">Done</button>
+            <button onClick={() => setResetMode('idle')} className="btn-secondary py-2 px-4 text-sm">{t('users.done')}</button>
           </div>
         )}
 
         {resetMode === 'idle' && (
           <div className="mt-8 pt-6 border-t border-red-500/15">
             <h3 className="text-sm font-semibold text-red-400 mb-1 flex items-center gap-2">
-              <Trash2 size={14} /> Danger Zone
+              <Trash2 size={14} /> {t('users.dangerZone')}
             </h3>
             <p className="text-xs text-gray-600 mb-3">
-              Deactivating keeps the user's history; permanent deletion removes the account entirely
-              and is blocked when the user has work orders, labor or tickets linked.
+              {t('users.dangerDesc')}
             </p>
             {dangerErr && (
               <div className="mb-3 flex items-start gap-2.5 p-3 bg-red-500/10 border border-red-500/25 rounded-lg">
@@ -589,7 +586,7 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
                     disabled={dangerBusy}
                     className="px-4 py-2 rounded-lg text-sm font-medium text-amber-400 border border-amber-500/30 hover:bg-amber-500/10 transition-all disabled:opacity-50"
                   >
-                    Deactivate user
+                    {t('users.deactivateUser')}
                   </button>
                 ) : (
                   <button
@@ -597,7 +594,7 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
                     disabled={dangerBusy}
                     className="px-4 py-2 rounded-lg text-sm font-semibold text-green-400 border border-green-500/30 hover:bg-green-500/10 transition-all disabled:opacity-50"
                   >
-                    {dangerBusy ? 'Reactivating…' : 'Reactivate user'}
+                    {dangerBusy ? t('users.reactivating') : t('users.reactivateUser')}
                   </button>
                 )}
                 <button
@@ -605,19 +602,19 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
                   disabled={dangerBusy}
                   className="px-4 py-2 rounded-lg text-sm font-medium text-red-400 border border-red-500/30 hover:bg-red-500/10 transition-all disabled:opacity-50"
                 >
-                  Delete permanently…
+                  {t('users.deletePermanently')}
                 </button>
               </div>
             ) : (
               <div className="space-y-3 p-4 bg-red-500/5 border border-red-500/20 rounded-xl max-w-md">
                 <p className="text-sm text-red-300">
-                  This cannot be undone. Type the user's name to confirm:
+                  {t('users.deleteConfirmPrompt')}
                   <span className="block font-mono text-white mt-1">{user.name}</span>
                 </p>
                 <input
                   value={confirmName}
                   onChange={(e) => setConfirmName(e.target.value)}
-                  placeholder="Type the full name"
+                  placeholder={t('users.typeFullName')}
                   className="input-field w-full"
                   disabled={dangerBusy}
                   autoFocus
@@ -628,14 +625,14 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
                     disabled={dangerBusy || confirmName.trim() !== user.name}
                     className="px-4 py-2 rounded-lg text-sm font-semibold text-white bg-red-600 hover:bg-red-500 transition-all disabled:opacity-40"
                   >
-                    {dangerBusy ? 'Deleting…' : 'Delete permanently'}
+                    {dangerBusy ? t('users.deleting') : t('users.deletePermanentlyBtn')}
                   </button>
                   <button
                     onClick={() => setDangerMode('idle')}
                     disabled={dangerBusy}
                     className="btn-secondary py-2 px-4 text-sm"
                   >
-                    Cancel
+                    {t('common.cancel')}
                   </button>
                 </div>
               </div>
@@ -646,13 +643,13 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
         {resetMode === 'manual' && (
           <form onSubmit={handleManual} className="space-y-3">
             <div>
-              <label className="label">New password</label>
+              <label className="label">{t('settings.newPassword')}</label>
               <div className="relative">
                 <input
                   type={showPw ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Min. 8 characters"
+                  placeholder={t('settings.min8chars')}
                   className="input-field pr-10"
                   autoFocus required disabled={loading}
                 />
@@ -664,19 +661,19 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
                   }
                 </button>
               </div>
-              {password.length > 0 && password.length < 8 && <p className="text-red-400 text-xs mt-1">Must be at least 8 characters</p>}
+              {password.length > 0 && password.length < 8 && <p className="text-red-400 text-xs mt-1">{t('settings.mustBe8')}</p>}
             </div>
             <div>
-              <label className="label">Confirm password</label>
+              <label className="label">{t('users.confirmPassword')}</label>
               <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)}
-                placeholder="Repeat password" className="input-field" required disabled={loading} />
-              {confirm.length > 0 && password !== confirm && <p className="text-red-400 text-xs mt-1">Passwords do not match</p>}
+                placeholder={t('users.repeatPassword')} className="input-field" required disabled={loading} />
+              {confirm.length > 0 && password !== confirm && <p className="text-red-400 text-xs mt-1">{t('users.passwordsDoNotMatch')}</p>}
             </div>
             <div className="flex gap-3 pt-1">
               <button type="submit" disabled={loading || password.length < 8 || password !== confirm} className="btn-primary py-2 px-5 text-sm">
-                {loading ? <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : 'Set password'}
+                {loading ? <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : t('users.setPassword')}
               </button>
-              <button type="button" onClick={() => setResetMode('choose')} className="btn-secondary py-2 px-4 text-sm">Back</button>
+              <button type="button" onClick={() => setResetMode('choose')} className="btn-secondary py-2 px-4 text-sm">{t('common.back')}</button>
             </div>
           </form>
         )}
@@ -688,6 +685,7 @@ function SecurityTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserT
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function UserDetail() {
+  const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const [user, setUser] = useState<UserType | null>(null);
   const [loading, setLoading] = useState(true);
@@ -707,7 +705,7 @@ export default function UserDetail() {
   );
 
   if (!user) return (
-    <div className="min-h-screen bg-[#060c17] flex items-center justify-center text-gray-600">User not found.</div>
+    <div className="min-h-screen bg-[#060c17] flex items-center justify-center text-gray-600">{t('users.userNotFound')}</div>
   );
 
   const initials = user.name.split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase();
@@ -715,7 +713,7 @@ export default function UserDetail() {
   return (
     <div className="min-h-screen bg-[#060c17] text-white p-6 max-w-4xl mx-auto">
       <Link to="/settings/users" className="flex items-center gap-2 text-gray-500 hover:text-gray-300 text-sm mb-6 transition-colors">
-        <ArrowLeft size={14} /> Back to Users
+        <ArrowLeft size={14} /> {t('users.backToUsers')}
       </Link>
 
       <div className="flex items-center gap-4 mb-8">
@@ -727,7 +725,7 @@ export default function UserDetail() {
             {user.name}
             {!user.active && (
               <span className="text-[11px] font-medium text-red-400 bg-red-500/10 border border-red-500/25 px-2 py-0.5 rounded-full">
-                Inactive
+                {t('users.inactive')}
               </span>
             )}
           </h1>
@@ -737,7 +735,7 @@ export default function UserDetail() {
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 bg-[#0d1421]/60 rounded-xl p-1 border border-white/[0.06]">
-        {TABS.map(({ id: tabId, label, Icon }) => (
+        {TABS.map(({ id: tabId, labelKey, Icon }) => (
           <button
             key={tabId}
             onClick={() => setTab(tabId)}
@@ -748,7 +746,7 @@ export default function UserDetail() {
             }`}
           >
             <Icon size={14} />
-            {label}
+            {t(labelKey)}
           </button>
         ))}
       </div>
@@ -762,14 +760,14 @@ export default function UserDetail() {
           <div className="space-y-2">
             {user.last_login_at ? (
               <div className="text-sm text-gray-400">
-                Last login: <span className="text-gray-300">{new Date(user.last_login_at).toLocaleString()}</span>
+                {t('users.lastLoginLabel')} <span className="text-gray-300">{new Date(user.last_login_at).toLocaleString()}</span>
               </div>
             ) : (
-              <p className="text-gray-600 text-sm">No login activity recorded.</p>
+              <p className="text-gray-600 text-sm">{t('users.noActivity')}</p>
             )}
             {user.invited_at && (
               <div className="text-sm text-gray-400">
-                Joined via invitation: <span className="text-gray-300">{new Date(user.invited_at).toLocaleString()}</span>
+                {t('users.joinedVia')} <span className="text-gray-300">{new Date(user.invited_at).toLocaleString()}</span>
               </div>
             )}
           </div>

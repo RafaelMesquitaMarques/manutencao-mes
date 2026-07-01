@@ -9,6 +9,7 @@ import {
   addPmTemplateTask, updatePmTemplateTask, deletePmTemplateTask,
   addPmTaskMedia, deletePmTaskMedia, updatePmTemplate,
 } from '../../api/pmTemplates';
+import { useRole } from '../../hooks/usePermission';
 
 const ENFORCEMENT_LEVELS = ['advisory', 'required', 'strict'] as const;
 import { uploadFile } from '../../api/uploads';
@@ -24,8 +25,12 @@ interface Props {
  * an instruction, an optional expected result, and photos / videos / external links.
  * Reused on the Equipment page (PM Templates) and on the Maintenance Plan page.
  */
-export default function PmStepsEditor({ template, onChange, readOnly = false }: Props) {
+export default function PmStepsEditor({ template, onChange, readOnly: readOnlyProp = false }: Props) {
   const { t } = useTranslation();
+  // Authoring a PM standard (steps, SOP media, rigor level) is a supervisor+ task.
+  // Technicians/operators execute the procedure on the work order — here they only view it.
+  const canManagePm = useRole('supervisor', 'maintenance_director', 'plant_manager', 'director', 'admin');
+  const readOnly = readOnlyProp || !canManagePm;
   const [newText, setNewText] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -224,7 +229,7 @@ function StepCard({ template, task, index, onChange, readOnly }: {
 
           {!readOnly && (
             <>
-              <input ref={fileRef} type="file" accept="image/*,video/*" className="hidden" onChange={onPickFile} />
+              <input ref={fileRef} type="file" accept="image/*,video/*" capture="environment" className="hidden" onChange={onPickFile} />
               <button
                 onClick={() => fileRef.current?.click()}
                 disabled={uploading}

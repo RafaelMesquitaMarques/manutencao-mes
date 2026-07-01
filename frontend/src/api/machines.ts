@@ -125,6 +125,17 @@ export const fetchMESData = async (ref: string): Promise<MESDataExtended> => {
   return data;
 };
 
+export interface HourlyPoint { hour: string; pieces: number; }
+export const fetchProductionHourly = async (
+  ref: string,
+  range?: { start: string; end: string },
+): Promise<{ hours: HourlyPoint[]; shift_total: number }> => {
+  const { data } = await axios.get(`/api/machines/${ref}/production-hourly`, {
+    params: range ? { start: range.start, end: range.end } : undefined,
+  });
+  return data;
+};
+
 export const addRejects = async (
   ref: string,
   delta: number,

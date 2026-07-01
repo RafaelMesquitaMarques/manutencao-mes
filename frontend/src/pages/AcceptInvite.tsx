@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Factory, User, Lock, Globe, ChevronDown, AlertCircle, CheckCircle } from 'lucide-react';
 import { getInvitation, acceptInvite } from '../api/auth';
 import i18n from '../i18n';
@@ -10,17 +11,8 @@ const LANGUAGES = [
   { code: 'es', label: 'ES', name: 'Español' },
 ];
 
-const ROLE_LABELS: Record<string, string> = {
-  operator: 'Operator',
-  technician: 'Technician',
-  supervisor: 'Supervisor',
-  maintenance_director: 'Maintenance Director',
-  plant_manager: 'Plant Manager',
-  director: 'Director',
-  admin: 'Administrator',
-};
-
 export default function AcceptInvite() {
+  const { t } = useTranslation();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const token = params.get('token') ?? '';
@@ -37,16 +29,16 @@ export default function AcceptInvite() {
   const [done, setDone] = useState(false);
 
   useEffect(() => {
-    if (!token) { setInviteError('No invitation token found.'); return; }
+    if (!token) { setInviteError(t('auth.noInviteToken')); return; }
     getInvitation(token)
       .then(setInvitation)
-      .catch(() => setInviteError('This invitation link is invalid or has expired.'));
-  }, [token]);
+      .catch(() => setInviteError(t('auth.inviteInvalid')));
+  }, [token, t]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password !== confirmPassword) { setError('Passwords do not match.'); return; }
-    if (password.length < 8) { setError('Password must be at least 8 characters.'); return; }
+    if (password !== confirmPassword) { setError(t('auth.passwordsNoMatch')); return; }
+    if (password.length < 8) { setError(t('auth.passwordMinLength')); return; }
     setError('');
     setLoading(true);
     try {
@@ -54,7 +46,7 @@ export default function AcceptInvite() {
       setDone(true);
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(msg ?? 'Failed to create account. Please try again.');
+      setError(msg ?? t('auth.createAccountFailed'));
     } finally {
       setLoading(false);
     }
@@ -70,7 +62,7 @@ export default function AcceptInvite() {
             </div>
             <div>
               <h1 className="text-white font-bold text-lg leading-none">Foliot MES</h1>
-              <p className="text-gray-600 text-[11px] mt-1 leading-none">Create your account</p>
+              <p className="text-gray-600 text-[11px] mt-1 leading-none">{t('auth.createYourAccount')}</p>
             </div>
           </div>
 
@@ -82,10 +74,10 @@ export default function AcceptInvite() {
           ) : done ? (
             <div className="text-center py-4">
               <CheckCircle size={40} className="text-green-400 mx-auto mb-3" />
-              <p className="text-white font-semibold mb-1">Account created!</p>
-              <p className="text-gray-500 text-sm mb-5">You can now sign in to your account.</p>
+              <p className="text-white font-semibold mb-1">{t('auth.accountCreated')}</p>
+              <p className="text-gray-500 text-sm mb-5">{t('auth.canNowSignIn')}</p>
               <button onClick={() => navigate('/login')} className="btn-primary w-full justify-center py-2.5 text-sm">
-                Go to Login
+                {t('auth.goToLogin')}
               </button>
             </div>
           ) : !invitation ? (
@@ -97,7 +89,7 @@ export default function AcceptInvite() {
               <div className="mb-5 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
                 <p className="text-blue-300 text-sm font-medium">{invitation.email}</p>
                 <p className="text-gray-500 text-xs mt-0.5">
-                  Invited as: <span className="text-gray-400">{ROLE_LABELS[invitation.role] ?? invitation.role}</span>
+                  {t('auth.invitedAs')} <span className="text-gray-400">{t(`roles.${invitation.role}`, invitation.role)}</span>
                 </p>
               </div>
 
@@ -110,14 +102,14 @@ export default function AcceptInvite() {
 
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                  <label className="label">Full name</label>
+                  <label className="label">{t('auth.fullName')}</label>
                   <div className="relative">
                     <User size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
                     <input
                       type="text"
                       value={name}
                       onChange={(e) => setName(e.target.value)}
-                      placeholder="Your full name"
+                      placeholder={t('auth.yourFullName')}
                       className="input-field pl-9"
                       required
                       disabled={loading}
@@ -125,14 +117,14 @@ export default function AcceptInvite() {
                   </div>
                 </div>
                 <div>
-                  <label className="label">Password</label>
+                  <label className="label">{t('auth.password')}</label>
                   <div className="relative">
                     <Lock size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
                     <input
                       type="password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      placeholder="Min. 8 characters"
+                      placeholder={t('auth.minChars')}
                       className="input-field pl-9"
                       required
                       disabled={loading}
@@ -140,7 +132,7 @@ export default function AcceptInvite() {
                   </div>
                 </div>
                 <div>
-                  <label className="label">Confirm password</label>
+                  <label className="label">{t('auth.confirmPassword')}</label>
                   <div className="relative">
                     <Lock size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
                     <input
@@ -155,7 +147,7 @@ export default function AcceptInvite() {
                   </div>
                 </div>
                 <div>
-                  <label className="label">Language</label>
+                  <label className="label">{t('auth.language')}</label>
                   <div className="relative inline-block w-full">
                     <button
                       type="button"
@@ -195,7 +187,7 @@ export default function AcceptInvite() {
                   {loading ? (
                     <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
                   ) : (
-                    'Create account'
+                    t('auth.createAccount')
                   )}
                 </button>
               </form>

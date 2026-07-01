@@ -60,6 +60,47 @@ function DateCell({ value }: { value: string | null }) {
   );
 }
 
+function fmtDate(value: string | null | undefined): string {
+  if (!value) return '—';
+  return new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// Mobile-only card: the AG Grid is unreadable on a phone (every column collapses
+// to a single truncated letter), so below the `lg` breakpoint we render a tappable
+// card per work order instead.
+function WorkOrderCard({ wo, onClick }: { wo: WorkOrder; onClick: () => void }) {
+  const { t } = useTranslation();
+  const technician = wo.technicians?.[0]?.name ?? wo.assigned_to_name ?? '';
+  return (
+    <button
+      onClick={onClick}
+      className="glass-card w-full text-left p-3.5 flex flex-col gap-2 active:bg-white/[0.04] transition-colors"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <span className="font-mono text-xs text-blue-400 flex-shrink-0">{wo.wo_number}</span>
+        <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${STATUS_COLORS[wo.status] ?? 'text-gray-400'}`}>
+          {t(`status.${wo.status}`, wo.status.replace('_', ' '))}
+        </span>
+      </div>
+      <p className="text-sm text-gray-100 font-medium leading-snug">{wo.title}</p>
+      {(wo.equipment_name || wo.equipment_location) && (
+        <p className="text-xs text-gray-400 truncate">
+          {[wo.equipment_name, wo.equipment_location].filter(Boolean).join(' · ')}
+        </p>
+      )}
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className={`font-medium ${PRIORITY_COLORS[wo.priority] ?? 'text-gray-400'}`}>
+          {t(`priority.${wo.priority}`, wo.priority)}
+        </span>
+        <div className="flex items-center gap-3 text-gray-500">
+          {technician && <span className="truncate max-w-[120px]">{technician}</span>}
+          <span className="font-mono">{fmtDate(wo.due_date)}</span>
+        </div>
+      </div>
+    </button>
+  );
+}
+
 const WorkOrderList = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -71,6 +112,10 @@ const WorkOrderList = () => {
   const [statusFilter, setStatusFilter] = useState<WorkOrderStatus | ''>(ALL);
   const [typeFilter, setTypeFilter] = useState<WorkOrderType | ''>(ALL);
   const [priorityFilter, setPriorityFilter] = useState<Priority | ''>(ALL);
+  // Mobile card list renders plain DOM (no virtualization), so cap how many we
+  // show at once and let the user expand — the dataset can be thousands of rows.
+  const MOBILE_PAGE = 30;
+  const [mobileLimit, setMobileLimit] = useState(MOBILE_PAGE);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -85,6 +130,9 @@ const WorkOrderList = () => {
   }, [setWorkOrders, setLoading]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Collapse the mobile list back to the first page whenever the filter set changes.
+  useEffect(() => { setMobileLimit(MOBILE_PAGE); }, [search, statusFilter, typeFilter, priorityFilter]);
 
   const { lastUpdatedAt, isRefreshing, hasError, manualRefresh } = useAutoRefresh(
     () => load(true),
@@ -297,10 +345,11 @@ const WorkOrderList = () => {
       ) : (
         <div>
           <p className="text-gray-600 text-xs font-mono mb-2 px-1">
-            {filtered.length} / {workOrders.length} orders
+            {t('workOrders.countLabel', { shown: filtered.length, total: workOrders.length })}
           </p>
+          {/* Desktop: AG Grid. Hidden on phones where the columns are unreadable. */}
           <div
-            className="ag-theme-quartz-dark rounded-xl overflow-hidden border border-white/[0.06]"
+            className="hidden lg:block ag-theme-quartz-dark rounded-xl overflow-hidden border border-white/[0.06]"
             style={{ height: 520 }}
           >
             <AgGridReact<WorkOrder>
@@ -319,6 +368,28 @@ const WorkOrderList = () => {
               paginationPageSize={20}
               paginationPageSizeSelector={[10, 20, 50, 100]}
             />
+          </div>
+          {/* Mobile: tappable card list. */}
+          <div className="lg:hidden space-y-2.5">
+            {filtered.length === 0 ? (
+              <div className="glass-card flex items-center justify-center py-10 text-gray-500 text-sm">
+                {t('workOrders.noResults')}
+              </div>
+            ) : (
+              <>
+                {filtered.slice(0, mobileLimit).map((wo) => (
+                  <WorkOrderCard key={wo.id} wo={wo} onClick={() => navigate(`/work-orders/${wo.id}`)} />
+                ))}
+                {filtered.length > mobileLimit && (
+                  <button
+                    onClick={() => setMobileLimit((n) => n + MOBILE_PAGE)}
+                    className="btn-secondary w-full py-2.5 text-sm"
+                  >
+                    {t('common.loadMore', 'Load more')}
+                  </button>
+                )}
+              </>
+            )}
           </div>
         </div>
       )}

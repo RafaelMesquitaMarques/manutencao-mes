@@ -80,6 +80,10 @@ const TABS: { id: Tab; icon: typeof Info; labelKey: string }[] = [
 
 const COST_TYPES = ['local_parts', 'labor', 'external_parts', 'contracts', 'rentals', 'other'];
 
+// Proof can be a photo or a video — detect video by the served file extension.
+const PROOF_VIDEO_EXT = /\.(mp4|mov|webm|m4v|ogg|ogv|avi|mkv)(\?|#|$)/i;
+const isVideoUrl = (u?: string | null): boolean => !!u && PROOF_VIDEO_EXT.test(u);
+
 const fmt = (d?: string | null) => {
   if (!d) return '—';
   return new Date(d).toLocaleString(undefined, {
@@ -270,8 +274,10 @@ const ChecklistItem = ({
                   <video key={m.id} src={m.url} className="h-16 w-24 rounded-lg border border-white/10 bg-black object-cover" controls preload="metadata" />
                 ) : (
                   <a key={m.id} href={m.url} target="_blank" rel="noreferrer"
-                    className="flex items-center gap-1 h-16 px-2 rounded-lg border border-white/10 text-[11px] text-blue-300 hover:bg-white/5">
-                    <ExternalLink size={13} /> {t('pm.video', 'Vidéo')}
+                    title={m.caption ?? m.url}
+                    className="flex items-center gap-1 h-16 px-2 rounded-lg border border-white/10 text-[11px] text-blue-300 hover:bg-white/5 max-w-[140px]">
+                    <ExternalLink size={13} className="flex-shrink-0" />
+                    <span className="line-clamp-3 break-all">{m.caption || t('pm.openDocument', 'Open')}</span>
                   </a>
                 )
               ))}
@@ -283,21 +289,26 @@ const ChecklistItem = ({
             <div className="mt-2 flex items-center gap-2">
               {action.proof_photo_url ? (
                 <div className="relative group">
-                  <a href={action.proof_photo_url} target="_blank" rel="noreferrer">
-                    <img src={action.proof_photo_url} alt="" className="h-16 w-16 object-cover rounded-lg border border-green-500/40" />
-                  </a>
-                  <button onClick={clearProof} className="absolute -top-2 -right-2 bg-red-600 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100">
+                  {isVideoUrl(action.proof_photo_url) ? (
+                    <video src={action.proof_photo_url} controls preload="metadata"
+                      className="h-16 w-24 object-cover rounded-lg border border-green-500/40 bg-black" />
+                  ) : (
+                    <a href={action.proof_photo_url} target="_blank" rel="noreferrer">
+                      <img src={action.proof_photo_url} alt="" className="h-16 w-16 object-cover rounded-lg border border-green-500/40" />
+                    </a>
+                  )}
+                  <button onClick={clearProof} className="absolute -top-2 -right-2 bg-red-600 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 z-10">
                     <X size={11} />
                   </button>
-                  <span className="absolute bottom-0 inset-x-0 text-[9px] text-center bg-green-600/80 text-white rounded-b-lg">{t('pm.proof', 'Preuve')}</span>
+                  <span className="absolute bottom-0 inset-x-0 text-[9px] text-center bg-green-600/80 text-white rounded-b-lg pointer-events-none">{t('pm.proof', 'Preuve')}</span>
                 </div>
               ) : (
                 <>
-                  <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onPickProof} />
+                  <input ref={fileRef} type="file" accept="image/*,video/*" capture="environment" className="hidden" onChange={onPickProof} />
                   <button onClick={() => fileRef.current?.click()} disabled={uploading}
                     className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-red-500/30 text-red-300 text-xs hover:bg-red-500/10 disabled:opacity-50">
                     {uploading ? <Loader2 size={13} className="animate-spin" /> : <Camera size={13} />}
-                    {t('pm.addProof', 'Photo de preuve')}
+                    {t('pm.addProof', 'Photo / vidéo de preuve')}
                   </button>
                 </>
               )}
@@ -309,16 +320,78 @@ const ChecklistItem = ({
   );
 };
 
+// ─── Technician notes (on the overview, reuses the timeline comment action) ──────
+
+const NotesSection = ({ woId, notes, onAdded }: {
+  woId: string; notes: WOAction[]; onAdded: (a: WOAction) => void;
+}) => {
+  const { t } = useTranslation();
+  const [text, setText] = useState('');
+  const [posting, setPosting] = useState(false);
+  const sorted = [...notes].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+
+  const post = async () => {
+    if (!text.trim()) return;
+    setPosting(true);
+    try {
+      const a = await addWOAction(woId, { action_type: 'comment', content: text.trim() });
+      onAdded(a);
+      setText('');
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  return (
+    <div className="glass-card p-5">
+      <div className="flex items-center gap-2 mb-1">
+        <MessageSquare size={14} className="text-gray-500" />
+        <h3 className="text-white font-semibold text-sm">{t('workOrders.technicianNotes')}</h3>
+      </div>
+      <p className="text-gray-600 text-xs mb-3">{t('workOrders.technicianNotesHint')}</p>
+      <textarea
+        rows={2}
+        className="input-field resize-none w-full"
+        placeholder={t('workOrders.commentPlaceholder')}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+      />
+      <div className="flex justify-end mt-2">
+        <button onClick={post} disabled={posting || !text.trim()} className="btn-primary py-1.5">
+          {posting ? <Spinner size="xs" /> : <Plus size={14} />}
+          {posting ? t('common.posting') : t('workOrders.addComment')}
+        </button>
+      </div>
+      {sorted.length > 0 && (
+        <div className="mt-4 space-y-2">
+          {sorted.map((a) => (
+            <div key={a.id} className="rounded-lg border border-white/[0.06] p-3">
+              <p className="text-[11px] text-gray-500 font-mono mb-1">{fmt(a.created_at)}</p>
+              <p className="text-gray-200 text-sm whitespace-pre-wrap leading-relaxed">{a.content}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
 const OverviewTab = ({
   wo,
   checklist,
+  notes,
   onToggleChecklist,
+  onNoteAdded,
 }: {
   wo: WorkOrder;
   checklist: WOAction[];
+  notes: WOAction[];
   onToggleChecklist: (action: WOAction) => void;
+  onNoteAdded: (a: WOAction) => void;
 }) => {
   const { t } = useTranslation();
 
@@ -351,6 +424,7 @@ const OverviewTab = ({
             </div>
           ))
         )}
+        <NotesSection woId={wo.id} notes={notes} onAdded={onNoteAdded} />
       </div>
 
       {/* Right — metadata */}
@@ -376,7 +450,7 @@ const OverviewTab = ({
         </SectionCard>
 
         {wo.ticket_id && (
-          <SectionCard icon={AlertCircle} title="Linked Ticket">
+          <SectionCard icon={AlertCircle} title={t('workOrders.linkedTicket')}>
             <Link to={`/tickets/${wo.ticket_id}`}
               className="text-blue-400 hover:text-blue-300 text-sm font-medium flex items-center gap-1 transition-colors">
               {wo.ticket_number ?? wo.ticket_id.slice(0, 8)}
@@ -410,7 +484,7 @@ const OverviewTab = ({
                 } />
               ) : (
                 <p className="text-gray-600 text-sm italic">
-                  {wo.status === 'in_progress' ? 'In progress…' : 'No time recorded'}
+                  {wo.status === 'in_progress' ? t('workOrders.timeInProgress') : t('workOrders.noTimeRecorded')}
                 </p>
               );
             })()}
@@ -625,7 +699,7 @@ const LaborTab = ({
             </div>
             <div>
               <label className="label">{t('workOrders.activityLabel')}</label>
-              <input type="text" className="input-field" placeholder="Inspection, repair..."
+              <input type="text" className="input-field" placeholder={t('workOrders.activityPlaceholder')}
                 value={form.activity}
                 onChange={(e) => setForm({ ...form, activity: e.target.value })} />
             </div>
@@ -653,8 +727,8 @@ const LaborTab = ({
               <thead>
                 <tr className="border-b border-white/[0.04]">
                   <th className="table-header-cell">{t('workOrders.technicianLabel')}</th>
-                  <th className="table-header-cell">Start</th>
-                  <th className="table-header-cell">End</th>
+                  <th className="table-header-cell">{t('workOrders.laborStart')}</th>
+                  <th className="table-header-cell">{t('workOrders.laborEnd')}</th>
                   <th className="table-header-cell text-right">{t('workOrders.hoursWorked')}</th>
                   <th className="table-header-cell text-right">{t('workOrders.rateLabel')}</th>
                   <th className="table-header-cell text-right">{t('workOrders.totalCost')}</th>
@@ -676,7 +750,7 @@ const LaborTab = ({
                         {r.started_at ? fmt(r.started_at) : fmtDate(r.date)}
                       </td>
                       <td className="table-cell font-mono text-xs text-gray-400">
-                        {r.stopped_at ? fmt(r.stopped_at) : <span className="text-amber-400">In progress</span>}
+                        {r.stopped_at ? fmt(r.stopped_at) : <span className="text-amber-400">{t('status.in_progress')}</span>}
                       </td>
                       <td className="table-cell text-right font-mono text-blue-400">{durStr}</td>
                       <td className="table-cell text-right font-mono text-gray-400 text-xs">
@@ -707,22 +781,23 @@ const IPART_STYLE: Record<string, string> = {
 };
 
 const InterventionPartsSection = ({ wo }: { wo: WorkOrder }) => {
+  const { t } = useTranslation();
   const iParts = wo.intervention_parts ?? [];
   if (iParts.length === 0) return null;
   return (
     <div className="glass-card overflow-hidden">
       <div className="px-4 py-3 border-b border-white/[0.06] flex items-center gap-2">
         <Package size={14} className="text-amber-500" />
-        <span className="text-sm font-medium text-gray-300">Parts added via kiosk</span>
-        <span className="ml-auto text-xs text-gray-600 font-mono">{iParts.length} part{iParts.length !== 1 ? 's' : ''}</span>
+        <span className="text-sm font-medium text-gray-300">{t('workOrders.partsViaKiosk')}</span>
+        <span className="ml-auto text-xs text-gray-600 font-mono">{t('workOrders.partsCount', { count: iParts.length })}</span>
       </div>
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-white/[0.04]">
-            <th className="table-header-cell">Code</th>
-            <th className="table-header-cell">Description</th>
-            <th className="table-header-cell text-right">Qty</th>
-            <th className="table-header-cell text-center">Status</th>
+            <th className="table-header-cell">{t('workOrders.code')}</th>
+            <th className="table-header-cell">{t('common.description')}</th>
+            <th className="table-header-cell text-right">{t('workOrders.quantity')}</th>
+            <th className="table-header-cell text-center">{t('common.status')}</th>
           </tr>
         </thead>
         <tbody>
@@ -733,7 +808,7 @@ const InterventionPartsSection = ({ wo }: { wo: WorkOrder }) => {
               <td className="table-cell text-right font-mono">{p.quantity_used} {p.unit}</td>
               <td className="table-cell text-center">
                 <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border ${IPART_STYLE[p.approval_status] ?? IPART_STYLE.pending}`}>
-                  {p.approval_status}
+                  {t(`partApprovalStatus.${p.approval_status}`, p.approval_status)}
                 </span>
               </td>
             </tr>
@@ -823,7 +898,7 @@ const PartsTab = ({
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
               <label className="label">{t('common.description')} *</label>
-              <input type="text" className="input-field" placeholder="Part description..."
+              <input type="text" className="input-field" placeholder={t('workOrders.partDescriptionPlaceholder')}
                 value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} required />
             </div>
             <div>
@@ -833,7 +908,7 @@ const PartsTab = ({
             </div>
             <div>
               <label className="label">{t('workOrders.supplier')}</label>
-              <input type="text" className="input-field" placeholder="Supplier name"
+              <input type="text" className="input-field" placeholder={t('workOrders.supplierPlaceholder')}
                 value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} />
             </div>
             <div>
@@ -980,7 +1055,7 @@ const CostsTab = ({
             <div className="flex items-center gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
               <AlertCircle size={14} className="text-amber-400 flex-shrink-0" />
               <p className="text-amber-300 text-xs">
-                Labor records exist but have no rate. Configure hourly rates in the <strong>Technicians</strong> page.
+                {t('workOrders.noRateWarningPrefix')}<strong>{t('workOrders.noRateWarningLink')}</strong>{t('workOrders.noRateWarningSuffix')}
               </p>
             </div>
           )}
@@ -1017,7 +1092,7 @@ const CostsTab = ({
             </div>
             <div className="col-span-2">
               <label className="label">{t('common.description')} *</label>
-              <input type="text" className="input-field" placeholder="Cost description..."
+              <input type="text" className="input-field" placeholder={t('workOrders.costDescriptionPlaceholder')}
                 value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} required />
             </div>
             <div>
@@ -1281,8 +1356,11 @@ const WorkOrderDetail = () => {
         updated = await updateWorkOrderStatus(wo.id, status);
       }
       setWo(updated);
-    } catch {
-      setActionError(t('common.error'));
+    } catch (err: unknown) {
+      // Surface the backend's reason (e.g. strict checklist: missing required
+      // steps or proof photos) instead of a generic error.
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setActionError(typeof detail === 'string' && detail ? detail : t('common.error'));
     } finally {
       setIsActioning(false);
       setShowCompleteModal(false);
@@ -1302,7 +1380,7 @@ const WorkOrderDetail = () => {
       <div className="flex flex-col items-center justify-center h-64 gap-4">
         <p className="text-red-400 text-sm">{error ?? t('common.error')}</p>
         <button onClick={load} className="btn-secondary flex items-center gap-2">
-          <RefreshCw size={14} /> Retry
+          <RefreshCw size={14} /> {t('common.retry')}
         </button>
       </div>
     );
@@ -1493,7 +1571,13 @@ const WorkOrderDetail = () => {
       {/* Tab content */}
       <div className="min-h-[300px]">
         {activeTab === 'overview' && (
-          <OverviewTab wo={wo} checklist={checklist} onToggleChecklist={handleToggleChecklist} />
+          <OverviewTab
+            wo={wo}
+            checklist={checklist}
+            notes={actions.filter((a) => a.action_type === 'comment')}
+            onToggleChecklist={handleToggleChecklist}
+            onNoteAdded={(a) => setActions((prev) => [...prev, a])}
+          />
         )}
         {activeTab === 'labor' && (
           <LaborTab
@@ -1540,7 +1624,7 @@ const WorkOrderDetail = () => {
               <h3 className="text-white font-semibold">{t('workOrders.confirmComplete')}</h3>
             </div>
             <p className="text-gray-400 text-sm mb-5">
-              Work time will be calculated automatically from labor records.
+              {t('workOrders.completeTimeNote')}
             </p>
             <div className="flex gap-2 justify-end">
               <button

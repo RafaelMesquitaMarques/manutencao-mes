@@ -3,7 +3,8 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, Html, Edges, useTexture, useGLTF, useAnimations, TransformControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { STATUS_HEX as STATUS_COLORS } from '../../utils/statusColors';
+import { useTranslation } from 'react-i18next';
+import { STATUS_HEX as STATUS_COLORS, STATUS_LABEL as STATUS_LABELS } from '../../utils/statusColors';
 const SCALE = 0.05;
 const FLOOR_W = 1600;
 
@@ -183,9 +184,10 @@ function Joint({ r, color }: { r: number; color: string }) {
 
 /** Procedural white FANUC-style 6-axis cobot (green joint accents) — the
  * placeholder until a .glb is uploaded. While `animate` (status === running) it
- * runs a smooth pick-and-place cycle: the base swings between two stations and
- * the arm dips to pick/place a wood panel at each end (no spinning). A panel is
- * held at the gripper and a stack sits beside it. Stopped → eases to home pose. */
+ * runs a smooth pick-and-place cycle: the base swings 180° between the machine
+ * and the conveyor, dipping to pick at the machine and place on the conveyor.
+ * The wrist counter-rotates the shoulder+elbow dip so the gripper stays LEVEL and
+ * the wood panel is always carried flat (horizontal). Stopped → eases to home. */
 function CobotMesh({ h, color, id, name, onSelect, animate }: BoxProps & { animate?: boolean }) {
   const u = h / 3;                                   // scale unit (default height 3)
   const white = '#eef1f4', dark = '#2b2f36', green = '#8ec63f', wood = '#caa46a';
@@ -195,32 +197,49 @@ function CobotMesh({ h, color, id, name, onSelect, animate }: BoxProps & { anima
   const j4 = useRef<THREE.Group>(null);              // wrist pitch (Z)
   const gripPanel = useRef<THREE.Mesh>(null);        // the wood panel the gripper holds
 
-  // Pick starts at yaw 0 — i.e. the direction you rotated the block to face — and
-  // the place is 180° opposite. So the scene begins exactly where you aimed it.
-  const CA = 0, MA = Math.PI;
+  // Pick is at yaw 0 — aim the block at the machine — and the place is 180°
+  // opposite (the conveyor). So the scene begins exactly where you aimed it.
+  const MACHINE = 0, CONVEYOR = Math.PI;
 
-  // Work cycle: dwell+pick at the conveyor → carry → dwell+place in the machine → return.
+  // Per-cobot phase + speed offset (stable, derived from the block id) so cells
+  // don't move in lockstep — each starts at a different point in the cycle and
+  // runs at a slightly different pace, drifting apart for a natural look.
+  const { phaseFrac, periodScale } = useMemo(() => {
+    let hsh = 0;
+    for (let i = 0; i < id.length; i++) hsh = (hsh * 31 + id.charCodeAt(i)) >>> 0;
+    return { phaseFrac: (hsh % 1000) / 1000, periodScale: 0.85 + ((hsh >> 10) % 100) / 100 * 0.3 };
+  }, [id]);
+
+  // Work cycle: dwell+pick at the machine → carry → dwell+place on the conveyor → return.
   useFrame((state) => {
     const a = animate ? 1 : 0;
-    const T = 8;
-    const p = (state.clock.elapsedTime % T) / T;     // 0..1 cycle phase
+    const T = 8 * periodScale;                       // per-cobot cycle length (≈7-9s)
+    const p = ((state.clock.elapsedTime % T) / T + phaseFrac) % 1;   // 0..1 phase, offset per cobot
     const ss = (lo: number, hi: number, x: number) => {
       const k = THREE.MathUtils.clamp((x - lo) / (hi - lo), 0, 1);
       return k * k * (3 - 2 * k);
     };
-    let yaw = CA;                                    // dwell at conveyor → swing → dwell at machine → swing back
-    if (p < 0.30) yaw = CA;
-    else if (p < 0.48) yaw = THREE.MathUtils.lerp(CA, MA, ss(0.30, 0.48, p));
-    else if (p < 0.78) yaw = MA;
-    else yaw = THREE.MathUtils.lerp(MA, CA, ss(0.78, 1.0, p));
+    let yaw = MACHINE;                               // dwell+pick at machine → swing → dwell+place at conveyor → swing back
+    if (p < 0.30) yaw = MACHINE;
+    else if (p < 0.48) yaw = THREE.MathUtils.lerp(MACHINE, CONVEYOR, ss(0.30, 0.48, p));
+    else if (p < 0.78) yaw = CONVEYOR;
+    else yaw = THREE.MathUtils.lerp(CONVEYOR, MACHINE, ss(0.78, 1.0, p));
     const bump = (c: number, wd: number) => { const z = (p - c) / wd; return Math.max(0, 1 - z * z); };
     const dip = Math.min(1, bump(0.15, 0.12) + bump(0.63, 0.12));   // reach down to pick (~0.15) and place (~0.63)
     const yawT = a ? yaw : 0, dipT = a ? dip : 0;
+    // Arm posture: the shoulder lifts the upper arm up-and-out, the elbow stays
+    // OPEN (not folded) so the forearm reaches down-and-out to the side, and the
+    // wrist keeps the tool pointing straight DOWN. The flat panel therefore hangs
+    // low and well clear of the arm — picked off a table, carried flat, and set
+    // down flat after the 180° swing. dipT lowers the whole reach at each end.
+    const j2t = -0.70 - dipT * 0.18;     // shoulder (up & out)
+    const j3t = -1.05 - dipT * 0.17;     // elbow (open bend → forearm reaches down & out)
+    const j4t = Math.PI - (j2t + j3t);   // wrist → tool (and flat panel) always points straight DOWN
     if (j1.current) j1.current.rotation.y = THREE.MathUtils.lerp(j1.current.rotation.y, yawT, 0.12);
-    if (j2.current) j2.current.rotation.z = THREE.MathUtils.lerp(j2.current.rotation.z, -0.25 - dipT * 0.72, 0.12);
-    if (j3.current) j3.current.rotation.z = THREE.MathUtils.lerp(j3.current.rotation.z, 0.6 + dipT * 0.8, 0.12);
-    if (j4.current) j4.current.rotation.z = THREE.MathUtils.lerp(j4.current.rotation.z, 0.35 + dipT * 0.5, 0.12);
-    // hold the panel from the grab (one side) through the place (other side); empty on the way back
+    if (j2.current) j2.current.rotation.z = THREE.MathUtils.lerp(j2.current.rotation.z, j2t, 0.12);
+    if (j3.current) j3.current.rotation.z = THREE.MathUtils.lerp(j3.current.rotation.z, j3t, 0.12);
+    if (j4.current) j4.current.rotation.z = THREE.MathUtils.lerp(j4.current.rotation.z, j4t, 0.12);
+    // hold the panel from the grab (machine side) through the place (conveyor side); empty on the way back
     const grab = 0.17, rel = 0.66;
     if (gripPanel.current) gripPanel.current.visible = !a || (p >= grab && p < rel);
   });
@@ -760,11 +779,13 @@ export interface KpiInfo {
 }
 
 const pct = (v?: number | null) => (v != null ? `${Math.round(v)}%` : '—');
-const statusLabel = (s?: string | null) =>
-  s ? s.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase()) : '—';
 
 // Floating live-KPI card above the machine the user clicked (View mode).
 function KpiBillboard({ m, cx, cy, kpi }: { m: M3D; cx: number; cy: number; kpi: KpiInfo | null }) {
+  const { t, i18n } = useTranslation();
+  const lang = (i18n.language || 'en').slice(0, 2) as 'en' | 'fr' | 'es';
+  const statusLabel = (s?: string | null) =>
+    s ? STATUS_LABELS[s]?.[lang] ?? s : '—';
   const h = m.height_3d ?? heightFor(m);
   const x = ((m.pos_x + m.pos_w / 2) - cx) * SCALE;
   const z = ((m.pos_y + m.pos_h / 2) - cy) * SCALE;
@@ -786,12 +807,12 @@ function KpiBillboard({ m, cx, cy, kpi }: { m: M3D; cx: number; cy: number; kpi:
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 3 }}>
             {kpi ? (
               <>
-                {cell('OEE', pct(kpi.oee_pct))}
-                {cell('Availability', pct(kpi.availability_pct))}
-                {cell('Parts/h', kpi.parts_per_hour != null ? String(Math.round(kpi.parts_per_hour)) : '—')}
-                {cell('Quality', pct(kpi.quality_pct))}
-                {cell('Status', statusLabel(m.status))}
-                {cell('Operator', kpi.operator || '—')}
+                {cell(t('factoryMap.oee'), pct(kpi.oee_pct))}
+                {cell(t('factoryMap.availability'), pct(kpi.availability_pct))}
+                {cell(t('factoryMap.partsPerHour'), kpi.parts_per_hour != null ? String(Math.round(kpi.parts_per_hour)) : '—')}
+                {cell(t('factoryMap.quality'), pct(kpi.quality_pct))}
+                {cell(t('common.status'), statusLabel(m.status))}
+                {cell(t('factoryMap.operator'), kpi.operator || '—')}
               </>
             ) : (
               <div style={{ gridColumn: '1 / 3', fontSize: 9, color: '#64748b' }}>…</div>

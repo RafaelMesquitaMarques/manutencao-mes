@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import {
   Briefcase, Play, CheckCircle2, Clock, AlertTriangle,
@@ -41,6 +42,7 @@ interface CompleteForm {
 const EMPTY_FORM: CompleteForm = { root_cause: '', solution_applied: '' };
 
 export default function MyWorkPage() {
+  const { t } = useTranslation();
   const [wos, setWOs]           = useState<WorkOrder[]>([]);
   const [available, setAvailable] = useState<MaintenanceTicket[]>([]);
   const [selfAssignOn, setSelfAssignOn] = useState(true);
@@ -82,11 +84,11 @@ export default function MyWorkPage() {
     } catch (err: unknown) {
       const resp = (err as { response?: { status?: number; data?: { detail?: string } } })?.response;
       if (resp?.status === 409) {
-        setClaimErr('Ce ticket vient d\'être pris par un autre technicien.');
+        setClaimErr(t('myWork.claimTakenByOther'));
       } else if (resp?.data?.detail === 'Your account has no technician profile') {
-        setClaimErr('Votre compte n\'a pas de profil technicien — seuls les techniciens peuvent prendre un ticket.');
+        setClaimErr(t('myWork.claimNoTechProfile'));
       } else {
-        setClaimErr(resp?.data?.detail ?? 'Échec — réessayez.');
+        setClaimErr(resp?.data?.detail ?? t('myWork.claimFailed'));
       }
       await load(true);
     } finally {
@@ -137,7 +139,7 @@ export default function MyWorkPage() {
   const handleComplete = async () => {
     if (!completeId) return;
     if (!form.root_cause.trim() || !form.solution_applied.trim()) {
-      setFormErr('Diagnosis and corrective action are required.');
+      setFormErr(t('myWork.diagnosisRequired'));
       return;
     }
     setActionId(completeId);
@@ -150,7 +152,7 @@ export default function MyWorkPage() {
       setWOs((prev) => prev.filter((w) => w.id !== completeId));
       setCompleteId(null);
     } catch {
-      setFormErr('Failed to complete. Please try again.');
+      setFormErr(t('myWork.completeFailed'));
     } finally {
       setActionId(null);
     }
@@ -165,10 +167,10 @@ export default function MyWorkPage() {
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-2xl font-bold text-white flex items-center gap-2">
           <Briefcase size={22} className="text-blue-400" />
-          My Work
+          {t('myWork.title')}
         </h1>
         <div className="flex items-center gap-2">
-          {hasError && <span className="text-xs text-amber-500">⚠ Retry</span>}
+          {hasError && <span className="text-xs text-amber-500">⚠ {t('common.retry')}</span>}
           {lastUpdatedAt && !hasError && (
             <span className="text-xs text-gray-600 font-mono hidden sm:inline">
               {lastUpdatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
@@ -190,40 +192,40 @@ export default function MyWorkPage() {
             <section className="space-y-3">
               <h2 className="text-xs font-semibold uppercase tracking-widest text-amber-500 px-1 flex items-center gap-1.5">
                 <Inbox size={13} />
-                Tickets disponibles — premier arrivé, premier servi
+                {t('myWork.availableTickets')}
               </h2>
               {claimErr && <p className="text-xs text-amber-400 px-1">{claimErr}</p>}
-              {available.map((t) => (
-                <div key={t.id} className="glass-card p-4 space-y-3 border-l-2 border-l-amber-500/60">
+              {available.map((ticket) => (
+                <div key={ticket.id} className="glass-card p-4 space-y-3 border-l-2 border-l-amber-500/60">
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-xs font-mono text-purple-400">{t.ticket_number}</span>
-                        {t.opened_at && (
+                        <span className="text-xs font-mono text-purple-400">{ticket.ticket_number}</span>
+                        {ticket.opened_at && (
                           <span className="text-[10px] text-gray-500 flex items-center gap-1">
                             <Clock size={10} />
-                            {elapsedStr(t.opened_at)}
+                            {elapsedStr(ticket.opened_at)}
                           </span>
                         )}
                       </div>
                       <p className="text-white font-medium mt-1 text-sm leading-snug">
-                        {t.machine_name ?? 'Machine'}
+                        {ticket.machine_name ?? t('myWork.machineFallback')}
                       </p>
-                      {t.description && (
-                        <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{t.description}</p>
+                      {ticket.description && (
+                        <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{ticket.description}</p>
                       )}
                     </div>
-                    <span className={`text-xs font-mono border px-1.5 py-0.5 rounded flex-shrink-0 ${PRIORITY_BADGE[t.priority as Priority] ?? PRIORITY_BADGE.medium}`}>
-                      {t.priority}
+                    <span className={`text-xs font-mono border px-1.5 py-0.5 rounded flex-shrink-0 ${PRIORITY_BADGE[ticket.priority as Priority] ?? PRIORITY_BADGE.medium}`}>
+                      {t(`priority.${ticket.priority}`, ticket.priority)}
                     </span>
                   </div>
                   <button
-                    onClick={() => handleClaim(t.id)}
-                    disabled={actionId === t.id}
+                    onClick={() => handleClaim(ticket.id)}
+                    disabled={actionId === ticket.id}
                     className="btn-primary w-full py-3 text-sm font-semibold flex items-center justify-center gap-2"
                   >
                     <Hand size={16} />
-                    {actionId === t.id ? 'Attribution…' : 'Prendre ce ticket'}
+                    {actionId === ticket.id ? t('myWork.claiming') : t('myWork.claimTicket')}
                   </button>
                 </div>
               ))}
@@ -233,13 +235,13 @@ export default function MyWorkPage() {
           {wos.length === 0 ? (
             <div className="glass-card flex flex-col items-center justify-center h-48 gap-3">
               <CheckCircle2 size={36} className="text-green-700" />
-              <p className="text-gray-400 font-medium">All caught up!</p>
-              <p className="text-gray-600 text-sm">No active work orders assigned to you</p>
+              <p className="text-gray-400 font-medium">{t('myWork.allCaughtUp')}</p>
+              <p className="text-gray-600 text-sm">{t('myWork.noActiveWork')}</p>
             </div>
           ) : (
             <>
           <WOGroup
-            title="In Progress"
+            title={t('status.in_progress')}
             wos={inProgress}
             onStart={handleStart}
             onHold={handleHold}
@@ -249,7 +251,7 @@ export default function MyWorkPage() {
             tick={tick}
           />
           <WOGroup
-            title="Open — Ready to Start"
+            title={t('myWork.openReady')}
             wos={openWOs}
             onStart={handleStart}
             onHold={handleHold}
@@ -259,7 +261,7 @@ export default function MyWorkPage() {
             tick={tick}
           />
           <WOGroup
-            title="On Hold"
+            title={t('status.on_hold')}
             wos={onHold}
             onStart={handleStart}
             onHold={handleHold}
@@ -276,22 +278,22 @@ export default function MyWorkPage() {
       {completeId && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 p-4">
           <div className="bg-[#0d1421] border border-white/10 rounded-2xl p-6 w-full max-w-lg space-y-5 shadow-2xl">
-            <h2 className="text-white font-bold text-lg">Complete Work Order</h2>
+            <h2 className="text-white font-bold text-lg">{t('myWork.completeWorkOrder')}</h2>
             <div className="space-y-4">
               <div>
-                <label className="label">Diagnosis / Root Cause *</label>
+                <label className="label">{t('myWork.diagnosisLabel')} *</label>
                 <textarea
                   className="input-field w-full h-24 resize-none"
-                  placeholder="What was found? Describe the root cause..."
+                  placeholder={t('myWork.diagnosisPlaceholder')}
                   value={form.root_cause}
                   onChange={(e) => setForm((f) => ({ ...f, root_cause: e.target.value }))}
                 />
               </div>
               <div>
-                <label className="label">Corrective Action *</label>
+                <label className="label">{t('myWork.correctiveActionLabel')} *</label>
                 <textarea
                   className="input-field w-full h-24 resize-none"
-                  placeholder="What was done to fix it?"
+                  placeholder={t('myWork.correctiveActionPlaceholder')}
                   value={form.solution_applied}
                   onChange={(e) => setForm((f) => ({ ...f, solution_applied: e.target.value }))}
                 />
@@ -304,14 +306,14 @@ export default function MyWorkPage() {
                 className="btn-secondary flex-1 py-3 text-base"
                 disabled={actionId === completeId}
               >
-                Cancel
+                {t('common.cancel')}
               </button>
               <button
                 onClick={handleComplete}
                 disabled={actionId === completeId}
                 className="btn-success flex-1 py-3 text-base font-semibold"
               >
-                {actionId === completeId ? 'Saving…' : 'Mark Complete'}
+                {actionId === completeId ? t('common.saving') : t('myWork.markComplete')}
               </button>
             </div>
           </div>
@@ -355,6 +357,7 @@ interface WOCardProps {
 }
 
 function WOCard({ wo, onStart, onHold, onResume, onComplete, actionId, tick: _tick }: WOCardProps) {
+  const { t } = useTranslation();
   const busy = actionId === wo.id;
 
   return (
@@ -385,10 +388,10 @@ function WOCard({ wo, onStart, onHold, onResume, onComplete, actionId, tick: _ti
         </div>
         <div className="flex flex-col items-end gap-1 flex-shrink-0">
           <span className={`text-xs font-mono border px-1.5 py-0.5 rounded ${PRIORITY_BADGE[wo.priority]}`}>
-            {wo.priority}
+            {t(`priority.${wo.priority}`, wo.priority)}
           </span>
           <span className={`text-xs font-mono border px-1.5 py-0.5 rounded ${STATUS_BADGE[wo.status as WorkOrderStatus]}`}>
-            {wo.status.replace('_', ' ')}
+            {t(`status.${wo.status}`, wo.status.replace('_', ' '))}
           </span>
         </div>
       </div>
@@ -396,7 +399,7 @@ function WOCard({ wo, onStart, onHold, onResume, onComplete, actionId, tick: _ti
       {wo.due_date && (
         <div className="text-xs text-amber-600 flex items-center gap-1">
           <AlertTriangle size={10} />
-          Due {wo.due_date}
+          {t('myWork.due', { date: wo.due_date })}
         </div>
       )}
 
@@ -408,7 +411,7 @@ function WOCard({ wo, onStart, onHold, onResume, onComplete, actionId, tick: _ti
             className="btn-success flex-1 py-3 text-sm font-semibold flex items-center justify-center gap-2"
           >
             <Play size={16} />
-            {busy ? 'Starting…' : 'Start Work'}
+            {busy ? t('myWork.starting') : t('myWork.startWork')}
           </button>
         )}
         {wo.status === 'in_progress' && (
@@ -419,7 +422,7 @@ function WOCard({ wo, onStart, onHold, onResume, onComplete, actionId, tick: _ti
               className="btn-secondary flex-1 py-3 text-sm flex items-center justify-center gap-2"
             >
               <PauseCircle size={16} />
-              Hold
+              {t('workOrders.holdWO')}
             </button>
             <button
               onClick={() => onComplete(wo.id)}
@@ -427,7 +430,7 @@ function WOCard({ wo, onStart, onHold, onResume, onComplete, actionId, tick: _ti
               className="btn-primary flex-1 py-3 text-sm font-semibold flex items-center justify-center gap-2"
             >
               <CheckCircle2 size={16} />
-              Complete
+              {t('workOrders.completeWO')}
             </button>
           </>
         )}
@@ -438,7 +441,7 @@ function WOCard({ wo, onStart, onHold, onResume, onComplete, actionId, tick: _ti
             className="btn-success flex-1 py-3 text-sm font-semibold flex items-center justify-center gap-2"
           >
             <Play size={16} />
-            {busy ? 'Resuming…' : 'Resume'}
+            {busy ? t('myWork.resuming') : t('workOrders.resumeWO')}
           </button>
         )}
         <Link

@@ -89,6 +89,7 @@ const WO_CARD_CLS = (wo: WorkOrder, extra = '') =>
   `bg-[#0b1120] border border-white/[0.06] border-l-2 ${PRIORITY_COLORS[wo.priority] ?? 'border-l-gray-700'} rounded-lg p-3 select-none ${extra}`;
 
 function WOCardInner({ wo, onClick }: { wo: WorkOrder; onClick?: (wo: WorkOrder) => void }) {
+  const { t } = useTranslation();
   const techCount = woTechIds(wo).length;
   return (
     <div className="flex-1 min-w-0" onClick={() => onClick?.(wo)} style={{ cursor: onClick ? 'pointer' : 'default' }}>
@@ -98,7 +99,7 @@ function WOCardInner({ wo, onClick }: { wo: WorkOrder; onClick?: (wo: WorkOrder)
         {wo.status === 'in_progress' && (
           <span className="flex items-center gap-1 text-[10px] text-red-400 bg-red-500/10 border border-red-500/25 px-1.5 py-0.5 rounded font-semibold uppercase">
             <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
-            en cours
+            {t('status.in_progress')}
           </span>
         )}
         {techCount > 1 && (
@@ -152,8 +153,9 @@ function SortableWOCard({ wo, colId, onClick }: { wo: WorkOrder; colId: string; 
 
 /** In-progress WO — pinned at the top (priority 1), not draggable. */
 function LockedWOCard({ wo, onClick }: { wo: WorkOrder; onClick?: (wo: WorkOrder) => void }) {
+  const { t } = useTranslation();
   return (
-    <div className={WO_CARD_CLS(wo)} title="En cours — priorité verrouillée">
+    <div className={WO_CARD_CLS(wo)} title={t('schedule.lockedTooltip')}>
       <div className="flex items-start gap-2">
         <div className="mt-0.5 text-gray-700 flex-shrink-0"><Lock size={13} /></div>
         <WOCardInner wo={wo} onClick={onClick} />
@@ -242,6 +244,7 @@ function UnassignedColumn({
   title: string;
   subtitle?: string;
 }) {
+  const { t } = useTranslation();
   const { setNodeRef, isOver } = useDroppable({ id: 'unassigned' });
   const total = items.length + tickets.length;
 
@@ -282,7 +285,7 @@ function UnassignedColumn({
         </SortableContext>
         {total === 0 && (
           <div className="flex items-center justify-center h-20 border border-dashed border-white/[0.06] rounded-lg">
-            <p className="text-[10px] text-gray-700">Drop here</p>
+            <p className="text-[10px] text-gray-700">{t('schedule.dropHere')}</p>
           </div>
         )}
       </div>
@@ -292,10 +295,16 @@ function UnassignedColumn({
 
 type TechStatus = 'busy' | 'assigned' | 'free';
 
-const TECH_STATUS_STYLE: Record<TechStatus, { bg: string; icon: string; pulse: boolean; label: string }> = {
-  busy:     { bg: 'bg-red-500/20 ring-2 ring-red-500/50',     icon: 'text-red-400',   pulse: true,  label: 'Busy — WO in progress' },
-  assigned: { bg: 'bg-amber-500/20 ring-2 ring-amber-500/40', icon: 'text-amber-400', pulse: false, label: 'Assigned — open WOs' },
-  free:     { bg: 'bg-green-500/20 ring-2 ring-green-500/40', icon: 'text-green-400', pulse: false, label: 'Available' },
+const TECH_STATUS_STYLE: Record<TechStatus, { bg: string; icon: string; pulse: boolean }> = {
+  busy:     { bg: 'bg-red-500/20 ring-2 ring-red-500/50',     icon: 'text-red-400',   pulse: true  },
+  assigned: { bg: 'bg-amber-500/20 ring-2 ring-amber-500/40', icon: 'text-amber-400', pulse: false },
+  free:     { bg: 'bg-green-500/20 ring-2 ring-green-500/40', icon: 'text-green-400', pulse: false },
+};
+
+const TECH_STATUS_LABEL_KEY: Record<TechStatus, string> = {
+  busy: 'schedule.techStatusBusy',
+  assigned: 'schedule.techStatusAssigned',
+  free: 'schedule.free',
 };
 
 /** One technician tile — a sortable grid cell: drag the header to reorder it
@@ -318,6 +327,7 @@ function TechCell({
   onResizeCommit: () => void;
   onCardClick?: (wo: WorkOrder) => void;
 }) {
+  const { t } = useTranslation();
   const { setNodeRef: setDropRef, isOver } = useDroppable({ id: tech.id });
   const {
     setNodeRef: setSortRef, attributes, listeners, transform, transition, isDragging,
@@ -356,7 +366,7 @@ function TechCell({
         transform: CSS.Transform.toString(transform), transition,
         zIndex: isDragging ? 50 : undefined, opacity: isDragging ? 0.85 : 1,
       }}
-      className={`flex flex-col flex-shrink-0 rounded-xl border ${
+      className={`relative flex flex-col flex-shrink-0 rounded-xl border ${
         isDragging || resizing
           ? 'border-blue-500/60 ring-1 ring-blue-500/30 shadow-2xl shadow-black/50'
           : isOver ? 'border-blue-500/50 bg-blue-500/5' : 'border-white/[0.06] bg-[#0d1421]'
@@ -371,7 +381,7 @@ function TechCell({
         <div className="flex items-center gap-2">
           <GripVertical size={13} className="text-gray-600 flex-shrink-0" />
           <div
-            title={s.label}
+            title={t(TECH_STATUS_LABEL_KEY[status])}
             className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 ${s.bg} ${s.pulse ? 'animate-pulse' : ''}`}
           >
             <User size={12} className={s.icon} />
@@ -400,14 +410,14 @@ function TechCell({
         </SortableContext>
         {items.length === 0 && (
           <div className="flex items-center justify-center h-12 border border-dashed border-white/[0.06] rounded-lg">
-            <p className="text-[10px] text-gray-700">Drop here</p>
+            <p className="text-[10px] text-gray-700">{t('schedule.dropHere')}</p>
           </div>
         )}
       </div>
       {/* Resize handle (bottom-right corner) */}
       <div
         onPointerDown={startResize}
-        title="Redimensionner"
+        title={t('schedule.resize')}
         style={{ touchAction: 'none' }}
         className="absolute bottom-0 right-0 w-5 h-5 cursor-se-resize flex items-end justify-end p-0.5 text-gray-600 hover:text-blue-400"
       >
@@ -472,18 +482,18 @@ function WODetailDrawer({
   return (
     <div className="fixed top-20 right-4 bottom-4 w-80 z-40 flex flex-col rounded-xl border border-blue-500/30 bg-[#0d1421] shadow-2xl shadow-black/60">
       <div className="p-3 border-b border-white/[0.06] flex items-center justify-between flex-shrink-0">
-        <p className="text-xs font-semibold text-gray-200">WO Details</p>
+        <p className="text-xs font-semibold text-gray-200">{t('schedule.woDetails')}</p>
         <button onClick={onClose} className="text-gray-600 hover:text-gray-300 transition-colors p-0.5">
           <X size={14} />
         </button>
       </div>
       <div className="flex-1 p-4 space-y-3 overflow-y-auto">
         <div>
-          <p className="text-[10px] text-gray-600 uppercase tracking-wide mb-0.5">WO Number</p>
+          <p className="text-[10px] text-gray-600 uppercase tracking-wide mb-0.5">{t('workOrders.woNumber')}</p>
           <p className="text-sm font-mono text-gray-200">{wo.wo_number}</p>
         </div>
         <div>
-          <p className="text-[10px] text-gray-600 uppercase tracking-wide mb-0.5">Title</p>
+          <p className="text-[10px] text-gray-600 uppercase tracking-wide mb-0.5">{t('workOrders.titleField')}</p>
           <p className="text-xs text-gray-300 leading-snug">{wo.title}</p>
         </div>
         <div className="flex gap-2">
@@ -496,7 +506,7 @@ function WODetailDrawer({
         </div>
         {wo.equipment_name && (
           <div>
-            <p className="text-[10px] text-gray-600 uppercase tracking-wide mb-0.5">Equipment</p>
+            <p className="text-[10px] text-gray-600 uppercase tracking-wide mb-0.5">{t('workOrders.equipment')}</p>
             <p className="text-xs text-gray-400">{wo.equipment_name}</p>
           </div>
         )}
@@ -504,20 +514,20 @@ function WODetailDrawer({
           <div className="bg-purple-500/5 border border-purple-500/20 rounded-lg p-3 space-y-1.5">
             <div className="flex items-center gap-1.5 mb-1">
               <Ticket size={12} className="text-purple-400" />
-              <p className="text-[10px] text-purple-400 font-semibold uppercase tracking-wide">Linked Ticket</p>
+              <p className="text-[10px] text-purple-400 font-semibold uppercase tracking-wide">{t('workOrders.linkedTicket')}</p>
             </div>
             <p className="text-xs font-mono text-gray-300">{wo.ticket_number ?? wo.ticket_id}</p>
             <button
               onClick={() => navigate(`/tickets/${wo.ticket_id}`)}
               className="flex items-center gap-1 text-[11px] text-purple-400 hover:text-purple-300 transition-colors"
             >
-              <ChevronRight size={12} /> View ticket
+              <ChevronRight size={12} /> {t('schedule.viewTicket')}
             </button>
           </div>
         )}
         {/* Assigned technicians — add/remove without leaving the page */}
         <div>
-          <p className="text-[10px] text-gray-600 uppercase tracking-wide mb-1">Assigned Technicians</p>
+          <p className="text-[10px] text-gray-600 uppercase tracking-wide mb-1">{t('workOrders.assignedTechnicians')}</p>
           {assignedIds.length === 0 && (
             <p className="text-[11px] text-gray-600 italic mb-1.5">
               {t('schedule.noneAssigned', 'No technician assigned yet')}
@@ -585,7 +595,7 @@ function WODetailDrawer({
           <div className="bg-green-500/5 border border-green-500/20 rounded-lg p-3 space-y-1">
             <div className="flex items-center gap-1.5 mb-1">
               <CalendarDays size={12} className="text-green-400" />
-              <p className="text-[10px] text-green-400 font-semibold uppercase tracking-wide">Schedule</p>
+              <p className="text-[10px] text-green-400 font-semibold uppercase tracking-wide">{t('schedule.scheduleLabel')}</p>
             </div>
             <p className="text-xs text-gray-300">{wo.scheduled_date}</p>
             {(wo.scheduled_start_time || wo.scheduled_end_time) && (
@@ -599,7 +609,7 @@ function WODetailDrawer({
           onClick={() => navigate(`/work-orders/${wo.id}`)}
           className="w-full btn-secondary py-1.5 text-xs flex items-center justify-center gap-1.5"
         >
-          <ChevronRight size={13} /> Open full WO
+          <ChevronRight size={13} /> {t('schedule.openFullWO')}
         </button>
       </div>
     </div>
@@ -913,22 +923,22 @@ export default function LaborScheduler() {
       <div className="flex items-center gap-4 text-sm flex-wrap">
         <div className="flex items-center gap-1.5 text-gray-400">
           <AlertCircle size={14} className="text-amber-400" />
-          <span>{unassignedCount} unassigned</span>
+          <span>{t('schedule.statsUnassigned', { count: unassignedCount })}</span>
         </div>
         <div className="flex items-center gap-1.5 text-gray-400">
           <Ticket size={14} className="text-purple-400" />
-          <span>{tickets.length} open tickets</span>
+          <span>{t('schedule.statsOpenTickets', { count: tickets.length })}</span>
         </div>
         <div className="flex items-center gap-1.5 text-gray-400">
           <Clock size={14} className="text-blue-400" />
           <span>
-            {allWOs.filter((w) => w.status === 'open').length} open ·{' '}
-            {allWOs.filter((w) => w.status === 'in_progress').length} in progress
+            {t('schedule.statsOpen', { count: allWOs.filter((w) => w.status === 'open').length })} ·{' '}
+            {t('schedule.statsInProgress', { count: allWOs.filter((w) => w.status === 'in_progress').length })}
           </span>
         </div>
         <div className="flex items-center gap-1.5 text-gray-400">
           <User size={14} className="text-green-400" />
-          <span>{techs.length} technicians</span>
+          <span>{t('schedule.statsTechnicians', { count: techs.length })}</span>
         </div>
 
         {/* Availability legend */}
@@ -949,7 +959,7 @@ export default function LaborScheduler() {
           <button
             onClick={toggleSelfAssign}
             disabled={savingSelfAssign}
-            title="When ON, technicians can claim unassigned tickets from My Work (for shifts without a supervisor). When OFF, only supervisors dispatch work."
+            title={t('schedule.autoAssignTooltip')}
             className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors disabled:opacity-60 ${
               selfAssign
                 ? 'border-green-500/40 bg-green-500/10 text-green-300'
@@ -962,7 +972,7 @@ export default function LaborScheduler() {
                 style={{ left: selfAssign ? '18px' : '2px' }}
               />
             </span>
-            Auto-attribution {selfAssign ? 'ON' : 'OFF'}
+            {selfAssign ? t('schedule.autoAssignOn') : t('schedule.autoAssignOff')}
           </button>
         )}
 

@@ -9,6 +9,7 @@ export const ROLE_PERMISSIONS: Record<string, Set<string>> = {
     'technicians:view', 'equipment:view', 'my_work:view',
     'alerts:view', 'alerts:create', 'tickets:view', 'tickets:update',
     'maintenance:view', 'machines:view', 'schedule:view', 'pm_calendar:view',
+    'maintenance_plans:view', 'inventory:view', 'intelligence:view',
   ]),
   supervisor: new Set([
     'dashboard:view', 'work_orders:view', 'work_orders:create', 'work_orders:update',
@@ -17,6 +18,9 @@ export const ROLE_PERMISSIONS: Record<string, Set<string>> = {
     'tickets:view', 'tickets:create', 'tickets:update',
     'maintenance:view', 'supervisor_view:view', 'machines:view',
     'schedule:view', 'schedule:update', 'pm_calendar:view', 'kpis:view',
+    'maintenance_plans:view', 'inventory:view', 'intelligence:view',
+    'factory_map:view', 'dashboards:view', 'wo_approval:view',
+    'suppliers:view', 'purchase_orders:view', 'machine_reports:view', 'settings_escalation:view',
   ]),
   maintenance_director: new Set([
     'dashboard:view',
@@ -29,6 +33,9 @@ export const ROLE_PERMISSIONS: Record<string, Set<string>> = {
     'schedule:view', 'schedule:create', 'schedule:update', 'schedule:delete',
     'pm_calendar:view', 'pm_calendar:create', 'pm_calendar:update',
     'kpis:view', 'settings_machines:view', 'settings_machines:update',
+    'maintenance_plans:view', 'inventory:view', 'intelligence:view',
+    'factory_map:view', 'dashboards:view', 'wo_approval:view',
+    'suppliers:view', 'purchase_orders:view', 'machine_reports:view', 'settings_escalation:view',
   ]),
   plant_manager: new Set([
     'dashboard:view',
@@ -41,12 +48,18 @@ export const ROLE_PERMISSIONS: Record<string, Set<string>> = {
     'schedule:view', 'schedule:create', 'schedule:update', 'schedule:delete',
     'pm_calendar:view', 'pm_calendar:create', 'pm_calendar:update', 'pm_calendar:delete',
     'kpis:view', 'settings_machines:view', 'settings_machines:update', 'settings_users:view',
+    'maintenance_plans:view', 'inventory:view', 'intelligence:view',
+    'factory_map:view', 'dashboards:view', 'wo_approval:view',
+    'suppliers:view', 'purchase_orders:view', 'machine_reports:view', 'settings_escalation:view',
   ]),
   director: new Set([
     'dashboard:view', 'work_orders:view', 'technicians:view', 'equipment:view',
     'my_work:view', 'alerts:view', 'tickets:view', 'maintenance:view',
     'supervisor_view:view', 'machines:view', 'schedule:view', 'pm_calendar:view',
     'kpis:view', 'settings_machines:view',
+    'maintenance_plans:view', 'inventory:view', 'intelligence:view',
+    'factory_map:view', 'dashboards:view', 'wo_approval:view',
+    'suppliers:view', 'purchase_orders:view', 'machine_reports:view', 'settings_escalation:view',
   ]),
   admin: new Set(['*']),
 };

@@ -7,15 +7,16 @@ import {
 import '@xyflow/react/dist/style.css';
 import {
   Map as MapIcon, Pencil, Eye, Upload, RefreshCw, Image as ImageIcon,
-  Camera, Wrench, RotateCw, RotateCcw, Trash2, X, Plus, ExternalLink, Box, ArrowUpDown,
+  Camera, Wrench, RotateCw, RotateCcw, Trash2, X, Plus, ExternalLink, Box, ArrowUpDown, Copy, Maximize2, Minimize2,
 } from 'lucide-react';
 import api from '../../api/axios';
-import { STATUS_HEX as STATUS_COLORS } from '../../utils/statusColors';
+import { useTranslation } from 'react-i18next';
+import { STATUS_HEX as STATUS_COLORS, STATUS_LABEL as STATUS_LABELS } from '../../utils/statusColors';
 import { uploadFile } from '../../api/uploads';
 import {
   fetchFactoryMap, saveMachineLayout, saveFloorPlan, createZone, saveZone, deleteZone,
   createProp, saveProp, deleteProp,
-  type MapMachine, type MapProp, type MachineLayout,
+  type MapMachine, type MapProp, type MachineLayout, type PropPatch,
 } from '../../api/factoryMap';
 import { fetchKPISummary } from '../../api/workOrders';
 import type { KPISummary } from '../../types';
@@ -23,11 +24,6 @@ import Factory3D, { PROP_CATALOG, ORBIT_MARGIN, type M3D, type P3D, type Commit,
 import { useAuthStore } from '../../store/authStore';
 
 interface Plant { id: string; code: string; name: string; }
-
-const STATUS_LABEL: Record<string, string> = {
-  running: 'Running', stopped: 'Stopped', maintenance: 'Maintenance',
-  planned_stop: 'Planned stop', unjustified: 'Unjustified', idle: 'Idle',
-};
 
 // How an item is drawn in 3D. 'auto' keeps the current behaviour (model/photo/box);
 // 'cobot' renders the animated arm. New procedural kinds get added here.
@@ -125,6 +121,8 @@ const iconBtn: React.CSSProperties = {
 
 // ── Custom nodes ────────────────────────────────────────────────────────────
 function MachineNode({ data, selected }: NodeProps) {
+  const { t, i18n } = useTranslation();
+  const lang = (i18n.language || 'en').slice(0, 2);
   const d = data as MachineNodeData;
   const m = d.machine;
   const color = STATUS_COLORS[m.status] ?? STATUS_COLORS.idle;
@@ -151,7 +149,7 @@ function MachineNode({ data, selected }: NodeProps) {
         <div style={{ position: 'absolute', inset: 0, background: color, opacity: 0.2, pointerEvents: 'none' }} />
 
         {m.open_ticket && (
-          <span title={`Open ticket ${m.open_ticket_number ?? ''}`} style={{ position: 'absolute', top: 4, left: 4, width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f59e0b', color: '#3a2a06', borderRadius: 6, zIndex: 2 }}>
+          <span title={`${t('factoryMap.openTicket')} ${m.open_ticket_number ?? ''}`} style={{ position: 'absolute', top: 4, left: 4, width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f59e0b', color: '#3a2a06', borderRadius: 6, zIndex: 2 }}>
             <Wrench size={12} />
           </span>
         )}
@@ -168,7 +166,7 @@ function MachineNode({ data, selected }: NodeProps) {
               <span style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name}</span>
             </div>
             <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {STATUS_LABEL[m.status] ?? m.status}{m.operator ? ` · ${m.operator}` : ''}
+              {STATUS_LABELS[m.status]?.[lang as 'en' | 'fr' | 'es'] ?? m.status}{m.operator ? ` · ${m.operator}` : ''}
             </div>
           </div>
         )}
@@ -176,19 +174,19 @@ function MachineNode({ data, selected }: NodeProps) {
         {selected && (
           <div style={{ position: 'absolute', top: 4, right: 4, display: 'flex', gap: 4, alignItems: 'center' }}>
             <select
-              title="3D shape"
+              title={t('factoryMap.shape3d')}
               value={m.block_kind ?? 'auto'}
               onChange={(e) => { e.stopPropagation(); d.onSetKind?.(m.id, e.target.value); }}
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => e.stopPropagation()}
               style={{ ...iconBtn, width: 'auto', padding: '0 4px', fontSize: 11 }}
             >
-              {BLOCK_KINDS.map((k) => <option key={k.key} value={k.key}>{k.label}</option>)}
+              {BLOCK_KINDS.map((k) => <option key={k.key} value={k.key}>{t(`factoryMap.block_${k.key}`)}</option>)}
             </select>
-            <button title="Rotate 15°" onClick={(e) => { e.stopPropagation(); d.onRotate?.(m.id); }} style={iconBtn}><RotateCw size={13} /></button>
-            <button title="3D height" onClick={(e) => { e.stopPropagation(); d.onSetHeight?.(m.id, m.height_3d ?? null); }} style={iconBtn}><ArrowUpDown size={13} /></button>
-            <button title="3D model (.glb)" onClick={(e) => { e.stopPropagation(); d.onPickModel?.(m.id); }} style={iconBtn}><Box size={13} /></button>
-            <button title="Set photo" onClick={(e) => { e.stopPropagation(); d.onPickPhoto?.(m.id); }} style={iconBtn}><Camera size={13} /></button>
+            <button title={t('factoryMap.rotate15')} onClick={(e) => { e.stopPropagation(); d.onRotate?.(m.id); }} style={iconBtn}><RotateCw size={13} /></button>
+            <button title={t('factoryMap.height3d')} onClick={(e) => { e.stopPropagation(); d.onSetHeight?.(m.id, m.height_3d ?? null); }} style={iconBtn}><ArrowUpDown size={13} /></button>
+            <button title={t('factoryMap.model3d')} onClick={(e) => { e.stopPropagation(); d.onPickModel?.(m.id); }} style={iconBtn}><Box size={13} /></button>
+            <button title={t('factoryMap.setPhoto')} onClick={(e) => { e.stopPropagation(); d.onPickPhoto?.(m.id); }} style={iconBtn}><Camera size={13} /></button>
           </div>
         )}
       </div>
@@ -197,6 +195,7 @@ function MachineNode({ data, selected }: NodeProps) {
 }
 
 function ZoneNode({ data, selected }: NodeProps) {
+  const { t } = useTranslation();
   const d = data as ZoneNodeData;
   const z = d.zone;
   return (
@@ -209,7 +208,7 @@ function ZoneNode({ data, selected }: NodeProps) {
       >
         <span style={{ position: 'absolute', top: 6, left: 8, fontSize: 12, fontWeight: 600, color: z.color, background: 'rgba(13,20,33,0.7)', padding: '1px 6px', borderRadius: 4 }}>{z.name}</span>
         {selected && (
-          <button title="Delete zone" onClick={(e) => { e.stopPropagation(); d.onDelete?.(z.id); }} style={{ ...iconBtn, position: 'absolute', top: 4, right: 4 }}><Trash2 size={13} /></button>
+          <button title={t('factoryMap.deleteZone')} onClick={(e) => { e.stopPropagation(); d.onDelete?.(z.id); }} style={{ ...iconBtn, position: 'absolute', top: 4, right: 4 }}><Trash2 size={13} /></button>
         )}
       </div>
     </>
@@ -243,6 +242,8 @@ const nodeTypes = { machine: MachineNode, zone: ZoneNode, floorplan: FloorPlanNo
 
 // ── Page ────────────────────────────────────────────────────────────────────
 export default function FactoryMap() {
+  const { t, i18n } = useTranslation();
+  const lang = (i18n.language || 'en').slice(0, 2);
   const navigate = useNavigate();
   const token = useAuthStore((s) => s.token);
   const [plants, setPlants] = useState<Plant[]>([]);
@@ -252,6 +253,8 @@ export default function FactoryMap() {
   const [editMode, setEditMode] = useState(false);
   const [assetFilter, setAssetFilter] = useState<'production' | 'auxiliary' | 'all'>('production');
   const [mode3d, setMode3d] = useState(false);
+  const [isFull, setIsFull] = useState(false);
+  const viewRef = useRef<HTMLDivElement>(null);
   const [sel3d, setSel3d] = useState<string | null>(null);
   const [props, setProps] = useState<MapProp[]>([]);
   const [selProp, setSelProp] = useState<string | null>(null);
@@ -320,12 +323,12 @@ export default function FactoryMap() {
         ? { ...n, data: { ...n.data, machine: { ...(n.data as MachineNodeData).machine, model_url: up.url } } } : n));
     } catch (e) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      window.alert(`Model upload failed: ${msg ?? 'error'}`);
+      window.alert(`${t('factoryMap.modelUploadFailed')}: ${msg ?? 'error'}`);
     }
   }, [setNodes]);
 
   const setHeight = useCallback((id: string, current: number | null) => {
-    const v = window.prompt('3D height (world units, ~1–8)', current != null ? String(current) : '');
+    const v = window.prompt(t('factoryMap.height3dPrompt'), current != null ? String(current) : '');
     if (v == null) return;
     const h = parseFloat(v.replace(',', '.'));
     if (!Number.isFinite(h) || h <= 0) return;
@@ -353,7 +356,7 @@ export default function FactoryMap() {
 
   const renameZone = useCallback((zoneId: string, current: string) => {
     if (!editModeRef.current) return;
-    const name = window.prompt('Zone name', current);
+    const name = window.prompt(t('factoryMap.zoneNamePrompt'), current);
     if (name == null) return;
     saveZone(zoneId, { name }).catch(() => {});
     setNodes((nds) => nds.map((n) => n.id === `zone-${zoneId}`
@@ -748,6 +751,39 @@ export default function FactoryMap() {
     setSelProp(null);
   }, [selProp]);
 
+  // Duplicate the selected block — exact same size/scale/rotation, offset a little
+  // so the copy is visible. Starts UNLINKED (a clone shouldn't share the original's
+  // equipment link). createProp can't set the scale fields, so we patch them after.
+  const duplicateSelProp = useCallback(async () => {
+    if (!selProp || !plantId) return;
+    const src = props.find((p) => p.id === selProp);
+    if (!src) return;
+    const OFFSET = 30;   // px, so the clone doesn't sit exactly on top of the original
+    const created = await createProp(plantId, {
+      kind: src.kind,
+      label: src.label,
+      model_url: src.model_url,
+      pos_x: Math.round(src.pos_x + OFFSET),
+      pos_y: Math.round(src.pos_y + OFFSET),
+      pos_w: src.pos_w,
+      pos_h: src.pos_h,
+      rotation_deg: src.rotation_deg ?? 0,
+      height_3d: src.height_3d,
+    });
+    const scalePatch: PropPatch = {};
+    if (src.model_scale != null) scalePatch.model_scale = src.model_scale;
+    if (src.scale_y != null) scalePatch.scale_y = src.scale_y;
+    if (src.scale_z != null) scalePatch.scale_z = src.scale_z;
+    let copy = created;
+    if (Object.keys(scalePatch).length) {
+      await saveProp(created.id, scalePatch);
+      copy = { ...created, ...scalePatch };
+    }
+    setProps((ps) => [...ps, copy]);
+    setSel3d(null);
+    setSelProp(copy.id);
+  }, [selProp, plantId, props]);
+
   // Live maintenance KPIs for the selected machine (real data from /api/kpis)
   useEffect(() => {
     const mid = detail?.machine_id;
@@ -764,6 +800,20 @@ export default function FactoryMap() {
 
   useEffect(() => { if (!mode3d || !editMode) { setSel3d(null); setSelProp(null); } }, [mode3d, editMode]);
 
+  // Fullscreen for the 3D view (real browser fullscreen; Esc exits). The R3F Canvas
+  // auto-resizes to its container, so toggling fullscreen just works.
+  const toggleFullscreen = useCallback(() => {
+    const el = viewRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) document.exitFullscreen?.();
+    else el.requestFullscreen?.().catch(() => {});
+  }, []);
+  useEffect(() => {
+    const onFs = () => setIsFull(document.fullscreenElement === viewRef.current);
+    document.addEventListener('fullscreenchange', onFs);
+    return () => document.removeEventListener('fullscreenchange', onFs);
+  }, []);
+
   const openMachinePage = (m: MapMachine) => {
     const path = m.page_slug ? `/machines/${m.page_slug}` : `/equipment/${m.id}`;
     window.open(path, '_blank', 'noopener');   // open the machine page in a new tab, keep the map open
@@ -775,7 +825,7 @@ export default function FactoryMap() {
       <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-800 flex-wrap">
         <div className="flex items-center gap-2">
           <MapIcon size={20} className="text-indigo-400" />
-          <span className="text-base font-semibold text-white">Factory map</span>
+          <span className="text-base font-semibold text-white">{t('factoryMap.title')}</span>
         </div>
         <select value={plantId} onChange={(e) => setPlantId(e.target.value)}
           className="bg-gray-800 border border-gray-700 text-sm text-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:border-indigo-500">
@@ -785,8 +835,8 @@ export default function FactoryMap() {
         <span className="inline-flex rounded-lg border border-gray-700 overflow-hidden text-sm">
           {(['production', 'auxiliary', 'all'] as const).map((f) => (
             <button key={f} onClick={() => { setAssetFilter(f); setDetail(null); }}
-              className={`px-3 py-1.5 capitalize ${assetFilter === f ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
-              {f}
+              className={`px-3 py-1.5 ${assetFilter === f ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
+              {t(`factoryMap.filter_${f}`)}
             </button>
           ))}
         </span>
@@ -797,17 +847,17 @@ export default function FactoryMap() {
         </span>
 
         <span className="inline-flex rounded-lg border border-gray-700 overflow-hidden text-sm">
-          <button onClick={() => setEditMode(false)} className={`flex items-center gap-1.5 px-3 py-1.5 ${!editMode ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}><Eye size={14} /> View</button>
-          <button onClick={() => { setEditMode(true); setDetail(null); }} className={`flex items-center gap-1.5 px-3 py-1.5 ${editMode ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}><Pencil size={14} /> Edit</button>
+          <button onClick={() => setEditMode(false)} className={`flex items-center gap-1.5 px-3 py-1.5 ${!editMode ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}><Eye size={14} /> {t('factoryMap.view')}</button>
+          <button onClick={() => { setEditMode(true); setDetail(null); }} className={`flex items-center gap-1.5 px-3 py-1.5 ${editMode ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}><Pencil size={14} /> {t('factoryMap.edit')}</button>
         </span>
 
         {editMode && !mode3d && (
           <>
             <button onClick={addZone} className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg">
-              <Plus size={14} /> Add zone
+              <Plus size={14} /> {t('factoryMap.addZone')}
             </button>
             <button onClick={() => fileRef.current?.click()} className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg">
-              <Upload size={14} /> {floorPlanUrl ? 'Replace floor plan' : 'Upload floor plan'}
+              <Upload size={14} /> {floorPlanUrl ? t('factoryMap.replaceFloorPlan') : t('factoryMap.uploadFloorPlan')}
             </button>
             <input ref={fileRef} type="file" accept="image/*" className="hidden"
               onChange={(e) => { const f = e.target.files?.[0]; if (f) onUploadFloorPlan(f); e.target.value = ''; }} />
@@ -819,10 +869,10 @@ export default function FactoryMap() {
         </button>
 
         <div className="flex items-center gap-3 ml-auto text-xs text-gray-400 flex-wrap">
-          {Object.entries(STATUS_LABEL).map(([k, label]) => (
+          {Object.entries(STATUS_LABELS).map(([k, label]) => (
             <span key={k} className="flex items-center gap-1.5">
               <span style={{ width: 10, height: 10, borderRadius: '50%', background: STATUS_COLORS[k], display: 'inline-block' }} />
-              {label}{statusCounts[k] ? ` (${statusCounts[k]})` : ''}
+              {label[lang as 'en' | 'fr' | 'es'] ?? k}{statusCounts[k] ? ` (${statusCounts[k]})` : ''}
             </span>
           ))}
         </div>
@@ -837,26 +887,33 @@ export default function FactoryMap() {
       <div className="flex-1 flex min-h-0">
         {editMode && !mode3d && (
           <aside className="w-56 flex-shrink-0 border-r border-gray-800 overflow-y-auto p-3">
-            <p className="text-xs text-gray-500 mb-2">Unplaced · {unplaced.length}</p>
-            <input value={unplacedSearch} onChange={(e) => setUnplacedSearch(e.target.value)} placeholder="Search machines…"
+            <p className="text-xs text-gray-500 mb-2">{t('factoryMap.unplaced')} · {unplaced.length}</p>
+            <input value={unplacedSearch} onChange={(e) => setUnplacedSearch(e.target.value)} placeholder={t('factoryMap.searchMachines')}
               className="w-full mb-2 px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500" />
             <div className="space-y-1.5">
               {unplaced.filter((m) => m.name.toLowerCase().includes(unplacedSearch.toLowerCase())).map((m) => (
-                <button key={m.id} onClick={() => placeMachine(m)} title="Click to drop on the map"
+                <button key={m.id} onClick={() => placeMachine(m)} title={t('factoryMap.clickToDrop')}
                   className="w-full flex items-center gap-2 text-left text-xs text-gray-200 border border-gray-700 rounded-lg px-2.5 py-2 bg-gray-900 hover:border-indigo-500/50 hover:bg-gray-800 transition-colors">
                   <span style={{ width: 8, height: 8, borderRadius: '50%', background: STATUS_COLORS[m.status] ?? STATUS_COLORS.idle, flexShrink: 0 }} />
                   <span className="truncate">{m.name}</span>
                 </button>
               ))}
-              {unplaced.length === 0 && <p className="text-xs text-gray-600">All machines placed.</p>}
+              {unplaced.length === 0 && <p className="text-xs text-gray-600">{t('factoryMap.allPlaced')}</p>}
             </div>
           </aside>
         )}
 
-        <div className="flex-1 min-w-0 relative">
+        <div ref={viewRef} className="flex-1 min-w-0 relative bg-gray-950">
+          {mode3d && (
+            <button onClick={toggleFullscreen}
+              title={isFull ? t('factoryMap.exitFullscreen') : t('factoryMap.fullscreen')}
+              className="absolute top-3 right-3 z-20 p-2 text-gray-300 bg-gray-900/90 border border-gray-700 rounded-lg hover:text-white hover:bg-gray-800">
+              {isFull ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            </button>
+          )}
           {!mode3d && !floorPlanUrl && (
             <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 text-xs text-gray-500 bg-gray-900/80 border border-gray-800 rounded-full px-3 py-1">
-              <ImageIcon size={12} /> No floor plan yet{editMode ? ' — upload one above' : ''}
+              <ImageIcon size={12} /> {t('factoryMap.noFloorPlan')}{editMode ? t('factoryMap.noFloorPlanEdit') : ''}
             </div>
           )}
           {mode3d ? (
@@ -879,48 +936,51 @@ export default function FactoryMap() {
           {mode3d && editMode && (
             <div className="absolute top-3 left-3 z-10 flex items-center gap-2 bg-gray-900/90 border border-gray-700 rounded-lg px-2 py-1.5">
               <span className="inline-flex rounded border border-gray-700 overflow-hidden text-xs">
-                <button onClick={() => setTransformMode('translate')} className={`px-2 py-1 ${transformMode === 'translate' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>Move</button>
-                <button onClick={() => setTransformMode('rotate')} className={`px-2 py-1 ${transformMode === 'rotate' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>Rotate</button>
-                <button onClick={() => setTransformMode('scale')} className={`px-2 py-1 ${transformMode === 'scale' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>Scale</button>
+                <button onClick={() => setTransformMode('translate')} className={`px-2 py-1 ${transformMode === 'translate' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>{t('factoryMap.move')}</button>
+                <button onClick={() => setTransformMode('rotate')} className={`px-2 py-1 ${transformMode === 'rotate' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>{t('factoryMap.rotate')}</button>
+                <button onClick={() => setTransformMode('scale')} className={`px-2 py-1 ${transformMode === 'scale' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>{t('factoryMap.scale')}</button>
               </span>
               {sel3d && (
                 <select
-                  title="Parent machine — this block stops when the machine stops"
+                  title={t('factoryMap.parentTitle')}
                   value={(nodes.find((n) => n.id === sel3d)?.data as MachineNodeData | undefined)?.machine.parent_equipment_id ?? ''}
                   onChange={(e) => setParent(sel3d, e.target.value || null)}
                   className="bg-gray-800 border border-gray-700 rounded text-xs text-gray-200 px-1.5 py-1 max-w-[150px] focus:outline-none focus:border-indigo-500"
                 >
-                  <option value="">⛓ no parent machine</option>
+                  <option value="">{t('factoryMap.noParent')}</option>
                   {equipOptions.filter((o) => o.id !== sel3d).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
                 </select>
               )}
               {(sel3d || selProp) && (
                 <span className="inline-flex items-center rounded border border-gray-700 overflow-hidden">
-                  <button onClick={() => rotateSelected(-90)} title="Rotate -90°" className="px-1.5 py-1 text-[11px] text-gray-300 hover:bg-gray-700">-90°</button>
-                  <button onClick={() => rotateSelected(-45)} title="Rotate -45°" className="flex items-center gap-0.5 px-1.5 py-1 text-[11px] text-gray-300 hover:bg-gray-700"><RotateCcw size={13} />45°</button>
-                  <button onClick={() => rotateSelected(45)} title="Rotate +45°" className="flex items-center gap-0.5 px-1.5 py-1 text-[11px] text-gray-300 hover:bg-gray-700"><RotateCw size={13} />45°</button>
-                  <button onClick={() => rotateSelected(90)} title="Rotate +90°" className="px-1.5 py-1 text-[11px] text-gray-300 hover:bg-gray-700">+90°</button>
+                  <button onClick={() => rotateSelected(-90)} title={t('factoryMap.rotateNeg90')} className="px-1.5 py-1 text-[11px] text-gray-300 hover:bg-gray-700">-90°</button>
+                  <button onClick={() => rotateSelected(-45)} title={t('factoryMap.rotateNeg45')} className="flex items-center gap-0.5 px-1.5 py-1 text-[11px] text-gray-300 hover:bg-gray-700"><RotateCcw size={13} />45°</button>
+                  <button onClick={() => rotateSelected(45)} title={t('factoryMap.rotatePos45')} className="flex items-center gap-0.5 px-1.5 py-1 text-[11px] text-gray-300 hover:bg-gray-700"><RotateCw size={13} />45°</button>
+                  <button onClick={() => rotateSelected(90)} title={t('factoryMap.rotatePos90')} className="px-1.5 py-1 text-[11px] text-gray-300 hover:bg-gray-700">+90°</button>
                 </span>
               )}
               <span className="text-xs text-gray-500">
-                {selProp ? 'block selected — rotate buttons or gizmo' : sel3d ? 'drag the gizmo, or use rotate buttons' : 'click an item to edit'}
+                {selProp ? t('factoryMap.hintBlock') : sel3d ? t('factoryMap.hintMachine') : t('factoryMap.hintNone')}
               </span>
               {selProp && (
                 <>
                   <select
-                    title="Link this block to a real equipment (live status)"
+                    title={t('factoryMap.linkTitle')}
                     value={props.find((p) => p.id === selProp)?.equipment_id ?? ''}
                     onChange={(e) => linkProp(selProp, e.target.value || null)}
                     className="bg-gray-800 border border-gray-700 rounded text-xs text-gray-200 px-1.5 py-1 max-w-[150px] focus:outline-none focus:border-indigo-500"
                   >
-                    <option value="">🔗 not linked</option>
+                    <option value="">{t('factoryMap.notLinked')}</option>
                     {equipOptions.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
                   </select>
-                  <button onClick={() => pickPropModel(selProp)} title="Upload a .glb for this block" className="flex items-center gap-1 text-xs text-gray-300 hover:text-white">
+                  <button onClick={() => pickPropModel(selProp)} title={t('factoryMap.uploadGlb')} className="flex items-center gap-1 text-xs text-gray-300 hover:text-white">
                     <Box size={12} /> .glb
                   </button>
+                  <button onClick={duplicateSelProp} title={t('factoryMap.duplicateTitle')} className="flex items-center gap-1 text-xs text-gray-300 hover:text-white">
+                    <Copy size={12} /> {t('factoryMap.duplicate')}
+                  </button>
                   <button onClick={deleteSelProp} className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300">
-                    <Trash2 size={12} /> Delete block
+                    <Trash2 size={12} /> {t('factoryMap.deleteBlock')}
                   </button>
                 </>
               )}
@@ -931,12 +991,12 @@ export default function FactoryMap() {
           {/* Block palette — add decorative support equipment directly in 3D */}
           {mode3d && editMode && (
             <div className="absolute bottom-3 left-3 z-10 max-w-[220px] bg-gray-900/90 border border-gray-700 rounded-lg p-2">
-              <p className="text-[11px] text-gray-500 mb-1.5 px-0.5">Add block</p>
+              <p className="text-[11px] text-gray-500 mb-1.5 px-0.5">{t('factoryMap.addBlock')}</p>
               <div className="flex flex-wrap gap-1.5">
                 {PROP_CATALOG.map((c) => (
-                  <button key={c.kind} onClick={() => addProp(c.kind)} title={`Add ${c.label}`}
+                  <button key={c.kind} onClick={() => addProp(c.kind)} title={`${t('factoryMap.add')} ${t(`factoryMap.block_${c.kind}`)}`}
                     className="flex items-center gap-1 px-2 py-1 text-[11px] text-gray-200 bg-gray-800 hover:bg-indigo-600 border border-gray-700 rounded">
-                    <Plus size={11} /> {c.label}
+                    <Plus size={11} /> {t(`factoryMap.block_${c.kind}`)}
                   </button>
                 ))}
               </div>
@@ -955,14 +1015,14 @@ export default function FactoryMap() {
             <div className="space-y-2 text-sm">
               <div className="flex items-center gap-2">
                 <span style={{ width: 10, height: 10, borderRadius: '50%', background: STATUS_COLORS[detail.status] ?? STATUS_COLORS.idle }} />
-                <span className="text-gray-200">{STATUS_LABEL[detail.status] ?? detail.status}</span>
+                <span className="text-gray-200">{STATUS_LABELS[detail.status]?.[lang as 'en' | 'fr' | 'es'] ?? detail.status}</span>
               </div>
-              <p className="text-gray-400 text-xs">Operator: <span className="text-gray-200">{detail.operator ?? '—'}</span></p>
-              <p className="text-gray-400 text-xs">Department: <span className="text-gray-200">{detail.department ?? '—'}</span></p>
+              <p className="text-gray-400 text-xs">{t('factoryMap.operator')}: <span className="text-gray-200">{detail.operator ?? '—'}</span></p>
+              <p className="text-gray-400 text-xs">{t('factoryMap.department')}: <span className="text-gray-200">{detail.department ?? '—'}</span></p>
               {detail.open_ticket && (
                 <button onClick={() => detail.open_ticket_id && navigate(`/tickets/${detail.open_ticket_id}`)}
                   className="w-full flex items-center gap-2 mt-1 px-3 py-2 rounded-lg text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20">
-                  <Wrench size={13} /> Open ticket {detail.open_ticket_number ?? ''}
+                  <Wrench size={13} /> {t('factoryMap.openTicket')} {detail.open_ticket_number ?? ''}
                 </button>
               )}
             </div>
@@ -970,16 +1030,16 @@ export default function FactoryMap() {
             {/* Live maintenance KPIs (last 30 days) — only for items linked to a machine */}
             {detail.machine_id && (
               <div className="mt-4 pt-3 border-t border-gray-800">
-                <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-2">Live KPIs · 30 days</p>
+                <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-2">{t('factoryMap.liveKpis')}</p>
                 {kpiLoading ? (
-                  <p className="text-xs text-gray-600">Loading…</p>
+                  <p className="text-xs text-gray-600">{t('factoryMap.loading')}</p>
                 ) : kpi ? (
                   <div className="grid grid-cols-2 gap-2">
                     {[
-                      { label: 'OEE', value: kpi.oee_pct != null ? `${Math.round(kpi.oee_pct)}%` : '—', tone: 'text-gray-200' },
-                      { label: 'Availability', value: kpi.availability_pct != null ? `${Math.round(kpi.availability_pct)}%` : '—', tone: 'text-gray-200' },
-                      { label: 'Parts / h', value: kpi.parts_per_hour != null ? String(Math.round(kpi.parts_per_hour)) : '—', tone: 'text-gray-200' },
-                      { label: 'Quality', value: kpi.quality_pct != null ? `${Math.round(kpi.quality_pct)}%` : '—', tone: 'text-gray-200' },
+                      { label: t('factoryMap.oee'), value: kpi.oee_pct != null ? `${Math.round(kpi.oee_pct)}%` : '—', tone: 'text-gray-200' },
+                      { label: t('factoryMap.availability'), value: kpi.availability_pct != null ? `${Math.round(kpi.availability_pct)}%` : '—', tone: 'text-gray-200' },
+                      { label: t('factoryMap.partsPerHour'), value: kpi.parts_per_hour != null ? String(Math.round(kpi.parts_per_hour)) : '—', tone: 'text-gray-200' },
+                      { label: t('factoryMap.quality'), value: kpi.quality_pct != null ? `${Math.round(kpi.quality_pct)}%` : '—', tone: 'text-gray-200' },
                     ].map((m) => (
                       <div key={m.label} className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-2">
                         <p className="text-[10px] text-gray-500">{m.label}</p>
@@ -988,14 +1048,14 @@ export default function FactoryMap() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-xs text-gray-600">No KPI data.</p>
+                  <p className="text-xs text-gray-600">{t('factoryMap.noKpi')}</p>
                 )}
               </div>
             )}
 
             <button onClick={() => openMachinePage(detail)}
               className="w-full flex items-center justify-center gap-1.5 mt-4 px-3 py-2 rounded-lg text-sm text-white bg-indigo-600 hover:bg-indigo-500">
-              <ExternalLink size={14} /> Open machine page
+              <ExternalLink size={14} /> {t('factoryMap.openMachinePage')}
             </button>
           </aside>
         )}

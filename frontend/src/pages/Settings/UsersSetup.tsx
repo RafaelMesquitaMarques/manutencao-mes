@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import {
   UserPlus, UserCheck, Mail, Settings, CheckCircle, XCircle,
   AlertCircle, X, Eye, EyeOff, KeyRound, Copy, Check,
@@ -7,16 +8,6 @@ import {
 import { fetchUsers, deleteUser, createUser, adminResetPassword } from '../../api/users';
 import { inviteUser } from '../../api/auth';
 import type { User, UserRole } from '../../types';
-
-const ROLE_LABELS: Record<string, string> = {
-  operator:             'Operator',
-  technician:           'Technician',
-  supervisor:           'Supervisor',
-  maintenance_director: 'Maint. Director',
-  plant_manager:        'Plant Manager',
-  director:             'Director',
-  admin:                'Admin',
-};
 
 const ROLE_COLORS: Record<string, string> = {
   operator:             'text-gray-400 bg-gray-500/15 border-gray-600/30',
@@ -73,6 +64,7 @@ interface InviteModalProps {
 }
 
 function InviteModal({ onClose, onSuccess }: InviteModalProps) {
+  const { t } = useTranslation();
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<UserRole>('technician');
   const [loading, setLoading] = useState(false);
@@ -88,7 +80,7 @@ function InviteModal({ onClose, onSuccess }: InviteModalProps) {
       setToken(result.token);
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(msg ?? 'Failed to send invitation.');
+      setError(msg ?? t('users.inviteFailed'));
     } finally {
       setLoading(false);
     }
@@ -98,7 +90,7 @@ function InviteModal({ onClose, onSuccess }: InviteModalProps) {
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-[#0d1421] border border-white/[0.08] rounded-2xl w-full max-w-md shadow-2xl">
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
-          <h3 className="text-white font-bold">Invite User</h3>
+          <h3 className="text-white font-bold">{t('users.inviteUser')}</h3>
           <button onClick={onClose} className="text-gray-500 hover:text-gray-300 transition-colors p-1 rounded">
             <X size={16} />
           </button>
@@ -109,18 +101,18 @@ function InviteModal({ onClose, onSuccess }: InviteModalProps) {
             <div>
               <div className="flex items-center gap-2.5 mb-4 p-3 bg-green-500/10 border border-green-500/25 rounded-lg">
                 <CheckCircle size={15} className="text-green-400 flex-shrink-0" />
-                <p className="text-green-400 text-sm">Invitation created!</p>
+                <p className="text-green-400 text-sm">{t('users.invitationCreated')}</p>
               </div>
-              <p className="text-gray-400 text-sm mb-2">Share this token with the invited user:</p>
+              <p className="text-gray-400 text-sm mb-2">{t('users.shareToken')}</p>
               <div className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 font-mono text-xs text-gray-300 break-all select-all">
                 {token}
               </div>
               <p className="text-gray-600 text-xs mt-2">
-                They can use this at: <span className="text-gray-400">/accept-invite?token=…</span>
+                {t('users.theyCanUseAt')} <span className="text-gray-400">/accept-invite?token=…</span>
               </p>
               <div className="mt-5">
                 <button onClick={() => { onSuccess(); onClose(); }} className="btn-primary py-2 px-4 text-sm">
-                  Done
+                  {t('users.done')}
                 </button>
               </div>
             </div>
@@ -134,19 +126,19 @@ function InviteModal({ onClose, onSuccess }: InviteModalProps) {
               )}
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                  <label className="label">Email address</label>
+                  <label className="label">{t('users.emailAddress')}</label>
                   <input
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="user@foliot.com"
+                    placeholder={t('users.emailPlaceholderInvite')}
                     className="input-field"
                     required
                     disabled={loading}
                   />
                 </div>
                 <div>
-                  <label className="label">Role</label>
+                  <label className="label">{t('users.role')}</label>
                   <select
                     value={role}
                     onChange={(e) => setRole(e.target.value as UserRole)}
@@ -154,7 +146,7 @@ function InviteModal({ onClose, onSuccess }: InviteModalProps) {
                     disabled={loading}
                   >
                     {ALL_ROLES.map((r) => (
-                      <option key={r} value={r}>{ROLE_LABELS[r]}</option>
+                      <option key={r} value={r}>{t(`roles.${r}`)}</option>
                     ))}
                   </select>
                 </div>
@@ -163,11 +155,11 @@ function InviteModal({ onClose, onSuccess }: InviteModalProps) {
                     {loading ? (
                       <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
                     ) : (
-                      'Send Invitation'
+                      t('users.sendInvitation')
                     )}
                   </button>
                   <button type="button" onClick={onClose} className="btn-secondary py-2 px-4 text-sm">
-                    Cancel
+                    {t('common.cancel')}
                   </button>
                 </div>
               </form>
@@ -187,6 +179,7 @@ interface CreateUserModalProps {
 }
 
 function CreateUserModal({ onClose, onSuccess }: CreateUserModalProps) {
+  const { t } = useTranslation();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -203,7 +196,7 @@ function CreateUserModal({ onClose, onSuccess }: CreateUserModalProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password.length < 8) { setError('Password must be at least 8 characters.'); return; }
+    if (password.length < 8) { setError(t('settings.passwordMin8')); return; }
     setError('');
     setLoading(true);
     try {
@@ -220,7 +213,7 @@ function CreateUserModal({ onClose, onSuccess }: CreateUserModalProps) {
       onSuccess(name.trim());
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(msg ?? 'Failed to create user.');
+      setError(msg ?? t('users.createUserFailed'));
     } finally {
       setLoading(false);
     }
@@ -230,7 +223,7 @@ function CreateUserModal({ onClose, onSuccess }: CreateUserModalProps) {
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-[#0d1421] border border-white/[0.08] rounded-2xl w-full max-w-lg shadow-2xl">
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
-          <h3 className="text-white font-bold">Create User</h3>
+          <h3 className="text-white font-bold">{t('users.createUser')}</h3>
           <button onClick={onClose} className="text-gray-500 hover:text-gray-300 transition-colors p-1 rounded">
             <X size={16} />
           </button>
@@ -249,13 +242,13 @@ function CreateUserModal({ onClose, onSuccess }: CreateUserModalProps) {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="label">
-                  Full name <span className="text-red-400">*</span>
+                  {t('settings.fullName')} <span className="text-red-400">*</span>
                 </label>
                 <input
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="Jane Smith"
+                  placeholder={t('users.namePlaceholder')}
                   className="input-field"
                   required
                   disabled={loading}
@@ -264,13 +257,13 @@ function CreateUserModal({ onClose, onSuccess }: CreateUserModalProps) {
               </div>
               <div>
                 <label className="label">
-                  Email <span className="text-red-400">*</span>
+                  {t('users.email')} <span className="text-red-400">*</span>
                 </label>
                 <input
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="jane@foliot.com"
+                  placeholder={t('users.emailPlaceholderCreate')}
                   className="input-field"
                   required
                   disabled={loading}
@@ -281,14 +274,14 @@ function CreateUserModal({ onClose, onSuccess }: CreateUserModalProps) {
             {/* Password */}
             <div>
               <label className="label">
-                Password <span className="text-red-400">*</span>
+                {t('users.password')} <span className="text-red-400">*</span>
               </label>
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Min. 8 characters"
+                  placeholder={t('settings.min8chars')}
                   className="input-field pr-10"
                   required
                   disabled={loading}
@@ -303,14 +296,14 @@ function CreateUserModal({ onClose, onSuccess }: CreateUserModalProps) {
                 </button>
               </div>
               {password.length > 0 && password.length < 8 && (
-                <p className="text-red-400 text-xs mt-1">Must be at least 8 characters</p>
+                <p className="text-red-400 text-xs mt-1">{t('settings.mustBe8')}</p>
               )}
             </div>
 
             {/* Row 2: role + language */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="label">Role</label>
+                <label className="label">{t('users.role')}</label>
                 <select
                   value={role}
                   onChange={(e) => setRole(e.target.value as UserRole)}
@@ -318,12 +311,12 @@ function CreateUserModal({ onClose, onSuccess }: CreateUserModalProps) {
                   disabled={loading}
                 >
                   {ALL_ROLES.map((r) => (
-                    <option key={r} value={r}>{ROLE_LABELS[r]}</option>
+                    <option key={r} value={r}>{t(`roles.${r}`)}</option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="label">Language</label>
+                <label className="label">{t('settings.language')}</label>
                 <select
                   value={language}
                   onChange={(e) => setLanguage(e.target.value)}
@@ -340,23 +333,23 @@ function CreateUserModal({ onClose, onSuccess }: CreateUserModalProps) {
             {/* Row 3: job title + phone */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="label">Job title <span className="text-gray-600 text-[10px] font-normal">optional</span></label>
+                <label className="label">{t('users.jobTitle')} <span className="text-gray-600 text-[10px] font-normal">{t('users.optional')}</span></label>
                 <input
                   type="text"
                   value={jobTitle}
                   onChange={(e) => setJobTitle(e.target.value)}
-                  placeholder="Maintenance Tech"
+                  placeholder={t('users.jobTitlePlaceholder')}
                   className="input-field"
                   disabled={loading}
                 />
               </div>
               <div>
-                <label className="label">Phone <span className="text-gray-600 text-[10px] font-normal">optional</span></label>
+                <label className="label">{t('settings.phone')} <span className="text-gray-600 text-[10px] font-normal">{t('users.optional')}</span></label>
                 <input
                   type="tel"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  placeholder="+1 (555) 000-0000"
+                  placeholder={t('users.phonePlaceholder')}
                   className="input-field"
                   disabled={loading}
                 />
@@ -377,7 +370,7 @@ function CreateUserModal({ onClose, onSuccess }: CreateUserModalProps) {
                   }`}
                 />
               </div>
-              <span className="text-sm text-gray-300">Must change password on first login</span>
+              <span className="text-sm text-gray-300">{t('users.mustChangeFirstLogin')}</span>
             </label>
 
             {/* Actions */}
@@ -390,14 +383,14 @@ function CreateUserModal({ onClose, onSuccess }: CreateUserModalProps) {
                 {loading ? (
                   <>
                     <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                    Creating...
+                    {t('users.creating')}
                   </>
                 ) : (
-                  'Create User'
+                  t('users.createUser')
                 )}
               </button>
               <button type="button" onClick={onClose} className="btn-secondary py-2 px-4 text-sm">
-                Cancel
+                {t('common.cancel')}
               </button>
             </div>
           </form>
@@ -416,6 +409,7 @@ interface ResetPasswordModalProps {
 }
 
 function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProps) {
+  const { t } = useTranslation();
   const [mode, setMode] = useState<'choose' | 'generate' | 'manual' | 'done_generate' | 'done_manual'>('choose');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -433,23 +427,23 @@ function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProp
       setMode('done_generate');
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(msg ?? 'Failed to reset password.');
+      setError(msg ?? t('users.resetFailed'));
     } finally { setLoading(false); }
   };
 
   const handleManual = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password !== confirm) { setError('Passwords do not match.'); return; }
-    if (password.length < 8) { setError('Password must be at least 8 characters.'); return; }
+    if (password !== confirm) { setError(t('users.passwordsNoMatchMsg')); return; }
+    if (password.length < 8) { setError(t('settings.passwordMin8')); return; }
     setLoading(true); setError('');
     try {
       await adminResetPassword(user.id, 'manual', password);
       setMode('done_manual');
-      onSuccess(`Password updated for ${user.name}`);
+      onSuccess(t('users.passwordUpdatedFor', { name: user.name }));
       onClose();
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(msg ?? 'Failed to reset password.');
+      setError(msg ?? t('users.resetFailed'));
     } finally { setLoading(false); }
   };
 
@@ -465,7 +459,7 @@ function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProp
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
           <div className="flex items-center gap-2.5">
             <KeyRound size={16} className="text-amber-400" />
-            <h3 className="text-white font-bold">Reset Password</h3>
+            <h3 className="text-white font-bold">{t('users.resetPassword')}</h3>
           </div>
           <button onClick={onClose} className="text-gray-500 hover:text-gray-300 transition-colors p-1 rounded">
             <X size={16} />
@@ -474,8 +468,8 @@ function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProp
 
         <div className="p-6">
           <p className="text-gray-400 text-sm mb-5">
-            Resetting password for <span className="text-white font-medium">{user.name}</span>.
-            The user will be required to change it on next login.
+            {t('users.resettingForPrefix')} <span className="text-white font-medium">{user.name}</span>.
+            {' '}{t('users.resettingForSuffix')}
           </p>
 
           {error && (
@@ -492,15 +486,15 @@ function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProp
                 onClick={() => setMode('generate')}
                 className="w-full p-4 rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] hover:border-blue-500/30 transition-all text-left"
               >
-                <p className="text-white font-medium text-sm">Generate temporary password</p>
-                <p className="text-gray-500 text-xs mt-0.5">System creates a random 8-character password to share with the user</p>
+                <p className="text-white font-medium text-sm">{t('users.genTempTitle')}</p>
+                <p className="text-gray-500 text-xs mt-0.5">{t('users.genTempDesc')}</p>
               </button>
               <button
                 onClick={() => setMode('manual')}
                 className="w-full p-4 rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] hover:border-blue-500/30 transition-all text-left"
               >
-                <p className="text-white font-medium text-sm">Set password manually</p>
-                <p className="text-gray-500 text-xs mt-0.5">You choose a new password for this user</p>
+                <p className="text-white font-medium text-sm">{t('users.setManualTitle')}</p>
+                <p className="text-gray-500 text-xs mt-0.5">{t('users.setManualDesc')}</p>
               </button>
             </div>
           )}
@@ -510,14 +504,14 @@ function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProp
             <div className="space-y-4">
               <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
                 <p className="text-amber-400 text-sm">
-                  A random 8-character password will be generated. You must communicate it to the user — it will only be shown once.
+                  {t('users.genWarn8')}
                 </p>
               </div>
               <div className="flex gap-3">
                 <button onClick={handleGenerate} disabled={loading} className="btn-primary py-2 px-5 text-sm">
-                  {loading ? <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : 'Generate & show'}
+                  {loading ? <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : t('users.generateShow')}
                 </button>
-                <button onClick={() => setMode('choose')} className="btn-secondary py-2 px-4 text-sm">Back</button>
+                <button onClick={() => setMode('choose')} className="btn-secondary py-2 px-4 text-sm">{t('common.back')}</button>
               </div>
             </div>
           )}
@@ -527,23 +521,23 @@ function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProp
             <div className="space-y-4">
               <div className="p-3 bg-green-500/10 border border-green-500/25 rounded-lg flex items-center gap-2">
                 <CheckCircle size={14} className="text-green-400 flex-shrink-0" />
-                <p className="text-green-400 text-sm">Password reset. Share it with the user.</p>
+                <p className="text-green-400 text-sm">{t('users.resetDoneShare')}</p>
               </div>
               <div>
-                <p className="text-xs text-gray-500 mb-1.5">Temporary password (shown once):</p>
+                <p className="text-xs text-gray-500 mb-1.5">{t('users.tempPasswordShownOnce')}</p>
                 <div className="flex items-center gap-2 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5">
                   <span className="font-mono text-lg text-white tracking-widest flex-1 select-all">{tempPassword}</span>
                   <button
                     onClick={copyTemp}
                     className="text-gray-400 hover:text-white transition-colors flex-shrink-0"
-                    title="Copy to clipboard"
+                    title={t('users.copyToClipboard')}
                   >
                     {copied ? <Check size={16} className="text-green-400" /> : <Copy size={16} />}
                   </button>
                 </div>
-                <p className="text-amber-400 text-xs mt-2">⚠ This password will not be shown again after you close this dialog.</p>
+                <p className="text-amber-400 text-xs mt-2">{t('users.tempWarnClose')}</p>
               </div>
-              <button onClick={onClose} className="btn-primary py-2 px-5 text-sm">Done</button>
+              <button onClick={onClose} className="btn-primary py-2 px-5 text-sm">{t('users.done')}</button>
             </div>
           )}
 
@@ -551,13 +545,13 @@ function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProp
           {mode === 'manual' && (
             <form onSubmit={handleManual} className="space-y-4">
               <div>
-                <label className="label">New password</label>
+                <label className="label">{t('settings.newPassword')}</label>
                 <div className="relative">
                   <input
                     type={showPw ? 'text' : 'password'}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Min. 8 characters"
+                    placeholder={t('settings.min8chars')}
                     className="input-field pr-10"
                     autoFocus
                     required
@@ -569,29 +563,29 @@ function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProp
                   </button>
                 </div>
                 {password.length > 0 && password.length < 8 && (
-                  <p className="text-red-400 text-xs mt-1">Must be at least 8 characters</p>
+                  <p className="text-red-400 text-xs mt-1">{t('settings.mustBe8')}</p>
                 )}
               </div>
               <div>
-                <label className="label">Confirm password</label>
+                <label className="label">{t('users.confirmPassword')}</label>
                 <input
                   type="password"
                   value={confirm}
                   onChange={(e) => setConfirm(e.target.value)}
-                  placeholder="Repeat password"
+                  placeholder={t('users.repeatPassword')}
                   className="input-field"
                   required
                   disabled={loading}
                 />
                 {confirm.length > 0 && password !== confirm && (
-                  <p className="text-red-400 text-xs mt-1">Passwords do not match</p>
+                  <p className="text-red-400 text-xs mt-1">{t('users.passwordsDoNotMatch')}</p>
                 )}
               </div>
               <div className="flex gap-3 pt-1">
                 <button type="submit" disabled={loading || password.length < 8 || password !== confirm} className="btn-primary py-2 px-5 text-sm">
-                  {loading ? <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : 'Set password'}
+                  {loading ? <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : t('users.setPassword')}
                 </button>
-                <button type="button" onClick={() => setMode('choose')} className="btn-secondary py-2 px-4 text-sm">Back</button>
+                <button type="button" onClick={() => setMode('choose')} className="btn-secondary py-2 px-4 text-sm">{t('common.back')}</button>
               </div>
             </form>
           )}
@@ -604,6 +598,7 @@ function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProp
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function UsersSetup() {
+  const { t } = useTranslation();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [showInvite, setShowInvite] = useState(false);
@@ -622,7 +617,7 @@ export default function UsersSetup() {
   useEffect(() => { load(); }, []);
 
   const handleDeactivate = async (user: User) => {
-    if (!confirm(`Deactivate ${user.name}?`)) return;
+    if (!confirm(t('users.deactivateConfirm', { name: user.name }))) return;
     setDeactivating(user.id);
     try {
       await deleteUser(user.id);
@@ -634,7 +629,7 @@ export default function UsersSetup() {
 
   const handleCreated = (name: string) => {
     setShowCreate(false);
-    setToast(`${name} created successfully`);
+    setToast(t('users.createdSuccess', { name }));
     load();
   };
 
@@ -657,8 +652,8 @@ export default function UsersSetup() {
 
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-black text-white">User Management</h1>
-          <p className="text-sm text-gray-600 mt-1">Manage user accounts and access levels</p>
+          <h1 className="text-2xl font-black text-white">{t('users.title')}</h1>
+          <p className="text-sm text-gray-600 mt-1">{t('users.subtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -666,14 +661,14 @@ export default function UsersSetup() {
             className="flex items-center gap-1.5 py-2 px-4 rounded-lg text-sm font-medium bg-white/[0.06] text-gray-300 border border-white/[0.10] hover:bg-white/[0.10] hover:text-white transition-all"
           >
             <UserCheck size={14} />
-            Create User
+            {t('users.createUser')}
           </button>
           <button
             onClick={() => setShowInvite(true)}
             className="btn-primary py-2 px-4 text-sm"
           >
             <UserPlus size={14} />
-            Invite User
+            {t('users.inviteUser')}
           </button>
         </div>
       </div>
@@ -705,24 +700,24 @@ export default function UsersSetup() {
                     <span className="text-xs text-gray-600 truncate">{u.email}</span>
                     {u.must_change_password && (
                       <span className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded-full">
-                        pw change required
+                        {t('users.pwChangeRequired')}
                       </span>
                     )}
                   </div>
                 </div>
 
                 <span className={`px-2 py-0.5 rounded-full border text-xs font-medium ${ROLE_COLORS[role] ?? ROLE_COLORS.operator}`}>
-                  {ROLE_LABELS[role] ?? role}
+                  {t(`roles.${role}`, role)}
                 </span>
 
                 <div className="flex items-center gap-1.5">
                   {u.active ? (
                     <span className="flex items-center gap-1 text-xs text-green-400">
-                      <CheckCircle size={11} /> Active
+                      <CheckCircle size={11} /> {t('users.active')}
                     </span>
                   ) : (
                     <span className="flex items-center gap-1 text-xs text-red-400">
-                      <XCircle size={11} /> Inactive
+                      <XCircle size={11} /> {t('users.inactive')}
                     </span>
                   )}
                 </div>
@@ -732,14 +727,14 @@ export default function UsersSetup() {
                     to={`/settings/users/${u.id}`}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-blue-600/20 text-blue-400 border border-blue-500/30 hover:bg-blue-600/30 transition-all font-bold"
                   >
-                    <Settings size={12} /> Manage
+                    <Settings size={12} /> {t('users.manage')}
                   </Link>
                   <button
                     onClick={() => setResetTarget(u)}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-amber-400 border border-amber-500/30 hover:bg-amber-500/10 transition-all"
-                    title="Reset password"
+                    title={t('users.resetPassword')}
                   >
-                    <KeyRound size={12} /> Reset pw
+                    <KeyRound size={12} /> {t('users.resetPwShort')}
                   </button>
                   {u.active && (
                     <button
@@ -748,7 +743,7 @@ export default function UsersSetup() {
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-red-400 border border-red-500/30 hover:bg-red-500/10 transition-all"
                     >
                       <XCircle size={12} />
-                      {deactivating === u.id ? '...' : 'Deactivate'}
+                      {deactivating === u.id ? '...' : t('users.deactivate')}
                     </button>
                   )}
                 </div>
@@ -756,7 +751,7 @@ export default function UsersSetup() {
             );
           })}
           {users.length === 0 && (
-            <div className="text-center py-16 text-gray-700">No users found.</div>
+            <div className="text-center py-16 text-gray-700">{t('users.noUsers')}</div>
           )}
         </div>
       )}

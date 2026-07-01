@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { AlertTriangle, CheckCircle2, X, Play, ChevronLeft, ChevronRight, User } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, X, Play, ChevronLeft, ChevronRight, User, Clock, Cog } from 'lucide-react';
 import {
   fetchMachinePage, fetchTodayStops, fetchMESData, fetchMachineOperators,
   updateMachineStatus, updateMachineJob, updateMachineOperator,
   createMachineStop, closeMachineStop, fetchMachineStopCategories,
   fetchMachineRejectCategories, logReject, reclassifyStop,
+  fetchProductionHourly, type HourlyPoint,
 } from '../../api/machines';
 import { openTicketField, closeTicket } from '../../api/maintenance';
 import { callMaintenance } from '../../api/machineOperator';
@@ -30,6 +31,7 @@ const DEFAULT_KIOSK_LAYOUT: Layout[] = [
   { i: 'job', x: 4, y: 0, w: 4, h: 6 },
   { i: 'stop', x: 8, y: 0, w: 4, h: 6 },
   { i: 'timeline', x: 0, y: 6, w: 12, h: 6 },
+  { i: 'passages', x: 0, y: 12, w: 12, h: 8 },
   { i: 'production', x: 0, y: 9, w: 7, h: 6 },
   { i: 'gauge', x: 7, y: 9, w: 5, h: 10 },
   { i: 'rejects', x: 0, y: 15, w: 7, h: 5 },
@@ -67,6 +69,7 @@ const I18N = {
     availability: 'Availability',
     production: 'Production',
     target: 'Target',
+    piecesProduced: 'Pieces produced',
     rejects: 'Rejects',
     oee: 'OEE',
     downtime: 'Downtime',
@@ -84,6 +87,7 @@ const I18N = {
     min: 'min',
     changeOperator: 'Change operator',
     stopCount: 'stops today',
+    waitTime: 'Wait',
   },
   fr: {
     running: 'EN MARCHE', stopped: 'ARRÊTÉE', maintenance: 'MAINTENANCE',
@@ -113,6 +117,7 @@ const I18N = {
     availability: 'Disponibilité',
     production: 'Production',
     target: 'Objectif',
+    piecesProduced: 'Nombre de passages produits',
     rejects: 'Rejets',
     oee: 'TRS',
     downtime: 'Arrêt',
@@ -130,6 +135,7 @@ const I18N = {
     min: 'min',
     changeOperator: 'Changer d\'opérateur',
     stopCount: 'arrêts aujourd\'hui',
+    waitTime: 'Attente',
   },
   es: {
     running: 'EN MARCHA', stopped: 'DETENIDA', maintenance: 'MANTENIMIENTO',
@@ -159,6 +165,7 @@ const I18N = {
     availability: 'Disponibilidad',
     production: 'Producción',
     target: 'Objetivo',
+    piecesProduced: 'Piezas producidas',
     rejects: 'Rechazos',
     oee: 'OEE',
     downtime: 'Parada',
@@ -176,9 +183,10 @@ const I18N = {
     min: 'min',
     changeOperator: 'Cambiar operador',
     stopCount: 'paradas hoy',
+    waitTime: 'Espera',
   },
 } as const;
-type Lang = keyof typeof I18N;
+export type Lang = keyof typeof I18N;
 
 // Status pill / dot classes — must mirror the canonical palette in utils/statusColors.
 const STATUS_COLOR: Record<string, string> = {
@@ -210,7 +218,7 @@ function stopColor(stop: MachineStopOut): string {
   return STOP_TYPE_COLORS[stop.category.type] || stop.category.color || '#6b7280';
 }
 
-const SHIFT_LABELS: Record<string, { en: string; fr: string; es: string }> = {
+export const SHIFT_LABELS: Record<string, { en: string; fr: string; es: string }> = {
   morning:   { en: 'Day shift',       fr: 'Quart de jour',  es: 'Turno de día' },
   afternoon: { en: 'Afternoon shift', fr: 'Quart de soir',  es: 'Turno de tarde' },
   night:     { en: 'Night shift',     fr: 'Quart de nuit',  es: 'Turno de nuit' },
@@ -222,7 +230,7 @@ export type ShiftWindow = { key: string; start: Date; end: Date };
 // Build the ordered list of concrete shift windows around `ref` (yesterday→tomorrow),
 // from the machine's shifts_config ({key:{start:"HH:MM",end:"HH:MM"}}). Overnight shifts
 // (end ≤ start) roll past midnight. Falls back to full-day windows when none configured.
-function buildShiftWindows(
+export function buildShiftWindows(
   shiftsConfig: Record<string, { start: string; end: string }> | null | undefined,
   ref: Date,
 ): ShiftWindow[] {
@@ -301,7 +309,7 @@ function AvailabilityGauge({ pct, target, color }: { pct: number; target: number
 // the machine's shifts_config); it follows the clock and auto-switches shift. Running
 // time is green; stops are colored by type (planned=blue, unplanned=red, maintenance=
 // yellow, unjustified MES stop=pink). Supervisor+ can step to past shifts with ◀ ▶.
-function StopTimeline({
+export function StopTimeline({
   win, stops, nowMs, lang, canNavigate, atCurrent, canGoBack, onPrev, onNext, onSegmentClick, hint,
 }: {
   win: ShiftWindow | null;
@@ -316,6 +324,7 @@ function StopTimeline({
   onSegmentClick?: (stop: MachineStopOut) => void;
   hint?: string;
 }) {
+  const [tip, setTip] = useState<{ stop: MachineStopOut; x: number; y: number } | null>(null);
   if (!win) return null;
   const startMs = win.start.getTime();
   const endMs = win.end.getTime();
@@ -342,9 +351,25 @@ function StopTimeline({
   const endHM = hm(win.end);
   const rangeLabel = `${hm(win.start)} – ${endHM === '00:00' ? '24:00' : endHM}`;
   const arrowBtn = 'w-7 h-7 flex items-center justify-center rounded-lg border border-white/10 text-gray-300 hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-not-allowed';
+  const hms = (d: Date) => d.toTimeString().slice(0, 8);
+  const tt = I18N[lang];
+  // "39min 6sec" / "1h 5min" — drops zero leading parts, mirrors the old vendor's format.
+  const fmtDur = (ms: number) => {
+    const total = Math.max(0, Math.round(ms / 1000));
+    const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
+    const parts: string[] = [];
+    if (h) parts.push(`${h}h`);
+    if (m) parts.push(`${m}min`);
+    if (s || !parts.length) parts.push(`${s}sec`);
+    return parts.join(' ');
+  };
+  const stopReason = (stop: MachineStopOut) =>
+    stop.category
+      ? (stop.subcategory ? `${stop.category.name} -> ${stop.subcategory.name}` : stop.category.name)
+      : tt.unjustified;
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2 h-full flex flex-col">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <p className="text-sm font-bold text-white truncate">{shiftName}</p>
@@ -358,7 +383,7 @@ function StopTimeline({
         )}
       </div>
 
-      <div className="relative h-14 rounded-lg overflow-hidden bg-[#1e293b]">
+      <div className="relative flex-1 min-h-[56px] rounded-lg overflow-hidden bg-[#1e293b]">
         <div className="absolute left-0 top-0 h-full" style={{ width: `${runningPct}%`, backgroundColor: RUNNING_COLOR }} />
         {stops.flatMap((stop) => {
           const s = new Date(stop.started_at).getTime();
@@ -377,7 +402,6 @@ function StopTimeline({
           } else {
             segs.push({ a: s, b: e, color: stopColor(stop) });
           }
-          const waitTxt = stop.wait_minutes != null ? ` · attente ${Math.round(stop.wait_minutes)} min` : '';
           return segs.map((sg, idx) => {
             const left = pct(sg.a);
             const width = Math.max(0.6, pct(sg.b) - left);
@@ -385,9 +409,11 @@ function StopTimeline({
               <div
                 key={`${stop.id}-${idx}`}
                 onClick={clickable ? () => onSegmentClick!(stop) : undefined}
+                onMouseEnter={(ev) => setTip({ stop, x: ev.clientX, y: ev.clientY })}
+                onMouseMove={(ev) => setTip({ stop, x: ev.clientX, y: ev.clientY })}
+                onMouseLeave={() => setTip(null)}
                 className={`absolute top-0 h-full transition-[filter] ${clickable ? 'cursor-pointer hover:brightness-125 hover:ring-2 hover:ring-white hover:z-10' : ''}`}
                 style={{ left: `${left}%`, width: `${width}%`, backgroundColor: sg.color }}
-                title={`${stop.category?.name ?? 'Arrêt non justifié'}: ${hm(new Date(stop.started_at))}–${stop.ended_at ? hm(new Date(stop.ended_at)) : '…'}${waitTxt}${clickable ? ' — ' + (hint ?? '') : ''}`}
               />
             );
           });
@@ -404,6 +430,108 @@ function StopTimeline({
           </span>
         ))}
       </div>
+
+      {tip && (() => {
+        const s = new Date(tip.stop.started_at);
+        const e = tip.stop.ended_at ? new Date(tip.stop.ended_at) : new Date(Math.min(endMs, nowMs));
+        const W = 240;
+        const left = tip.x + 16 + W > window.innerWidth ? tip.x - 16 - W : tip.x + 16;
+        const top = Math.min(tip.y + 16, window.innerHeight - 160);
+        return (
+          <div
+            className="fixed z-[80] pointer-events-none rounded-lg border border-white/10 bg-[#2b2f36]/95 px-3 py-2 text-xs text-gray-200 shadow-xl backdrop-blur-sm"
+            style={{ left, top, minWidth: W, maxWidth: W }}
+          >
+            <div className="text-[11px] text-gray-400">{hms(s)} - {tip.stop.ended_at ? hms(e) : '…'}</div>
+            <div className="mb-1.5 font-bold text-white">{stopReason(tip.stop)}</div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-1.5">
+                <Clock size={13} className="shrink-0 text-gray-400" />
+                <span>{fmtDur(e.getTime() - s.getTime())}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <User size={13} className="shrink-0 text-gray-400" />
+                <span className="truncate">{tip.stop.operator_name || tt.noOperator}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Cog size={13} className="shrink-0 text-gray-400" />
+                <span className="truncate">{tip.stop.job_number || tt.noJob}</span>
+              </div>
+              {tip.stop.wait_minutes != null && (
+                <div className="flex items-center gap-1.5 text-yellow-400">
+                  <AlertTriangle size={13} className="shrink-0" />
+                  <span>{tt.waitTime}: {Math.round(tip.stop.wait_minutes)} {tt.min}</span>
+                </div>
+              )}
+            </div>
+            {onSegmentClick && hint && (
+              <div className="mt-1.5 border-t border-white/10 pt-1.5 text-[10px] text-gray-400">{hint}</div>
+            )}
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+// Pieces-produced-per-hour bar chart for ONE shift window — mirrors the old vendor's
+// "Nombre de passages produits" view. Shares the shift window + ◀ ▶ nav with the timeline.
+export function ProductionChart({
+  win, hours, nowMs, lang, title, canNavigate, atCurrent, canGoBack, onPrev, onNext,
+}: {
+  win: ShiftWindow | null;
+  hours: HourlyPoint[];
+  nowMs: number;
+  lang: Lang;
+  title: string;
+  canNavigate: boolean;
+  atCurrent: boolean;
+  canGoBack: boolean;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  if (!win) return null;
+  const locale = lang === 'fr' ? 'fr-CA' : lang === 'es' ? 'es-ES' : 'en-CA';
+  const hm = (d: Date) => d.toTimeString().slice(0, 5);
+  const shiftName = (SHIFT_LABELS[win.key] || SHIFT_LABELS.day)[lang] ?? win.key;
+  const dateLabel = new Intl.DateTimeFormat(locale, { weekday: 'short', day: 'numeric', month: 'short' }).format(win.start);
+  const endHM = hm(win.end);
+  const rangeLabel = `${hm(win.start)} – ${endHM === '00:00' ? '24:00' : endHM}`;
+  const arrowBtn = 'w-7 h-7 flex items-center justify-center rounded-lg border border-white/10 text-gray-300 hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-not-allowed';
+  const max = Math.max(1, ...hours.map((h) => h.pieces));
+  const isCurrentHour = (iso: string) => {
+    if (!atCurrent) return false;
+    const s = new Date(iso).getTime();
+    return nowMs >= s && nowMs < s + 3_600_000;
+  };
+  return (
+    <div className="space-y-2 h-full flex flex-col">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-bold text-white truncate">{title}</p>
+          <p className="text-[11px] text-gray-500 truncate">{shiftName} · {dateLabel} · {rangeLabel}</p>
+        </div>
+        {canNavigate && (
+          <div className="flex items-center gap-1 shrink-0">
+            <button onClick={onPrev} disabled={!canGoBack} className={arrowBtn}><ChevronLeft size={16} /></button>
+            <button onClick={onNext} disabled={atCurrent} className={arrowBtn}><ChevronRight size={16} /></button>
+          </div>
+        )}
+      </div>
+      <div className="flex-1 min-h-[110px] flex items-end gap-1">
+        {hours.map((h) => {
+          const cur = isCurrentHour(h.hour);
+          return (
+            <div key={h.hour} className="flex-1 flex flex-col items-center justify-end h-full gap-1">
+              <span className={`text-[10px] font-bold ${cur ? 'text-blue-300' : 'text-gray-400'}`}>{h.pieces || ''}</span>
+              <div className="w-full rounded-t transition-all"
+                style={{ height: `${Math.max(2, (h.pieces / max) * 100)}%`, background: cur ? '#3b82f6' : '#64748b' }} />
+              <span className="text-[9px] text-gray-500 font-mono">{hm(new Date(h.hour))}</span>
+            </div>
+          );
+        })}
+        {hours.length === 0 && <p className="text-xs text-gray-600 m-auto">—</p>}
+      </div>
     </div>
   );
 }
@@ -417,6 +545,7 @@ export default function MachinePage() {
   const [mes, setMes]         = useState<MESDataExtended | null>(null);
   const [stops, setStops]     = useState<MachineStopOut[]>([]);
   const [timelineStops, setTimelineStops] = useState<MachineStopOut[]>([]);
+  const [hourly, setHourly] = useState<HourlyPoint[]>([]);
   const [shiftOffset, setShiftOffset] = useState(0); // 0 = current shift; negative = past (supervisor nav)
   const [operators, setOps]   = useState<MachineOperatorOut[]>([]);
   const [categories, setCats] = useState<StopCategoryOut[]>([]);
@@ -502,6 +631,19 @@ export default function MachinePage() {
         .catch(() => {});
     loadWin();
     const id = setInterval(loadWin, 30_000);
+    return () => { active = false; clearInterval(id); };
+  }, [slug, winStartISO, winEndISO]);
+
+  // Pieces-per-hour for the displayed shift window (refreshes 30s, refetches on nav).
+  useEffect(() => {
+    if (!slug || !winStartISO || !winEndISO) return;
+    let active = true;
+    const load = () =>
+      fetchProductionHourly(slug, { start: winStartISO, end: winEndISO })
+        .then((r) => { if (active) setHourly(r.hours); })
+        .catch(() => {});
+    load();
+    const id = setInterval(load, 30_000);
     return () => { active = false; clearInterval(id); };
   }, [slug, winStartISO, winEndISO]);
 
@@ -922,8 +1064,9 @@ export default function MachinePage() {
         {/* Panel — Timeline */}
         <div key="timeline" className="h-full relative">
           {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.todayTimeline}</div>}
-          <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-4">
+          <div className="h-full flex flex-col overflow-hidden bg-[#0d1421] rounded-2xl border border-white/[0.06] p-4">
             <p className="text-xs text-gray-600 uppercase tracking-widest mb-3 font-semibold">{t.todayTimeline}</p>
+            <div className="flex-1 min-h-0">
             <StopTimeline
               win={displayWin}
               stops={timelineStops}
@@ -936,6 +1079,26 @@ export default function MachinePage() {
               onNext={() => setShiftOffset((o) => Math.min(0, o + 1))}
               onSegmentClick={editLayout ? undefined : (stop) => { setReclassTarget(stop); setReclassCat(null); }}
               hint={t.changeCause}
+            />
+            </div>
+          </div>
+        </div>
+
+        {/* Panel — Pieces produced per hour */}
+        <div key="passages" className="h-full relative">
+          {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.piecesProduced}</div>}
+          <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-4">
+            <ProductionChart
+              win={displayWin}
+              hours={hourly}
+              nowMs={nowMs}
+              lang={lang}
+              title={t.piecesProduced}
+              canNavigate={canEditLayout}
+              atCurrent={offset === 0}
+              canGoBack={displayIdx > 0}
+              onPrev={() => setShiftOffset((o) => o - 1)}
+              onNext={() => setShiftOffset((o) => Math.min(0, o + 1))}
             />
           </div>
         </div>

@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Factory, Lock, AlertCircle, CheckCircle } from 'lucide-react';
 import { resetPassword } from '../api/auth';
 
 export default function ResetPassword() {
+  const { t } = useTranslation();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const token = params.get('token') ?? '';
@@ -16,9 +18,9 @@ export default function ResetPassword() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password !== confirmPassword) { setError('Passwords do not match.'); return; }
-    if (password.length < 8) { setError('Password must be at least 8 characters.'); return; }
-    if (!token) { setError('Missing reset token. Please use the link from your email.'); return; }
+    if (password !== confirmPassword) { setError(t('auth.passwordsNoMatch')); return; }
+    if (password.length < 8) { setError(t('auth.passwordMinLength')); return; }
+    if (!token) { setError(t('auth.missingResetToken')); return; }
     setError('');
     setLoading(true);
     try {
@@ -26,7 +28,7 @@ export default function ResetPassword() {
       setDone(true);
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(msg ?? 'Failed to reset password. The link may have expired.');
+      setError(msg ?? t('auth.resetFailed'));
     } finally {
       setLoading(false);
     }
@@ -42,24 +44,24 @@ export default function ResetPassword() {
             </div>
             <div>
               <h1 className="text-white font-bold text-lg leading-none">Foliot MES</h1>
-              <p className="text-gray-600 text-[11px] mt-1 leading-none">Set new password</p>
+              <p className="text-gray-600 text-[11px] mt-1 leading-none">{t('auth.setNewPassword')}</p>
             </div>
           </div>
 
           {done ? (
             <div className="text-center py-4">
               <CheckCircle size={40} className="text-green-400 mx-auto mb-3" />
-              <p className="text-white font-semibold mb-1">Password reset!</p>
-              <p className="text-gray-500 text-sm mb-5">Your password has been updated successfully.</p>
+              <p className="text-white font-semibold mb-1">{t('auth.passwordResetDone')}</p>
+              <p className="text-gray-500 text-sm mb-5">{t('auth.passwordUpdated')}</p>
               <button onClick={() => navigate('/login')} className="btn-primary w-full justify-center py-2.5 text-sm">
-                Go to Login
+                {t('auth.goToLogin')}
               </button>
             </div>
           ) : (
             <>
               <div className="mb-6">
-                <h2 className="text-white text-xl font-semibold">Set new password</h2>
-                <p className="text-gray-500 text-sm mt-1">Choose a strong password for your account.</p>
+                <h2 className="text-white text-xl font-semibold">{t('auth.setNewPassword')}</h2>
+                <p className="text-gray-500 text-sm mt-1">{t('auth.setNewPasswordSubtitle')}</p>
               </div>
 
               {error && (
@@ -71,14 +73,14 @@ export default function ResetPassword() {
 
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                  <label className="label">New password</label>
+                  <label className="label">{t('auth.newPassword')}</label>
                   <div className="relative">
                     <Lock size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
                     <input
                       type="password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      placeholder="Min. 8 characters"
+                      placeholder={t('auth.minChars')}
                       className="input-field pl-9"
                       required
                       disabled={loading}
@@ -86,7 +88,7 @@ export default function ResetPassword() {
                   </div>
                 </div>
                 <div>
-                  <label className="label">Confirm password</label>
+                  <label className="label">{t('auth.confirmPassword')}</label>
                   <div className="relative">
                     <Lock size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
                     <input
@@ -109,7 +111,7 @@ export default function ResetPassword() {
                   {loading ? (
                     <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
                   ) : (
-                    'Reset password'
+                    t('auth.resetPasswordBtn')
                   )}
                 </button>
               </form>

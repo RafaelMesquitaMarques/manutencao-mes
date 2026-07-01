@@ -61,10 +61,20 @@ function barOpts(
   title: string,
   color = '#3b82f6',
 ): object {
+  const rotate = data.length > 4 ? 30 : 0;
   return {
     tooltip: { trigger: 'axis', backgroundColor: '#111827', borderColor: 'rgba(255,255,255,0.1)', textStyle: { color: '#e5e7eb' } },
-    grid:    { left: 16, right: 16, top: 12, bottom: 40, containLabel: true },
-    xAxis:   { type: 'category', data: data.map((d) => d.label), axisLabel: { color: CHART_TEXT, fontSize: 11 }, axisLine: { lineStyle: { color: CHART_LINE } }, splitLine: { show: false } },
+    // containLabel already reserves room for the (rotated) axis labels, so keep
+    // bottom small — a large value just adds empty space below them. top gives
+    // the value labels above the tallest bar room so they aren't clipped.
+    grid:    { left: 16, right: 16, top: 24, bottom: 8, containLabel: true },
+    xAxis:   {
+      type: 'category',
+      data: data.map((d) => d.label),
+      axisLabel: { color: CHART_TEXT, fontSize: 11, interval: 0, rotate, overflow: 'truncate', width: 100 },
+      axisLine: { lineStyle: { color: CHART_LINE } },
+      splitLine: { show: false },
+    },
     yAxis:   { type: 'value', axisLabel: { color: CHART_TEXT, fontSize: 11 }, splitLine: { lineStyle: { color: CHART_LINE } }, minInterval: 1 },
     series:  [{ data: data.map((d) => d.count), type: 'bar', barMaxWidth: 36, itemStyle: { color, borderRadius: [4, 4, 0, 0] }, label: { show: true, position: 'top', color: CHART_TEXT, fontSize: 10 } }],
   };
@@ -461,7 +471,7 @@ export default function MaintenanceDashboard() {
         <div className="flex items-center justify-between">
           <h2 className="text-white font-semibold flex items-center gap-2">
             <Wrench size={16} className="text-blue-400" />
-            KPIs Interventions
+            {t('maintenanceDash.interventionKpis')}
           </h2>
         </div>
 
@@ -469,7 +479,7 @@ export default function MaintenanceDashboard() {
           <>
             <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
               <KPICard
-                title="MTTR (durée moy. réparation)"
+                title={t('maintenanceDash.mttr')}
                 value={kpiData.mttr_minutes != null ? `${kpiData.mttr_minutes.toFixed(0)} min` : '—'}
                 icon={Wrench}
                 iconBg="bg-blue-500/15"
@@ -477,7 +487,7 @@ export default function MaintenanceDashboard() {
                 valueColor="text-blue-400"
               />
               <KPICard
-                title="MTBF (temps moy. entre pannes)"
+                title={t('maintenanceDash.mtbf')}
                 value={kpiData.mtbf_hours != null ? `${kpiData.mtbf_hours.toFixed(1)} h` : '—'}
                 icon={TrendingUp}
                 iconBg="bg-green-500/15"
@@ -485,7 +495,7 @@ export default function MaintenanceDashboard() {
                 valueColor="text-green-400"
               />
               <KPICard
-                title="Temps de réponse moyen"
+                title={t('maintenanceDash.avgResponseTime')}
                 value={kpiData.avg_response_time_minutes != null ? `${kpiData.avg_response_time_minutes.toFixed(0)} min` : '—'}
                 icon={Zap}
                 iconBg="bg-amber-500/15"
@@ -493,7 +503,7 @@ export default function MaintenanceDashboard() {
                 valueColor="text-amber-400"
               />
               <KPICard
-                title="Arrêt moyen par intervention"
+                title={t('maintenanceDash.avgDowntime')}
                 value={kpiData.avg_downtime_minutes != null ? `${kpiData.avg_downtime_minutes.toFixed(0)} min` : '—'}
                 icon={Timer}
                 iconBg="bg-red-500/15"
@@ -504,7 +514,7 @@ export default function MaintenanceDashboard() {
 
             {kpiData.by_equipment.some((e) => e.avg_duration_minutes != null) && (
               <div className="glass-card p-5">
-                <h3 className="text-white font-semibold text-sm mb-4">Durée moy. par équipement (min)</h3>
+                <h3 className="text-white font-semibold text-sm mb-4">{t('maintenanceDash.avgDurationByEquipment')}</h3>
                 <ReactECharts
                   option={barOpts(
                     kpiData.by_equipment

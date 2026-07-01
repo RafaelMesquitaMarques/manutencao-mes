@@ -42,6 +42,8 @@ import MaintenanceDashboard from './pages/MaintenanceDashboard/MaintenanceDashbo
 import SupervisorDashboard from './pages/MaintenanceDashboard/SupervisorDashboard';
 import MachinePage from './pages/Machines/MachinePage';
 import FactoryMap from './pages/FactoryMap/FactoryMap';
+import DashboardList from './pages/Dashboards/DashboardList';
+import DashboardPage from './pages/Dashboards/DashboardPage';
 import MyWorkPage from './pages/MyWork/MyWorkPage';
 import UsersSetup from './pages/Settings/UsersSetup';
 import EscalationSettingsPage from './pages/Settings/EscalationSettings';
@@ -104,13 +106,13 @@ const App = () => {
         <Route path="technicians/new"       element={<NewTechnician />} />
         <Route path="technicians/:id"       element={<TechnicianDetail />} />
         <Route path="kpis"                  element={<RequireView resource="kpis"><KPIDashboard /></RequireView>} />
-        <Route path="kpis/machines"         element={<RequireView resource="kpis"><MachineReport /></RequireView>} />
-        <Route path="intelligence"          element={<IntelligenceDashboard />} />
+        <Route path="kpis/machines"         element={<RequireView resource="machine_reports"><MachineReport /></RequireView>} />
+        <Route path="intelligence"          element={<RequireView resource="intelligence"><IntelligenceDashboard /></RequireView>} />
         <Route path="equipment"             element={<RequireView resource="equipment"><EquipmentList /></RequireView>} />
         <Route path="equipment/new"         element={<NewEquipment />} />
         <Route path="equipment/:id"         element={<EquipmentDetail />} />
         <Route path="pm-calendar"           element={<RequireView resource="pm_calendar"><PMCalendar /></RequireView>} />
-        <Route path="maintenance/plans"      element={<RequireView resource="pm_calendar"><PlanList /></RequireView>} />
+        <Route path="maintenance/plans"      element={<RequireView resource="maintenance_plans"><PlanList /></RequireView>} />
         <Route path="maintenance/plans/new"  element={<NewPlan />} />
         <Route path="maintenance/plans/:id"  element={<PlanDetail />} />
         <Route path="schedule"              element={<RequireView resource="schedule"><LaborScheduler /></RequireView>} />
@@ -120,26 +122,28 @@ const App = () => {
         <Route path="tickets"              element={<RequireView resource="tickets"><TicketList /></RequireView>} />
         <Route path="tickets/new"          element={<NewTicket />} />
         <Route path="tickets/:id"          element={<TicketDetail />} />
-        <Route path="inventory"            element={<InventoryList />} />
+        <Route path="inventory"            element={<RequireView resource="inventory"><InventoryList /></RequireView>} />
         <Route path="inventory/new"        element={<NewInventoryItem />} />
         <Route path="inventory/:id"        element={<InventoryDetail />} />
-        <Route path="suppliers"            element={<SupplierList />} />
+        <Route path="suppliers"            element={<RequireView resource="suppliers"><SupplierList /></RequireView>} />
         <Route path="suppliers/new"        element={<NewSupplier />} />
         <Route path="suppliers/:id"        element={<SupplierDetail />} />
-        <Route path="supplier-orders"      element={<PurchaseOrderList />} />
+        <Route path="supplier-orders"      element={<RequireView resource="purchase_orders"><PurchaseOrderList /></RequireView>} />
         <Route path="supplier-orders/new"  element={<NewPurchaseOrder />} />
         <Route path="maintenance/dashboard"      element={<RequireView resource="maintenance"><MaintenanceDashboard /></RequireView>} />
         <Route path="maintenance/supervisor"     element={<RequireView resource="supervisor_view"><SupervisorDashboard /></RequireView>} />
-        <Route path="factory-map"                element={<RequireView resource="machines"><FactoryMap /></RequireView>} />
-        <Route path="maintenance/wo-approval" element={<WOApproval />} />
+        <Route path="factory-map"                element={<RequireView resource="factory_map"><FactoryMap /></RequireView>} />
+        <Route path="dashboards"                 element={<RequireView resource="dashboards"><DashboardList /></RequireView>} />
+        <Route path="dashboards/:slug"           element={<RequireView resource="dashboards"><DashboardPage /></RequireView>} />
+        <Route path="maintenance/wo-approval" element={<RequireView resource="wo_approval"><WOApproval /></RequireView>} />
         {/* legacy path → keep old links working */}
-        <Route path="maintenance/parts-approval" element={<WOApproval />} />
+        <Route path="maintenance/parts-approval" element={<RequireView resource="wo_approval"><WOApproval /></RequireView>} />
         <Route path="machines"              element={<Navigate to="/equipment" replace />} />
         <Route path="my-work"               element={<MyWorkPage />} />
         <Route path="settings/machines"           element={<Navigate to="/equipment" replace />} />
         <Route path="settings/machines/:id"       element={<Navigate to="/equipment" replace />} />
         <Route path="settings/stop-categories"    element={<Navigate to="/equipment" replace />} />
-        <Route path="settings/escalation"         element={<EscalationSettingsPage />} />
+        <Route path="settings/escalation"         element={<RequireView resource="settings_escalation"><EscalationSettingsPage /></RequireView>} />
         <Route path="settings/users"              element={<UsersSetup />} />
         <Route path="settings/users/:id"          element={<UserDetail />} />
         <Route path="settings/profile"            element={<MyProfile />} />

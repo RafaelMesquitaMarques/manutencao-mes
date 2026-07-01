@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { User, Phone, Briefcase, Globe, ChevronDown, CheckCircle, AlertCircle, Lock } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { updateMe } from '../../api/auth';
@@ -10,16 +11,6 @@ const LANGUAGES = [
   { code: 'fr', label: 'Français' },
   { code: 'es', label: 'Español' },
 ];
-
-const ROLE_LABELS: Record<UserRole, string> = {
-  operator: 'Operator',
-  technician: 'Technician',
-  supervisor: 'Supervisor',
-  maintenance_director: 'Maintenance Director',
-  plant_manager: 'Plant Manager',
-  director: 'Director',
-  admin: 'Administrator',
-};
 
 const ROLE_COLORS: Record<UserRole, string> = {
   operator: 'text-gray-400 bg-gray-500/15 border-gray-600/30',
@@ -32,6 +23,7 @@ const ROLE_COLORS: Record<UserRole, string> = {
 };
 
 export default function MyProfile() {
+  const { t } = useTranslation();
   const { user, setAuth, token } = useAuthStore();
   const [name, setName] = useState(user?.name ?? '');
   const [phone, setPhone] = useState(user?.phone ?? '');
@@ -57,7 +49,7 @@ export default function MyProfile() {
       setSuccess(true);
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(msg ?? 'Failed to update profile.');
+      setError(msg ?? t('settings.updateProfileFailed'));
     } finally {
       setLoading(false);
     }
@@ -66,8 +58,8 @@ export default function MyProfile() {
   return (
     <div className="min-h-screen bg-[#060c17] text-white p-6 max-w-xl mx-auto">
       <div className="mb-8">
-        <h1 className="text-2xl font-black text-white">My Profile</h1>
-        <p className="text-sm text-gray-600 mt-1">Update your personal information</p>
+        <h1 className="text-2xl font-black text-white">{t('settings.profileTitle')}</h1>
+        <p className="text-sm text-gray-600 mt-1">{t('settings.profileSubtitle')}</p>
       </div>
 
       {/* Avatar & role */}
@@ -80,7 +72,7 @@ export default function MyProfile() {
             <p className="text-white font-semibold text-base">{user?.name}</p>
             <p className="text-gray-500 text-sm">{user?.email}</p>
             <span className={`inline-flex mt-1 items-center px-2 py-0.5 rounded-full border text-xs font-medium ${ROLE_COLORS[role]}`}>
-              {ROLE_LABELS[role]}
+              {t(`roles.${role}`)}
             </span>
           </div>
         </div>
@@ -91,7 +83,7 @@ export default function MyProfile() {
         {success && (
           <div className="mb-5 flex items-center gap-2.5 p-3 bg-green-500/10 border border-green-500/25 rounded-lg">
             <CheckCircle size={15} className="text-green-400 flex-shrink-0" />
-            <p className="text-green-400 text-sm">Profile updated.</p>
+            <p className="text-green-400 text-sm">{t('settings.profileUpdated')}</p>
           </div>
         )}
         {error && (
@@ -103,7 +95,7 @@ export default function MyProfile() {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="label">Full name</label>
+            <label className="label">{t('settings.fullName')}</label>
             <div className="relative">
               <User size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
               <input
@@ -117,7 +109,7 @@ export default function MyProfile() {
             </div>
           </div>
           <div>
-            <label className="label">Phone</label>
+            <label className="label">{t('settings.phone')}</label>
             <div className="relative">
               <Phone size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
               <input
@@ -131,7 +123,7 @@ export default function MyProfile() {
             </div>
           </div>
           <div>
-            <label className="label">Language</label>
+            <label className="label">{t('settings.language')}</label>
             <div className="relative">
               <Globe size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none z-10" />
               <button
@@ -170,10 +162,10 @@ export default function MyProfile() {
               {loading ? (
                 <>
                   <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                  Saving...
+                  {t('settings.saving')}
                 </>
               ) : (
-                'Save changes'
+                t('settings.saveChanges')
               )}
             </button>
             <Link
@@ -181,7 +173,7 @@ export default function MyProfile() {
               className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-white transition-colors"
             >
               <Lock size={13} />
-              Change password
+              {t('settings.changePasswordLink')}
             </Link>
           </div>
         </form>
