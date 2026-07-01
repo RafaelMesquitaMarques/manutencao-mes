@@ -282,6 +282,45 @@ async def on_wo_finished(db: AsyncSession, wo: WorkOrder) -> None:
             machine.last_stop_at = now
 
 
+async def repaint_after_maintenance(db: AsyncSession, machine, ticket_id=None) -> None:
+    """Shared post-repair repaint (kiosk complete + WO finish). Closes the open
+    maintenance downtime stop, then repaints WITHOUT assuming production resumed:
+      • another stop still open      → 'maintenance' (amber)
+      • production signal positive    → 'running' (green)
+      • otherwise                     → 'unjustified' (pink) + an open MES stop
+    So a signal-driven machine waits for the ADAM signal to go green instead of
+    being assumed back in production the moment the repair is marked done."""
+    now = datetime.now(timezone.utc)
+    for s in (await db.execute(
+        select(MachineStop).where(
+            MachineStop.machine_id == machine.id,
+            MachineStop.ended_at.is_(None),
+        )
+    )).scalars().all():
+        if s.source == "work_order" or (ticket_id and s.ticket_id == ticket_id):
+            s.ended_at = now
+            st = s.started_at
+            if st and st.tzinfo is None:
+                st = st.replace(tzinfo=timezone.utc)
+            s.duration_minutes = max(int((now - st).total_seconds() / 60), 0) if st else None
+
+    if machine.current_status not in (MachineStatus.maintenance, MachineStatus.intervention):
+        return
+    other_open = await _open_stop(db, machine.id)
+    if other_open is not None:
+        machine.current_status = MachineStatus.maintenance
+    elif (await _production_running(db, machine)) is True:
+        machine.current_status = MachineStatus.running
+        machine.last_start_at = now
+    else:
+        machine.current_status = MachineStatus.unjustified
+        db.add(MachineStop(
+            machine_id=machine.id, started_at=now, stop_category_id=None,
+            source="mes", comments="Auto — en attente de production après maintenance",
+        ))
+        machine.last_stop_at = now
+
+
 async def on_wo_held(db: AsyncSession, wo: WorkOrder) -> None:
     """A machine-linked WO paused (on hold): the technician stepped away, so the
     machine is no longer actively worked. Revert OUR 'intervention' paint back to

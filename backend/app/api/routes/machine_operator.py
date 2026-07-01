@@ -356,8 +356,11 @@ async def complete_intervention(machine_id: str, body: CompleteBody, db: AsyncSe
             await sync_alert_from_ticket(ticket, db)
 
     machine.last_maintenance_at = now
-    if machine.current_status in (MachineStatus.maintenance, MachineStatus.intervention):
-        machine.current_status = MachineStatus.running     # intervention done → back in production
+    # Do NOT assume production resumed. Close the maintenance downtime and repaint:
+    # a positive production signal → green; otherwise → pink (waiting for production).
+    # A signal-driven machine only goes green once the ADAM signal confirms it.
+    from app.services.intervention_sync import repaint_after_maintenance
+    await repaint_after_maintenance(db, machine, ticket_id=intervention.ticket_id)
     await db.commit()
     await db.refresh(intervention)
     return {
