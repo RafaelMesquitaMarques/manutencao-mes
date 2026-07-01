@@ -297,7 +297,10 @@ async def repaint_after_maintenance(db: AsyncSession, machine, ticket_id=None) -
             MachineStop.ended_at.is_(None),
         )
     )).scalars().all():
-        if s.source == "work_order" or (ticket_id and s.ticket_id == ticket_id):
+        # Close the maintenance downtime stop AND any auto-detected MES stop that
+        # overlapped it — otherwise a stale 'detected' stop lingers and keeps the
+        # machine amber (maintenance) after the repair instead of going pink.
+        if s.source in ("work_order", "mes") or (ticket_id and s.ticket_id == ticket_id):
             s.ended_at = now
             st = s.started_at
             if st and st.tzinfo is None:

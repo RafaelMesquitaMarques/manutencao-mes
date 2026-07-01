@@ -17,6 +17,7 @@ from app.models.models import (
     RejectCategory, RejectSubcategory, RejectLog,
     AlertShift, JobOrder, JobOrderSource, MachineProductionLog, MachineProductionHourly,
     MachineHistory, Technician, MachineIntervention,
+    MaintenanceAlert, AlertStatus, AlertProblemType,
 )
 from app.schemas.maintenance import (
     MachineOut, MachineListResponse, MachinePageData, TicketForMachine,
@@ -34,7 +35,7 @@ from app.schemas.maintenance import (
     JobOrderOut, JobOrderCreate,
 )
 from app.core.security import get_current_user
-from app.services.ticket_service import TicketService, _next_ticket_number
+from app.services.ticket_service import TicketService, _next_ticket_number, _next_alert_number
 from app.services.mes_service import MesService, shift_windows
 from app.services.intervention_sync import apply_production_signal
 
@@ -454,9 +455,26 @@ async def create_stop(
 
     ticket_number = None
     if triggers:
+        # A maintenance stop raised from the machine page must surface as an ALERT
+        # too (feeds the maintenance dashboard/notifications), not just a ticket —
+        # otherwise callMaintenance later adopts this ticket and no alert is ever
+        # created. Mirror call_maintenance: alert ↔ ticket linked both ways.
+        alert = MaintenanceAlert(
+            alert_number=await _next_alert_number(db),
+            machine_id=machine.id,
+            department=machine.department,
+            problem_type=AlertProblemType.mechanical,
+            priority=AlertPriority.high,
+            description=data.comments or "Arrêt maintenance (poste opérateur)",
+            created_by=data.justified_by or "operator",
+            status=AlertStatus.new_alert,
+        )
+        db.add(alert)
+        await db.flush()
         ticket = MaintenanceTicket(
             ticket_number=await _next_ticket_number(db),
             machine_id=machine.id,
+            alert_id=alert.id,
             priority=AlertPriority.high,
             problem_type=None,
             description=data.comments,
@@ -464,6 +482,7 @@ async def create_stop(
         )
         db.add(ticket)
         await db.flush()
+        alert.ticket_id = ticket.id
         stop.ticket_id = ticket.id
         ticket_number = ticket.ticket_number
         machine.current_status = MachineStatus.maintenance
