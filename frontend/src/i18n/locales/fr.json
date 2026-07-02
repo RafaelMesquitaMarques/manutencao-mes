@@ -461,6 +461,10 @@
     "requiredFields": "Veuillez sélectionner un compte utilisateur"
   },
   "equipment": {
+    "cloneTo": "Cloner vers…",
+    "cloneITTitle": "Copier ces types vers…",
+    "cloneITHint": "Les types actifs de l'équipement cible sont remplacés par ceux-ci.",
+    "cloneITSuccess": "Copié vers {{count}} équipement(s)",
     "title": "Équipements",
     "subtitle": "Catalogue d'actifs et état des équipements",
     "newEquipment": "Nouvel équipement",

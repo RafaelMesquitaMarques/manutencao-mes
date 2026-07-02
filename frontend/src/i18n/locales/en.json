@@ -461,6 +461,10 @@
     "requiredFields": "Please select a user account"
   },
   "equipment": {
+    "cloneTo": "Clone to…",
+    "cloneITTitle": "Copy these types to…",
+    "cloneITHint": "Active types on the target equipment are replaced by these.",
+    "cloneITSuccess": "Copied to {{count}} equipment",
     "title": "Equipment",
     "subtitle": "Asset catalog and equipment status",
     "newEquipment": "New Equipment",

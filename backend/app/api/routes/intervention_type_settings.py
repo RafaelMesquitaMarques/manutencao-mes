@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.models.models import InterventionType, User
+from app.models.models import Equipment, InterventionType, User
 from app.core.security import get_current_user
 
 router = APIRouter(prefix="/api/settings/intervention-types", tags=["Intervention Type Settings"])
@@ -97,6 +97,54 @@ async def update_type(
     await db.commit()
     await db.refresh(itype)
     return _to_dict(itype)
+
+
+class CloneRequest(BaseModel):
+    source_equipment_id: UUID
+    target_equipment_ids: List[UUID]
+
+
+@router.post("/clone")
+async def clone_types(
+    data: CloneRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Copy all active intervention types from a source equipment to targets.
+    Existing active types on each target are deactivated first (soft-delete, so
+    completed interventions that reference them keep their link)."""
+    src = (await db.execute(
+        select(InterventionType)
+        .where(InterventionType.equipment_id == data.source_equipment_id,
+               InterventionType.is_active == True)  # noqa: E712
+        .order_by(InterventionType.sort_order)
+    )).scalars().all()
+
+    cloned = 0
+    for target_id in data.target_equipment_ids:
+        if target_id == data.source_equipment_id:
+            continue
+        equip = await db.get(Equipment, target_id)
+        if not equip:
+            continue
+        existing = (await db.execute(
+            select(InterventionType).where(
+                InterventionType.equipment_id == target_id,
+                InterventionType.is_active == True,  # noqa: E712
+            )
+        )).scalars().all()
+        for old in existing:
+            old.is_active = False
+        for s in src:
+            db.add(InterventionType(
+                equipment_id=target_id, plant_id=equip.plant_id,
+                name=s.name, icon=s.icon, color=s.color,
+                sort_order=s.sort_order, is_active=True,
+            ))
+        cloned += 1
+
+    await db.commit()
+    return {"status": "ok", "cloned_to": cloned}
 
 
 @router.delete("/{type_id}", status_code=200)

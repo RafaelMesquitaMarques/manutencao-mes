@@ -736,6 +736,28 @@ function InterventionTypesConfigTab({ equipmentId }: { equipmentId: string }) {
   const [editForm, setEditForm] = useState<ITForm>(IT_EMPTY);
   const [saving, setSaving] = useState(false);
 
+  const { t } = useTranslation();
+  const [allEquipment, setAllEquipment] = useState<Equipment[]>([]);
+  const [showClone, setShowClone] = useState(false);
+  const [cloneTargets, setCloneTargets] = useState<string[]>([]);
+  const [cloning, setCloning] = useState(false);
+  const [cloneMsg, setCloneMsg] = useState('');
+  useEffect(() => { fetchEquipment({ limit: '1000' }).then(setAllEquipment).catch(() => {}); }, []);
+  const toggleCloneTarget = (id: string) =>
+    setCloneTargets((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  const handleCloneIT = async () => {
+    if (cloneTargets.length === 0) return;
+    setCloning(true);
+    try {
+      const r = await api.post('/api/settings/intervention-types/clone', {
+        source_equipment_id: equipmentId, target_equipment_ids: cloneTargets,
+      });
+      setCloneMsg(t('equipment.cloneITSuccess', { count: r.data.cloned_to, defaultValue: `Copié vers ${r.data.cloned_to} équipement(s)` }));
+      setShowClone(false); setCloneTargets([]);
+      setTimeout(() => setCloneMsg(''), 4000);
+    } finally { setCloning(false); }
+  };
+
   const load = useCallback(async () => {
     setLoadingIT(true);
     try {
@@ -795,11 +817,50 @@ function InterventionTypesConfigTab({ equipmentId }: { equipmentId: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-bold text-gray-400 uppercase tracking-widest">Intervention Types</h2>
-        <button onClick={() => setShowAdd(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition-colors">
-          <Plus size={12} /> Add
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowClone((v) => !v)} disabled={types.length === 0}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-white/[0.06] hover:bg-white/[0.1] text-gray-200 rounded-xl text-xs font-bold transition-colors disabled:opacity-40">
+            <Copy size={12} /> {t('equipment.cloneTo', 'Clone to…')}
+          </button>
+          <button onClick={() => setShowAdd(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition-colors">
+            <Plus size={12} /> Add
+          </button>
+        </div>
       </div>
+
+      {cloneMsg && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-teal-500/15 border border-teal-500/30 text-teal-300 text-sm">
+          <Check size={14} /> {cloneMsg}
+        </div>
+      )}
+
+      {showClone && (
+        <div className="p-4 bg-[#0d1421] rounded-2xl border border-teal-500/30 space-y-3">
+          <p className="text-sm font-semibold text-white">{t('equipment.cloneITTitle', 'Copier ces types vers…')}</p>
+          <p className="text-xs text-gray-500">{t('equipment.cloneITHint', 'Les types actifs de l’équipement cible sont remplacés par ceux-ci.')}</p>
+          <div className="max-h-52 overflow-y-auto space-y-1 pr-1">
+            {allEquipment.filter((eq) => eq.id !== equipmentId).map((eq) => (
+              <label key={eq.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/5 cursor-pointer text-sm text-gray-200">
+                <input type="checkbox" checked={cloneTargets.includes(eq.id)} onChange={() => toggleCloneTarget(eq.id)}
+                  className="w-4 h-4 rounded border-gray-600 bg-[#0b1120] text-teal-500" />
+                {eq.name}{eq.location ? <span className="text-gray-600 text-xs">· {eq.location}</span> : null}
+              </label>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <button onClick={handleCloneIT} disabled={cloning || cloneTargets.length === 0}
+              className="bg-teal-600 hover:bg-teal-500 text-white px-4 py-2 rounded-xl text-sm font-bold disabled:opacity-50 flex items-center gap-1.5">
+              {cloning ? <Loader2 size={13} className="animate-spin" /> : <Copy size={13} />}
+              {t('pm.copyAction', 'Copier')} ({cloneTargets.length})
+            </button>
+            <button onClick={() => { setShowClone(false); setCloneTargets([]); }}
+              className="text-gray-500 px-4 py-2 border border-white/10 rounded-xl text-sm">
+              <X size={13} />
+            </button>
+          </div>
+        </div>
+      )}
 
       {showAdd && (
         <div className="p-4 bg-[#0d1421] rounded-2xl border border-blue-500/30 space-y-3">
