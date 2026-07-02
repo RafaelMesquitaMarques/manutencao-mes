@@ -1530,7 +1530,12 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
     fetchMachinesAll()
       .then((machines) => {
         setAllMachines(machines);
-        const found = machines.find((m) => m.code && equipment.code && m.code === equipment.code);
+        // Match the kiosk by the authoritative FK link (equipment_id) — the same
+        // link the factory map uses — falling back to code for legacy records.
+        // (A kiosk's own code often differs from the equipment catalog code, e.g.
+        // machine "S001" ↔ equipment "PARA-SAW-09", which broke the code-only match.)
+        const found = machines.find((m) => m.equipment_id && m.equipment_id === equipment.id)
+          || machines.find((m) => m.code && equipment.code && m.code === equipment.code);
         if (found) {
           setMachine(found);
           setForm({
