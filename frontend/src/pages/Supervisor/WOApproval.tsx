@@ -2,9 +2,10 @@ import { useEffect, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ClipboardCheck, CheckCircle, XCircle, Loader2, AlertCircle,
-  Wrench, Package, Clock, User as UserIcon,
+  Wrench, Package, Clock, User as UserIcon, Pencil, Trash2, Search,
 } from 'lucide-react';
 import api from '../../api/axios';
+import { searchInventory, type InventorySearchItem } from '../../api/machineOperator';
 import { humanMinutes } from '../../utils/duration';
 
 interface PartItem {
@@ -39,7 +40,20 @@ interface WorkOrder {
   total_downtime_minutes: number | null;
   parts: PartItem[];
   parts_total: number;
+  cost_center: string | null;
   supports_part_reject: boolean;
+  can_edit_diagnosis: boolean;
+}
+
+interface CostCenterOption {
+  name: string;
+  code: string | null;
+}
+
+interface WorkDoneDraft {
+  diagnosis: string;
+  corrective_action: string;
+  mechanic_note: string;
 }
 
 export default function WOApproval() {
@@ -52,6 +66,18 @@ export default function WOApproval() {
   const [acting, setActing] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState<Record<string, string>>({});
+  // Cost center picked per work order at approval (required to approve).
+  const [costCenters, setCostCenters] = useState<CostCenterOption[]>([]);
+  const [ccChoice, setCcChoice] = useState<Record<string, string>>({});
+  const [ccError, setCcError] = useState<Record<string, boolean>>({});
+
+  // Inline edit-before-approve state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<WorkDoneDraft>({ diagnosis: '', corrective_action: '', mechanic_note: '' });
+  const [qtyDraft, setQtyDraft] = useState<Record<string, string>>({});
+  const [partQuery, setPartQuery] = useState('');
+  const [partResults, setPartResults] = useState<InventorySearchItem[]>([]);
+  const [partQty, setPartQty] = useState('1');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -68,10 +94,116 @@ export default function WOApproval() {
 
   useEffect(() => { load(); }, [load]);
 
-  const approve = async (wo: WorkOrder) => {
+  useEffect(() => {
+    api.get('/api/wo-approval/cost-centers')
+      .then((res) => setCostCenters(Array.isArray(res.data) ? res.data : []))
+      .catch(() => setCostCenters([]));
+  }, []);
+
+  // Debounced inventory lookup for the add-part field
+  useEffect(() => {
+    const q = partQuery.trim();
+    if (q.length < 2) { setPartResults([]); return; }
+    const timer = setTimeout(async () => {
+      try {
+        const res = await searchInventory(q, 20);
+        setPartResults(res.items ?? []);
+      } catch {
+        setPartResults([]);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [partQuery]);
+
+  const replaceItem = (view: WorkOrder) => {
+    setItems((prev) => prev.map((i) => (i.source === view.source && i.id === view.id ? view : i)));
+    setQtyDraft(Object.fromEntries(view.parts.map((p) => [p.id, String(p.quantity_used)])));
+  };
+
+  const startEdit = (wo: WorkOrder) => {
+    setEditingId(wo.id);
+    setRejectingId(null);
+    setDraft({
+      diagnosis: wo.diagnosis ?? '',
+      corrective_action: wo.corrective_action ?? '',
+      mechanic_note: wo.mechanic_note ?? '',
+    });
+    setQtyDraft(Object.fromEntries(wo.parts.map((p) => [p.id, String(p.quantity_used)])));
+    setPartQuery('');
+    setPartResults([]);
+    setPartQty('1');
+  };
+
+  const saveEdit = async (wo: WorkOrder) => {
     setActing(wo.id);
     try {
-      await api.post(`/api/wo-approval/${wo.source}/${wo.id}/approve`, {});
+      const payload: Record<string, string | null> = {
+        mechanic_note: draft.mechanic_note.trim() || null,
+      };
+      if (wo.can_edit_diagnosis) {
+        payload.diagnosis = draft.diagnosis.trim() || null;
+        payload.corrective_action = draft.corrective_action.trim() || null;
+      }
+      const res = await api.patch(`/api/wo-approval/${wo.source}/${wo.id}`, payload);
+      replaceItem(res.data);
+      setEditingId(null);
+    } catch { /* ignore */ }
+    finally { setActing(null); }
+  };
+
+  const parseQty = (raw: string) => {
+    const q = parseFloat(raw.replace(',', '.'));
+    return Number.isFinite(q) && q > 0 ? q : null;
+  };
+
+  const addPart = async (wo: WorkOrder, stockItem: InventorySearchItem | null) => {
+    const qty = parseQty(partQty) ?? 1;
+    const payload = stockItem
+      ? { stock_item_id: stockItem.id, quantity: qty }
+      : { item_description: partQuery.trim(), quantity: qty };
+    setActing(`add-${wo.id}`);
+    try {
+      const res = await api.post(`/api/wo-approval/${wo.source}/${wo.id}/parts`, payload);
+      replaceItem(res.data);
+      setPartQuery('');
+      setPartResults([]);
+      setPartQty('1');
+    } catch { /* ignore */ }
+    finally { setActing(null); }
+  };
+
+  const commitQty = async (wo: WorkOrder, part: PartItem) => {
+    const q = parseQty(qtyDraft[part.id] ?? '');
+    if (q === null || q === part.quantity_used) {
+      setQtyDraft((prev) => ({ ...prev, [part.id]: String(part.quantity_used) }));
+      return;
+    }
+    setActing(part.id);
+    try {
+      const res = await api.patch(`/api/wo-approval/${wo.source}/${wo.id}/parts/${part.id}`, { quantity: q });
+      replaceItem(res.data);
+    } catch { /* ignore */ }
+    finally { setActing(null); }
+  };
+
+  const removePart = async (wo: WorkOrder, part: PartItem) => {
+    setActing(part.id);
+    try {
+      const res = await api.delete(`/api/wo-approval/${wo.source}/${wo.id}/parts/${part.id}`);
+      replaceItem(res.data);
+    } catch { /* ignore */ }
+    finally { setActing(null); }
+  };
+
+  const approve = async (wo: WorkOrder) => {
+    const cost_center = (ccChoice[wo.id] ?? wo.cost_center ?? '').trim();
+    if (!cost_center) {
+      setCcError((prev) => ({ ...prev, [wo.id]: true }));
+      return;
+    }
+    setActing(wo.id);
+    try {
+      await api.post(`/api/wo-approval/${wo.source}/${wo.id}/approve`, { cost_center });
       await load();
     } catch { /* ignore */ }
     finally { setActing(null); }
@@ -91,14 +223,16 @@ export default function WOApproval() {
   const rejectPart = async (woId: string, partId: string) => {
     setActing(partId);
     try {
-      await api.post(`/api/wo-approval/intervention/${woId}/parts/${partId}/reject`, { reason: null });
-      await load();
+      const res = await api.post(`/api/wo-approval/intervention/${woId}/parts/${partId}/reject`, { reason: null });
+      replaceItem(res.data);
     } catch { /* ignore */ }
     finally { setActing(null); }
   };
 
   const fmtDate = (s: string | null) =>
     s ? new Date(s).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' }) : '—';
+
+  const inputCls = 'w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 outline-none';
 
   return (
     <div className="p-4 sm:p-6 max-w-3xl mx-auto space-y-6 animate-fade-in">
@@ -128,6 +262,7 @@ export default function WOApproval() {
 
       {items.map((wo) => {
         const busy = acting === wo.id;
+        const editing = editingId === wo.id;
         return (
           <div key={`${wo.source}-${wo.id}`} className="glass-card overflow-hidden">
             {/* Header */}
@@ -146,6 +281,15 @@ export default function WOApproval() {
                   <span className="inline-flex items-center gap-1"><Clock size={11} />{fmtDate(wo.completed_at)}</span>
                 </p>
               </div>
+              {!editing && (
+                <button
+                  onClick={() => startEdit(wo)}
+                  title={t('woApproval.edit')}
+                  className="text-gray-600 hover:text-blue-400 transition-colors flex-shrink-0 p-1"
+                >
+                  <Pencil size={15} />
+                </button>
+              )}
             </div>
 
             {/* Work done */}
@@ -158,20 +302,58 @@ export default function WOApproval() {
                   <span className="text-gray-600">{t('woApproval.type')}: </span>{wo.intervention_type_name}
                 </p>
               )}
-              {wo.diagnosis && (
-                <p className="text-sm text-gray-300">
-                  <span className="text-gray-600">{t('woApproval.diagnosis')}: </span>{wo.diagnosis}
-                </p>
-              )}
-              {wo.corrective_action && (
-                <p className="text-sm text-gray-300">
-                  <span className="text-gray-600">{t('woApproval.correctiveAction')}: </span>{wo.corrective_action}
-                </p>
-              )}
-              {wo.mechanic_note && (
-                <p className="text-sm text-gray-300">
-                  <span className="text-gray-600">{t('woApproval.mechanicNote')}: </span>{wo.mechanic_note}
-                </p>
+              {editing ? (
+                <div className="space-y-2">
+                  {wo.can_edit_diagnosis && (
+                    <>
+                      <label className="block text-xs text-gray-600">
+                        {t('woApproval.diagnosis')}
+                        <textarea
+                          rows={2}
+                          value={draft.diagnosis}
+                          onChange={(e) => setDraft((d) => ({ ...d, diagnosis: e.target.value }))}
+                          className={`${inputCls} mt-1 resize-none`}
+                        />
+                      </label>
+                      <label className="block text-xs text-gray-600">
+                        {t('woApproval.correctiveAction')}
+                        <textarea
+                          rows={2}
+                          value={draft.corrective_action}
+                          onChange={(e) => setDraft((d) => ({ ...d, corrective_action: e.target.value }))}
+                          className={`${inputCls} mt-1 resize-none`}
+                        />
+                      </label>
+                    </>
+                  )}
+                  <label className="block text-xs text-gray-600">
+                    {t('woApproval.mechanicNote')}
+                    <textarea
+                      rows={2}
+                      value={draft.mechanic_note}
+                      onChange={(e) => setDraft((d) => ({ ...d, mechanic_note: e.target.value }))}
+                      className={`${inputCls} mt-1 resize-none`}
+                    />
+                  </label>
+                </div>
+              ) : (
+                <>
+                  {wo.diagnosis && (
+                    <p className="text-sm text-gray-300">
+                      <span className="text-gray-600">{t('woApproval.diagnosis')}: </span>{wo.diagnosis}
+                    </p>
+                  )}
+                  {wo.corrective_action && (
+                    <p className="text-sm text-gray-300">
+                      <span className="text-gray-600">{t('woApproval.correctiveAction')}: </span>{wo.corrective_action}
+                    </p>
+                  )}
+                  {wo.mechanic_note && (
+                    <p className="text-sm text-gray-300">
+                      <span className="text-gray-600">{t('woApproval.mechanicNote')}: </span>{wo.mechanic_note}
+                    </p>
+                  )}
+                </>
               )}
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500 pt-1">
                 {wo.total_downtime_minutes != null && (
@@ -199,7 +381,7 @@ export default function WOApproval() {
                 )}
               </div>
 
-              {wo.parts.length === 0 && (
+              {wo.parts.length === 0 && !editing && (
                 <p className="text-xs text-gray-600 italic">{t('woApproval.noParts')}</p>
               )}
 
@@ -211,7 +393,7 @@ export default function WOApproval() {
                     </p>
                     <p className="text-xs text-gray-600 mt-0.5">
                       {part.item_code && <span className="mr-2 font-mono">{part.item_code}</span>}
-                      {part.quantity_used} {part.unit || 'un'}
+                      {!(editing && part.approval_status !== 'rejected') && <>{part.quantity_used} {part.unit || 'un'}</>}
                       {part.total_cost != null && (
                         <span className="ml-2 font-mono text-emerald-400/80">${part.total_cost.toFixed(2)}</span>
                       )}
@@ -220,11 +402,32 @@ export default function WOApproval() {
                       <p className="text-xs text-red-400/70 italic">{part.rejection_reason}</p>
                     )}
                   </div>
-                  {part.approval_status === 'rejected' ? (
+                  {editing && part.approval_status !== 'rejected' ? (
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <input
+                        value={qtyDraft[part.id] ?? String(part.quantity_used)}
+                        onChange={(e) => setQtyDraft((prev) => ({ ...prev, [part.id]: e.target.value }))}
+                        onBlur={() => commitQty(wo, part)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                        inputMode="decimal"
+                        title={t('woApproval.qty')}
+                        className="w-16 bg-[#0d1117] border border-[#30363d] rounded-lg px-2 py-1 text-sm text-gray-200 text-right outline-none"
+                      />
+                      <span className="text-xs text-gray-600 w-8 truncate">{part.unit || 'un'}</span>
+                      <button
+                        disabled={acting === part.id}
+                        onClick={() => removePart(wo, part)}
+                        title={t('woApproval.removePart')}
+                        className="text-gray-600 hover:text-red-400 transition-colors disabled:opacity-40"
+                      >
+                        {acting === part.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                      </button>
+                    </div>
+                  ) : part.approval_status === 'rejected' ? (
                     <span className="flex items-center gap-1 text-xs text-red-400 flex-shrink-0">
                       <XCircle size={11} /> {t('woApproval.rejected')}
                     </span>
-                  ) : wo.supports_part_reject ? (
+                  ) : wo.supports_part_reject && !editing ? (
                     <button
                       disabled={acting === part.id}
                       onClick={() => rejectPart(wo.id, part.id)}
@@ -236,11 +439,86 @@ export default function WOApproval() {
                   ) : null}
                 </div>
               ))}
+
+              {/* Add part (edit mode) */}
+              {editing && (
+                <div className="relative pt-1">
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-600" />
+                      <input
+                        value={partQuery}
+                        onChange={(e) => setPartQuery(e.target.value)}
+                        placeholder={t('woApproval.searchPart')}
+                        className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg pl-8 pr-3 py-1.5 text-sm text-gray-200 placeholder-gray-600 outline-none"
+                      />
+                    </div>
+                    <input
+                      value={partQty}
+                      onChange={(e) => setPartQty(e.target.value)}
+                      inputMode="decimal"
+                      title={t('woApproval.qty')}
+                      className="w-16 bg-[#0d1117] border border-[#30363d] rounded-lg px-2 py-1.5 text-sm text-gray-200 text-right outline-none"
+                    />
+                  </div>
+                  {partQuery.trim().length >= 2 && (
+                    // In-flow (not absolute): the card clips overflow, so a floating
+                    // dropdown would be cut off after the first result.
+                    <div className="mt-1 rounded-lg shadow-xl max-h-64 overflow-y-auto"
+                      style={{ background: '#161b22', border: '1px solid #30363d' }}>
+                      {partResults.map((r) => (
+                        <button
+                          key={r.id}
+                          disabled={acting === `add-${wo.id}`}
+                          onClick={() => addPart(wo, r)}
+                          className="w-full text-left px-3 py-2 hover:bg-white/5 transition-colors disabled:opacity-40"
+                        >
+                          <p className="text-sm text-gray-200 truncate">{r.name || r.description || r.code}</p>
+                          <p className="text-xs text-gray-600">
+                            {r.code && <span className="font-mono mr-2">{r.code}</span>}
+                            {r.quantity} {r.unit}
+                          </p>
+                        </button>
+                      ))}
+                      {partResults.length === 0 && (
+                        <p className="px-3 py-2 text-xs text-gray-600 italic">{t('woApproval.noResults')}</p>
+                      )}
+                      <button
+                        disabled={acting === `add-${wo.id}`}
+                        onClick={() => addPart(wo, null)}
+                        className="w-full text-left px-3 py-2 border-t border-white/5 text-xs text-blue-400 hover:bg-white/5 transition-colors disabled:opacity-40"
+                      >
+                        {acting === `add-${wo.id}`
+                          ? <Loader2 size={12} className="animate-spin" />
+                          : t('woApproval.addAsText', { text: partQuery.trim() })}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Actions */}
             <div className="px-4 py-3 border-t border-white/5" style={{ background: '#0f1117' }}>
-              {rejectingId === wo.id ? (
+              {editing ? (
+                <div className="flex gap-2 justify-end">
+                  <button
+                    disabled={busy}
+                    onClick={() => setEditingId(null)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-400 transition-all disabled:opacity-40"
+                    style={{ background: '#1c2128', border: '1px solid #30363d' }}>
+                    {t('common.cancel')}
+                  </button>
+                  <button
+                    disabled={busy}
+                    onClick={() => saveEdit(wo)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-all disabled:opacity-40"
+                    style={{ background: '#1d4ed8', border: '1px solid #3b82f6' }}>
+                    {busy ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle size={13} />}
+                    {t('common.save')}
+                  </button>
+                </div>
+              ) : rejectingId === wo.id ? (
                 <div className="flex gap-2 items-center">
                   <AlertCircle size={14} className="text-amber-400 flex-shrink-0" />
                   <input
@@ -260,7 +538,27 @@ export default function WOApproval() {
                   </button>
                 </div>
               ) : (
-                <div className="flex gap-2 justify-end">
+                <div className="flex gap-2 justify-end items-center flex-wrap">
+                  <div className="flex flex-col mr-auto">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] text-gray-500 uppercase tracking-wide">{t('woApproval.costCenter')}</span>
+                      <select
+                        value={ccChoice[wo.id] ?? wo.cost_center ?? ''}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setCcChoice((prev) => ({ ...prev, [wo.id]: v }));
+                          setCcError((prev) => ({ ...prev, [wo.id]: false }));
+                        }}
+                        className={`bg-[#0d1117] border rounded-lg px-2 py-1.5 text-sm text-gray-200 outline-none ${
+                          ccError[wo.id] ? 'border-red-500' : 'border-[#30363d]'}`}>
+                        <option value="">{t('woApproval.selectCostCenter')}</option>
+                        {costCenters.map((cc) => (
+                          <option key={cc.name} value={cc.name}>{cc.code ? `${cc.code} · ${cc.name}` : cc.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    {ccError[wo.id] && <span className="text-[11px] text-red-400 mt-0.5">{t('woApproval.costCenterRequired')}</span>}
+                  </div>
                   <button
                     disabled={busy}
                     onClick={() => setRejectingId(wo.id)}

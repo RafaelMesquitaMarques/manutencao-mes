@@ -15,6 +15,8 @@ import NewTechnician from './pages/Technicians/NewTechnician';
 import TechnicianDetail from './pages/Technicians/TechnicianDetail';
 import KPIDashboard from './pages/KPIs/KPIDashboard';
 import MachineReport from './pages/KPIs/MachineReport';
+import CostsDashboard from './pages/Costs/CostsDashboard';
+import GestionBT from './pages/GestionBT/GestionBT';
 import IntelligenceDashboard from './pages/Intelligence/IntelligenceDashboard';
 import EquipmentList from './pages/Equipment/EquipmentList';
 import EquipmentDetail from './pages/Equipment/EquipmentDetail';
@@ -24,7 +26,6 @@ import PlanList from './pages/MaintenancePlans/PlanList';
 import NewPlan from './pages/MaintenancePlans/NewPlan';
 import PlanDetail from './pages/MaintenancePlans/PlanDetail';
 import LaborScheduler from './pages/Schedule/LaborScheduler';
-import AlertList from './pages/Alerts/AlertList';
 import NewAlert from './pages/Alerts/NewAlert';
 import AlertDetail from './pages/Alerts/AlertDetail';
 import TicketList from './pages/Tickets/TicketList';
@@ -39,7 +40,6 @@ import NewSupplier      from './pages/Suppliers/NewSupplier';
 import PurchaseOrderList from './pages/PurchaseOrders/PurchaseOrderList';
 import NewPurchaseOrder  from './pages/PurchaseOrders/NewPurchaseOrder';
 import MaintenanceDashboard from './pages/MaintenanceDashboard/MaintenanceDashboard';
-import SupervisorDashboard from './pages/MaintenanceDashboard/SupervisorDashboard';
 import MachinePage from './pages/Machines/MachinePage';
 import FactoryMap from './pages/FactoryMap/FactoryMap';
 import DashboardList from './pages/Dashboards/DashboardList';
@@ -47,6 +47,8 @@ import DashboardPage from './pages/Dashboards/DashboardPage';
 import MyWorkPage from './pages/MyWork/MyWorkPage';
 import UsersSetup from './pages/Settings/UsersSetup';
 import EscalationSettingsPage from './pages/Settings/EscalationSettings';
+import FactoryCalendarPage from './pages/Settings/FactoryCalendar';
+import DeviceSettingsPage from './pages/Settings/DeviceSettings';
 import UserDetail from './pages/Settings/UserDetail';
 import MyProfile from './pages/Settings/MyProfile';
 import ChangePassword from './pages/Settings/ChangePassword';
@@ -97,7 +99,9 @@ const App = () => {
           </ProtectedRoute>
         }
       >
-        <Route index element={<Navigate to="/dashboard" replace />} />
+        {/* KPIs is the landing page; users lacking `kpis` view are bounced to
+            /dashboard (WO Reports) by RequireView, which everyone can see. */}
+        <Route index element={<Navigate to="/kpis" replace />} />
         <Route path="dashboard"             element={<Dashboard />} />
         <Route path="work-orders"           element={<RequireView resource="work_orders"><WorkOrderList /></RequireView>} />
         <Route path="work-orders/new"       element={<NewWorkOrder />} />
@@ -107,6 +111,7 @@ const App = () => {
         <Route path="technicians/:id"       element={<TechnicianDetail />} />
         <Route path="kpis"                  element={<RequireView resource="kpis"><KPIDashboard /></RequireView>} />
         <Route path="kpis/machines"         element={<RequireView resource="machine_reports"><MachineReport /></RequireView>} />
+        <Route path="costs"                 element={<RequireView resource="costs"><CostsDashboard /></RequireView>} />
         <Route path="intelligence"          element={<RequireView resource="intelligence"><IntelligenceDashboard /></RequireView>} />
         <Route path="equipment"             element={<RequireView resource="equipment"><EquipmentList /></RequireView>} />
         <Route path="equipment/new"         element={<NewEquipment />} />
@@ -116,7 +121,9 @@ const App = () => {
         <Route path="maintenance/plans/new"  element={<NewPlan />} />
         <Route path="maintenance/plans/:id"  element={<PlanDetail />} />
         <Route path="schedule"              element={<RequireView resource="schedule"><LaborScheduler /></RequireView>} />
-        <Route path="alerts"               element={<RequireView resource="alerts"><AlertList /></RequireView>} />
+        <Route path="gestion-bt"           element={<RequireView resource="alerts"><GestionBT /></RequireView>} />
+        {/* legacy paths — Alerts and Supervisor View were merged into Gestion BT */}
+        <Route path="alerts"               element={<Navigate to="/gestion-bt" replace />} />
         <Route path="alerts/new"            element={<NewAlert />} />
         <Route path="alerts/:id"            element={<AlertDetail />} />
         <Route path="tickets"              element={<RequireView resource="tickets"><TicketList /></RequireView>} />
@@ -131,7 +138,7 @@ const App = () => {
         <Route path="supplier-orders"      element={<RequireView resource="purchase_orders"><PurchaseOrderList /></RequireView>} />
         <Route path="supplier-orders/new"  element={<NewPurchaseOrder />} />
         <Route path="maintenance/dashboard"      element={<RequireView resource="maintenance"><MaintenanceDashboard /></RequireView>} />
-        <Route path="maintenance/supervisor"     element={<RequireView resource="supervisor_view"><SupervisorDashboard /></RequireView>} />
+        <Route path="maintenance/supervisor"     element={<Navigate to="/gestion-bt?tab=bt" replace />} />
         <Route path="factory-map"                element={<RequireView resource="factory_map"><FactoryMap /></RequireView>} />
         <Route path="dashboards"                 element={<RequireView resource="dashboards"><DashboardList /></RequireView>} />
         <Route path="dashboards/:slug"           element={<RequireView resource="dashboards"><DashboardPage /></RequireView>} />
@@ -144,6 +151,8 @@ const App = () => {
         <Route path="settings/machines/:id"       element={<Navigate to="/equipment" replace />} />
         <Route path="settings/stop-categories"    element={<Navigate to="/equipment" replace />} />
         <Route path="settings/escalation"         element={<RequireView resource="settings_escalation"><EscalationSettingsPage /></RequireView>} />
+        <Route path="settings/calendar"           element={<RequireView resource="calendar"><FactoryCalendarPage /></RequireView>} />
+        <Route path="settings/devices"            element={<RequireView resource="settings_devices"><DeviceSettingsPage /></RequireView>} />
         <Route path="settings/users"              element={<UsersSetup />} />
         <Route path="settings/users/:id"          element={<UserDetail />} />
         <Route path="settings/profile"            element={<MyProfile />} />

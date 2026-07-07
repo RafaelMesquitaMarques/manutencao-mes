@@ -70,6 +70,9 @@ class EquipmentOut(BaseModel):
     manufacturing_year: Optional[int] = None
     location: Optional[str] = None
     status: EquipmentStatus
+    # Effective operational status (kiosk machine / tickets / parent) — set by
+    # the list endpoint; None on detail/create responses that don't compute it.
+    live_status: Optional[str] = None
     criticality: str
     asset_type: str = "production"
     subtype: Optional[str] = None

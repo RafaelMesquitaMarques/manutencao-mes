@@ -264,9 +264,21 @@ export const logReject = async (
   return data;
 };
 
+export interface RejectLogItem {
+  id: string;
+  created_at: string | null;
+  quantity: number;
+  comments?: string | null;
+  category_id: string | null;
+  category_name?: string | null;
+  subcategory_id: string | null;
+  subcategory_name?: string | null;
+  operator_name?: string | null;
+}
+
 export const fetchTodayRejects = async (
   ref: string,
-): Promise<{ total: number; by_category: Record<string, number> }> => {
+): Promise<{ total: number; by_category: Record<string, number>; logs: RejectLogItem[] }> => {
   const { data } = await axios.get(`/api/machines/${ref}/rejects/today`);
   return data;
 };

@@ -89,12 +89,21 @@ export async function createPurchaseOrder(body: {
   order_date?: string;
   expected_date?: string;
   currency?: string;
+  cost_center?: string;
+  scope?: 'opex' | 'capex';
   notes?: string;
   status?: string;
   items?: { stock_item_id?: string; description: string; quantity: number; unit_cost: number; notes?: string }[];
 }): Promise<PurchaseOrder> {
   const { data } = await api.post('/api/supplier-orders', body);
   return data;
+}
+
+export interface POCostCenter { name: string; code: string | null }
+
+export async function fetchPOCostCenters(): Promise<POCostCenter[]> {
+  const { data } = await api.get('/api/supplier-orders/cost-centers');
+  return Array.isArray(data) ? data : [];
 }
 
 export async function updatePurchaseOrder(id: string, body: Partial<PurchaseOrder>): Promise<PurchaseOrder> {

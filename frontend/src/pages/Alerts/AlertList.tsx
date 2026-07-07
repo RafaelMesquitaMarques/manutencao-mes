@@ -55,7 +55,7 @@ function slaColor(priority: AlertPriority, createdAt: string): string {
 const isResolved = (a: MaintenanceAlert) =>
   a.status === 'resolved' || a.status === 'cancelled';
 
-export default function AlertList() {
+export default function AlertList({ embedded = false }: { embedded?: boolean } = {}) {
   const { t }    = useTranslation();
   const navigate = useNavigate();
   const canCreate = usePermission('alerts', 'create');
@@ -140,16 +140,18 @@ export default function AlertList() {
     : alerts;
 
   return (
-    <div className="p-6 space-y-4 animate-fade-in">
+    <div className={`${embedded ? '' : 'p-6'} space-y-4 animate-fade-in`}>
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-            <Bell size={22} className="text-amber-400" />
-            {t('alerts.title')}
-          </h1>
-          <p className="text-gray-500 text-sm mt-0.5">{t('alerts.subtitle')}</p>
-        </div>
+        {!embedded && (
+          <div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+              <Bell size={22} className="text-amber-400" />
+              {t('alerts.title')}
+            </h1>
+            <p className="text-gray-500 text-sm mt-0.5">{t('alerts.subtitle')}</p>
+          </div>
+        )}
         <div className="flex items-center gap-2">
           {hasError && (
             <span className="text-xs text-amber-500 hidden sm:inline">⚠ Last update failed</span>

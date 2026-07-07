@@ -187,7 +187,7 @@ function WORow({ wo }: { wo: WorkOrder }) {
   );
 }
 
-export default function SupervisorDashboard() {
+export default function SupervisorDashboard({ embedded = false }: { embedded?: boolean } = {}) {
   const { t } = useTranslation();
   const [tickets, setTickets] = useState<MaintenanceTicket[]>([]);
   const [wos, setWos] = useState<WorkOrder[]>([]);
@@ -222,12 +222,14 @@ export default function SupervisorDashboard() {
   const openWOs = wos.filter((w) => w.status === 'open');
 
   return (
-    <div className="p-6 space-y-5 animate-fade-in">
+    <div className={`${embedded ? '' : 'p-6'} space-y-5 animate-fade-in`}>
       <div className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-white">{t('supervisor.title', 'Supervisor Dashboard')}</h1>
-          <p className="text-gray-500 text-sm mt-0.5">Assign technicians to tickets — work orders are created automatically</p>
-        </div>
+        {!embedded && (
+          <div>
+            <h1 className="text-2xl font-bold text-white">{t('supervisor.title', 'Supervisor Dashboard')}</h1>
+            <p className="text-gray-500 text-sm mt-0.5">Assign technicians to tickets — work orders are created automatically</p>
+          </div>
+        )}
         <div className="flex items-center gap-2">
           {hasError && <span className="text-xs text-amber-500 hidden sm:inline">⚠ Last update failed</span>}
           {lastUpdatedAt && !hasError && (

@@ -7,7 +7,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import {
   Map as MapIcon, Pencil, Eye, Upload, RefreshCw, Image as ImageIcon,
-  Camera, Wrench, RotateCw, RotateCcw, Trash2, X, Plus, ExternalLink, Box, ArrowUpDown, Copy, Maximize2, Minimize2,
+  Camera, Wrench, RotateCw, RotateCcw, Trash2, X, Plus, ExternalLink, Box, ArrowUpDown, Copy, Maximize2, Minimize2, Move,
 } from 'lucide-react';
 import api from '../../api/axios';
 import { useTranslation } from 'react-i18next';
@@ -911,6 +911,12 @@ export default function FactoryMap() {
               {isFull ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
             </button>
           )}
+          {/* Camera controls hint — Shift+drag pans (moves) instead of rotating */}
+          {mode3d && (
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 text-[11px] text-gray-300 bg-gray-900/85 border border-gray-700 rounded-full px-3 py-1 pointer-events-none">
+              <Move size={12} className="text-indigo-400" /> {t('factoryMap.shiftToPan')}
+            </div>
+          )}
           {!mode3d && !floorPlanUrl && (
             <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 text-xs text-gray-500 bg-gray-900/80 border border-gray-800 rounded-full px-3 py-1">
               <ImageIcon size={12} /> {t('factoryMap.noFloorPlan')}{editMode ? t('factoryMap.noFloorPlanEdit') : ''}
@@ -1006,7 +1012,7 @@ export default function FactoryMap() {
 
         {/* Detail panel (View mode) */}
         {!editMode && detail && (
-          <aside className="w-72 flex-shrink-0 border-l border-gray-800 overflow-y-auto p-4">
+          <aside className="w-80 flex-shrink-0 border-l border-gray-800 overflow-y-auto p-4">
             <div className="flex items-start justify-between mb-3">
               <h3 className="text-white font-semibold text-sm leading-snug">{detail.name}</h3>
               <button onClick={() => setDetail(null)} className="text-gray-500 hover:text-gray-300"><X size={16} /></button>
@@ -1019,6 +1025,9 @@ export default function FactoryMap() {
               </div>
               <p className="text-gray-400 text-xs">{t('factoryMap.operator')}: <span className="text-gray-200">{detail.operator ?? '—'}</span></p>
               <p className="text-gray-400 text-xs">{t('factoryMap.department')}: <span className="text-gray-200">{detail.department ?? '—'}</span></p>
+              {(detail.function_label || detail.subtype || detail.family) && (
+                <p className="text-gray-400 text-xs">{t('common.type')}: <span className="text-gray-200">{detail.function_label ?? detail.subtype ?? detail.family}</span></p>
+              )}
               {detail.open_ticket && (
                 <button onClick={() => detail.open_ticket_id && navigate(`/tickets/${detail.open_ticket_id}`)}
                   className="w-full flex items-center gap-2 mt-1 px-3 py-2 rounded-lg text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20">
@@ -1034,19 +1043,40 @@ export default function FactoryMap() {
                 {kpiLoading ? (
                   <p className="text-xs text-gray-600">{t('factoryMap.loading')}</p>
                 ) : kpi ? (
-                  <div className="grid grid-cols-2 gap-2">
-                    {[
-                      { label: t('factoryMap.oee'), value: kpi.oee_pct != null ? `${Math.round(kpi.oee_pct)}%` : '—', tone: 'text-gray-200' },
-                      { label: t('factoryMap.availability'), value: kpi.availability_pct != null ? `${Math.round(kpi.availability_pct)}%` : '—', tone: 'text-gray-200' },
-                      { label: t('factoryMap.partsPerHour'), value: kpi.parts_per_hour != null ? String(Math.round(kpi.parts_per_hour)) : '—', tone: 'text-gray-200' },
-                      { label: t('factoryMap.quality'), value: kpi.quality_pct != null ? `${Math.round(kpi.quality_pct)}%` : '—', tone: 'text-gray-200' },
-                    ].map((m) => (
-                      <div key={m.label} className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-2">
-                        <p className="text-[10px] text-gray-500">{m.label}</p>
-                        <p className={`text-sm font-semibold ${m.tone}`}>{m.value}</p>
-                      </div>
-                    ))}
-                  </div>
+                  <>
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { label: t('factoryMap.oee'), value: kpi.oee_pct != null ? `${Math.round(kpi.oee_pct)}%` : '—' },
+                        { label: t('factoryMap.availability'), value: kpi.availability_pct != null ? `${Math.round(kpi.availability_pct)}%` : '—' },
+                        { label: t('factoryMap.performance'), value: kpi.performance_pct != null ? `${Math.round(kpi.performance_pct)}%` : '—' },
+                        { label: t('factoryMap.quality'), value: kpi.quality_pct != null ? `${Math.round(kpi.quality_pct)}%` : '—' },
+                        { label: t('factoryMap.partsPerHour'), value: kpi.parts_per_hour != null ? String(Math.round(kpi.parts_per_hour)) : '—' },
+                      ].map((m) => (
+                        <div key={m.label} className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-2">
+                          <p className="text-[10px] text-gray-500">{m.label}</p>
+                          <p className="text-sm font-semibold text-gray-200">{m.value}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <p className="text-[11px] uppercase tracking-wide text-gray-500 mt-4 mb-2">{t('factoryMap.reliability')}</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { label: t('factoryMap.mtbf'), value: kpi.mtbf_hours != null ? `${Math.round(kpi.mtbf_hours)} h` : '—' },
+                        { label: t('factoryMap.mttr'), value: kpi.mttr_hours != null ? `${kpi.mttr_hours.toFixed(1)} h` : '—' },
+                        { label: t('factoryMap.downtime'), value: kpi.downtime_hours != null ? `${Math.round(kpi.downtime_hours)} h` : '—' },
+                        { label: t('factoryMap.failures'), value: kpi.failures != null ? String(kpi.failures) : '—' },
+                        { label: t('factoryMap.backlog'), value: String(kpi.backlog_count) },
+                        { label: t('factoryMap.pmCompliance'), value: kpi.pm_compliance_pct != null ? `${Math.round(kpi.pm_compliance_pct)}%` : '—' },
+                        { label: t('factoryMap.maintCost'), value: kpi.total_cost_cad != null ? `$${Math.round(kpi.total_cost_cad).toLocaleString()}` : '—' },
+                      ].map((m) => (
+                        <div key={m.label} className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-2">
+                          <p className="text-[10px] text-gray-500">{m.label}</p>
+                          <p className="text-sm font-semibold text-gray-200">{m.value}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </>
                 ) : (
                   <p className="text-xs text-gray-600">{t('factoryMap.noKpi')}</p>
                 )}

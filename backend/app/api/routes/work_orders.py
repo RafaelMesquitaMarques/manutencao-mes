@@ -31,10 +31,23 @@ router = APIRouter()
 
 
 async def _sync_ticket_from_wo(wo: WorkOrder, db: AsyncSession) -> None:
-    if not wo.ticket_id:
-        return
-    ticket = await db.get(MaintenanceTicket, wo.ticket_id)
-    if not ticket:
+    ticket = None
+    if wo.ticket_id:
+        ticket = await db.get(MaintenanceTicket, wo.ticket_id)
+    if ticket is None:
+        # Fall back to the reverse link. PM-generated work orders sometimes end
+        # up with a NULL ticket_id even though their ticket still points back at
+        # them (work_order_id) — without this lookup, completing the WO would
+        # silently leave the ticket open forever.
+        ticket = (
+            await db.execute(
+                select(MaintenanceTicket).where(MaintenanceTicket.work_order_id == wo.id)
+            )
+        ).scalars().first()
+        # Heal the missing forward link so future syncs are cheap.
+        if ticket is not None and not wo.ticket_id:
+            wo.ticket_id = ticket.id
+    if ticket is None:
         return
     status = wo.status.value if hasattr(wo.status, "value") else str(wo.status)
     if status == WorkOrderStatus.in_progress:

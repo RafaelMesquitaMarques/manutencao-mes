@@ -64,37 +64,47 @@ async def apply_production_signal(db: AsyncSession, machine, is_running: bool) -
     Conservative guards:
       • Never disturb an ACTIVE technician intervention — a stray reading must not
         yank the machine out of 'intervention' while a repair is under way.
-      • Never override an operator-justified stop (the floor owns those).
-      • Producing → close our own open auto stop (source mes/work_order) and go green.
+      • Non-signal machines: never override an operator-justified stop (the floor
+        owns those). Signal-driven machines: the I/O reading IS the source of truth,
+        so a positive signal resumes production and closes whatever downtime stop
+        was open (operator ones included) — a maintenance stop carrying a ticket is
+        left for the maintenance flow.
       • Not producing (was running) → open a pink 'unjustified' MES stop (detected stop)."""
     if await _active_for_machine(db, machine.id) is not None:
         return
-    operator_stop = (await db.execute(
-        select(MachineStop).where(
-            MachineStop.machine_id == machine.id,
-            MachineStop.ended_at.is_(None),
-            MachineStop.source == "operator",
-        )
-    )).scalars().first()
-    if operator_stop is not None:
-        return
+    signal_driven = bool(getattr(machine, "signal_ingest_token", None))
+    if not signal_driven:
+        operator_stop = (await db.execute(
+            select(MachineStop).where(
+                MachineStop.machine_id == machine.id,
+                MachineStop.ended_at.is_(None),
+                MachineStop.source == "operator",
+            )
+        )).scalars().first()
+        if operator_stop is not None:
+            return
     now = datetime.now(timezone.utc)
     if is_running:
         if machine.current_status == MachineStatus.running:
             return
-        auto = (await db.execute(
-            select(MachineStop).where(
-                MachineStop.machine_id == machine.id,
-                MachineStop.ended_at.is_(None),
-                MachineStop.source.in_(("mes", "work_order")),
-            ).order_by(MachineStop.started_at.desc())
-        )).scalars().first()
-        if auto is not None:
-            auto.ended_at = now
-            st = auto.started_at
+        # Close the open stop(s) this signal may close. Signal-driven: any open
+        # downtime stop without a maintenance ticket. Else: only our own auto stops.
+        q = select(MachineStop).where(
+            MachineStop.machine_id == machine.id,
+            MachineStop.ended_at.is_(None),
+        )
+        if signal_driven:
+            q = q.where(MachineStop.ticket_id.is_(None))
+        else:
+            q = q.where(MachineStop.source.in_(("mes", "work_order")))
+        for open_stop in (await db.execute(
+            q.order_by(MachineStop.started_at.desc())
+        )).scalars().all():
+            open_stop.ended_at = now
+            st = open_stop.started_at
             if st and st.tzinfo is None:
                 st = st.replace(tzinfo=timezone.utc)
-            auto.duration_minutes = max(int((now - st).total_seconds() / 60), 0) if st else None
+            open_stop.duration_minutes = max(int((now - st).total_seconds() / 60), 0) if st else None
         machine.current_status = MachineStatus.running
         machine.last_start_at = now
     else:
@@ -270,6 +280,48 @@ async def on_wo_finished(db: AsyncSession, wo: WorkOrder) -> None:
                 source="mes", comments="Auto — en attente de production après maintenance",
             ))
             machine.last_stop_at = now
+
+
+async def repaint_after_maintenance(db: AsyncSession, machine, ticket_id=None) -> None:
+    """Shared post-repair repaint (kiosk complete + WO finish). Closes the open
+    maintenance downtime stop, then repaints WITHOUT assuming production resumed:
+      • another stop still open      → 'maintenance' (amber)
+      • production signal positive    → 'running' (green)
+      • otherwise                     → 'unjustified' (pink) + an open MES stop
+    So a signal-driven machine waits for the ADAM signal to go green instead of
+    being assumed back in production the moment the repair is marked done."""
+    now = datetime.now(timezone.utc)
+    for s in (await db.execute(
+        select(MachineStop).where(
+            MachineStop.machine_id == machine.id,
+            MachineStop.ended_at.is_(None),
+        )
+    )).scalars().all():
+        # Close the maintenance downtime stop AND any auto-detected MES stop that
+        # overlapped it — otherwise a stale 'detected' stop lingers and keeps the
+        # machine amber (maintenance) after the repair instead of going pink.
+        if s.source in ("work_order", "mes") or (ticket_id and s.ticket_id == ticket_id):
+            s.ended_at = now
+            st = s.started_at
+            if st and st.tzinfo is None:
+                st = st.replace(tzinfo=timezone.utc)
+            s.duration_minutes = max(int((now - st).total_seconds() / 60), 0) if st else None
+
+    if machine.current_status not in (MachineStatus.maintenance, MachineStatus.intervention):
+        return
+    other_open = await _open_stop(db, machine.id)
+    if other_open is not None:
+        machine.current_status = MachineStatus.maintenance
+    elif (await _production_running(db, machine)) is True:
+        machine.current_status = MachineStatus.running
+        machine.last_start_at = now
+    else:
+        machine.current_status = MachineStatus.unjustified
+        db.add(MachineStop(
+            machine_id=machine.id, started_at=now, stop_category_id=None,
+            source="mes", comments="Auto — en attente de production après maintenance",
+        ))
+        machine.last_stop_at = now
 
 
 async def on_wo_held(db: AsyncSession, wo: WorkOrder) -> None:

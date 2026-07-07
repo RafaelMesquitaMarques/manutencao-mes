@@ -8,3 +8,6 @@ dist/
 Thumbs.db
 acess twilio.txt
 *.credentials
+# Local tooling binaries (don't bloat the repo)
+cloudflared.exe
+*.exe

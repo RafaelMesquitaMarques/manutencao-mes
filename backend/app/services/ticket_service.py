@@ -274,6 +274,7 @@ class TicketService:
                 machine_name=machine.name,
                 alert_id=alert_id,
                 ticket_id=ticket.id,
+                machine=machine,
             )
         await notif.notify_ticket_opened(ticket, machine.name)
 

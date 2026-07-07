@@ -1,29 +1,18 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactECharts from 'echarts-for-react';
-import { Activity, Clock, CheckSquare, DollarSign, Gauge, Timer, Target, Zap, ShieldCheck } from 'lucide-react';
+import { Activity, Clock, CheckSquare, Gauge, Timer, Target, Zap, ShieldCheck } from 'lucide-react';
 import {
-  fetchKPISummary, fetchBacklog, fetchMTTR, fetchCostByType,
+  fetchKPISummary, fetchBacklog, fetchMTTR,
   fetchDowntimePareto, fetchOEETrend, fetchOEEByMachine, fetchEquipment,
 } from '../../api/workOrders';
 import type {
-  KPISummary, BacklogData, MTTRItem, CostItem, Equipment,
-  DowntimeParetoItem, OEETrendPoint, OEEByMachineItem,
+  KPISummary, BacklogData, MTTRItem, Equipment,
+  DowntimeParetoItem, DowntimeParetoSub, OEETrendPoint, OEEByMachineItem,
 } from '../../types';
 import { humanHours } from '../../utils/duration';
 
 const PERIOD_OPTIONS = [30, 90, 180];
-
-// English fallbacks for cost transaction types (localized via t('costType.*')).
-const COST_TYPE_FALLBACK: Record<string, string> = {
-  labor: 'Labor',
-  local_parts: 'Local Parts',
-  external_parts: 'External Parts',
-  contracts: 'Contracts',
-  rentals: 'Rentals',
-  other: 'Other',
-  parts_used: 'Parts Used (stock)',
-};
 
 function fmtMttr(hours: number): string {
   return hours > 0 ? humanHours(hours) : '—';
@@ -40,21 +29,20 @@ export default function KPIDashboard() {
   const { t, i18n } = useTranslation();
   const lang = (i18n.language || 'en').slice(0, 2);
   const [period, setPeriod] = useState(30);
+  // Custom calendar range (ISO YYYY-MM-DD). When both are set they override the
+  // day-preset period for every KPI query.
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const rangeActive = !!(customStart && customEnd && customStart <= customEnd);
   const [machines, setMachines] = useState<Equipment[]>([]);
   const [machineId, setMachineId] = useState<string>('');
   const [summary, setSummary] = useState<KPISummary | null>(null);
   const [backlog, setBacklog] = useState<BacklogData | null>(null);
   const [mttr, setMttr] = useState<MTTRItem[]>([]);
-  const [costs, setCosts] = useState<CostItem[]>([]);
   const [pareto, setPareto] = useState<DowntimeParetoItem[]>([]);
   const [trend, setTrend] = useState<OEETrendPoint[]>([]);
   const [byMachine, setByMachine] = useState<OEEByMachineItem[]>([]);
   const [loading, setLoading] = useState(true);
-
-  // Localized stop-reason name for the Pareto chart (falls back across locales).
-  const reasonName = (p: DowntimeParetoItem): string =>
-    (lang === 'fr' ? p.name_fr : lang === 'es' ? p.name_es : p.name_en) || p.name || t('kpis.uncategorized');
-  const costLabel = (type: string): string => t(`costType.${type}`, COST_TYPE_FALLBACK[type] ?? type);
 
   useEffect(() => {
     // Drive the picker off the Equipment catalog (production only) — same source as
@@ -68,25 +56,24 @@ export default function KPIDashboard() {
   useEffect(() => {
     setLoading(true);
     const mid = machineId || undefined;
+    const range = rangeActive ? { start: customStart, end: customEnd } : undefined;
     Promise.allSettled([
-      fetchKPISummary(period, mid),
+      fetchKPISummary(period, mid, range),
       fetchBacklog(mid),
-      fetchMTTR(period, mid),
-      fetchCostByType(period, mid),
-      fetchDowntimePareto(period, mid),
-      fetchOEETrend(period, mid),
-      fetchOEEByMachine(period),
-    ]).then(([s, b, m, c, p, tr, bm]) => {
+      fetchMTTR(period, mid, range),
+      fetchDowntimePareto(period, mid, range),
+      fetchOEETrend(period, mid, range),
+      fetchOEEByMachine(period, range),
+    ]).then(([s, b, m, p, tr, bm]) => {
       if (s.status === 'fulfilled') setSummary(s.value);
       if (b.status === 'fulfilled') setBacklog(b.value);
       if (m.status === 'fulfilled') setMttr(m.value);
-      if (c.status === 'fulfilled') setCosts(c.value);
       if (p.status === 'fulfilled') setPareto(p.value);
       if (tr.status === 'fulfilled') setTrend(tr.value);
       if (bm.status === 'fulfilled') setByMachine(bm.value);
       setLoading(false);
     });
-  }, [period, machineId]);
+  }, [period, machineId, rangeActive, customStart, customEnd]);
 
   const backlogOption = {
     backgroundColor: 'transparent',
@@ -125,23 +112,6 @@ export default function KPIDashboard() {
       data: mttr.map((m) => m.avg_repair_hours),
       itemStyle: { color: '#3b82f6', borderRadius: [0, 4, 4, 0] },
       label: { show: true, position: 'right', color: '#cbd5e1', formatter: '{c}h' },
-    }],
-  };
-
-  const costTotal = costs.reduce((s, c) => s + c.total, 0);
-  const costOption = {
-    backgroundColor: 'transparent',
-    tooltip: { trigger: 'item', formatter: '{b}: ${c} ({d}%)' },
-    legend: { bottom: '5%', left: 'center', textStyle: { color: '#94a3b8' }, itemWidth: 10, itemHeight: 10 },
-    series: [{
-      type: 'pie',
-      radius: ['45%', '70%'],
-      center: ['50%', '42%'],
-      avoidLabelOverlap: true,
-      label: { show: false },
-      emphasis: { label: { show: true, fontSize: 14, fontWeight: 'bold', color: '#fff' } },
-      data: costs.map((c) => ({ name: costLabel(c.type), value: c.total })),
-      itemStyle: { borderRadius: 4, borderColor: '#0b1120', borderWidth: 2 },
     }],
   };
 
@@ -200,20 +170,88 @@ export default function KPIDashboard() {
     ],
   };
 
-  // Downtime Pareto — biggest loss reason on top; bars carry the category's own colour.
-  const paretoRev = [...pareto].reverse();
-  const paretoOption = {
-    backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: (ps: { name: string; value: number }[]) => `${ps[0].name}: ${ps[0].value} h` },
-    grid: { left: '3%', right: '10%', top: '4%', bottom: '4%', containLabel: true },
-    xAxis: { type: 'value', axisLabel: { color: '#94a3b8', formatter: '{value}h' }, splitLine: { lineStyle: { color: '#1e293b' } } },
-    yAxis: { type: 'category', data: paretoRev.map(reasonName), axisLabel: { color: '#94a3b8' } },
-    series: [{
-      type: 'bar',
-      data: paretoRev.map((p) => ({ value: +(p.minutes / 60).toFixed(1), itemStyle: { color: p.color, borderRadius: [0, 4, 4, 0] } })),
-      label: { show: true, position: 'right', color: '#cbd5e1', formatter: '{c}h' },
-    }],
+  // Downtime Pareto — classic form: descending bars (hours) + cumulative % line on
+  // a secondary axis. Drill up/down the group → subgroup hierarchy.
+  const pctOf = (mins: number, whole: number) => (whole > 0 ? Math.round((mins / whole) * 100) : 0);
+  const anyDrillable = pareto.some((p) => (p.subcategories?.length ?? 0) > 0);
+
+  // Localized subcategory name (falls back across locales, then to a generic label).
+  const subName = (s: DowntimeParetoSub): string =>
+    (lang === 'fr' ? s.name_fr : lang === 'es' ? s.name_es : s.name_en) || s.name || t('kpis.unspecified');
+
+  type ParetoRow = { label: string; minutes: number; color: string };
+
+  // Build a classic Pareto option from rows already sorted biggest-first.
+  const paretoChart = (rows: ParetoRow[]) => {
+    const total = rows.reduce((s, r) => s + r.minutes, 0) || 1;
+    let run = 0;
+    const cumulative = rows.map((r) => { run += r.minutes; return +((run / total) * 100).toFixed(1); });
+    return {
+      backgroundColor: 'transparent',
+      tooltip: {
+        trigger: 'axis', axisPointer: { type: 'shadow' },
+        formatter: (ps: { dataIndex: number }[]) => {
+          const i = ps[0].dataIndex;
+          const h = +(rows[i].minutes / 60).toFixed(1);
+          return `${rows[i].label}<br/>${h} h · ${pctOf(rows[i].minutes, total)}%<br/>${t('kpis.cumulative')}: ${cumulative[i]}%`;
+        },
+      },
+      legend: {
+        data: [t('kpis.hours'), t('kpis.cumulative')],
+        textStyle: { color: '#94a3b8' }, top: 0, itemWidth: 14, itemHeight: 8,
+      },
+      grid: { left: '3%', right: '3%', top: '16%', bottom: '2%', containLabel: true },
+      xAxis: {
+        type: 'category', data: rows.map((r) => r.label),
+        axisLabel: { color: '#94a3b8', interval: 0, rotate: rows.length > 4 ? 32 : 0, width: 90, overflow: 'truncate', hideOverlap: false },
+      },
+      yAxis: [
+        { type: 'value', axisLabel: { color: '#94a3b8', formatter: '{value}h' }, splitLine: { lineStyle: { color: '#1e293b' } } },
+        { type: 'value', min: 0, max: 100, axisLabel: { color: '#94a3b8', formatter: '{value}%' }, splitLine: { show: false } },
+      ],
+      series: [
+        {
+          name: t('kpis.hours'), type: 'bar',
+          data: rows.map((r) => ({ value: +(r.minutes / 60).toFixed(1), itemStyle: { color: r.color, borderRadius: [3, 3, 0, 0] } })),
+        },
+        {
+          name: t('kpis.cumulative'), type: 'line', yAxisIndex: 1, data: cumulative,
+          smooth: false, symbol: 'circle', symbolSize: 7,
+          lineStyle: { color: '#cbd5e1', width: 2 }, itemStyle: { color: '#38bdf8' }, z: 3,
+        },
+      ],
+    };
   };
+
+  // ── Pareto #1 — primary categories (TPM buckets): planned / unplanned /
+  // maintenance / uncategorized. Categories that share a type are summed. ──
+  const TYPE_COLOR: Record<string, string> = {
+    planned: '#3b82f6', unplanned: '#ef4444', maintenance: '#eab308', uncategorized: '#6b7280',
+  };
+  const typeLabel = (ty: string) =>
+    ty === 'uncategorized' ? t('kpis.uncategorized') : t(`kpis.type_${ty}`, ty);
+  const typeAgg: Record<string, number> = {};
+  for (const c of pareto) {
+    const key = c.type ?? 'uncategorized';
+    typeAgg[key] = (typeAgg[key] ?? 0) + c.minutes;
+  }
+  const categoryRows: ParetoRow[] = Object.entries(typeAgg)
+    .map(([ty, minutes]) => ({ label: typeLabel(ty), minutes, color: TYPE_COLOR[ty] ?? '#6b7280' }))
+    .sort((a, b) => b.minutes - a.minutes);
+  const categoryOption = paretoChart(categoryRows);
+
+  // ── Pareto #2 — all subcategories flattened across every category, biggest
+  // first, with one "unspecified" bucket for stops that carried no subcategory. ──
+  const subRows: ParetoRow[] = [];
+  let unspecified = 0;
+  for (const c of pareto) {
+    const subs = c.subcategories ?? [];
+    for (const s of subs) subRows.push({ label: subName(s), minutes: s.minutes, color: s.color });
+    unspecified += c.minutes - subs.reduce((sm, s) => sm + s.minutes, 0);
+  }
+  if (unspecified > 0) subRows.push({ label: t('kpis.unspecified'), minutes: unspecified, color: '#475569' });
+  subRows.sort((a, b) => b.minutes - a.minutes);
+  const subOption = paretoChart(subRows);
 
   // OEE by machine — worst first (only meaningful plant-wide).
   const bmFiltered = byMachine.filter((m) => m.oee_pct != null);
@@ -256,9 +294,9 @@ export default function KPIDashboard() {
             {PERIOD_OPTIONS.map((days) => (
               <button
                 key={days}
-                onClick={() => setPeriod(days)}
+                onClick={() => { setPeriod(days); setCustomStart(''); setCustomEnd(''); }}
                 className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
-                  period === days
+                  period === days && !rangeActive
                     ? 'bg-blue-600 text-white'
                     : 'text-gray-400 hover:text-gray-200'
                 }`}
@@ -266,6 +304,35 @@ export default function KPIDashboard() {
                 {t('kpis.nDays', { days })}
               </button>
             ))}
+          </div>
+          {/* Custom calendar range — overrides the presets when both dates are set. */}
+          <div className={`flex items-center gap-1.5 bg-[#0d1421] border rounded-lg px-2 py-1 ${rangeActive ? 'border-blue-500' : 'border-white/[0.06]'}`}>
+            <input
+              type="date"
+              value={customStart}
+              max={customEnd || undefined}
+              onChange={(e) => setCustomStart(e.target.value)}
+              title={t('kpis.from')}
+              className="bg-transparent text-xs text-gray-200 focus:outline-none [color-scheme:dark]"
+            />
+            <span className="text-gray-600 text-xs">→</span>
+            <input
+              type="date"
+              value={customEnd}
+              min={customStart || undefined}
+              onChange={(e) => setCustomEnd(e.target.value)}
+              title={t('kpis.to')}
+              className="bg-transparent text-xs text-gray-200 focus:outline-none [color-scheme:dark]"
+            />
+            {rangeActive && (
+              <button
+                onClick={() => { setCustomStart(''); setCustomEnd(''); }}
+                title={t('common.clear', 'Clear')}
+                className="text-gray-500 hover:text-gray-300 text-xs px-1"
+              >
+                ✕
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -335,26 +402,26 @@ export default function KPIDashboard() {
           sub={t('kpis.onTimeRate')}
           color="green"
         />
-        <KPICard
-          icon={<DollarSign size={20} className="text-purple-400" />}
-          label={t('kpis.totalCost')}
-          value={loading ? '—' : `$${(summary?.total_cost_cad ?? 0).toLocaleString()}`}
-          sub={t('kpis.periodCost')}
-          color="purple"
-        />
       </div>
 
-      {/* OEE row: trend + downtime Pareto */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4 lg:col-span-2">
-          <h3 className="text-sm font-semibold text-gray-300 mb-3">{t('kpis.oeeTrend')}</h3>
-          {trend.length === 0 ? <Empty /> : <ReactECharts option={trendOption} style={{ height: 260 }} theme="dark" />}
-        </div>
-        <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-gray-300 mb-1">{t('kpis.downtimePareto')}</h3>
-          <p className="text-xs text-gray-600 mb-3">{t('kpis.downtimeParetoSub')}</p>
-          {pareto.length === 0 ? <Empty /> : <ReactECharts option={paretoOption} style={{ height: 232 }} theme="dark" />}
-        </div>
+      {/* OEE trend — full width */}
+      <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
+        <h3 className="text-sm font-semibold text-gray-300 mb-3">{t('kpis.oeeTrend')}</h3>
+        {trend.length === 0 ? <Empty /> : <ReactECharts option={trendOption} style={{ height: 320 }} theme="dark" />}
+      </div>
+
+      {/* Downtime Pareto #1 — primary categories (planned / unplanned / maintenance / uncategorized) */}
+      <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
+        <h3 className="text-sm font-semibold text-gray-300 mb-1">{t('kpis.paretoByType')}</h3>
+        <p className="text-xs text-gray-600 mb-3">{t('kpis.paretoByTypeSub')}</p>
+        {categoryRows.length === 0 ? <Empty /> : <ReactECharts option={categoryOption} style={{ height: 360 }} theme="dark" />}
+      </div>
+
+      {/* Downtime Pareto #2 — subcategories */}
+      <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
+        <h3 className="text-sm font-semibold text-gray-300 mb-1">{t('kpis.paretoBySub')}</h3>
+        <p className="text-xs text-gray-600 mb-3">{t('kpis.paretoBySubSub')}</p>
+        {subRows.length === 0 ? <Empty /> : <ReactECharts option={subOption} style={{ height: 420 }} theme="dark" />}
       </div>
 
       {/* OEE by machine — plant-wide only (redundant when one machine is selected) */}
@@ -397,18 +464,6 @@ export default function KPIDashboard() {
         </div>
       </div>
 
-      {/* Cost chart */}
-      <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
-        <h3 className="text-sm font-semibold text-gray-300 mb-1">{t('kpis.costByType')}</h3>
-        <p className="text-xs text-gray-600 mb-3">
-          {t('kpis.totalLabel')}: <span className="text-gray-300">${costTotal.toLocaleString()} CAD</span>
-        </p>
-        {costs.length === 0 ? (
-          <Empty />
-        ) : (
-          <ReactECharts option={costOption} style={{ height: 280 }} theme="dark" />
-        )}
-      </div>
     </div>
   );
 }

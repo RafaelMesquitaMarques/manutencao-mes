@@ -63,7 +63,7 @@ def snapshot(client):
 
 def main():
     ap = argparse.ArgumentParser(description="ADAM-6051 diagnostic scan")
-    ap.add_argument("--ip", default="10.0.0.1")
+    ap.add_argument("--ip", default="192.168.63.10")
     ap.add_argument("--port", type=int, default=502)
     ap.add_argument("--interval", type=float, default=0.2)
     args = ap.parse_args()

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +16,8 @@ from app.api.routes import (
     auth, plants, equipment, work_orders,
     maintenance_plans, inventory, alerts, iot, users, kpis, technicians,
     tickets, maintenance_dashboard, machines, stop_categories, job_orders,
-    suppliers as suppliers_module, reports, escalation, factory_map,
+    suppliers as suppliers_module, reports, escalation, factory_map, costs,
+    factory_calendar, adam_devices,
 )
 from app.api.routes.machine_operator import router as machine_operator_router
 from app.api.routes.intervention_type_settings import router as intervention_types_router
@@ -26,8 +28,10 @@ from app.api.routes.intelligence import router as intelligence_router
 from app.api.routes.uploads import router as uploads_router
 from app.api.routes.robot_cells import router as robot_cells_router
 from app.api.routes.dashboards import router as dashboards_router
+from app.api.routes.live import router as live_router
 from app.core.permissions import resource_guard, role_write_guard
 from app.models.models import UserRole
+from app.services import event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,19 @@ async def _pm_loop() -> None:
                 await pm_service.check_upcoming_reminders(db)
         except Exception as exc:
             print(f"[PMService] {exc}")
+
+
+async def _shift_report_loop() -> None:
+    """End-of-shift summary SMS (template-based, no AI). Checks every 60s for
+    shift windows that just ended; no-op until enabled in Settings → Escalation."""
+    from app.services import shift_report_service
+    while True:
+        await asyncio.sleep(60)
+        try:
+            async with AsyncSessionLocal() as db:
+                await shift_report_service.check_and_send(db)
+        except Exception as exc:
+            print(f"[ShiftReport] {exc}")
 
 
 async def _backfill_ticket_alerts() -> None:
@@ -128,6 +145,11 @@ async def _run_migrations() -> None:
         "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS operator_id UUID REFERENCES machine_operators(id) ON DELETE SET NULL",
         "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS shift VARCHAR(20)",
         "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS job_number VARCHAR(100)",
+        # Scale machine_stops range scans (downtime by machine over time) without
+        # hypertabling it (kept plain: small, and fetched by id via db.get).
+        "CREATE INDEX IF NOT EXISTS idx_machine_stops_machine_started ON machine_stops (machine_id, started_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_machine_stops_started ON machine_stops (started_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_machine_stops_category ON machine_stops (stop_category_id)",
         # Phase: user permissions system
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) NOT NULL DEFAULT 'operator'",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)",
@@ -588,6 +610,8 @@ async def _run_migrations() -> None:
         "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS notify_on_ticket_completed BOOLEAN DEFAULT TRUE",
         # Phase: supervisor-controlled technician self-assignment
         "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS technician_self_assign BOOLEAN DEFAULT TRUE",
+        # End-of-shift summary (SMS to level-1 contacts) — off until enabled in Settings → Escalation
+        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS shift_report_enabled BOOLEAN DEFAULT FALSE",
         # Phase: work-order-driven maintenance stop (office/mobile flow feeds Availability/OEE)
         "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'operator'",
         # Phase: per-machine production-signal ingest token (ADAM-6050)
@@ -696,6 +720,26 @@ async def _run_migrations() -> None:
         ) lm
         WHERE s.id = lm.stock_item_id AND s.last_purchase_cost IS NULL
         """,
+        # Phase: escalation flexibility — per-contact scope (department/machines)
+        # and quiet hours, + minimum priority for the level-0 ticket group
+        "ALTER TABLE escalation_contacts ADD COLUMN IF NOT EXISTS scope_department VARCHAR(200)",
+        "ALTER TABLE escalation_contacts ADD COLUMN IF NOT EXISTS scope_machine_ids JSON",
+        "ALTER TABLE escalation_contacts ADD COLUMN IF NOT EXISTS notify_start VARCHAR(5)",
+        "ALTER TABLE escalation_contacts ADD COLUMN IF NOT EXISTS notify_end VARCHAR(5)",
+        "ALTER TABLE escalation_contacts ADD COLUMN IF NOT EXISTS critical_bypass BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS ticket_group_min_priority VARCHAR(20) DEFAULT 'low'",
+        # Phase: escalation lifecycle — same-level reminders + planned-stop pause
+        # (the "I'm on it" ack feature was built then removed — DROPs clean it up)
+        "ALTER TABLE maintenance_alerts ADD COLUMN IF NOT EXISTS last_notified_at TIMESTAMPTZ",
+        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS reminder_minutes INTEGER DEFAULT 0",
+        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS pause_during_planned_stop BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE maintenance_alerts DROP COLUMN IF EXISTS ack_token",
+        "ALTER TABLE maintenance_alerts DROP COLUMN IF EXISTS acknowledged_at",
+        "ALTER TABLE maintenance_alerts DROP COLUMN IF EXISTS acknowledged_by",
+        "ALTER TABLE escalation_settings DROP COLUMN IF EXISTS ack_enabled",
+        # Phase: editable SMS templates + per-trigger channel matrix
+        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS sms_templates JSON",
+        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS channel_matrix JSON",
         # Phase: WO-level approval — supervisor/director approves completed work
         # (whole intervention OR whole formal work order), not just individual parts.
         # A marker table makes the historical "grandfather" backfill run exactly once,
@@ -738,6 +782,17 @@ async def _run_migrations() -> None:
           END IF;
         END $$
         """,
+        # Costs page: budgets split into OPEX / CAPEX envelopes
+        "ALTER TABLE cost_center_budgets ADD COLUMN IF NOT EXISTS kind VARCHAR(10) NOT NULL DEFAULT 'opex'",
+        """DO $$ BEGIN
+           ALTER TABLE cost_center_budgets DROP CONSTRAINT IF EXISTS uq_cc_budget_year_month_cc;
+           ALTER TABLE cost_center_budgets ADD CONSTRAINT uq_cc_budget_year_month_cc_kind
+             UNIQUE (year, month, cost_center, kind);
+           EXCEPTION WHEN others THEN NULL; END $$""",
+        # Cost center on approval + purchase-order commitments (forecast)
+        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS cost_center VARCHAR(200)",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS cost_center VARCHAR(200)",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS scope VARCHAR(10) NOT NULL DEFAULT 'opex'",
     ]
     async with engine.begin() as conn:
         for stmt in stmts:
@@ -768,6 +823,24 @@ async def _run_migrations() -> None:
         await conn.execute(text(
             "UPDATE reject_categories SET comment_required = COALESCE(comment_required, FALSE), is_active = COALESCE(is_active, TRUE)"
         ))
+        # Legacy seeds (and rows cloned from them) stored emoji as icons, but the
+        # config UI's icon picker writes IconLibrary keys — the two render styles
+        # don't match. Normalize emoji to their IconLibrary equivalent.
+        emoji_icons = {
+            "🕐": "clock24", "⏰": "clock24", "⏸": "clock24",
+            "⚠️": "exclamation", "⚠": "exclamation",
+            "❌": "no-entry", "🚫": "no-operator", "🔧": "wrench",
+            "✅": "quality", "📦": "materials", "💻": "computer",
+            "🧹": "broom", "🔍": "magnifier", "⚡": "lightning", "🔥": "fire",
+        }
+        icon_case = " ".join(f"WHEN '{e}' THEN '{k}'" for e, k in emoji_icons.items())
+        icon_in = ", ".join(f"'{e}'" for e in emoji_icons)
+        for icon_table in ("stop_categories", "stop_subcategories",
+                           "reject_categories", "reject_subcategories"):
+            await conn.execute(text(
+                f"UPDATE {icon_table} SET icon = CASE icon {icon_case} END "
+                f"WHERE icon IN ({icon_in})"
+            ))
         await _seed_stop_categories(conn)
         await _seed_suppliers(conn)
 
@@ -793,9 +866,9 @@ async def _seed_stop_categories(conn) -> None:
         return
     await conn.execute(text("""
         INSERT INTO stop_categories (id, name, type, icon, color, is_active, sort_order) VALUES
-        (gen_random_uuid(), 'Planned Stop',           'planned',     '🕐', '#3b82f6', true, 1),
-        (gen_random_uuid(), 'Maintenance Requested',  'maintenance', '⚠️', '#f59e0b', true, 2),
-        (gen_random_uuid(), 'Unplanned Stop',         'unplanned',   '❌', '#ef4444', true, 3)
+        (gen_random_uuid(), 'Planned Stop',           'planned',     'clock24',     '#3b82f6', true, 1),
+        (gen_random_uuid(), 'Maintenance Requested',  'maintenance', 'exclamation', '#f59e0b', true, 2),
+        (gen_random_uuid(), 'Unplanned Stop',         'unplanned',   'no-entry',    '#ef4444', true, 3)
     """))
     r = await conn.execute(text(
         "SELECT id, name FROM stop_categories WHERE name = 'Unplanned Stop'"
@@ -805,11 +878,11 @@ async def _seed_stop_categories(conn) -> None:
         uid = row[0]
         await conn.execute(text(f"""
             INSERT INTO stop_subcategories (id, category_id, name, icon, color, triggers_maintenance, is_active, sort_order) VALUES
-            (gen_random_uuid(), '{uid}', 'No Operator',    '🚫', '#6b7280', false, true, 1),
-            (gen_random_uuid(), '{uid}', 'Maintenance',    '🔧', '#f59e0b', true,  true, 2),
-            (gen_random_uuid(), '{uid}', 'Quality Stop',   '✅', '#10b981', false, true, 3),
-            (gen_random_uuid(), '{uid}', 'Materials Stop', '📦', '#8b5cf6', false, true, 4),
-            (gen_random_uuid(), '{uid}', 'IT Stop',        '💻', '#06b6d4', false, true, 5)
+            (gen_random_uuid(), '{uid}', 'No Operator',    'no-operator', '#6b7280', false, true, 1),
+            (gen_random_uuid(), '{uid}', 'Maintenance',    'wrench',      '#f59e0b', true,  true, 2),
+            (gen_random_uuid(), '{uid}', 'Quality Stop',   'quality',     '#10b981', false, true, 3),
+            (gen_random_uuid(), '{uid}', 'Materials Stop', 'materials',   '#8b5cf6', false, true, 4),
+            (gen_random_uuid(), '{uid}', 'IT Stop',        'computer',    '#06b6d4', false, true, 5)
         """))
 
 
@@ -839,19 +912,80 @@ async def _intelligence_cron() -> None:
                     logger.error("Intelligence cron %s: %s", lang, e)
 
 
+async def _ensure_timescale() -> None:
+    """TimescaleDB setup for the high-volume production / telemetry tables.
+
+    Runs on AUTOCOMMIT: continuous-aggregate DDL and create_hypertable(migrate_data)
+    cannot run inside a transaction block (unlike _run_migrations, which does).
+    Idempotent — guarded by catalog checks + IF NOT EXISTS, so it's a no-op once
+    applied. Mirrors scripts/migrations/2026-07-08_timescale_production.sql, which
+    is the manual path for a DBA; this is the automatic one for fresh installs.
+    Non-fatal: on a non-TimescaleDB database it logs and skips."""
+    stmts = [
+        "CREATE EXTENSION IF NOT EXISTS timescaledb",
+        # sensor_readings → hypertable (high-frequency telemetry stream)
+        """DO $$ BEGIN
+             IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='sensor_readings')
+                AND NOT EXISTS (SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name='sensor_readings') THEN
+               ALTER TABLE sensor_readings DROP CONSTRAINT IF EXISTS sensor_readings_pkey;
+               ALTER TABLE sensor_readings ADD PRIMARY KEY (id, "timestamp");
+               PERFORM create_hypertable('sensor_readings','timestamp', migrate_data=>TRUE, if_not_exists=>TRUE, chunk_time_interval=>INTERVAL '7 days');
+               ALTER TABLE sensor_readings SET (timescaledb.compress, timescaledb.compress_segmentby='sensor_id', timescaledb.compress_orderby='"timestamp" DESC');
+               PERFORM add_compression_policy('sensor_readings', INTERVAL '30 days', if_not_exists=>TRUE);
+               PERFORM add_retention_policy('sensor_readings', INTERVAL '2 years', if_not_exists=>TRUE);
+             END IF;
+           END $$""",
+        'CREATE INDEX IF NOT EXISTS idx_sensor_readings_sensor_ts ON sensor_readings (sensor_id, "timestamp" DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_sensor_readings_equip_ts ON sensor_readings (equipment_id, "timestamp" DESC)',
+        # machine_production_hourly → hypertable (grows with every machine·hour)
+        """DO $$ BEGIN
+             IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='machine_production_hourly')
+                AND NOT EXISTS (SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name='machine_production_hourly') THEN
+               ALTER TABLE machine_production_hourly DROP CONSTRAINT IF EXISTS machine_production_hourly_pkey;
+               ALTER TABLE machine_production_hourly ADD PRIMARY KEY (id, hour);
+               PERFORM create_hypertable('machine_production_hourly','hour', migrate_data=>TRUE, if_not_exists=>TRUE, chunk_time_interval=>INTERVAL '30 days');
+               ALTER TABLE machine_production_hourly SET (timescaledb.compress, timescaledb.compress_segmentby='machine_id', timescaledb.compress_orderby='hour DESC');
+               PERFORM add_compression_policy('machine_production_hourly', INTERVAL '90 days', if_not_exists=>TRUE);
+             END IF;
+           END $$""",
+        "CREATE INDEX IF NOT EXISTS idx_mph_machine_hour ON machine_production_hourly (machine_id, hour DESC)",
+        # Continuous aggregate: produced/rejected per machine per day (auto-refresh).
+        # Dashboards/BI read this instead of scanning raw hourly rows.
+        """CREATE MATERIALIZED VIEW IF NOT EXISTS machine_production_daily
+           WITH (timescaledb.continuous) AS
+           SELECT machine_id, time_bucket(INTERVAL '1 day', hour) AS bucket,
+                  sum(count) AS produced, sum(reject_count) AS rejected
+           FROM machine_production_hourly
+           GROUP BY machine_id, time_bucket(INTERVAL '1 day', hour)""",
+        """SELECT add_continuous_aggregate_policy('machine_production_daily',
+             start_offset => INTERVAL '90 days', end_offset => INTERVAL '1 hour',
+             schedule_interval => INTERVAL '1 hour', if_not_exists => TRUE)""",
+    ]
+    try:
+        ac_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
+        async with ac_engine.connect() as conn:
+            for stmt in stmts:
+                await conn.execute(text(stmt))
+    except Exception as e:  # noqa: BLE001 — non-fatal; app must boot without Timescale
+        logger.warning("TimescaleDB setup skipped/failed (non-fatal): %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await _run_migrations()
+    await _ensure_timescale()
     await _backfill_ticket_alerts()
     task = asyncio.create_task(_escalation_loop())
     pm_task = asyncio.create_task(_pm_loop())
     intel_task = asyncio.create_task(_intelligence_cron())
+    shift_report_task = asyncio.create_task(_shift_report_loop())
     yield
     task.cancel()
     pm_task.cancel()
     intel_task.cancel()
+    shift_report_task.cancel()
     await engine.dispose()
 
 
@@ -874,6 +1008,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Live-update events ────────────────────────────────────────────────────────
+# Any successful mutation on these paths publishes a hint on the event bus, and
+# /api/live/ws pushes it to connected browsers (kiosk, dashboards, badges), which
+# then refetch. Path-based so every current and future endpoint is covered without
+# per-route publish calls.
+_MUTATING_METHODS = {"POST", "PATCH", "PUT", "DELETE"}
+# Machine-scoped: the ref (id, code or page_slug — _get_machine accepts all three)
+# is in the path, so clients can refetch only their own machine.
+_MACHINE_PATH = re.compile(r"^/api/(?:machines|machine-operator)/([^/]+)")
+# Office-side changes that can flip a machine's effective status (ticket opened/
+# closed, alert converted, WO started) but don't carry the machine in the URL →
+# broadcast (ref=None). Low-rate operations, so a plant-wide refetch is fine.
+_MACHINE_BROADCAST_PATH = re.compile(r"^/api/(?:alerts|tickets|wo)(?:/|$)")
+_BADGES_PATH = re.compile(r"^/api/(?:alerts|tickets|wo|machine-operator)(?:/|$)")
+
+
+@app.middleware("http")
+async def _publish_live_events(request, call_next):
+    response = await call_next(request)
+    if request.method in _MUTATING_METHODS and response.status_code < 400:
+        path = request.url.path
+        machine = _MACHINE_PATH.match(path)
+        if machine:
+            event_bus.publish_machine(machine.group(1))
+        elif _MACHINE_BROADCAST_PATH.match(path):
+            event_bus.publish_machine(None)
+        if _BADGES_PATH.match(path):
+            event_bus.publish_badges()
+    return response
+
 app.include_router(auth.router,                   prefix="/api/auth",          tags=["Authentication"])
 app.include_router(plants.router,                 prefix="/api/plants",        tags=["Plants"])
 app.include_router(equipment.router,              prefix="/api/equipment",     tags=["Equipment"],            dependencies=[Depends(resource_guard("equipment"))])
@@ -886,6 +1050,9 @@ app.include_router(maintenance_dashboard.router,  prefix="/api/maintenance",   t
 app.include_router(iot.router,                    prefix="/api/iot",           tags=["IoT / Sensors"])
 app.include_router(users.router,                  prefix="/api/users",         tags=["Users"])
 app.include_router(kpis.router,                   prefix="/api/kpis",          tags=["KPIs"])
+app.include_router(costs.router,                  prefix="/api/costs",         tags=["Costs"],                dependencies=[Depends(resource_guard("costs"))])
+app.include_router(factory_calendar.router,       prefix="/api/calendar",      tags=["Factory Calendar"],     dependencies=[Depends(resource_guard("calendar"))])
+app.include_router(adam_devices.router,           prefix="/api/adam-devices",  tags=["ADAM Devices"],         dependencies=[Depends(resource_guard("settings_devices"))])
 app.include_router(reports.router,                prefix="/api/reports",       tags=["Reports"])
 app.include_router(escalation.router,             prefix="/api/escalation",    tags=["Escalation"])
 app.include_router(technicians.router,            prefix="/api/technicians",   tags=["Technicians"],          dependencies=[Depends(resource_guard("technicians"))])
@@ -910,6 +1077,7 @@ app.include_router(
 app.include_router(intelligence_router)
 app.include_router(uploads_router)
 app.include_router(dashboards_router, prefix="/api/dashboards", tags=["Dashboards"])
+app.include_router(live_router,       prefix="/api/live",       tags=["Live Updates"])
 
 # Serve uploaded media (photos/videos for SOP steps). Behind nginx /api/ → backend.
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)

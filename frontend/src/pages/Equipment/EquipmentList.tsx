@@ -6,13 +6,24 @@ import { fetchEquipment } from '../../api/workOrders';
 import api from '../../api/axios';
 import { usePermission } from '../../hooks/usePermission';
 import type { Equipment } from '../../types';
+import { STATUS_LABEL } from '../../utils/statusColors';
 
+// Live status palette — mirrors utils/statusColors.ts STATUS_HEX (kiosk / map)
 const STATUS_COLORS: Record<string, string> = {
   running: 'bg-green-500/15 text-green-400 border-green-500/20',
-  in_maintenance: 'bg-amber-500/15 text-amber-400 border-amber-500/20',
+  planned_stop: 'bg-blue-500/15 text-blue-400 border-blue-500/20',
   stopped: 'bg-red-500/15 text-red-400 border-red-500/20',
+  maintenance: 'bg-amber-500/15 text-amber-400 border-amber-500/20',
+  intervention: 'bg-purple-500/15 text-purple-400 border-purple-500/20',
+  unjustified: 'bg-pink-500/15 text-pink-400 border-pink-500/20',
+  idle: 'bg-gray-500/15 text-gray-400 border-gray-500/20',
+  // static catalog statuses (fallback when live_status is absent)
+  in_maintenance: 'bg-amber-500/15 text-amber-400 border-amber-500/20',
   scrapped: 'bg-gray-500/15 text-gray-400 border-gray-500/20',
 };
+
+// Effective operational status: live (kiosk/tickets/parent) over the static column
+const effStatus = (e: Equipment): string => e.live_status ?? e.status;
 
 const CRIT_COLORS: Record<string, string> = {
   critical: 'text-red-400',
@@ -119,8 +130,13 @@ function MultiSelect({ label, options, selected, onChange }: {
 }
 
 export default function EquipmentList() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
+  const lang = (i18n.language || 'en').slice(0, 2) as 'en' | 'fr' | 'es';
+  const statusLabel = useCallback(
+    (s: string) => STATUS_LABEL[s]?.[lang] ?? s.replace('_', ' '),
+    [lang],
+  );
   const canCreate = usePermission('equipment', 'create');
   const canUpdate = usePermission('equipment', 'update');
   const [items, setItems] = useState<Equipment[]>([]);
@@ -189,7 +205,7 @@ export default function EquipmentList() {
   const deptOpts = useMemo(() => uniq(scoped.map(getDept)).map((v) => ({ value: v, label: v })), [scoped]);
   const familyOpts = useMemo(() => uniq(scoped.map(getFamily)).map((v) => ({ value: v, label: v })), [scoped]);
   const subtypeOpts = useMemo(() => uniq(scoped.map(getSubtype)).map((v) => ({ value: v, label: v })), [scoped]);
-  const statusOpts = useMemo(() => uniq(scoped.map((e) => e.status)).map((v) => ({ value: v, label: v.replace('_', ' ') })), [scoped]);
+  const statusOpts = useMemo(() => uniq(scoped.map(effStatus)).map((v) => ({ value: v, label: statusLabel(v) })), [scoped, statusLabel]);
   const critOpts = ['critical', 'high', 'medium', 'low'].map((c) => ({ value: c, label: c.charAt(0).toUpperCase() + c.slice(1) }));
 
   const filtered = useMemo(() => {
@@ -201,7 +217,7 @@ export default function EquipmentList() {
       if (fFamily.length && !fFamily.includes(getFamily(e))) return false;
       if (fSubtype.length && !fSubtype.includes(getSubtype(e))) return false;
       if (fCrit.length && !fCrit.includes(e.criticality)) return false;
-      if (fStatus.length && !fStatus.includes(e.status)) return false;
+      if (fStatus.length && !fStatus.includes(effStatus(e))) return false;
       if (lq && !(e.location ?? '').toLowerCase().includes(lq)) return false;
       if (q && !(
         e.name.toLowerCase().includes(q) ||
@@ -224,7 +240,7 @@ export default function EquipmentList() {
         case 'subtype': return getSubtype(e);
         case 'location': return e.location ?? '';
         case 'criticality': return CRIT_ORDER[e.criticality] ?? 0;
-        case 'status': return e.status;
+        case 'status': return effStatus(e);
         default: return e.name;
       }
     };
@@ -404,7 +420,7 @@ export default function EquipmentList() {
       ) : assetFilter === 'production' ? (
         /* ── Production: rich cards — scroll inside so header/tabs/bulk bar stay fixed ── */
         <div className="overflow-auto max-h-[calc(100vh-220px)] pr-1">
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-3">
           {sorted.map((eq) => {
             const isAux = eq.asset_type === 'auxiliary';
             const sel = selected.has(eq.id);
@@ -412,53 +428,50 @@ export default function EquipmentList() {
               <div
                 key={eq.id}
                 onClick={() => navigate(`/equipment/${eq.id}`)}
-                className={`bg-[#0d1421] border rounded-xl p-4 hover:bg-[#0f1929] transition-all group cursor-pointer ${sel ? 'border-blue-500/60' : 'border-white/[0.06] hover:border-blue-500/30'}`}
+                className={`bg-[#0d1421] border rounded-xl p-3 hover:bg-[#0f1929] transition-all group cursor-pointer ${sel ? 'border-blue-500/60' : 'border-white/[0.06] hover:border-blue-500/30'}`}
               >
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex items-center gap-2.5">
-                    <input
-                      type="checkbox"
-                      checked={sel}
-                      onChange={() => toggleOne(eq.id)}
-                      onClick={(e) => e.stopPropagation()}
-                      className="w-4 h-4 accent-blue-500 cursor-pointer"
-                    />
-                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${isAux ? 'bg-teal-500/10' : 'bg-blue-500/10'}`}>
-                      {isAux ? <Power size={20} className="text-teal-400" /> : <Cpu size={20} className="text-blue-400" />}
-                    </div>
+                <div className="flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={sel}
+                    onChange={() => toggleOne(eq.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    className="w-4 h-4 accent-blue-500 cursor-pointer mt-1.5 flex-shrink-0"
+                  />
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${isAux ? 'bg-teal-500/10' : 'bg-blue-500/10'}`}>
+                    {isAux ? <Power size={16} className="text-teal-400" /> : <Cpu size={16} className="text-blue-400" />}
                   </div>
-                  <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${STATUS_COLORS[eq.status] ?? STATUS_COLORS.stopped}`}>
-                    {eq.status.replace('_', ' ')}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-white font-semibold text-sm leading-snug break-words group-hover:text-blue-300 transition-colors">{eq.name}</p>
+                    <p className="text-gray-600 text-xs font-mono truncate">
+                      {eq.code}
+                      {eq.location && <span className="font-sans text-gray-500"> · {eq.location}</span>}
+                    </p>
+                  </div>
+                  <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full border flex-shrink-0 ${STATUS_COLORS[effStatus(eq)] ?? STATUS_COLORS.stopped}`}>
+                    {statusLabel(effStatus(eq))}
                   </span>
                 </div>
-                <p className="text-white font-semibold text-sm leading-snug group-hover:text-blue-300 transition-colors">{eq.name}</p>
-                <p className="text-gray-600 text-xs font-mono mt-0.5">{eq.code}</p>
-                {eq.location && (
-                  <div className="flex items-center gap-1.5 mt-2">
-                    <MapPin size={12} className="text-gray-600" />
-                    <span className="text-gray-500 text-xs">{eq.location}</span>
-                  </div>
-                )}
-                <div className="flex items-center justify-between mt-3 pt-3 border-t border-white/[0.04]">
-                  <div className="flex items-center gap-1.5">
-                    <Activity size={12} className={CRIT_COLORS[eq.criticality] ?? 'text-gray-500'} />
-                    <span className={`text-xs ${CRIT_COLORS[eq.criticality] ?? 'text-gray-500'}`}>{eq.criticality}</span>
-                  </div>
+                <div className="flex items-center gap-2 mt-2.5 pt-2.5 border-t border-white/[0.04]">
+                  <Activity size={12} className={CRIT_COLORS[eq.criticality] ?? 'text-gray-500'} />
+                  <span className={`text-xs ${CRIT_COLORS[eq.criticality] ?? 'text-gray-500'}`}>{eq.criticality}</span>
                   <span className="text-xs text-gray-600">{eq.hour_meter.toLocaleString()} {t('equipment.hours')}</span>
-                </div>
-                <div className="flex items-center gap-2 mt-3 pt-3 border-t border-white/[0.04]">
-                  <button
-                    onClick={(e) => { e.stopPropagation(); navigate(`/machine/${eq.id}`); }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-blue-700 text-blue-400 hover:bg-blue-900/20 transition-colors"
-                  >
-                    <Monitor size={12} /> Machine page
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); navigate(`/equipment/${eq.id}`); }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-gray-700 text-gray-400 hover:bg-gray-800 transition-colors ml-auto"
-                  >
-                    <Pencil size={12} /> Edit
-                  </button>
+                  <div className="flex items-center gap-1.5 ml-auto">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); navigate(`/machine/${eq.id}`); }}
+                      title={t('equipment.machinePage')}
+                      className="p-1.5 rounded-md border border-blue-700 text-blue-400 hover:bg-blue-900/20 transition-colors"
+                    >
+                      <Monitor size={13} />
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); navigate(`/equipment/${eq.id}`); }}
+                      title={t('common.edit')}
+                      className="p-1.5 rounded-md border border-gray-700 text-gray-400 hover:bg-gray-800 transition-colors"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                  </div>
                 </div>
               </div>
             );
@@ -530,8 +543,8 @@ export default function EquipmentList() {
                       </span>
                     </td>
                     <td className="px-3 py-2.5">
-                      <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${STATUS_COLORS[eq.status] ?? STATUS_COLORS.stopped}`}>
-                        {eq.status.replace('_', ' ')}
+                      <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${STATUS_COLORS[effStatus(eq)] ?? STATUS_COLORS.stopped}`}>
+                        {statusLabel(effStatus(eq))}
                       </span>
                     </td>
                     <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>

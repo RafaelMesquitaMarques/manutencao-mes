@@ -147,8 +147,8 @@ export default function InventoryList() {
     {
       field: 'description',
       headerName: t('inventory.description', 'Description'),
-      flex: 3,
-      minWidth: 240,
+      flex: 2,
+      minWidth: 220,
       filter: 'agTextColumnFilter',
       cellClass: 'text-sm text-gray-200',
       tooltipField: 'description',
@@ -266,6 +266,11 @@ export default function InventoryList() {
     sortable: true,
     resizable: true,
     floatingFilter: true,
+    // Wrap header labels onto a second line instead of truncating them with "…"
+    // (the grid squeezes flex columns down to their minWidth, which was cutting
+    // headers like "Qty in stock" / "Last purchase" / "Part Class").
+    wrapHeaderText: true,
+    autoHeaderHeight: true,
   }), []);
 
   const EDITABLE_FIELDS = ['unit_cost', 'min_quantity', 'supplier_name'];

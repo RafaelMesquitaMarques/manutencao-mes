@@ -210,7 +210,7 @@ class StopCategoryCreate(BaseModel):
     name_fr:             Optional[str] = None
     name_es:             Optional[str] = None
     type:                StopCategoryType
-    icon:                str = "⏸"
+    icon:                str = "wrench"
     color:               str = "#6b7280"
     comment_required:    bool = False
     triggers_maintenance: bool = False
@@ -236,7 +236,7 @@ class StopSubcategoryCreate(BaseModel):
     name_en:             Optional[str]  = None
     name_fr:             Optional[str]  = None
     name_es:             Optional[str]  = None
-    icon:                str = "⏸"
+    icon:                str = "wrench"
     color:               Optional[str]  = None
     comment_required:    bool = False
     triggers_maintenance: bool = False
@@ -302,7 +302,7 @@ class RejectCategoryCreate(BaseModel):
     name_en:          Optional[str] = None
     name_fr:          Optional[str] = None
     name_es:          Optional[str] = None
-    icon:             str = "❌"
+    icon:             str = "quality"
     color:            str = "#ef4444"
     comment_required: bool = False
     sort_order:       int = 0
@@ -325,7 +325,7 @@ class RejectSubcategoryCreate(BaseModel):
     name_en:          Optional[str] = None
     name_fr:          Optional[str] = None
     name_es:          Optional[str] = None
-    icon:             str = "❌"
+    icon:             str = "quality"
     color:            Optional[str] = None
     comment_required: bool = False
     sort_order:       int = 0

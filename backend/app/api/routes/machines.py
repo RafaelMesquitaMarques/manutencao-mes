@@ -17,6 +17,7 @@ from app.models.models import (
     RejectCategory, RejectSubcategory, RejectLog,
     AlertShift, JobOrder, JobOrderSource, MachineProductionLog, MachineProductionHourly,
     MachineHistory, Technician, MachineIntervention,
+    MaintenanceAlert, AlertStatus, AlertProblemType,
 )
 from app.schemas.maintenance import (
     MachineOut, MachineListResponse, MachinePageData, TicketForMachine,
@@ -34,7 +35,7 @@ from app.schemas.maintenance import (
     JobOrderOut, JobOrderCreate,
 )
 from app.core.security import get_current_user
-from app.services.ticket_service import TicketService, _next_ticket_number
+from app.services.ticket_service import TicketService, _next_ticket_number, _next_alert_number
 from app.services.mes_service import MesService, shift_windows
 from app.services.intervention_sync import apply_production_signal
 
@@ -341,7 +342,39 @@ async def today_rejects(ref: str, db: AsyncSession = Depends(get_db)):
     for l in logs:
         cat_id = str(l.reject_category_id) if l.reject_category_id else "uncategorized"
         by_cat[cat_id] = by_cat.get(cat_id, 0) + l.quantity
-    return {"total": total, "by_category": by_cat, "logs": [{"id": str(l.id), "quantity": l.quantity, "category_id": str(l.reject_category_id) if l.reject_category_id else None} for l in logs]}
+
+    # Resolve names for the events table (category / subcategory / operator).
+    cat_ids = {l.reject_category_id for l in logs if l.reject_category_id}
+    sub_ids = {l.reject_subcategory_id for l in logs if l.reject_subcategory_id}
+    op_ids = {l.operator_id for l in logs if l.operator_id}
+    cat_names = dict((await db.execute(
+        select(RejectCategory.id, RejectCategory.name).where(RejectCategory.id.in_(cat_ids))
+    )).all()) if cat_ids else {}
+    sub_names = dict((await db.execute(
+        select(RejectSubcategory.id, RejectSubcategory.name).where(RejectSubcategory.id.in_(sub_ids))
+    )).all()) if sub_ids else {}
+    op_names = dict((await db.execute(
+        select(MachineOperator.id, MachineOperator.name).where(MachineOperator.id.in_(op_ids))
+    )).all()) if op_ids else {}
+
+    return {
+        "total": total,
+        "by_category": by_cat,
+        "logs": [
+            {
+                "id": str(l.id),
+                "created_at": l.created_at.isoformat() if l.created_at else None,
+                "quantity": l.quantity,
+                "comments": l.comments,
+                "category_id": str(l.reject_category_id) if l.reject_category_id else None,
+                "category_name": cat_names.get(l.reject_category_id),
+                "subcategory_id": str(l.reject_subcategory_id) if l.reject_subcategory_id else None,
+                "subcategory_name": sub_names.get(l.reject_subcategory_id),
+                "operator_name": op_names.get(l.operator_id),
+            }
+            for l in logs
+        ],
+    }
 
 
 # ── Production counter ────────────────────────────────────────────────────────
@@ -454,9 +487,26 @@ async def create_stop(
 
     ticket_number = None
     if triggers:
+        # A maintenance stop raised from the machine page must surface as an ALERT
+        # too (feeds the maintenance dashboard/notifications), not just a ticket —
+        # otherwise callMaintenance later adopts this ticket and no alert is ever
+        # created. Mirror call_maintenance: alert ↔ ticket linked both ways.
+        alert = MaintenanceAlert(
+            alert_number=await _next_alert_number(db),
+            machine_id=machine.id,
+            department=machine.department,
+            problem_type=AlertProblemType.mechanical,
+            priority=AlertPriority.high,
+            description=data.comments or "Arrêt maintenance (poste opérateur)",
+            created_by=data.justified_by or "operator",
+            status=AlertStatus.new_alert,
+        )
+        db.add(alert)
+        await db.flush()
         ticket = MaintenanceTicket(
             ticket_number=await _next_ticket_number(db),
             machine_id=machine.id,
+            alert_id=alert.id,
             priority=AlertPriority.high,
             problem_type=None,
             description=data.comments,
@@ -464,10 +514,27 @@ async def create_stop(
         )
         db.add(ticket)
         await db.flush()
+        alert.ticket_id = ticket.id
         stop.ticket_id = ticket.id
         ticket_number = ticket.ticket_number
         machine.current_status = MachineStatus.maintenance
         machine.last_maintenance_at = now
+
+        # Notify the ticket open/close group (level-0 contacts) + technician pool —
+        # mirrors request_maintenance/call_maintenance. Without this, a maintenance
+        # stop raised from the machine page opened a ticket silently (no SMS/email).
+        from app.services.notification_service import NotificationService
+        notif = NotificationService(db)
+        if ticket.priority == AlertPriority.critical:
+            await notif.notify_new_critical(
+                ref_number=ticket.ticket_number,
+                description=ticket.description,
+                machine_name=machine.name,
+                alert_id=alert.id,
+                ticket_id=ticket.id,
+                machine=machine,
+            )
+        await notif.notify_ticket_opened(ticket, machine.name)
     elif cat_type == "planned":
         machine.current_status = MachineStatus.planned_stop
     elif cat_type is None:
@@ -806,7 +873,20 @@ async def mes_data(ref: str, db: AsyncSession = Depends(get_db)):
             availability_pct=availability, reject_count=rejects,
             downtime_today_minutes=downtime_min, is_placeholder=False,
         )
-    # No production fed yet → keep the placeholder card.
+    # Provisioned for a real signal feed (ADAM) but nothing counted today: that's
+    # a real zero, not "MES coming soon" — the placeholder must not come back on
+    # days the poller hasn't produced yet.
+    if machine.signal_ingest_token:
+        return MESDataExtended(
+            production_count=0,
+            target=machine.target_count or 0,
+            oee_pct=0.0,
+            availability_pct=availability,
+            reject_count=await svc.get_today_rejects(machine.id),
+            downtime_today_minutes=downtime_min,
+            is_placeholder=False,
+        )
+    # No production feed at all → keep the placeholder card.
     return MESDataExtended(
         production_count=svc.get_mock_production_count(),
         target=svc.get_mock_target(),
@@ -1010,6 +1090,7 @@ async def request_maintenance(
             description=data.description,
             machine_name=machine.name,
             ticket_id=ticket.id,
+            machine=machine,
         )
     await notif.notify_ticket_opened(ticket, machine.name)
 
@@ -1147,7 +1228,24 @@ async def delete_machine_stop_category(
     cat = await db.get(StopCategory, cat_id)
     if not cat:
         raise HTTPException(404, "Category not found")
-    await db.delete(cat)
+    # Stops keep FK references to their category/subcategories; a hard delete on a
+    # category with history raises IntegrityError. Deactivate instead — the list
+    # endpoints filter on is_active, so it disappears from the UI either way.
+    used = (await db.execute(
+        select(MachineStop.id).where(MachineStop.stop_category_id == cat_id).limit(1)
+    )).first()
+    if not used:
+        sub_ids = (await db.execute(
+            select(StopSubcategory.id).where(StopSubcategory.category_id == cat_id)
+        )).scalars().all()
+        if sub_ids:
+            used = (await db.execute(
+                select(MachineStop.id).where(MachineStop.stop_subcategory_id.in_(sub_ids)).limit(1)
+            )).first()
+    if used:
+        cat.is_active = False
+    else:
+        await db.delete(cat)
     await db.commit()
 
 
@@ -1192,7 +1290,15 @@ async def delete_stop_subcategory(
     sub = await db.get(StopSubcategory, sub_id)
     if not sub:
         raise HTTPException(404, "Subcategory not found")
-    await db.delete(sub)
+    # Same FK concern as categories: subcategories referenced by stop history
+    # can't be hard-deleted, so deactivate them instead.
+    used = (await db.execute(
+        select(MachineStop.id).where(MachineStop.stop_subcategory_id == sub_id).limit(1)
+    )).first()
+    if used:
+        sub.is_active = False
+    else:
+        await db.delete(sub)
     await db.commit()
 
 
@@ -1308,7 +1414,23 @@ async def delete_machine_reject_category(
     cat = await db.get(RejectCategory, cat_id)
     if not cat:
         raise HTTPException(404, "Reject category not found")
-    await db.delete(cat)
+    # Reject logs reference categories/subcategories; keep history intact by
+    # deactivating instead of hard-deleting when referenced.
+    used = (await db.execute(
+        select(RejectLog.id).where(RejectLog.reject_category_id == cat_id).limit(1)
+    )).first()
+    if not used:
+        sub_ids = (await db.execute(
+            select(RejectSubcategory.id).where(RejectSubcategory.category_id == cat_id)
+        )).scalars().all()
+        if sub_ids:
+            used = (await db.execute(
+                select(RejectLog.id).where(RejectLog.reject_subcategory_id.in_(sub_ids)).limit(1)
+            )).first()
+    if used:
+        cat.is_active = False
+    else:
+        await db.delete(cat)
     await db.commit()
 
 
@@ -1353,7 +1475,13 @@ async def delete_reject_subcategory(
     sub = await db.get(RejectSubcategory, sub_id)
     if not sub:
         raise HTTPException(404, "Reject subcategory not found")
-    await db.delete(sub)
+    used = (await db.execute(
+        select(RejectLog.id).where(RejectLog.reject_subcategory_id == sub_id).limit(1)
+    )).first()
+    if used:
+        sub.is_active = False
+    else:
+        await db.delete(sub)
     await db.commit()
 
 

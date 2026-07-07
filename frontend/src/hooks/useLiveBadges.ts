@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { fetchAlerts } from '../api/maintenance';
 import { fetchTickets } from '../api/maintenance';
 import { fetchMyWorkOrders } from '../api/workOrders';
+import { useLiveEvents } from './useLiveEvents';
 
 export interface LiveBadges {
   alertCount: number;
@@ -48,9 +49,14 @@ export function useLiveBadges(): LiveBadges {
     }
   }, []);
 
+  // Instant refresh when an alert/ticket/WO mutation is pushed over the live WS.
+  useLiveEvents((e) => {
+    if (e.topic === 'badges' || e.topic === 'reconnect') doFetch();
+  });
+
   useEffect(() => {
     doFetch();
-    intervalRef.current = setInterval(doFetch, 30_000);
+    intervalRef.current = setInterval(doFetch, 60_000);
     const onVisibility = () => {
       if (document.visibilityState === 'visible') doFetch();
     };
