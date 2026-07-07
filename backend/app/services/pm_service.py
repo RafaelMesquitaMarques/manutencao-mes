@@ -1,8 +1,11 @@
 """TPM preventive maintenance — recurrence calculation, occurrence/WO/ticket
 generation, and overdue/reminder alerting."""
 import calendar
+import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -206,6 +209,13 @@ async def generate_wo_and_ticket(db: AsyncSession, plan: MaintenancePlan, occurr
         await db.commit()
     except Exception:
         # Ticket is best-effort — keep the (already-flushed) work order regardless.
+        # Log it: a swallowed failure here leaves the WO with no linked ticket.
+        # A WO in that state can no longer close its ticket on completion, so the
+        # reverse-link fallback in work_orders._sync_ticket_from_wo now covers it.
+        logger.exception(
+            "PM ticket generation failed for WO %s (plan %s) — work order kept unlinked",
+            getattr(wo, "wo_number", wo.id), plan.id,
+        )
         await db.commit()
 
     await db.refresh(wo)

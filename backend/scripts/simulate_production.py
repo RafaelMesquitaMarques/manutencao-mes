@@ -31,7 +31,7 @@ from sqlalchemy import select, delete, update
 
 from app.db.session import AsyncSessionLocal
 from app.models.models import (
-    Machine, MachineProductionLog, MachineStop, StopCategory,
+    Machine, MachineProductionLog, MachineStop, StopCategory, StopSubcategory,
     MaintenanceAlert, MaintenanceTicket, MachineIntervention,
     AlertShift, AlertPriority, AlertStatus, AlertProblemType,
     TicketStatus, StopCategoryType,
@@ -96,6 +96,24 @@ async def generate(db, days: int):
     cat_unplanned = cats.get(StopCategoryType.unplanned)
     cat_maint = cats.get(StopCategoryType.maintenance)
 
+    # Subcategories per category (sorted), so each stop also gets a subgroup — the
+    # Pareto drill-down works on real data. Weighted so the first subgroup dominates
+    # (a natural Pareto shape) instead of a flat split.
+    subs_by_cat: dict = {}
+    for s in (await db.execute(
+        select(StopSubcategory).where(StopSubcategory.is_active == True)  # noqa: E712
+    )).scalars().all():
+        subs_by_cat.setdefault(s.category_id, []).append(s)
+    for lst in subs_by_cat.values():
+        lst.sort(key=lambda s: s.sort_order)
+
+    def pick_sub(cat_id):
+        lst = subs_by_cat.get(cat_id)
+        if not lst:
+            return None
+        weights = [len(lst) - i for i in range(len(lst))]   # first = heaviest
+        return random.choices(lst, weights=weights)[0]
+
     # Assign archetypes — prefer the showcase names as the "problem" machines.
     problem = [m for m in machines if any(k in m.name.lower() for k in SHOWCASE)][:2]
     if len(problem) < 2:
@@ -138,13 +156,15 @@ async def generate(db, days: int):
                 down = round(SHIFT_MIN * (1 - avail / 100))
                 if down >= 5 and (cat_planned or cat_unplanned):
                     cat = random.choice([c for c in (cat_planned, cat_unplanned) if c])
+                    sub = pick_sub(cat.id)
                     start = datetime(d.year, d.month, d.day, start_hour, tzinfo=timezone.utc) \
                         + timedelta(minutes=random.randint(30, 300))
                     if start + timedelta(minutes=down) > now:
                         start = now - timedelta(minutes=down + 10)
                     db.add(MachineStop(
                         machine_id=m.id, started_at=start, ended_at=start + timedelta(minutes=down),
-                        duration_minutes=down, stop_category_id=cat.id, shift=shift,
+                        duration_minutes=down, stop_category_id=cat.id,
+                        stop_subcategory_id=sub.id if sub else None, shift=shift,
                         comments=f"{TAG} {cat.name}", justified_by=m.current_operator,
                     ))
                     n_stops += 1

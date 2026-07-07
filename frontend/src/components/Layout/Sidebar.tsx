@@ -4,8 +4,9 @@ import { useTranslation } from 'react-i18next';
 import {
   LayoutDashboard, LayoutGrid, ClipboardList, Wrench, Users, BarChart3,
   Settings, Factory, CalendarDays, CalendarCheck, CalendarClock, Bell, Ticket,
-  Activity, Shield, Briefcase, X, UserCog, Package, Building2, ShoppingCart,
-  ChevronsLeft, ChevronsRight, Brain, Map as MapIcon, ClipboardCheck, type LucideIcon,
+  Activity, Briefcase, X, UserCog, Package, Building2, ShoppingCart,
+  ChevronsLeft, ChevronsRight, Brain, Map as MapIcon, ClipboardCheck, ListChecks,
+  DollarSign, Cpu, type LucideIcon,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import type { UserRole } from '../../types';
@@ -34,25 +35,28 @@ const TECH_UP: NavRole[] = ['technician', 'supervisor', 'maintenance_director', 
 
 const CORE_GROUPS: NavGroup[] = [
   {
+    label: 'WorkOrders',
+    items: [
+      { to: '/dashboard',               icon: LayoutDashboard, key: 'woReports' },
+      { to: '/maintenance/wo-approval', icon: ClipboardCheck,  key: 'woApproval',  roles: SUPERVISOR_UP },
+      { to: '/work-orders',             icon: ClipboardList,   key: 'workOrders' },
+      { to: '/gestion-bt',              icon: ListChecks,      key: 'gestionBT' },
+    ],
+  },
+  {
     label: 'Core',
     items: [
-      { to: '/dashboard',   icon: LayoutDashboard, key: 'dashboard' },
-      { to: '/work-orders', icon: ClipboardList,   key: 'workOrders' },
-      { to: '/technicians', icon: Users,            key: 'technicians', roles: SUPERVISOR_UP },
       { to: '/equipment',   icon: Wrench,           key: 'equipment',   roles: TECH_UP },
+      { to: '/factory-map', icon: MapIcon,          key: 'factoryMap',  roles: SUPERVISOR_UP },
       { to: '/my-work',     icon: Briefcase,        key: 'myWork' },
     ],
   },
   {
     label: 'Maintenance',
     items: [
-      { to: '/alerts',                  icon: Bell,         key: 'alerts' },
       { to: '/tickets',                 icon: Ticket,       key: 'tickets',              roles: TECH_UP },
       { to: '/maintenance/dashboard',      icon: Activity,     key: 'maintenanceDashboard', roles: TECH_UP },
-      { to: '/maintenance/supervisor',     icon: Shield,       key: 'supervisorView',       roles: SUPERVISOR_UP },
-      { to: '/factory-map',                icon: MapIcon,      key: 'factoryMap',           roles: SUPERVISOR_UP },
       { to: '/dashboards',                 icon: LayoutGrid,   key: 'dashboards',           roles: SUPERVISOR_UP },
-      { to: '/maintenance/wo-approval',    icon: ClipboardCheck, key: 'woApproval',          roles: SUPERVISOR_UP },
       { to: '/schedule',                icon: CalendarDays, key: 'schedule',             roles: TECH_UP },
       { to: '/pm-calendar',             icon: CalendarCheck, key: 'pmCalendar',          roles: TECH_UP },
       { to: '/maintenance/plans',       icon: CalendarClock, key: 'maintenancePlans',    roles: TECH_UP },
@@ -70,6 +74,7 @@ const CORE_GROUPS: NavGroup[] = [
     label: 'Analytics',
     items: [
       { to: '/kpis', icon: BarChart3, key: 'kpis', roles: SUPERVISOR_UP },
+      { to: '/costs', icon: DollarSign, key: 'costs', roles: SUPERVISOR_UP },
       { to: '/kpis/machines', icon: Factory, key: 'machineReports', roles: SUPERVISOR_UP },
       { to: '/intelligence', icon: Brain, img: '/mirai-icon.png', key: 'intelligence', roles: TECH_UP },
     ],
@@ -81,22 +86,23 @@ interface SidebarProps {
 }
 
 const BADGE_NAV_KEYS: Record<string, 'alertCount' | 'ticketCount' | 'myWorkCount'> = {
-  alerts:  'alertCount',
-  tickets: 'ticketCount',
-  myWork:  'myWorkCount',
+  gestionBT: 'alertCount',
+  tickets:   'ticketCount',
+  myWork:    'myWorkCount',
 };
 
 // Maps a nav item key → the permission resource that gates its visibility (view).
 // Items not listed here are gated by role only (their `roles` array).
 const NAV_PERM: Record<string, string> = {
-  dashboard: 'dashboard', workOrders: 'work_orders', technicians: 'technicians',
-  equipment: 'equipment', myWork: 'my_work', alerts: 'alerts', tickets: 'tickets',
-  maintenanceDashboard: 'maintenance', supervisorView: 'supervisor_view',
+  woReports: 'dashboard', workOrders: 'work_orders', technicians: 'technicians',
+  equipment: 'equipment', myWork: 'my_work', tickets: 'tickets',
+  maintenanceDashboard: 'maintenance',
   schedule: 'schedule', pmCalendar: 'pm_calendar', maintenancePlans: 'maintenance_plans',
-  kpis: 'kpis', machineReports: 'machine_reports', factoryMap: 'factory_map', dashboards: 'dashboards',
+  kpis: 'kpis', costs: 'costs', machineReports: 'machine_reports', factoryMap: 'factory_map', dashboards: 'dashboards',
   woApproval: 'wo_approval', inventory: 'inventory', suppliers: 'suppliers',
   purchaseOrders: 'purchase_orders', intelligence: 'intelligence',
-  escalationSettings: 'settings_escalation',
+  escalationSettings: 'settings_escalation', gestionBT: 'alerts',
+  factoryCalendar: 'calendar', deviceSettings: 'settings_devices',
 };
 
 const Sidebar = ({ onClose }: SidebarProps) => {
@@ -122,7 +128,10 @@ const Sidebar = ({ onClose }: SidebarProps) => {
   };
 
   const settingsItems: NavItem[] = [
+    { to: '/technicians', icon: Users, key: 'technicians', roles: SUPERVISOR_UP },
     { to: '/settings/escalation', icon: Bell, key: 'escalationSettings', roles: SUPERVISOR_UP },
+    { to: '/settings/calendar', icon: CalendarDays, key: 'factoryCalendar', roles: SUPERVISOR_UP },
+    { to: '/settings/devices', icon: Cpu, key: 'deviceSettings', roles: SUPERVISOR_UP },
     ...(isAdmin() ? [{ to: '/settings/users', icon: UserCog, key: 'userManagement' }] : []),
   ];
 

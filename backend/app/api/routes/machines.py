@@ -487,6 +487,22 @@ async def create_stop(
         ticket_number = ticket.ticket_number
         machine.current_status = MachineStatus.maintenance
         machine.last_maintenance_at = now
+
+        # Notify the ticket open/close group (level-0 contacts) + technician pool —
+        # mirrors request_maintenance/call_maintenance. Without this, a maintenance
+        # stop raised from the machine page opened a ticket silently (no SMS/email).
+        from app.services.notification_service import NotificationService
+        notif = NotificationService(db)
+        if ticket.priority == AlertPriority.critical:
+            await notif.notify_new_critical(
+                ref_number=ticket.ticket_number,
+                description=ticket.description,
+                machine_name=machine.name,
+                alert_id=alert.id,
+                ticket_id=ticket.id,
+                machine=machine,
+            )
+        await notif.notify_ticket_opened(ticket, machine.name)
     elif cat_type == "planned":
         machine.current_status = MachineStatus.planned_stop
     elif cat_type is None:
@@ -825,7 +841,20 @@ async def mes_data(ref: str, db: AsyncSession = Depends(get_db)):
             availability_pct=availability, reject_count=rejects,
             downtime_today_minutes=downtime_min, is_placeholder=False,
         )
-    # No production fed yet → keep the placeholder card.
+    # Provisioned for a real signal feed (ADAM) but nothing counted today: that's
+    # a real zero, not "MES coming soon" — the placeholder must not come back on
+    # days the poller hasn't produced yet.
+    if machine.signal_ingest_token:
+        return MESDataExtended(
+            production_count=0,
+            target=machine.target_count or 0,
+            oee_pct=0.0,
+            availability_pct=availability,
+            reject_count=await svc.get_today_rejects(machine.id),
+            downtime_today_minutes=downtime_min,
+            is_placeholder=False,
+        )
+    # No production feed at all → keep the placeholder card.
     return MESDataExtended(
         production_count=svc.get_mock_production_count(),
         target=svc.get_mock_target(),
@@ -1029,6 +1058,7 @@ async def request_maintenance(
             description=data.description,
             machine_name=machine.name,
             ticket_id=ticket.id,
+            machine=machine,
         )
     await notif.notify_ticket_opened(ticket, machine.name)
 
@@ -1166,7 +1196,24 @@ async def delete_machine_stop_category(
     cat = await db.get(StopCategory, cat_id)
     if not cat:
         raise HTTPException(404, "Category not found")
-    await db.delete(cat)
+    # Stops keep FK references to their category/subcategories; a hard delete on a
+    # category with history raises IntegrityError. Deactivate instead — the list
+    # endpoints filter on is_active, so it disappears from the UI either way.
+    used = (await db.execute(
+        select(MachineStop.id).where(MachineStop.stop_category_id == cat_id).limit(1)
+    )).first()
+    if not used:
+        sub_ids = (await db.execute(
+            select(StopSubcategory.id).where(StopSubcategory.category_id == cat_id)
+        )).scalars().all()
+        if sub_ids:
+            used = (await db.execute(
+                select(MachineStop.id).where(MachineStop.stop_subcategory_id.in_(sub_ids)).limit(1)
+            )).first()
+    if used:
+        cat.is_active = False
+    else:
+        await db.delete(cat)
     await db.commit()
 
 
@@ -1211,7 +1258,15 @@ async def delete_stop_subcategory(
     sub = await db.get(StopSubcategory, sub_id)
     if not sub:
         raise HTTPException(404, "Subcategory not found")
-    await db.delete(sub)
+    # Same FK concern as categories: subcategories referenced by stop history
+    # can't be hard-deleted, so deactivate them instead.
+    used = (await db.execute(
+        select(MachineStop.id).where(MachineStop.stop_subcategory_id == sub_id).limit(1)
+    )).first()
+    if used:
+        sub.is_active = False
+    else:
+        await db.delete(sub)
     await db.commit()
 
 
@@ -1327,7 +1382,23 @@ async def delete_machine_reject_category(
     cat = await db.get(RejectCategory, cat_id)
     if not cat:
         raise HTTPException(404, "Reject category not found")
-    await db.delete(cat)
+    # Reject logs reference categories/subcategories; keep history intact by
+    # deactivating instead of hard-deleting when referenced.
+    used = (await db.execute(
+        select(RejectLog.id).where(RejectLog.reject_category_id == cat_id).limit(1)
+    )).first()
+    if not used:
+        sub_ids = (await db.execute(
+            select(RejectSubcategory.id).where(RejectSubcategory.category_id == cat_id)
+        )).scalars().all()
+        if sub_ids:
+            used = (await db.execute(
+                select(RejectLog.id).where(RejectLog.reject_subcategory_id.in_(sub_ids)).limit(1)
+            )).first()
+    if used:
+        cat.is_active = False
+    else:
+        await db.delete(cat)
     await db.commit()
 
 
@@ -1372,7 +1443,13 @@ async def delete_reject_subcategory(
     sub = await db.get(RejectSubcategory, sub_id)
     if not sub:
         raise HTTPException(404, "Reject subcategory not found")
-    await db.delete(sub)
+    used = (await db.execute(
+        select(RejectLog.id).where(RejectLog.reject_subcategory_id == sub_id).limit(1)
+    )).first()
+    if used:
+        sub.is_active = False
+    else:
+        await db.delete(sub)
     await db.commit()
 
 

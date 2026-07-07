@@ -27,8 +27,8 @@ const RESOURCES = [
   'alerts', 'tickets', 'maintenance', 'supervisor_view', 'factory_map',
   'dashboards', 'wo_approval', 'schedule', 'pm_calendar', 'maintenance_plans',
   'inventory', 'suppliers', 'purchase_orders', 'machines', 'kpis',
-  'machine_reports', 'intelligence', 'settings_machines', 'settings_escalation',
-  'settings_users',
+  'costs', 'machine_reports', 'intelligence', 'settings_machines', 'settings_escalation',
+  'settings_users', 'settings_devices', 'calendar',
 ];
 
 const ACTIONS = ['view', 'create', 'update', 'delete'];
@@ -160,6 +160,21 @@ function PermissionsTab({ userId, userRole }: { userId: string; userRole: string
 
   useEffect(() => { load(); }, [load]);
 
+  const columnAllSelected = (action: string) =>
+    RESOURCES.every((resource) =>
+      overrides.some((p) => p.resource === resource && p.action === action && p.granted));
+
+  const toggleColumn = (action: string) => {
+    const allOn = columnAllSelected(action);
+    setOverrides((prev) => {
+      const rest = prev.filter((p) => p.action !== action);
+      if (allOn) return rest;
+      return [...rest, ...RESOURCES.map((resource) => ({
+        id: `${resource}-${action}`, resource, action, granted: true,
+      }))];
+    });
+  };
+
   const toggleOverride = (resource: string, action: string) => {
     setOverrides((prev) => {
       const existing = prev.find((p) => p.resource === resource && p.action === action);
@@ -185,6 +200,23 @@ function PermissionsTab({ userId, userRole }: { userId: string; userRole: string
 
   if (loading) return <div className="py-8 flex justify-center"><div className="w-6 h-6 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" /></div>;
 
+  // Admin bypasses the whole permission system (backend returns {'*'}, frontend
+  // can() short-circuits on role==='admin'). The per-resource matrix has no effect
+  // on an admin, and would render all-unchecked (nothing matches the '*' wildcard),
+  // which looks like "no access" even though the admin sees everything. Show a clear
+  // full-access notice instead of a misleading, editable grid.
+  if (userRole === 'admin') {
+    return (
+      <div className="flex items-start gap-3 p-4 bg-blue-500/10 border border-blue-500/25 rounded-lg">
+        <Shield size={18} className="text-blue-400 flex-shrink-0 mt-0.5" />
+        <div>
+          <p className="text-sm text-blue-200 font-medium">{t('users.adminFullAccessTitle')}</p>
+          <p className="text-xs text-gray-400 mt-1">{t('users.adminFullAccessBody')}</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div>
       <p className="text-xs text-gray-500 mb-4">
@@ -203,11 +235,29 @@ function PermissionsTab({ userId, userRole }: { userId: string; userRole: string
           <thead>
             <tr className="border-b border-white/[0.06]">
               <th className="text-left py-2 pr-4 text-gray-500 font-medium text-xs uppercase tracking-wider">{t('users.resource')}</th>
-              {ACTIONS.map((a) => (
-                <th key={a} className="text-center py-2 px-3 text-gray-500 font-medium text-xs uppercase tracking-wider">
-                  {a}
-                </th>
-              ))}
+              {ACTIONS.map((a) => {
+                const colOn = columnAllSelected(a);
+                return (
+                  <th key={a} className="py-2 px-3 text-gray-500 font-medium text-xs uppercase tracking-wider">
+                    <div className="flex flex-col items-center gap-1.5">
+                      <span>{a}</span>
+                      <button
+                        type="button"
+                        onClick={() => toggleColumn(a)}
+                        title={colOn ? t('users.permClearColumn') : t('users.permSelectColumn')}
+                        aria-label={colOn ? t('users.permClearColumn') : t('users.permSelectColumn')}
+                        className={`w-4 h-4 rounded border transition-all ${
+                          colOn
+                            ? 'bg-blue-600 border-blue-500 text-white'
+                            : 'bg-gray-800 border-gray-700 text-transparent hover:border-gray-500'
+                        }`}
+                      >
+                        <CheckCircle size={10} className="mx-auto" />
+                      </button>
+                    </div>
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>

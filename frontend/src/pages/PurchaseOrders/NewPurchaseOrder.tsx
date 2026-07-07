@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Plus, Trash2, Save } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { createPurchaseOrder, fetchSupplierList } from '../../api/suppliers';
+import { createPurchaseOrder, fetchSupplierList, fetchPOCostCenters, type POCostCenter } from '../../api/suppliers';
 import { fetchStockItems } from '../../api/inventory';
 import type { Supplier, StockItem } from '../../types';
 
@@ -50,18 +50,23 @@ export default function NewPurchaseOrder() {
     order_date:    today,
     expected_date: '',
     currency:      'CAD',
+    cost_center:   '',
+    scope:         'opex',
     status:        'draft',
     notes:         '',
   });
+  const [costCenters, setCostCenters] = useState<POCostCenter[]>([]);
   const [lines, setLines] = useState<LineItem[]>([newLine()]);
 
   useEffect(() => {
     Promise.all([
       fetchSupplierList({ active_only: true, limit: 200 }),
       fetchStockItems({ limit: 5500 }),
-    ]).then(([supRes, stockRes]) => {
+      fetchPOCostCenters(),
+    ]).then(([supRes, stockRes, ccRes]) => {
       setSuppliers(supRes.items);
       setStockItems(stockRes.items);
+      setCostCenters(ccRes);
     });
   }, []);
 
@@ -98,6 +103,8 @@ export default function NewPurchaseOrder() {
         order_date:    form.order_date || undefined,
         expected_date: form.expected_date || undefined,
         currency:      form.currency,
+        cost_center:   form.cost_center || undefined,
+        scope:         form.scope as 'opex' | 'capex',
         status:        form.status,
         notes:         form.notes || undefined,
         items: lines
@@ -169,16 +176,26 @@ export default function NewPurchaseOrder() {
               </FormField>
             </div>
             <div className="grid grid-cols-4 gap-4">
+              <FormField label={t('purchaseOrders.costCenter', 'Cost center')} required>
+                <select required value={form.cost_center} onChange={e => setF('cost_center', e.target.value)} className={selectCls}>
+                  <option value="">— {t('purchaseOrders.selectCostCenter', 'Select a cost center')} —</option>
+                  {costCenters.map(cc => <option key={cc.name} value={cc.name}>{cc.code ? `${cc.code} · ${cc.name}` : cc.name}</option>)}
+                </select>
+              </FormField>
+              <FormField label={t('purchaseOrders.scope', 'Scope')}>
+                <select value={form.scope} onChange={e => setF('scope', e.target.value)} className={selectCls}>
+                  <option value="opex">OPEX</option>
+                  <option value="capex">CAPEX</option>
+                </select>
+              </FormField>
               <FormField label={t('suppliers.currency', 'Currency')}>
                 <select value={form.currency} onChange={e => setF('currency', e.target.value)} className={selectCls}>
                   {['CAD', 'USD', 'EUR'].map(c => <option key={c}>{c}</option>)}
                 </select>
               </FormField>
-              <div className="col-span-3">
-                <FormField label={t('common.notes', 'Notes')}>
-                  <input value={form.notes} onChange={e => setF('notes', e.target.value)} placeholder="Internal notes…" className={inputCls} />
-                </FormField>
-              </div>
+              <FormField label={t('common.notes', 'Notes')}>
+                <input value={form.notes} onChange={e => setF('notes', e.target.value)} placeholder="Internal notes…" className={inputCls} />
+              </FormField>
             </div>
           </div>
 

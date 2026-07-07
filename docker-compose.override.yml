@@ -1,0 +1,11 @@
+# Dev override — auto-loaded by `docker compose`. Live-mounts the frontend source
+# into the container so Vite hot-reloads edits without rebuilding the image.
+# The anonymous volume on /app/node_modules keeps the image's installed deps
+# (so the host folder doesn't shadow them). Safe to delete for production builds.
+services:
+  frontend:
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      CHOKIDAR_USEPOLLING: "true"

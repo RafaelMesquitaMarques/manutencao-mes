@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     TWILIO_AUTH_TOKEN: str = ""
     TWILIO_FROM_NUMBER: str = ""
 
+    # Public base URL of the app (e.g. the cloudflared tunnel) — used to build
+    # the "I'm on it" ack link in escalation SMS. Empty = no link in the SMS.
+    PUBLIC_BASE_URL: str = ""
+
     # Anthropic API key for the Maintenance Intelligence AI layer.
     # If unset, the module runs in calculator-only mode (structured fallback text).
     anthropic_api_key: Optional[str] = None

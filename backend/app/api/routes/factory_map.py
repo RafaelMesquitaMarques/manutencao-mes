@@ -15,41 +15,18 @@ from jose import jwt, JWTError
 
 from app.db.session import get_db, AsyncSessionLocal
 from app.models.models import (
-    User, Machine, Plant, Equipment, FactoryZone, MapProp, MaintenanceTicket, TicketStatus,
-    RobotCell, RobotCellState,
+    User, Plant, Equipment, FactoryZone, MapProp,
 )
 
-# Live robot-cell run_state → map status (cobots are auxiliary, no Machine layer).
-_CELL_RUN_MAP = {"running": "running", "stopped": "stopped", "fault": "maintenance", "idle": "idle"}
 from app.core.config import settings
 from app.core.security import get_current_user
 from app.core.permissions import require_permission
+# Live status composition shared with the equipment catalog — single source of
+# truth (see app/services/live_status.py). Both the 2D GET and the live WS below
+# build their payloads from this one snapshot instead of re-deriving status.
+from app.services.live_status import live_details_by_equipment
 
 router = APIRouter()
-
-_EQ_STATUS_MAP = {
-    "running": "running",
-    "in_maintenance": "maintenance",
-    "stopped": "stopped",
-    "scrapped": "idle",
-}
-_OPEN_TICKET_STATUSES = [
-    TicketStatus.open, TicketStatus.in_progress,
-    TicketStatus.on_hold_parts, TicketStatus.on_hold_ext,
-]
-
-
-def _effective_status(base: str, open_ticket: bool) -> str:
-    """Map colour priority: a physically stopped machine is red; a technician
-    actively working (intervention) shows purple even while its ticket is still
-    open; otherwise an open maintenance call turns it amber; else the live status."""
-    if base == "stopped":
-        return "stopped"
-    if base == "intervention":
-        return "intervention"
-    if base == "maintenance" or open_ticket:
-        return "maintenance"
-    return base
 
 
 class LayoutUpdate(BaseModel):
@@ -156,80 +133,24 @@ async def get_factory_map(
         eq_query = eq_query.where(Equipment.asset_type == asset_type)
     equipment = (await db.execute(eq_query)).scalars().all()
 
-    machines = (await db.execute(select(Machine))).scalars().all()
-    # Only ACTIVE machines attach live status to their asset; the equipment↔machine
-    # auto-sync leaves inactive (is_active=False) machine shells when an asset switches
-    # production→auxiliary, and those must not make a cobot look like a machine.
-    machine_by_eq = {str(m.equipment_id): m for m in machines if m.equipment_id and m.is_active}
-
-    # open ticket per machine (for the live badge)
-    open_rows = (await db.execute(
-        select(MaintenanceTicket.machine_id, MaintenanceTicket.id, MaintenanceTicket.ticket_number)
-        .where(MaintenanceTicket.status.in_(_OPEN_TICKET_STATUSES))
-    )).all()
-    open_by_machine: dict[str, dict] = {}
-    for mid, tid, tnum in open_rows:
-        if mid and str(mid) not in open_by_machine:
-            open_by_machine[str(mid)] = {"id": str(tid), "number": tnum}
-
-    # Live run_state from connected robot cells (cobots are independent of their machine)
-    cell_run = dict((await db.execute(
-        select(RobotCell.equipment_id, RobotCellState.run_state)
-        .join(RobotCellState, RobotCellState.cell_id == RobotCell.id)
-    )).all())
-
-    def _own_status(eid, eq_status, machine) -> str:
-        """One asset's operational status: machine status > cell run_state > equipment status."""
-        if machine and machine.current_status:
-            s = machine.current_status.value
-        else:
-            s = _EQ_STATUS_MAP.get(eq_status or "running", "idle")
-        if eid in cell_run and cell_run[eid] in _CELL_RUN_MAP:
-            s = _CELL_RUN_MAP[cell_run[eid]]
-        return s
-
-    # Parent machines can be outside the current asset_type filter → fetch their status.
-    # Use the EFFECTIVE status (incl. open maintenance call) so a machine that is amber from a
-    # ticket — not just one whose stored status flipped — still pulls its cobots/conveyors down.
-    parent_ids = {e.parent_equipment_id for e in equipment if e.parent_equipment_id}
-    parent_status: dict = {}
-    if parent_ids:
-        for pe in (await db.execute(select(Equipment).where(Equipment.id.in_(parent_ids)))).scalars().all():
-            pm = machine_by_eq.get(str(pe.id))
-            p_ticket = open_by_machine.get(str(pm.id)) if pm else None
-            parent_status[pe.id] = _effective_status(
-                _own_status(pe.id, pe.status.value if pe.status else None, pm),
-                p_ticket is not None,
-            )
+    # One shared snapshot: effective status + operator + open-ticket badge, with
+    # the same machine > cell > equipment rules and parent-machine inheritance
+    # used everywhere (see live_status.live_details_by_equipment).
+    details = await live_details_by_equipment(db, equipment)
 
     items = []
     for e in equipment:
-        m = machine_by_eq.get(str(e.id))
-        operator = m.current_operator if (m and m.current_status) else None
-        status = _own_status(e.id, e.status.value if e.status else None, m)
-        # Parent-machine relationship:
-        #  • conveyors (and cobots without live telemetry) follow the machine entirely;
-        #  • a cobot WITH telemetry is independent while the machine runs, but STOPS when
-        #    its machine is down (maintenance / stopped / planned_stop).
-        is_cobot = "cobot" in (e.subtype or "").lower() or e.block_kind == "cobot"
-        if e.parent_equipment_id:
-            pstat = parent_status.get(e.parent_equipment_id)
-            parent_down = pstat in ("stopped", "maintenance", "planned_stop")
-            if is_cobot and e.id in cell_run:
-                if parent_down:
-                    status = pstat
-            elif pstat:
-                status = pstat
-        ticket = open_by_machine.get(str(m.id)) if m else None
-        status = _effective_status(status, ticket is not None)
+        la = details[str(e.id)]
+        m = la.machine
+        ticket = la.open_ticket
         items.append({
             "id": str(e.id),
             "machine_id": str(m.id) if m else None,
             "page_slug": m.page_slug if m else None,
             "name": e.name,
             "code": e.code,
-            "status": status,
-            "operator": operator,
+            "status": la.status,
+            "operator": la.operator,
             "department": e.department,
             "family": e.family,
             "subtype": e.subtype,
@@ -402,63 +323,15 @@ async def _status_payload(db: AsyncSession, plant_id) -> list[dict]:
     equipment = (await db.execute(
         select(Equipment).where(Equipment.plant_id == plant_id, Equipment.active == True)
     )).scalars().all()
-    machines = (await db.execute(select(Machine))).scalars().all()
-    # Only ACTIVE machines attach live status to their asset; the equipment↔machine
-    # auto-sync leaves inactive (is_active=False) machine shells when an asset switches
-    # production→auxiliary, and those must not make a cobot look like a machine.
-    machine_by_eq = {str(m.equipment_id): m for m in machines if m.equipment_id and m.is_active}
-    open_rows = (await db.execute(
-        select(MaintenanceTicket.machine_id, MaintenanceTicket.id, MaintenanceTicket.ticket_number)
-        .where(MaintenanceTicket.status.in_(_OPEN_TICKET_STATUSES))
-    )).all()
-    open_by_machine: dict[str, dict] = {}
-    for mid, tid, tnum in open_rows:
-        if mid and str(mid) not in open_by_machine:
-            open_by_machine[str(mid)] = {"id": str(tid), "number": tnum}
-    # Same effective-status logic as GET so the LIVE push follows parent machines too.
-    cell_run = dict((await db.execute(
-        select(RobotCell.equipment_id, RobotCellState.run_state)
-        .join(RobotCellState, RobotCellState.cell_id == RobotCell.id)
-    )).all())
-
-    def _own(eid, eqs, mc) -> str:
-        if mc and mc.current_status:
-            s = mc.current_status.value
-        else:
-            s = _EQ_STATUS_MAP.get(eqs or "running", "idle")
-        if eid in cell_run and cell_run[eid] in _CELL_RUN_MAP:
-            s = _CELL_RUN_MAP[cell_run[eid]]
-        return s
-
-    parent_ids = {e.parent_equipment_id for e in equipment if e.parent_equipment_id}
-    parent_status: dict = {}
-    if parent_ids:
-        for pe in (await db.execute(select(Equipment).where(Equipment.id.in_(parent_ids)))).scalars().all():
-            pm = machine_by_eq.get(str(pe.id))
-            p_ticket = open_by_machine.get(str(pm.id)) if pm else None
-            parent_status[pe.id] = _effective_status(
-                _own(pe.id, pe.status.value if pe.status else None, pm),
-                p_ticket is not None,
-            )
-
+    # Same shared snapshot as the GET endpoint so the LIVE push follows parent
+    # machines, cobot telemetry and open-ticket badges identically.
+    details = await live_details_by_equipment(db, equipment)
     out = []
     for e in equipment:
-        m = machine_by_eq.get(str(e.id))
-        operator = m.current_operator if (m and m.current_status) else None
-        status = _own(e.id, e.status.value if e.status else None, m)
-        is_cobot = "cobot" in (e.subtype or "").lower() or e.block_kind == "cobot"
-        if e.parent_equipment_id:
-            pstat = parent_status.get(e.parent_equipment_id)
-            parent_down = pstat in ("stopped", "maintenance", "planned_stop")
-            if is_cobot and e.id in cell_run:
-                if parent_down:
-                    status = pstat
-            elif pstat:
-                status = pstat
-        ticket = open_by_machine.get(str(m.id)) if m else None
-        status = _effective_status(status, ticket is not None)
+        la = details[str(e.id)]
+        ticket = la.open_ticket
         out.append({
-            "id": str(e.id), "status": status, "operator": operator,
+            "id": str(e.id), "status": la.status, "operator": la.operator,
             "open_ticket": ticket is not None,
             "open_ticket_id": ticket["id"] if ticket else None,
             "open_ticket_number": ticket["number"] if ticket else None,

@@ -18,11 +18,25 @@ from app.db.session import get_db
 from app.core.security import get_current_user
 from app.models.models import (
     Supplier, StockItem, PurchaseOrder, PurchaseOrderItem,
-    InventoryMovement, User, PurchaseOrderStatus,
+    InventoryMovement, User, PurchaseOrderStatus, CostCenter,
 )
 
 supplier_router = APIRouter()
 po_router       = APIRouter()
+
+
+@po_router.get("/cost-centers")
+async def po_cost_centers(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """SAP cost centers a purchase order books to — active, coded, code first."""
+    rows = (await db.execute(
+        select(CostCenter.name, CostCenter.code)
+        .where(CostCenter.active == True, CostCenter.code.isnot(None))  # noqa: E712
+        .order_by(CostCenter.code, CostCenter.name)
+    )).all()
+    return [{"name": name, "code": code} for name, code in rows]
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -82,6 +96,8 @@ def _po_out(po: PurchaseOrder, include_items: bool = False) -> dict:
         "received_date": str(po.received_date) if po.received_date else None,
         "total_amount":  po.total_amount,
         "currency":      po.currency or "CAD",
+        "cost_center":   po.cost_center,
+        "scope":         po.scope or "opex",
         "notes":         po.notes,
         "created_by_id": str(po.created_by_id) if po.created_by_id else None,
         "created_at":    po.created_at.isoformat() if po.created_at else None,
@@ -392,6 +408,8 @@ async def create_purchase_order(
         order_date=date.fromisoformat(body.get("order_date") or str(date.today())),
         expected_date=date.fromisoformat(body["expected_date"]) if body.get("expected_date") else None,
         currency=body.get("currency", supplier.currency or "CAD"),
+        cost_center=(body.get("cost_center") or None),
+        scope=("capex" if body.get("scope") == "capex" else "opex"),
         notes=body.get("notes"),
         created_by_id=current_user.id,
     )
@@ -462,6 +480,10 @@ async def update_purchase_order(
         po.status = PurchaseOrderStatus(body["status"])
     if "expected_date" in body:
         po.expected_date = date.fromisoformat(body["expected_date"]) if body["expected_date"] else None
+    if "cost_center" in body:
+        po.cost_center = body["cost_center"] or None
+    if "scope" in body:
+        po.scope = "capex" if body["scope"] == "capex" else "opex"
     if "notes" in body:
         po.notes = body["notes"]
     if "currency" in body:

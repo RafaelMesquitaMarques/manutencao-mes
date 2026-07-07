@@ -75,6 +75,8 @@ export interface Equipment {
   manufacturing_year?: number;
   criticality: string;
   status: string;
+  /** Effective operational status (kiosk machine / tickets / parent) — list endpoint only */
+  live_status?: string | null;
   asset_type?: 'production' | 'auxiliary';
   subtype?: string | null;
   function_label?: string | null;
@@ -474,8 +476,20 @@ export interface KPISummary {
   period_days: number;
 }
 
+// One subcategory (subgroup) of a downtime category — its share of the group.
+export interface DowntimeParetoSub {
+  name: string | null;
+  name_en: string | null;
+  name_fr: string | null;
+  name_es: string | null;
+  color: string;
+  minutes: number;
+  count: number;
+}
+
 // Downtime grouped by stop reason (Pareto). Names carried in all locales so the
 // UI localizes; `type` is the TPM bucket (planned | unplanned | maintenance).
+// `subcategories` carries the subgroup breakdown for drill-down.
 export interface DowntimeParetoItem {
   name: string | null;
   name_en: string | null;
@@ -485,6 +499,7 @@ export interface DowntimeParetoItem {
   type: string | null;
   minutes: number;
   count: number;
+  subcategories?: DowntimeParetoSub[];
 }
 
 export interface OEETrendPoint {
@@ -559,6 +574,7 @@ export interface MachineReportData {
     planned_minutes: number;
     stops_count: number;
     pareto: StopParetoItem[];
+    sub_pareto?: StopParetoItem[];
   };
   mttr: { hours: number | null; repairs: number };
   mtbf: { hours: number | null; failures: number };

@@ -5,6 +5,7 @@ import { ArrowLeft, User, AlertCircle, CheckCircle, Trash2 } from 'lucide-react'
 import api from '../../api/axios';
 import type { TechnicianFull } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import { usePermission } from '../../hooks/usePermission';
 
 const SPECIALTIES = [
   'electromechanical', 'mechanical', 'electrical',
@@ -17,6 +18,10 @@ export default function TechnicianDetail() {
   const { id }     = useParams<{ id: string }>();
   const navigate   = useNavigate();
   const { t }      = useTranslation();
+  const canUpdate  = usePermission('technicians', 'update');
+  const canDelete  = usePermission('technicians', 'delete');
+  // Hourly rates are cost data — only visible to users with access to the Costs page.
+  const canSeeCosts = usePermission('costs', 'view');
   const [tech, setTech]         = useState<TechnicianFull | null>(null);
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
@@ -44,13 +49,13 @@ export default function TechnicianDetail() {
           certifications:  (data.certifications ?? []).join(', '),
         });
       })
-      .catch(() => setError('Technician not found.'))
+      .catch(() => setError(t('technicians.notFound')))
       .finally(() => setLoading(false));
-  }, [id]);
+  }, [id, t]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!id) return;
+    if (!id || !canUpdate) return;
     setError('');
     setSuccess(false);
     setSaving(true);
@@ -59,7 +64,7 @@ export default function TechnicianDetail() {
       if (form.employee_number) payload.employee_number = form.employee_number;
       if (form.specialty)       payload.specialty       = form.specialty;
       if (form.shift)           payload.shift           = form.shift;
-      if (form.hourly_rate)     payload.hourly_rate     = Number(form.hourly_rate);
+      if (canSeeCosts && form.hourly_rate) payload.hourly_rate = Number(form.hourly_rate);
       payload.certifications = form.certifications
         ? form.certifications.split(',').map((c) => c.trim()).filter(Boolean)
         : [];
@@ -74,12 +79,12 @@ export default function TechnicianDetail() {
   };
 
   const handleDelete = async () => {
-    if (!id || !window.confirm('Deactivate this technician?')) return;
+    if (!id || !canDelete || !window.confirm(t('technicians.deactivateConfirm'))) return;
     try {
       await api.delete(`/api/technicians/${id}`);
       navigate('/technicians');
     } catch {
-      setError('Failed to deactivate technician.');
+      setError(t('technicians.deactivateFailed'));
     }
   };
 
@@ -106,15 +111,24 @@ export default function TechnicianDetail() {
           </h1>
           {tech?.email && <p className="text-gray-500 text-sm mt-0.5">{tech.email}</p>}
         </div>
-        <button onClick={handleDelete} className="btn-danger py-1.5 px-3" title="Deactivate">
-          <Trash2 size={15} />
-        </button>
+        {canDelete && (
+          <button onClick={handleDelete} className="btn-danger py-1.5 px-3" title={t('technicians.deactivate')}>
+            <Trash2 size={15} />
+          </button>
+        )}
       </div>
+
+      {!canUpdate && (
+        <div className="flex items-center gap-2.5 p-3 bg-blue-500/10 border border-blue-500/25 rounded-lg">
+          <AlertCircle size={14} className="text-blue-400 flex-shrink-0" />
+          <p className="text-blue-400 text-sm">{t('technicians.viewOnly')}</p>
+        </div>
+      )}
 
       {success && (
         <div className="flex items-center gap-2.5 p-3 bg-green-500/10 border border-green-500/25 rounded-lg">
           <CheckCircle size={14} className="text-green-400" />
-          <p className="text-green-400 text-sm">Changes saved.</p>
+          <p className="text-green-400 text-sm">{t('technicians.changesSaved')}</p>
         </div>
       )}
       {error && (
@@ -133,6 +147,7 @@ export default function TechnicianDetail() {
             placeholder="EMP-001"
             value={form.employee_number}
             onChange={(e) => setForm({ ...form, employee_number: e.target.value })}
+            disabled={!canUpdate}
           />
         </div>
 
@@ -142,6 +157,7 @@ export default function TechnicianDetail() {
             className="input-field"
             value={form.specialty}
             onChange={(e) => setForm({ ...form, specialty: e.target.value })}
+            disabled={!canUpdate}
           >
             <option value="">{t('technicians.selectSpecialty')}</option>
             {SPECIALTIES.map((s) => (
@@ -156,6 +172,7 @@ export default function TechnicianDetail() {
             className="input-field"
             value={form.shift}
             onChange={(e) => setForm({ ...form, shift: e.target.value })}
+            disabled={!canUpdate}
           >
             <option value="">{t('technicians.selectShift')}</option>
             {SHIFTS.map((s) => (
@@ -164,38 +181,44 @@ export default function TechnicianDetail() {
           </select>
         </div>
 
-        <div>
-          <label className="label">{t('technicians.hourlyRate')}</label>
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            className="input-field"
-            placeholder="45.00"
-            value={form.hourly_rate}
-            onChange={(e) => setForm({ ...form, hourly_rate: e.target.value })}
-          />
-        </div>
+        {canSeeCosts && (
+          <div>
+            <label className="label">{t('technicians.hourlyRate')}</label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              className="input-field"
+              placeholder="45.00"
+              value={form.hourly_rate}
+              onChange={(e) => setForm({ ...form, hourly_rate: e.target.value })}
+              disabled={!canUpdate}
+            />
+          </div>
+        )}
 
         <div>
-          <label className="label">{t('technicians.certifications', 'Certifications')}</label>
+          <label className="label">{t('technicians.certifications')}</label>
           <input
             type="text"
             className="input-field"
             placeholder="NR-10, NR-12, CREA"
             value={form.certifications}
             onChange={(e) => setForm({ ...form, certifications: e.target.value })}
+            disabled={!canUpdate}
           />
-          <p className="text-xs text-gray-600 mt-1">Comma-separated</p>
+          <p className="text-xs text-gray-600 mt-1">{t('technicians.commaSeparated')}</p>
         </div>
 
-        <div className="flex justify-end pt-2 border-t border-white/[0.06]">
-          <button type="submit" disabled={saving} className="btn-primary">
-            {saving ? (
-              <><span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> Saving...</>
-            ) : 'Save changes'}
-          </button>
-        </div>
+        {canUpdate && (
+          <div className="flex justify-end pt-2 border-t border-white/[0.06]">
+            <button type="submit" disabled={saving} className="btn-primary">
+              {saving ? (
+                <><span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> {t('technicians.saving')}</>
+              ) : t('technicians.saveChanges')}
+            </button>
+          </div>
+        )}
       </form>
     </div>
   );

@@ -24,6 +24,7 @@ import type {
   InterventionPartItem,
   InventorySearchItem,
 } from '../../api/machineOperator';
+import { useMachineLive } from '../../hooks/useLiveEvents';
 
 // Web Speech API is not in the standard DOM typings — minimal local shape
 interface SpeechRecognitionLike {
@@ -449,9 +450,12 @@ export function MaintenancePanel({ machineId, embedded = false }: { machineId: s
 
   useEffect(() => {
     load();
-    pollRef.current = setInterval(load, 30_000);
+    // Slow fallback only — the live WS below refetches the instant something changes.
+    pollRef.current = setInterval(load, 60_000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [machine_id]);
+
+  useMachineLive([machine_id, state?.machine?.code], () => load());
 
   // Fetch intervention types once on mount
   useEffect(() => {
@@ -654,7 +658,7 @@ export function MaintenancePanel({ machineId, embedded = false }: { machineId: s
                 {acting ? <Loader2 className="animate-spin mx-auto" size={18} /> : '🔧 Prendre en charge la maintenance'}
               </button>
             ) : (
-              <p className="text-gray-600 text-sm">Aucune maintenance active</p>
+              <p className="text-gray-400 text-sm">Aucune maintenance active</p>
             )
           ) : (
             <>
@@ -824,7 +828,7 @@ export function MaintenancePanel({ machineId, embedded = false }: { machineId: s
 
         {/* Last intervention panel */}
         <div style={embedded ? undefined : { width: '220px', flexShrink: 0 }} className="flex flex-col gap-3 py-6">
-          <p className="text-xs text-gray-600 uppercase tracking-widest font-semibold">Dernière intervention</p>
+          <p className="text-xs text-gray-400 uppercase tracking-widest font-semibold">Dernière intervention</p>
           {state.last_intervention ? (
             <>
               <InfoCard label="Statut" value="Terminée" />
@@ -844,7 +848,7 @@ export function MaintenancePanel({ machineId, embedded = false }: { machineId: s
               )}
             </>
           ) : (
-            <p className="text-gray-600 text-sm">Aucune</p>
+            <p className="text-gray-400 text-sm">Aucune</p>
           )}
         </div>
       </main>
@@ -874,7 +878,7 @@ function DynamicIcon({ name, size = 28 }: { name: string; size?: number }) {
 function InfoCard({ label, value, alert }: { label: string; value: string; alert?: boolean }) {
   return (
     <div className="rounded-lg p-3" style={{ background: '#111318', border: '1px solid #21262d' }}>
-      <p className="text-xs text-gray-600 mb-0.5">{label}</p>
+      <p className="text-xs text-gray-400 mb-0.5">{label}</p>
       <p className={`text-sm font-semibold ${alert ? 'text-red-400' : 'text-gray-200'}`}>{value}</p>
     </div>
   );

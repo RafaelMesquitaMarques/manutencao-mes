@@ -32,17 +32,19 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 function StatusCell({ value }: { value: string }) {
+  const { t } = useTranslation();
   return (
     <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[value] ?? 'text-gray-400'}`}>
-      {value.replace('_', ' ')}
+      {t(`status.${value}`, value.replace('_', ' '))}
     </span>
   );
 }
 
 function PriorityCell({ value }: { value: string }) {
+  const { t } = useTranslation();
   return (
     <span className={`text-xs font-medium capitalize ${PRIORITY_COLORS[value] ?? 'text-gray-400'}`}>
-      {value}
+      {t(`priority.${value}`, value)}
     </span>
   );
 }
@@ -205,7 +207,8 @@ const WorkOrderList = () => {
       width: 120,
       sortable: true,
       filter: ExcelSetFilter,
-      cellStyle: { color: '#94a3b8', fontSize: '13px', textTransform: 'capitalize' },
+      valueFormatter: (p) => (p.value ? t(`type.${p.value}`, p.value) : ''),
+      cellStyle: { color: '#94a3b8', fontSize: '13px' },
     },
     {
       field: 'priority',
@@ -214,6 +217,7 @@ const WorkOrderList = () => {
       sortable: true,
       filter: ExcelSetFilter,
       cellRenderer: PriorityCell,
+      valueFormatter: (p) => (p.value ? t(`priority.${p.value}`, p.value) : ''),
     },
     {
       field: 'status',
@@ -222,6 +226,7 @@ const WorkOrderList = () => {
       sortable: true,
       filter: ExcelSetFilter,
       cellRenderer: StatusCell,
+      valueFormatter: (p) => (p.value ? t(`status.${p.value}`, String(p.value).replace('_', ' ')) : ''),
     },
     {
       field: 'due_date',

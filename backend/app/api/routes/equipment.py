@@ -11,6 +11,7 @@ from app.models.models import User, Equipment, EquipmentStatus
 from app.schemas.equipment import EquipmentCreate, EquipmentUpdate, EquipmentOut, EquipmentListResponse
 from app.core.security import get_current_user
 from app.services.equipment_machine_sync import ensure_machine_for_equipment
+from app.services.live_status import live_status_by_equipment
 
 router = APIRouter()
 
@@ -56,6 +57,12 @@ async def list_equipment(
     query = query.offset(skip).limit(limit).order_by(Equipment.name)
     result = await db.execute(query)
     items = result.scalars().all()
+
+    # Effective live status (kiosk machine / open ticket / parent machine) —
+    # the static `status` column alone would show everything as "running".
+    live = await live_status_by_equipment(db, items)
+    for e in items:
+        e.live_status = live.get(str(e.id))
 
     return EquipmentListResponse(total=total, items=items)
 

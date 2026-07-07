@@ -2,12 +2,12 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
-import { AlertTriangle, CheckCircle2, X, Play, ChevronLeft, ChevronRight, User, Clock, Cog } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, X, Play, ChevronLeft, ChevronRight, User, Clock, Cog, Maximize2, Minimize2 } from 'lucide-react';
 import {
   fetchMachinePage, fetchTodayStops, fetchMESData, fetchMachineOperators,
   updateMachineStatus, updateMachineJob, updateMachineOperator,
   createMachineStop, closeMachineStop, fetchMachineStopCategories,
-  fetchMachineRejectCategories, logReject, reclassifyStop,
+  fetchMachineRejectCategories, logReject, addRejects, reclassifyStop,
   fetchProductionHourly, type HourlyPoint,
 } from '../../api/machines';
 import { openTicketField, closeTicket } from '../../api/maintenance';
@@ -25,6 +25,7 @@ import 'react-resizable/css/styles.css';
 import { useRole } from '../../hooks/usePermission';
 import api from '../../api/axios';
 import { STATUS_HEX, statusColor } from '../../utils/statusColors';
+import { useMachineLive } from '../../hooks/useLiveEvents';
 
 const RGL = WidthProvider(GridLayout);
 // Default arrangement of the kiosk panels (12-col grid). Saved per machine in kiosk_layout.
@@ -59,10 +60,13 @@ const I18N = {
     commentPlaceholder: 'Add a comment...',
     confirmStop: 'CONFIRM STOP',
     confirmReject: 'CONFIRM REJECT',
+    removeOne: 'Remove one (correction)',
     quantity: 'Quantity',
     editLayoutBtn: 'Edit layout',
     saveLayoutBtn: 'Save layout',
     resetLayoutBtn: 'Reset',
+    enterFullscreen: 'Fullscreen',
+    exitFullscreen: 'Exit fullscreen',
     confirmMaintenance: 'CONFIRM — NOTIFY MAINTENANCE',
     stoppedAt: 'Stop detected at',
     maintenanceWillBeNotified: 'Maintenance team will be notified',
@@ -109,10 +113,13 @@ const I18N = {
     commentPlaceholder: 'Ajouter un commentaire...',
     confirmStop: 'CONFIRMER L\'ARRÊT',
     confirmReject: 'CONFIRMER LE REJET',
+    removeOne: 'Retirer un (correction)',
     quantity: 'Quantité',
     editLayoutBtn: 'Éditer la disposition',
     saveLayoutBtn: 'Enregistrer',
     resetLayoutBtn: 'Réinitialiser',
+    enterFullscreen: 'Plein écran',
+    exitFullscreen: 'Quitter le plein écran',
     confirmMaintenance: 'CONFIRMER — NOTIFIER MAINTENANCE',
     stoppedAt: 'Arrêt détecté à',
     maintenanceWillBeNotified: 'L\'équipe de maintenance sera notifiée',
@@ -159,10 +166,13 @@ const I18N = {
     commentPlaceholder: 'Agregar un comentario...',
     confirmStop: 'CONFIRMAR PARADA',
     confirmReject: 'CONFIRMAR RECHAZO',
+    removeOne: 'Quitar uno (corrección)',
     quantity: 'Cantidad',
     editLayoutBtn: 'Editar disposición',
     saveLayoutBtn: 'Guardar',
     resetLayoutBtn: 'Restablecer',
+    enterFullscreen: 'Pantalla completa',
+    exitFullscreen: 'Salir de pantalla completa',
     confirmMaintenance: 'CONFIRMAR — NOTIFICAR MANTENIMIENTO',
     stoppedAt: 'Parada detectada a las',
     maintenanceWillBeNotified: 'Se notificará al equipo de mantenimiento',
@@ -565,6 +575,12 @@ export default function MachinePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
 
+  // Live updates: the /api/live WS signals when this machine changes and the
+  // fetch effects below re-run instantly; their intervals are a slow fallback.
+  const [liveTick, setLiveTick] = useState(0);
+  useMachineLive([slug, machine?.id, machine?.code, machine?.page_slug],
+    () => setLiveTick((n) => n + 1));
+
   // Reject modal
   const [showRejectModal, setShowRejectModal]     = useState(false);
   const [rejectStep, setRejectStep]               = useState<RejectStep>('categories');
@@ -573,6 +589,7 @@ export default function MachinePage() {
   const [rejectQty, setRejectQty]                 = useState(1);
   const [rejectComment, setRejectComment]         = useState('');
   const [rejectBusy, setRejectBusy]               = useState(false);
+  const [rejectAdjustBusy, setRejectAdjustBusy]   = useState(false);
 
   const [jobInput, setJobInput]       = useState('');
   const [showOpList, setShowOpList]   = useState(false);
@@ -582,6 +599,35 @@ export default function MachinePage() {
   const canEditLayout = useRole('supervisor', 'plant_manager', 'director', 'admin');
   const [editLayout, setEditLayout] = useState(false);
   const [layout, setLayout] = useState<Layout[]>(DEFAULT_KIOSK_LAYOUT);
+
+  // Fullscreen (kiosk on a tablet — maximize the operator's usable space by hiding
+  // the browser chrome). Uses the Fullscreen API with a webkit fallback for iPad Safari.
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    const doc = document as Document & { webkitFullscreenElement?: Element };
+    const onChange = () => setIsFullscreen(!!(document.fullscreenElement || doc.webkitFullscreenElement));
+    document.addEventListener('fullscreenchange', onChange);
+    document.addEventListener('webkitfullscreenchange', onChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onChange);
+      document.removeEventListener('webkitfullscreenchange', onChange);
+    };
+  }, []);
+  const toggleFullscreen = useCallback(() => {
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element;
+      webkitExitFullscreen?: () => Promise<void>;
+    };
+    const el = document.documentElement as HTMLElement & {
+      webkitRequestFullscreen?: () => Promise<void>;
+    };
+    const active = !!(document.fullscreenElement || doc.webkitFullscreenElement);
+    if (active) {
+      (document.exitFullscreen?.bind(document) || doc.webkitExitFullscreen?.bind(doc))?.();
+    } else {
+      (el.requestFullscreen?.bind(el) || el.webkitRequestFullscreen?.bind(el))?.();
+    }
+  }, []);
 
   // Stop modal state
   const [showModal, setShowModal]           = useState(false);
@@ -637,7 +683,7 @@ export default function MachinePage() {
   const winStartISO = displayWin?.start.toISOString();
   const winEndISO = displayWin?.end.toISOString();
 
-  // Fetch the displayed window's stops (refreshes every 30s; refetches on navigation).
+  // Fetch the displayed window's stops (live WS push; slow fallback interval).
   useEffect(() => {
     if (!slug || !winStartISO || !winEndISO) return;
     let active = true;
@@ -646,11 +692,11 @@ export default function MachinePage() {
         .then((s) => { if (active) setTimelineStops(s); })
         .catch(() => {});
     loadWin();
-    const id = setInterval(loadWin, 5_000);
+    const id = setInterval(loadWin, 60_000);
     return () => { active = false; clearInterval(id); };
-  }, [slug, winStartISO, winEndISO]);
+  }, [slug, winStartISO, winEndISO, liveTick]);
 
-  // Pieces-per-hour for the displayed shift window (refreshes 30s, refetches on nav).
+  // Pieces-per-hour for the displayed shift window (live WS push; slow fallback).
   useEffect(() => {
     if (!slug || !winStartISO || !winEndISO) return;
     let active = true;
@@ -659,9 +705,9 @@ export default function MachinePage() {
         .then((r) => { if (active) setHourly(r.hours); })
         .catch(() => {});
     load();
-    const id = setInterval(load, 5_000);
+    const id = setInterval(load, 60_000);
     return () => { active = false; clearInterval(id); };
-  }, [slug, winStartISO, winEndISO]);
+  }, [slug, winStartISO, winEndISO, liveTick]);
 
   const doReclassify = async (catId: string | null, subId?: string | null) => {
     if (!slug || !reclassTarget) return;
@@ -720,9 +766,13 @@ export default function MachinePage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Auto-refresh every 5s, SILENT (no loader flash; the 3D map uses a WS push).
+  // Silent refresh (no loader flash): instantly on a live WS event for this
+  // machine, plus a slow fallback interval in case the socket drops.
   useEffect(() => {
-    const id = setInterval(() => load(true), 5_000);
+    if (liveTick) load(true);
+  }, [liveTick, load]);
+  useEffect(() => {
+    const id = setInterval(() => load(true), 60_000);
     return () => clearInterval(id);
   }, [load]);
 
@@ -850,7 +900,7 @@ export default function MachinePage() {
   };
 
   const submitReject = async () => {
-    if (!slug) return;
+    if (!slug || rejectQty < 1) return;
     setRejectBusy(true);
     try {
       const payload = {
@@ -864,6 +914,18 @@ export default function MachinePage() {
       setShowRejectModal(false);
     } finally {
       setRejectBusy(false);
+    }
+  };
+
+  // Correction: undo an accidental reject (backend clamps at 0).
+  const removeOneReject = async () => {
+    if (!slug || rejectAdjustBusy || (mes?.reject_count ?? 0) <= 0) return;
+    setRejectAdjustBusy(true);
+    try {
+      const res = await addRejects(slug, -1);
+      setMes((prev) => prev ? { ...prev, reject_count: res.reject_count } : prev);
+    } finally {
+      setRejectAdjustBusy(false);
     }
   };
 
@@ -913,6 +975,10 @@ export default function MachinePage() {
   const openTickets = machine.open_tickets ?? [];
   const todayStopCount = stops.length;
 
+  // Production KPI colors — green output, blue target, OEE by band, amber downtime.
+  const oeePct = mes?.oee_pct ?? 0;
+  const oeeColor = oeePct >= 85 ? 'text-emerald-400' : oeePct >= 50 ? 'text-amber-400' : 'text-rose-400';
+
   return (
     <div className="min-h-screen bg-[#0a0f1a] text-white flex flex-col" style={machine.custom_color ? { '--accent': machine.custom_color } as any : {}}>
 
@@ -945,28 +1011,35 @@ export default function MachinePage() {
         </div>
       )}
 
-      {/* ── Kiosk layout editor toolbar (supervisor+) ── */}
-      {canEditLayout && (
-        <div className="flex items-center justify-end gap-2 px-4 pt-3">
-          {editLayout ? (
-            <>
-              <button
-                onClick={() => setLayout(DEFAULT_KIOSK_LAYOUT)}
-                className="px-3 py-1.5 rounded-lg text-sm font-semibold text-gray-300 border border-white/10 hover:bg-white/[0.05]"
-              >{t.resetLayoutBtn}</button>
-              <button
-                onClick={() => { saveLayout(layout); setEditLayout(false); }}
-                className="px-4 py-1.5 rounded-lg text-sm font-bold text-white bg-blue-600 hover:bg-blue-500"
-              >{t.saveLayoutBtn}</button>
-            </>
-          ) : (
+      {/* ── Top toolbar: fullscreen (everyone) + layout editor (supervisor+) ── */}
+      <div className="flex items-center justify-end gap-2 px-4 pt-3">
+        <button
+          onClick={toggleFullscreen}
+          title={isFullscreen ? t.exitFullscreen : t.enterFullscreen}
+          aria-label={isFullscreen ? t.exitFullscreen : t.enterFullscreen}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold text-gray-300 border border-white/10 hover:bg-white/[0.05]"
+        >
+          {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+          <span className="hidden sm:inline">{isFullscreen ? t.exitFullscreen : t.enterFullscreen}</span>
+        </button>
+        {canEditLayout && (editLayout ? (
+          <>
             <button
-              onClick={() => setEditLayout(true)}
-              className="px-3 py-1.5 rounded-lg text-sm font-semibold text-blue-300 border border-blue-500/30 bg-blue-500/10 hover:bg-blue-500/20"
-            >{t.editLayoutBtn}</button>
-          )}
-        </div>
-      )}
+              onClick={() => setLayout(DEFAULT_KIOSK_LAYOUT)}
+              className="px-3 py-1.5 rounded-lg text-sm font-semibold text-gray-300 border border-white/10 hover:bg-white/[0.05]"
+            >{t.resetLayoutBtn}</button>
+            <button
+              onClick={() => { saveLayout(layout); setEditLayout(false); }}
+              className="px-4 py-1.5 rounded-lg text-sm font-bold text-white bg-blue-600 hover:bg-blue-500"
+            >{t.saveLayoutBtn}</button>
+          </>
+        ) : (
+          <button
+            onClick={() => setEditLayout(true)}
+            className="px-3 py-1.5 rounded-lg text-sm font-semibold text-blue-300 border border-blue-500/30 bg-blue-500/10 hover:bg-blue-500/20"
+          >{t.editLayoutBtn}</button>
+        ))}
+      </div>
 
       {/* ── Editable kiosk panels (drag/resize when editing) ── */}
       <RGL
@@ -1003,7 +1076,7 @@ export default function MachinePage() {
               {machine.display_name || machine.name}
             </p>
             {machine.code && (
-              <p className="text-sm font-mono text-gray-600">{machine.code}</p>
+              <p className="text-sm font-mono text-gray-400">{machine.code}</p>
             )}
 
             {/* Operator selector */}
@@ -1031,7 +1104,7 @@ export default function MachinePage() {
               )}
             </div>
 
-            <p className="text-sm text-gray-600">
+            <p className="text-sm text-gray-400">
               {todayStopCount} {t.stopCount}
             </p>
           </div>
@@ -1043,10 +1116,10 @@ export default function MachinePage() {
           <div key="job" className="h-full relative">
             {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.jobNumber}</div>}
             <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex flex-col justify-between">
-            <p className="text-sm font-semibold text-gray-500 uppercase tracking-widest">{t.jobNumber}</p>
+            <p className="text-sm font-semibold text-gray-400 uppercase tracking-widest">{t.jobNumber}</p>
             <div>
               <p className="text-3xl font-bold text-white mb-4">
-                {machine.current_job_number || <span className="text-gray-600">{t.noJob}</span>}
+                {machine.current_job_number || <span className="text-gray-500">{t.noJob}</span>}
               </p>
               <div className="flex gap-2">
                 <input
@@ -1117,7 +1190,7 @@ export default function MachinePage() {
         <div key="timeline" className="h-full relative">
           {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.todayTimeline}</div>}
           <div className="h-full flex flex-col overflow-hidden bg-[#0d1421] rounded-2xl border border-white/[0.06] p-4">
-            <p className="text-xs text-gray-600 uppercase tracking-widest mb-3 font-semibold">{t.todayTimeline}</p>
+            <p className="text-xs text-gray-400 uppercase tracking-widest mb-3 font-semibold">{t.todayTimeline}</p>
             <div className="flex-1 min-h-0">
             <StopTimeline
               win={displayWin}
@@ -1160,23 +1233,23 @@ export default function MachinePage() {
           <div key="production" className="h-full relative">
             {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.production}</div>}
             <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 relative overflow-hidden">
-            <p className="text-xs text-gray-600 uppercase tracking-widest mb-2 font-semibold">{t.production}</p>
+            <p className="text-xs text-gray-400 uppercase tracking-widest mb-2 font-semibold">{t.production}</p>
             <div className="flex gap-8">
               <div>
-                <p className="text-4xl font-black text-gray-600">{mes?.is_placeholder ? '—' : mes?.production_count ?? 0}</p>
-                <p className="text-xs text-gray-700 mt-1">{t.production}</p>
+                <p className={`text-4xl font-black ${mes?.is_placeholder ? 'text-gray-600' : 'text-emerald-400'}`}>{mes?.is_placeholder ? '—' : mes?.production_count ?? 0}</p>
+                <p className="text-xs text-gray-500 mt-1">{t.production}</p>
               </div>
               <div>
-                <p className="text-4xl font-black text-gray-600">{mes?.is_placeholder ? '—' : (machine.target_count ?? mes?.target ?? 0)}</p>
-                <p className="text-xs text-gray-700 mt-1">{t.target}</p>
+                <p className={`text-4xl font-black ${mes?.is_placeholder ? 'text-gray-600' : 'text-sky-400'}`}>{mes?.is_placeholder ? '—' : (machine.target_count ?? mes?.target ?? 0)}</p>
+                <p className="text-xs text-gray-500 mt-1">{t.target}</p>
               </div>
               <div>
-                <p className="text-4xl font-black text-gray-600">{mes?.is_placeholder ? '—' : `${mes?.oee_pct ?? 0}%`}</p>
-                <p className="text-xs text-gray-700 mt-1">{t.oee}</p>
+                <p className={`text-4xl font-black ${mes?.is_placeholder ? 'text-gray-600' : oeeColor}`}>{mes?.is_placeholder ? '—' : `${mes?.oee_pct ?? 0}%`}</p>
+                <p className="text-xs text-gray-500 mt-1">{t.oee}</p>
               </div>
               <div>
-                <p className="text-4xl font-black text-gray-400">{mes?.downtime_today_minutes ?? 0}</p>
-                <p className="text-xs text-gray-600 mt-1">{t.downtime} ({t.min})</p>
+                <p className={`text-4xl font-black ${mes?.is_placeholder ? 'text-gray-600' : (mes?.downtime_today_minutes ?? 0) > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>{mes?.downtime_today_minutes ?? 0}</p>
+                <p className="text-xs text-gray-500 mt-1">{t.downtime} ({t.min})</p>
               </div>
             </div>
             {mes?.is_placeholder && (
@@ -1193,7 +1266,7 @@ export default function MachinePage() {
           <div key="gauge" className="h-full relative">
             {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.availability}</div>}
             <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5">
-            <p className="text-xs text-gray-600 uppercase tracking-widest mb-1 font-semibold">{t.availability}</p>
+            <p className="text-xs text-gray-400 uppercase tracking-widest mb-1 font-semibold">{t.availability}</p>
             <AvailabilityGauge
               pct={mes?.availability_pct ?? 0}
               target={machine.target_availability_pct ?? 70}
@@ -1209,7 +1282,7 @@ export default function MachinePage() {
             {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.rejects}</div>}
             <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex items-center justify-between">
             <div>
-              <p className="text-xs text-gray-600 uppercase tracking-widest mb-1 font-semibold">{t.rejects}</p>
+              <p className="text-xs text-gray-400 uppercase tracking-widest mb-1 font-semibold">{t.rejects}</p>
               <p className="text-6xl font-black text-red-400">{mes?.reject_count ?? 0}</p>
             </div>
             <div className="flex flex-col gap-3">
@@ -1217,6 +1290,12 @@ export default function MachinePage() {
                 onClick={openRejectModal}
                 className="w-16 h-16 rounded-full bg-red-600/20 hover:bg-red-600/30 border-2 border-red-500/40 text-red-400 text-3xl font-black transition-all active:scale-90"
               >+1</button>
+              <button
+                onClick={removeOneReject}
+                disabled={rejectAdjustBusy || (mes?.reject_count ?? 0) <= 0}
+                title={t.removeOne} aria-label={t.removeOne}
+                className="w-16 h-11 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border-2 border-white/15 text-gray-300 text-2xl font-black transition-all active:scale-90 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center"
+              >−1</button>
             </div>
             </div>
           </div>
@@ -1229,7 +1308,7 @@ export default function MachinePage() {
             <MaintenancePanel machineId={machine.id} embedded />
             {false && (
               <div className="space-y-2">
-                <p className="text-xs text-gray-600 uppercase tracking-widest font-semibold mb-2">{t.activeTickets}</p>
+                <p className="text-xs text-gray-400 uppercase tracking-widest font-semibold mb-2">{t.activeTickets}</p>
                 {openTickets.map((ticket) => (
                   <div key={ticket.id} className="border border-amber-500/20 rounded-xl p-3 space-y-2">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -1357,7 +1436,15 @@ export default function MachinePage() {
                   <div className="flex items-center gap-4 justify-center">
                     <button onClick={() => setRejectQty((q) => Math.max(1, q - 1))}
                       className="w-14 h-14 rounded-full bg-gray-700 hover:bg-gray-600 text-white text-2xl font-black transition-all active:scale-90">−</button>
-                    <span className="text-6xl font-black text-white w-20 text-center">{rejectQty}</span>
+                    <input
+                      type="number" min={1} inputMode="numeric" value={rejectQty}
+                      onFocus={(e) => e.target.select()}
+                      onChange={(e) => {
+                        const v = parseInt(e.target.value, 10);
+                        setRejectQty(Number.isNaN(v) ? 1 : Math.max(1, v));
+                      }}
+                      className="text-6xl font-black text-white w-40 text-center bg-transparent border-b-2 border-white/15 focus:border-red-500 focus:outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                    />
                     <button onClick={() => setRejectQty((q) => q + 1)}
                       className="w-14 h-14 rounded-full bg-gray-700 hover:bg-gray-600 text-white text-2xl font-black transition-all active:scale-90">+</button>
                   </div>

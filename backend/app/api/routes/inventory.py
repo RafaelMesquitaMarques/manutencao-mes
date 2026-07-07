@@ -8,7 +8,7 @@ import uuid
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, and_
+from sqlalchemy import select, func, or_, and_, case
 
 from app.db.session import get_db
 from app.core.security import get_current_user
@@ -377,20 +377,40 @@ async def search_stock_items(
     limit: int = Query(10, le=50),
     db: AsyncSession = Depends(get_db),
 ):
-    """Open endpoint (no auth) — for kiosk parts search during intervention."""
+    """Open endpoint (no auth) — for kiosk parts search during intervention.
+
+    Every whitespace-separated term must match (in any order), each against any
+    searchable field — so "bearing skf 205" finds "SKF 6205 bearing, banc de scie".
+    """
+    terms = q.split()
     filters = []
-    if q:
+    for term in terms:
+        like = f"%{term}%"
         filters.append(
             or_(
-                StockItem.code.ilike(f"%{q}%"),
-                StockItem.name.ilike(f"%{q}%"),
-                StockItem.description.ilike(f"%{q}%"),
+                StockItem.code.ilike(like),
+                StockItem.name.ilike(like),
+                StockItem.description.ilike(like),
+                StockItem.supplier_code.ilike(like),
+                StockItem.supplier.ilike(like),
+                StockItem.category.ilike(like),
             )
         )
     stmt = select(StockItem)
     if filters:
         stmt = stmt.where(and_(*filters))
-    stmt = stmt.order_by(StockItem.code).limit(limit)
+    if q:
+        # Relevance: exact-code prefix, then code substring, then name, then the rest.
+        rank = case(
+            (StockItem.code.ilike(f"{q}%"), 0),
+            (StockItem.code.ilike(f"%{q}%"), 1),
+            (StockItem.name.ilike(f"%{q}%"), 2),
+            else_=3,
+        )
+        stmt = stmt.order_by(rank, StockItem.code)
+    else:
+        stmt = stmt.order_by(StockItem.code)
+    stmt = stmt.limit(limit)
     items = (await db.execute(stmt)).scalars().all()
     return {
         "items": [

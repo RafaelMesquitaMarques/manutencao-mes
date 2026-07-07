@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Integer, Float, Boolean, DateTime, Date,
-    ForeignKey, Text, Enum as SAEnum, JSON
+    ForeignKey, Text, Enum as SAEnum, JSON, UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -975,6 +975,62 @@ class Machine(Base):
     reject_categories  = relationship("RejectCategory", back_populates="machine", cascade="all, delete-orphan")
 
 
+# ─── Production I/O devices (Advantech ADAM gateway) ───────────────────────────
+
+class AdamModel(str, enum.Enum):
+    adam_6050 = "6050"
+    adam_6051 = "6051"
+
+class AdamSignalSource(str, enum.Enum):
+    di      = "di"        # software edge-count on a discrete-input channel
+    counter = "counter"   # ADAM 32-bit hardware counter register (no missed pulses)
+
+class AdamActiveLevel(str, enum.Enum):
+    low  = "low"          # idle=1, pulse pulls the line to 0 (bench button on DI0)
+    high = "high"
+
+class AdamDeviceStatus(str, enum.Enum):
+    unknown = "unknown"   # never polled yet
+    online  = "online"    # last poll succeeded
+    offline = "offline"   # last poll could not reach the device
+    error   = "error"     # reached the device but the read failed
+
+
+class AdamDevice(Base):
+    """An Advantech ADAM I/O module wired to a production machine.
+
+    The central gateway (app.workers.adam_gateway) polls every enabled device
+    over Modbus/TCP and pushes readings to the linked machine's production-signal
+    / production-count endpoints, authenticated with the machine's
+    signal_ingest_token. This row is the single source of truth for a device's
+    config — edit it in the UI and the gateway picks it up on its next reload.
+    The health fields (status/last_seen_at/last_error) are written by the gateway."""
+    __tablename__ = "adam_devices"
+
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name             = Column(String(200), nullable=False)
+    model            = Column(SAEnum(AdamModel, native_enum=False), default=AdamModel.adam_6051)
+    ip_address       = Column(String(64), nullable=False)
+    port             = Column(Integer, default=502)
+    machine_id       = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
+    enabled          = Column(Boolean, default=True)
+    # Pulse source + wiring
+    signal_source    = Column(SAEnum(AdamSignalSource, native_enum=False), default=AdamSignalSource.di)
+    channel          = Column(Integer, default=0)        # DI channel (signal_source=di)
+    active_level     = Column(SAEnum(AdamActiveLevel, native_enum=False), default=AdamActiveLevel.low)
+    counter_reg      = Column(Integer, default=0)        # input-register addr (signal_source=counter)
+    idle_timeout_s   = Column(Integer, default=15)       # seconds without a pulse → "not producing"
+    poll_interval_ms = Column(Integer, default=100)
+    # Health (written by the gateway)
+    status           = Column(SAEnum(AdamDeviceStatus, native_enum=False), default=AdamDeviceStatus.unknown)
+    last_seen_at     = Column(DateTime(timezone=True), nullable=True)
+    last_error       = Column(String(500), nullable=True)
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at       = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    machine          = relationship("Machine")
+
+
 class FactoryZone(Base):
     """A labelled rectangular area on the factory map (e.g. Parallèle, Assemblage)."""
     __tablename__ = "factory_zones"
@@ -1255,6 +1311,8 @@ class MaintenanceAlert(Base):
     escalation_level = Column(Integer, default=0)
     escalated_at     = Column(DateTime(timezone=True), nullable=True)
     is_overdue       = Column(Boolean, default=False)
+    # Last escalation/reminder SMS for this alert (drives reminder_minutes)
+    last_notified_at = Column(DateTime(timezone=True), nullable=True)
     created_at       = Column(DateTime(timezone=True), server_default=func.now())
     updated_at       = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -1316,6 +1374,20 @@ class EscalationSettings(Base):
     notify_on_ticket_completed = Column(Boolean, default=True)
     # Workflow: can technicians claim unassigned tickets themselves?
     technician_self_assign     = Column(Boolean, default=True)
+    # End-of-shift summary SMS to level-1 contacts (template-based, no AI)
+    shift_report_enabled       = Column(Boolean, default=False)
+    # Level-0 ticket group only hears about tickets at or above this priority
+    ticket_group_min_priority  = Column(String(20), default="low")
+    # Re-notify the current level every N minutes until the alert closes (0 = off)
+    reminder_minutes           = Column(Integer, default=0)
+    # Don't escalate alerts while the machine is in an open planned stop
+    pause_during_planned_stop  = Column(Boolean, default=True)
+    # SMS text per notification type — {key: template}; missing/empty = default
+    # (defaults live in notification_service.TEMPLATE_DEFAULTS)
+    sms_templates              = Column(JSON, nullable=True)
+    # Channel per trigger — {trigger: {"sms": bool, "email": bool}}; missing = both on.
+    # Refines the global sms_enabled/email_enabled switches, does not override them.
+    channel_matrix             = Column(JSON, nullable=True)
     updated_at                = Column(DateTime(timezone=True), onupdate=func.now())
 
 
@@ -1329,6 +1401,14 @@ class EscalationContact(Base):
     via_sms    = Column(Boolean, default=True)
     via_email  = Column(Boolean, default=True)
     is_active  = Column(Boolean, default=True)
+    # Scope — both empty = whole factory; machine list wins over department
+    scope_department  = Column(String(200), nullable=True)
+    scope_machine_ids = Column(JSON, nullable=True)     # list of machine UUID strings
+    # Quiet hours — local plant time "HH:MM"; both empty = 24/7.
+    # critical_bypass = critical alerts ignore the window (scope always applies)
+    notify_start    = Column(String(5), nullable=True)
+    notify_end      = Column(String(5), nullable=True)
+    critical_bypass = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User")
@@ -1347,6 +1427,23 @@ class NotificationLog(Base):
     message           = Column(Text)
     status            = Column(String(20), default="sent")
     created_at        = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ShiftReport(Base):
+    """One end-of-shift summary generated by the shift-report cron (template-based,
+    no AI tokens). Also the dedup ledger: a (shift_key, window_start) row means
+    that shift's report was already produced."""
+    __tablename__ = "shift_reports"
+
+    id                  = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shift_key           = Column(String(50), nullable=False)     # shifts_config key (morning|afternoon|night|…)
+    window_start        = Column(DateTime(timezone=True), nullable=False)
+    window_end          = Column(DateTime(timezone=True), nullable=False)
+    body                = Column(Text, nullable=False)           # rendered text (English master copy)
+    machines_included   = Column(Integer, default=0)
+    recipients_notified = Column(Integer, default=0)
+    status              = Column(String(20), default="sent")     # sent | no_recipients | error
+    created_at          = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class TicketComment(Base):
@@ -1456,6 +1553,11 @@ class PurchaseOrder(Base):
     total_amount  = Column(Float, nullable=True)
     currency      = Column(String(10), default="CAD")
     notes         = Column(Text, nullable=True)
+    # Cost control: which cost center this purchase books to (SAP cost-center
+    # name) and whether it's OPEX or CAPEX. An open PO (sent/confirmed, not yet
+    # received) is a committed spend that feeds the forecast in its expected month.
+    cost_center   = Column(String(200), nullable=True)
+    scope         = Column(String(10), nullable=False, default="opex")  # opex | capex
     created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
     updated_at    = Column(DateTime(timezone=True), onupdate=func.now())
@@ -1596,6 +1698,9 @@ class MachineIntervention(Base):
     approved_at                   = Column(DateTime(timezone=True), nullable=True)
     approval_note                 = Column(Text, nullable=True)
     rejection_reason              = Column(Text, nullable=True)
+    # Cost center the approver books this intervention's cost to (SAP cost-center
+    # name, e.g. "Maintenance"). Chosen at approval; drives cost attribution.
+    cost_center                   = Column(String(200), nullable=True)
 
 
 class SafetyChecklist(Base):
@@ -1807,3 +1912,113 @@ class Dashboard(Base):
     tiles         = Column(JSON, default=list)
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
     updated_at    = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class MaintenanceBudget(Base):
+    """Monthly maintenance budget, tracked against actual costs on the Costs page.
+    One row per (year, month); amount in the plant currency (CAD by default)."""
+    __tablename__ = "maintenance_budgets"
+    __table_args__ = (UniqueConstraint("year", "month", name="uq_maintenance_budget_year_month"),)
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    year       = Column(Integer, nullable=False, index=True)
+    month      = Column(Integer, nullable=False)   # 1..12
+    amount     = Column(Float, nullable=False, default=0.0)
+    currency   = Column(String(3), nullable=False, default="CAD")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class CostCenterBudget(Base):
+    """Monthly budget for one cost center (Budget-vs-Actual view). A cost center
+    is the department the spend rolls up to — WorkOrder.cost_center when set,
+    else the work order's equipment department. One row per (year, month,
+    cost_center, kind), where kind splits the envelope into opex | capex."""
+    __tablename__ = "cost_center_budgets"
+    __table_args__ = (UniqueConstraint("year", "month", "cost_center", "kind",
+                                       name="uq_cc_budget_year_month_cc_kind"),)
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cost_center = Column(String(200), nullable=False, index=True)
+    year        = Column(Integer, nullable=False, index=True)
+    month       = Column(Integer, nullable=False)   # 1..12
+    kind        = Column(String(10), nullable=False, default="opex", index=True)  # opex | capex
+    amount      = Column(Float, nullable=False, default=0.0)
+    currency    = Column(String(3), nullable=False, default="CAD")
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at  = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class FactoryCalendarSettings(Base):
+    """Singleton: which days count as working days for machine KPIs. The factory
+    normally runs Mon-Fri; with count_weekends off, a Saturday/Sunday only counts
+    when production was actually recorded that day (overtime auto-detected)."""
+    __tablename__ = "factory_calendar_settings"
+
+    id             = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    count_weekends = Column(Boolean, nullable=False, default=False)
+    updated_at     = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class FactoryHoliday(Base):
+    """A non-working holiday date. Excluded from machine-KPI working time unless
+    production was actually recorded on it (worked holiday)."""
+    __tablename__ = "factory_holidays"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    date       = Column(Date, nullable=False, unique=True, index=True)
+    name       = Column(String(200), nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class CostCenter(Base):
+    """A manageable cost center for the P&L. Spend rolls up to a cost center via
+    the department→cost-center map (CostCenterDepartment); budgets are keyed by
+    the cost center's name."""
+    __tablename__ = "cost_centers"
+    __table_args__ = (UniqueConstraint("name", name="uq_cost_center_name"),)
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name       = Column(String(200), nullable=False)
+    code       = Column(String(50))
+    active     = Column(Boolean, nullable=False, default=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class CostCenterDepartment(Base):
+    """Maps an equipment department (the raw grouping on Equipment.department) to
+    a cost center. One department belongs to at most one cost center."""
+    __tablename__ = "cost_center_departments"
+    __table_args__ = (UniqueConstraint("department", name="uq_ccdept_department"),)
+
+    id             = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cost_center_id = Column(UUID(as_uuid=True), ForeignKey("cost_centers.id", ondelete="CASCADE"), nullable=False, index=True)
+    department     = Column(String(200), nullable=False)
+
+
+class SapCostLine(Base):
+    """One month of SAP GL budget/actual for a (cost center, account) pair,
+    imported from the monthly SAC extract. The SAP fiscal year runs Dec–Nov:
+    pos 1 = December of fiscal_year-1, pos 12 = November. When lines exist for a
+    fiscal year, they are the official Budget-vs-Actual series on the Costs page
+    (OPEX); a re-import replaces the whole fiscal year."""
+    __tablename__ = "sap_cost_lines"
+    __table_args__ = (UniqueConstraint("fiscal_year", "pos", "cost_center_code", "account_code",
+                                       name="uq_sap_line_fy_pos_cc_acct"),)
+
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    fiscal_year      = Column(Integer, nullable=False, index=True)
+    pos              = Column(Integer, nullable=False)   # 1..12 fiscal position (1 = Dec)
+    year             = Column(Integer, nullable=False)   # calendar year of the month
+    month            = Column(Integer, nullable=False)   # calendar month 1..12
+    cost_center_code = Column(String(50), nullable=False, index=True)
+    cost_center      = Column(String(200), nullable=False)   # descriptive name, e.g. "Maintenance"
+    account_code     = Column(String(50), nullable=False)
+    account_name     = Column(String(200), nullable=False)
+    budget           = Column(Float, nullable=False, default=0.0)
+    actual           = Column(Float, nullable=False, default=0.0)
+    comment          = Column(Text)
+    currency         = Column(String(3), nullable=False, default="CAD")
+    imported_at      = Column(DateTime(timezone=True), server_default=func.now())

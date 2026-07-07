@@ -11,6 +11,8 @@ const TechnicianList = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const canCreate = usePermission('technicians', 'create');
+  // Hourly rates are cost data — only visible to users with access to the Costs page.
+  const canSeeCosts = usePermission('costs', 'view');
 
   const [technicians, setTechnicians] = useState<TechnicianFull[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -80,7 +82,9 @@ const TechnicianList = () => {
                   <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('technicians.employeeNumber')}</th>
                   <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('technicians.specialty')}</th>
                   <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('technicians.shift')}</th>
-                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] text-right">{t('technicians.hourlyRate')}</th>
+                  {canSeeCosts && (
+                    <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] text-right">{t('technicians.hourlyRate')}</th>
+                  )}
                   <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('technicians.active')}</th>
                 </tr>
               </thead>
@@ -106,9 +110,11 @@ const TechnicianList = () => {
                     <td className="table-cell text-gray-400 text-sm">
                       {tech.shift ? t(`shift.${tech.shift}`) : '—'}
                     </td>
-                    <td className="table-cell text-right font-mono text-gray-300">
-                      {tech.hourly_rate != null ? `$${tech.hourly_rate.toFixed(2)}/h` : '—'}
-                    </td>
+                    {canSeeCosts && (
+                      <td className="table-cell text-right font-mono text-gray-300">
+                        {tech.hourly_rate != null ? `$${tech.hourly_rate.toFixed(2)}/h` : '—'}
+                      </td>
+                    )}
                     <td className="table-cell">
                       {tech.active ? (
                         <CheckCircle2 size={16} className="text-green-400" />

@@ -5,6 +5,7 @@ import { ArrowLeft, UserPlus, AlertCircle } from 'lucide-react';
 import { createTechnician, fetchUsers } from '../../api/workOrders';
 import type { User } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import { usePermission } from '../../hooks/usePermission';
 
 const SPECIALTIES = [
   'electromechanical',
@@ -20,6 +21,8 @@ const SHIFTS = ['day', 'evening', 'night', 'rotating'];
 const NewTechnician = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  // Hourly rates are cost data — only visible to users with access to the Costs page.
+  const canSeeCosts = usePermission('costs', 'view');
 
   const [users, setUsers] = useState<User[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -144,19 +147,21 @@ const NewTechnician = () => {
           </select>
         </div>
 
-        {/* Hourly rate */}
-        <div>
-          <label className="label">{t('technicians.hourlyRate')}</label>
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            className="input-field"
-            placeholder="45.00"
-            value={form.hourly_rate}
-            onChange={(e) => setForm({ ...form, hourly_rate: e.target.value })}
-          />
-        </div>
+        {/* Hourly rate — cost data, gated on Costs page access */}
+        {canSeeCosts && (
+          <div>
+            <label className="label">{t('technicians.hourlyRate')}</label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              className="input-field"
+              placeholder="45.00"
+              value={form.hourly_rate}
+              onChange={(e) => setForm({ ...form, hourly_rate: e.target.value })}
+            />
+          </div>
+        )}
 
         {/* Certifications */}
         <div>

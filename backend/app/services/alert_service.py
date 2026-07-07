@@ -42,6 +42,7 @@ class AlertService:
                 description=data.description,
                 machine_name=machine.name,
                 alert_id=alert.id,
+                machine=machine,
             )
 
         await self.db.commit()

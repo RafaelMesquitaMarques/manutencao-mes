@@ -235,6 +235,31 @@ function ReportView({ report, loading }: { report: MachineReportData | null; loa
     };
   }, [report]);
 
+  const subParetoOption = useMemo(() => {
+    if (!report) return {};
+    const items = (report.downtime.sub_pareto ?? []).slice(0, 10).reverse();
+    return {
+      backgroundColor: 'transparent',
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: (params: { name: string; value: number; dataIndex: number }[]) => {
+          const p = params[0];
+          const item = items[p.dataIndex];
+          return `${p.name}<br/>${fmtMinutes(p.value)} · ${item.count}×`;
+        },
+      },
+      grid: { left: '3%', right: '10%', top: '5%', bottom: '5%', containLabel: true },
+      xAxis: { type: 'value', axisLabel: { color: '#94a3b8' }, splitLine: { lineStyle: { color: '#1e293b' } } },
+      yAxis: { type: 'category', data: items.map((i) => i.category), axisLabel: { color: '#94a3b8' } },
+      series: [{
+        type: 'bar',
+        data: items.map((i) => ({ value: i.minutes, itemStyle: { color: i.color, borderRadius: [0, 4, 4, 0] } })),
+        label: { show: true, position: 'right', color: '#cbd5e1', formatter: (p: { value: number }) => fmtMinutes(p.value) },
+      }],
+    };
+  }, [report]);
+
   const costOption = useMemo(() => {
     if (!report) return {};
     return {
@@ -345,7 +370,7 @@ function ReportView({ report, loading }: { report: MachineReportData | null; loa
           : <ReactECharts option={trendOption} style={{ height: 260 }} theme="dark" />}
       </div>
 
-      {/* Pareto + costs */}
+      {/* Downtime Paretos — by cause (category) and by subcategory */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
           <h3 className="text-sm font-semibold text-gray-300 mb-1">{t('machineReport.paretoTitle')}</h3>
@@ -356,6 +381,17 @@ function ReportView({ report, loading }: { report: MachineReportData | null; loa
             ? <Empty label={t('machineReport.noData')} />
             : <ReactECharts option={paretoOption} style={{ height: 260 }} theme="dark" />}
         </div>
+        <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
+          <h3 className="text-sm font-semibold text-gray-300 mb-1">{t('machineReport.subParetoTitle')}</h3>
+          <p className="text-xs text-gray-600 mb-3">{t('machineReport.subParetoSub')}</p>
+          {(report.downtime.sub_pareto?.length ?? 0) === 0
+            ? <Empty label={t('machineReport.noData')} />
+            : <ReactECharts option={subParetoOption} style={{ height: 260 }} theme="dark" />}
+        </div>
+      </div>
+
+      {/* Cost by type */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
           <h3 className="text-sm font-semibold text-gray-300 mb-1">{t('machineReport.costTitle')}</h3>
           <p className="text-xs text-gray-600 mb-3">

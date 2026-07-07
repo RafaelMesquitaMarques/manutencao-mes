@@ -4,6 +4,7 @@ import { fetchMachinePage, fetchTodayStops, fetchProductionHourly, type HourlyPo
 import type { MachinePageData, MachineStopOut } from '../../types';
 import { statusColor, STATUS_LABEL } from '../../utils/statusColors';
 import { StopTimeline, ProductionChart, buildShiftWindows, type Lang, type ShiftWindow } from '../Machines/MachinePage';
+import { useMachineLive } from '../../hooks/useLiveEvents';
 
 // Current UI language as a Lang (drives the shared kiosk components + status labels).
 function useLang(): Lang {
@@ -30,22 +31,26 @@ function WidgetShell({ title, children }: { title?: string; children: ReactNode 
   );
 }
 
+// Machine data + a live tick: bumps on a WS event for this machine so dependent
+// fetches re-run instantly; the interval is only a fallback for a dropped socket.
 function useMachine(machineId: string | null) {
   const [m, setM] = useState<MachinePageData | null>(null);
+  const [liveTick, setLiveTick] = useState(0);
+  useMachineLive([machineId, m?.code, m?.page_slug], () => setLiveTick((n) => n + 1));
   useEffect(() => {
     if (!machineId) return;
     let on = true;
     const load = () => fetchMachinePage(machineId).then((d) => { if (on) setM(d); }).catch(() => {});
     load();
-    const id = setInterval(load, 30_000);
+    const id = setInterval(load, 60_000);
     return () => { on = false; clearInterval(id); };
-  }, [machineId]);
-  return m;
+  }, [machineId, liveTick]);
+  return { m, liveTick };
 }
 
 export function StatusWidget({ machineId }: { machineId: string }) {
   const lang = useLang();
-  const m = useMachine(machineId);
+  const { m } = useMachine(machineId);
   if (!m) return <WidgetShell><span className="text-gray-600 text-sm m-auto">…</span></WidgetShell>;
   const color = statusColor(m.current_status);
   const label = (STATUS_LABEL[m.current_status as string] || {})[lang] ?? String(m.current_status ?? '');
@@ -67,7 +72,7 @@ export function StatusWidget({ machineId }: { machineId: string }) {
 export function StopsWidget({ machineId }: { machineId: string }) {
   const { t } = useTranslation();
   const lang = useLang();
-  const m = useMachine(machineId);
+  const { m, liveTick } = useMachine(machineId);
   const [stops, setStops] = useState<MachineStopOut[]>([]);
   const win = currentWin(m?.shifts_config ?? null);
   const winStart = win?.start.toISOString();
@@ -78,9 +83,9 @@ export function StopsWidget({ machineId }: { machineId: string }) {
     const load = () => fetchTodayStops(machineId, { start: winStart, end: winEnd })
       .then((s) => { if (on) setStops(s); }).catch(() => {});
     load();
-    const id = setInterval(load, 30_000);
+    const id = setInterval(load, 60_000);
     return () => { on = false; clearInterval(id); };
-  }, [machineId, winStart, winEnd]);
+  }, [machineId, winStart, winEnd, liveTick]);
   return (
     <WidgetShell title={t('dashboards.stopsTitle', 'Machine stops')}>
       <StopTimeline win={win} stops={stops} nowMs={Date.now()} lang={lang}
@@ -91,7 +96,7 @@ export function StopsWidget({ machineId }: { machineId: string }) {
 
 export function ProductionWidget({ machineId }: { machineId: string }) {
   const lang = useLang();
-  const m = useMachine(machineId);
+  const { m, liveTick } = useMachine(machineId);
   const [hours, setHours] = useState<HourlyPoint[]>([]);
   const win = currentWin(m?.shifts_config ?? null);
   const winStart = win?.start.toISOString();
@@ -102,9 +107,9 @@ export function ProductionWidget({ machineId }: { machineId: string }) {
     const load = () => fetchProductionHourly(machineId, { start: winStart, end: winEnd })
       .then((r) => { if (on) setHours(r.hours); }).catch(() => {});
     load();
-    const id = setInterval(load, 30_000);
+    const id = setInterval(load, 60_000);
     return () => { on = false; clearInterval(id); };
-  }, [machineId, winStart, winEnd]);
+  }, [machineId, winStart, winEnd, liveTick]);
   return (
     <WidgetShell>
       <ProductionChart win={win} hours={hours} nowMs={Date.now()} lang={lang}

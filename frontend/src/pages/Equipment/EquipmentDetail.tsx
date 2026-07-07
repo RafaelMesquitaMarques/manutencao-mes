@@ -5,7 +5,7 @@ import {
   ArrowLeft, Cpu, MapPin, Clock, Gauge, AlertCircle, Calendar,
   Save, Plus, Trash2, Check, X, Copy, ChevronRight, ChevronDown, ExternalLink,
   Settings, StopCircle, AlertTriangle, Users, BarChart2, Activity,
-  Zap, Pencil, Shield, Loader2, Power, CalendarClock, ListChecks,
+  Zap, Pencil, Shield, Loader2, Power, CalendarClock, ListChecks, Search,
   type LucideIcon,
 } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
@@ -19,9 +19,9 @@ import {
   fetchMachinesAll, updateMachineConfig,
   addMachineOperator, updateMachineOperatorRecord, deleteOperator,
   fetchMachineStopCategories, createMachineStopCategory, deleteMachineStopCategory,
-  addStopSubcategory, deleteStopSubcategory,
+  addStopSubcategory, updateStopSubcategory, deleteStopSubcategory,
   fetchMachineRejectCategories, createMachineRejectCategory, deleteMachineRejectCategory,
-  addRejectSubcategory, deleteRejectSubcategory,
+  addRejectSubcategory, updateRejectSubcategory, deleteRejectSubcategory,
   cloneCategories,
 } from '../../api/machines';
 import api from '../../api/axios';
@@ -113,6 +113,12 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
 
 type AnyCategory = { id: string; name: string; icon?: string; color?: string; sort_order: number; subcategories?: unknown[] };
 
+function errDetail(e: unknown): string {
+  const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  return e instanceof Error ? e.message : String(e);
+}
+
 function CategoryCard({ cat, selected, onSelect, onDelete }: {
   cat: AnyCategory; selected: boolean; onSelect: () => void; onDelete: () => void;
 }) {
@@ -143,14 +149,38 @@ function CategoryCard({ cat, selected, onSelect, onDelete }: {
 
 // ─── Clone modal ──────────────────────────────────────────────────────────────────
 
+type CloneAssetFilter = 'all' | 'production' | 'auxiliary';
+
 function CloneModal({ machines, sourceMachineId, categoryType, onClose }: {
   machines: Machine[]; sourceMachineId: string; categoryType: 'stop' | 'reject'; onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [query, setQuery] = useState('');
+  const [assetFilter, setAssetFilter] = useState<CloneAssetFilter>('all');
+  const [assetTypes, setAssetTypes] = useState<Record<string, 'production' | 'auxiliary'>>({});
 
-  const targets = machines.filter((m) => m.id !== sourceMachineId);
+  // asset_type lives on Equipment; machines link back via equipment_id.
+  useEffect(() => {
+    fetchEquipment({ limit: '1000' }).then((eqs) => {
+      const map: Record<string, 'production' | 'auxiliary'> = {};
+      eqs.forEach((eq) => { map[eq.id] = eq.asset_type ?? 'production'; });
+      setAssetTypes(map);
+    }).catch(() => {});
+  }, []);
+
+  const q = query.trim().toLowerCase();
+  const targets = machines.filter((m) => {
+    if (m.id === sourceMachineId) return false;
+    if (q && !(m.display_name || m.name).toLowerCase().includes(q) && !m.name.toLowerCase().includes(q)) return false;
+    if (assetFilter !== 'all') {
+      const type = (m.equipment_id && assetTypes[m.equipment_id]) || 'production';
+      if (type !== assetFilter) return false;
+    }
+    return true;
+  });
   const toggle = (id: string) =>
     setSelected((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
 
@@ -163,11 +193,36 @@ function CloneModal({ machines, sourceMachineId, categoryType, onClose }: {
     setTimeout(onClose, 1200);
   };
 
+  const FILTERS: CloneAssetFilter[] = ['all', 'production', 'auxiliary'];
+  const filterLabel: Record<CloneAssetFilter, string> = {
+    all: t('common.all'),
+    production: t('equipment.assetProduction'),
+    auxiliary: t('equipment.assetAuxiliary'),
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
       <div className="bg-[#0d1421] border border-white/10 rounded-2xl p-6 w-full max-w-md space-y-4">
-        <h2 className="text-base font-black text-white">Clone {categoryType} categories to…</h2>
-        <p className="text-xs text-gray-500">Existing categories on target machines will be replaced.</p>
+        <h2 className="text-base font-black text-white">
+          {categoryType === 'stop' ? t('equipment.cloneCatsStopTitle') : t('equipment.cloneCatsRejectTitle')}
+        </h2>
+        <p className="text-xs text-gray-500">{t('equipment.cloneCatsHint')}</p>
+        <div className="relative">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t('equipment.cloneSearchMachines')}
+            className="w-full bg-[#0b1120] border border-white/10 rounded-xl pl-9 pr-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500" />
+        </div>
+        <div className="flex gap-2">
+          {FILTERS.map((f) => (
+            <button key={f} type="button" onClick={() => setAssetFilter(f)}
+              className={`px-3 py-1 rounded-xl text-xs font-bold border transition-all ${assetFilter === f ? 'bg-blue-600 text-white border-blue-500' : 'bg-white/[0.04] text-gray-400 border-white/10'}`}>
+              {filterLabel[f]}
+            </button>
+          ))}
+        </div>
         <div className="space-y-2 max-h-60 overflow-y-auto">
           {targets.map((m) => (
             <label key={m.id} className="flex items-center gap-3 cursor-pointer p-3 rounded-xl hover:bg-white/[0.04]">
@@ -175,13 +230,16 @@ function CloneModal({ machines, sourceMachineId, categoryType, onClose }: {
               <span className="text-sm text-white">{m.display_name || m.name}</span>
             </label>
           ))}
+          {targets.length === 0 && (
+            <p className="text-center py-4 text-gray-600 text-sm">{t('equipment.cloneNoMachines')}</p>
+          )}
         </div>
         <div className="flex gap-2">
           <button onClick={run} disabled={busy || !selected.length}
             className={`flex-1 py-2.5 rounded-xl text-sm font-black transition-all ${done ? 'bg-green-600' : 'bg-blue-600 hover:bg-blue-500'} text-white disabled:opacity-50`}>
-            {done ? 'Cloned!' : busy ? 'Cloning…' : `Clone to ${selected.length} machine${selected.length !== 1 ? 's' : ''}`}
+            {done ? t('equipment.cloned') : busy ? t('equipment.cloning') : t('equipment.cloneCount', { count: selected.length })}
           </button>
-          <button onClick={onClose} className="px-4 py-2.5 rounded-xl text-sm text-gray-400 border border-white/10 hover:border-white/20">Cancel</button>
+          <button onClick={onClose} className="px-4 py-2.5 rounded-xl text-sm text-gray-400 border border-white/10 hover:border-white/20">{t('common.cancel')}</button>
         </div>
       </div>
     </div>
@@ -200,10 +258,19 @@ function StopCategoriesTab({ slug, allMachines, machineId }: { slug: string; all
   );
   const [addSubForm, setAddSubForm] = useState({ name: '', icon: 'wrench', color: '#6b7280', comment_required: false, triggers_maintenance: false });
   const [showAddSub, setShowAddSub] = useState(false);
+  const [editSubId, setEditSubId] = useState<string | null>(null);
+  const [editSubForm, setEditSubForm] = useState({ name: '', icon: 'wrench', color: '#6b7280', triggers_maintenance: false });
   const [busy, setBusy] = useState(false);
+  const { t } = useTranslation();
 
   const load = useCallback(async () => { setCats(await fetchMachineStopCategories(slug)); }, [slug]);
   useEffect(() => { load(); }, [load]);
+
+  const refreshKeepingSelection = async (selectedId: string) => {
+    const refreshed = await fetchMachineStopCategories(slug);
+    setCats(refreshed);
+    setSelected(refreshed.find((c) => c.id === selectedId) ?? null);
+  };
 
   const addCat = async () => {
     if (!addForm.name.trim()) return;
@@ -217,7 +284,12 @@ function StopCategoriesTab({ slug, allMachines, machineId }: { slug: string; all
 
   const delCat = async (id: string) => {
     if (!confirm('Delete this category and all its subcategories?')) return;
-    await deleteMachineStopCategory(slug, id);
+    try {
+      await deleteMachineStopCategory(slug, id);
+    } catch (e) {
+      alert(t('equipment.deleteFailed', { detail: errDetail(e) }));
+      return;
+    }
     if (selected?.id === id) setSelected(null);
     await load();
   };
@@ -228,18 +300,39 @@ function StopCategoriesTab({ slug, allMachines, machineId }: { slug: string; all
     await addStopSubcategory(slug, selected.id, addSubForm);
     setAddSubForm({ name: '', icon: 'wrench', color: '#6b7280', comment_required: false, triggers_maintenance: false });
     setShowAddSub(false);
-    const refreshed = await fetchMachineStopCategories(slug);
-    setCats(refreshed);
-    setSelected(refreshed.find((c) => c.id === selected.id) ?? null);
+    await refreshKeepingSelection(selected.id);
     setBusy(false);
+  };
+
+  const startEditSub = (sub: StopSubcategoryOut) => {
+    setEditSubId(sub.id);
+    setEditSubForm({
+      name: sub.name, icon: sub.icon || 'wrench', color: sub.color || '#6b7280',
+      triggers_maintenance: !!sub.triggers_maintenance,
+    });
+  };
+
+  const saveEditSub = async () => {
+    if (!selected || !editSubId || !editSubForm.name.trim()) return;
+    setBusy(true);
+    try {
+      await updateStopSubcategory(slug, editSubId, editSubForm);
+      setEditSubId(null);
+      await refreshKeepingSelection(selected.id);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const delSub = async (subId: string) => {
     if (!selected) return;
-    await deleteStopSubcategory(slug, subId);
-    const refreshed = await fetchMachineStopCategories(slug);
-    setCats(refreshed);
-    setSelected(refreshed.find((c) => c.id === selected.id) ?? null);
+    try {
+      await deleteStopSubcategory(slug, subId);
+    } catch (e) {
+      alert(t('equipment.deleteFailed', { detail: errDetail(e) }));
+      return;
+    }
+    await refreshKeepingSelection(selected.id);
   };
 
   return (
@@ -319,12 +412,29 @@ function StopCategoriesTab({ slug, allMachines, machineId }: { slug: string; all
           )}
           <div className="space-y-1.5">
             {(selected.subcategories || []).map((sub: StopSubcategoryOut) => (
-              <div key={sub.id} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-white/[0.03]">
-                <IconRenderer icon={sub.icon} color={sub.color || '#6b7280'} size={16} />
-                <span className="flex-1 text-sm text-gray-300">{sub.name}</span>
-                {sub.triggers_maintenance && <span className="text-xs text-orange-400 bg-orange-400/10 px-2 py-0.5 rounded-full">🔧 maint.</span>}
-                <button onClick={() => delSub(sub.id)} className="p-1 rounded-lg text-gray-700 hover:text-red-400 hover:bg-red-400/10 transition-colors"><Trash2 size={11} /></button>
-              </div>
+              editSubId === sub.id ? (
+                <div key={sub.id} className="p-3 bg-[#0d1421] rounded-xl space-y-2 border border-blue-500/30">
+                  <input value={editSubForm.name} onChange={(e) => setEditSubForm((f) => ({ ...f, name: e.target.value }))}
+                    placeholder={t('equipment.subNamePlaceholder')} className="w-full bg-[#0b1120] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+                  <div className="flex gap-3 items-center">
+                    <IconPicker value={editSubForm.icon} onChange={(k) => setEditSubForm((f) => ({ ...f, icon: k }))} />
+                    <input type="color" value={editSubForm.color} onChange={(e) => setEditSubForm((f) => ({ ...f, color: e.target.value }))} className="w-9 h-9 rounded-lg cursor-pointer border-0 bg-transparent" />
+                    <Toggle label={t('equipment.triggersMaintenance')} checked={editSubForm.triggers_maintenance} onChange={(v) => setEditSubForm((f) => ({ ...f, triggers_maintenance: v }))} />
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={saveEditSub} disabled={busy || !editSubForm.name.trim()} className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold disabled:opacity-50 flex items-center gap-1"><Check size={11} /> {t('common.save')}</button>
+                    <button onClick={() => setEditSubId(null)} className="text-gray-500 px-3 py-1.5 border border-white/10 rounded-lg text-xs"><X size={11} /></button>
+                  </div>
+                </div>
+              ) : (
+                <div key={sub.id} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-white/[0.03]">
+                  <IconRenderer icon={sub.icon} color={sub.color || '#6b7280'} size={16} />
+                  <span className="flex-1 text-sm text-gray-300">{sub.name}</span>
+                  {sub.triggers_maintenance && <span className="text-xs text-orange-400 bg-orange-400/10 px-2 py-0.5 rounded-full">🔧 maint.</span>}
+                  <button onClick={() => startEditSub(sub)} title={t('common.edit')} className="p-1 rounded-lg text-gray-700 hover:text-blue-400 hover:bg-blue-400/10 transition-colors"><Pencil size={11} /></button>
+                  <button onClick={() => delSub(sub.id)} className="p-1 rounded-lg text-gray-700 hover:text-red-400 hover:bg-red-400/10 transition-colors"><Trash2 size={11} /></button>
+                </div>
+              )
             ))}
             {(selected.subcategories || []).length === 0 && <p className="text-xs text-gray-700 text-center py-4">No subcategories</p>}
           </div>
@@ -346,10 +456,19 @@ function RejectCategoriesTab({ slug, allMachines, machineId }: { slug: string; a
   const [addForm, setAddForm] = useState({ name: '', icon: 'quality', color: '#10b981', comment_required: false });
   const [addSubForm, setAddSubForm] = useState({ name: '', icon: 'quality', color: '#6b7280', comment_required: false });
   const [showAddSub, setShowAddSub] = useState(false);
+  const [editSubId, setEditSubId] = useState<string | null>(null);
+  const [editSubForm, setEditSubForm] = useState({ name: '', icon: 'quality', color: '#6b7280' });
   const [busy, setBusy] = useState(false);
+  const { t } = useTranslation();
 
   const load = useCallback(async () => { setCats(await fetchMachineRejectCategories(slug)); }, [slug]);
   useEffect(() => { load(); }, [load]);
+
+  const refreshKeepingSelection = async (selectedId: string) => {
+    const refreshed = await fetchMachineRejectCategories(slug);
+    setCats(refreshed);
+    setSelected(refreshed.find((c) => c.id === selectedId) ?? null);
+  };
 
   const addCat = async () => {
     if (!addForm.name.trim()) return;
@@ -363,7 +482,12 @@ function RejectCategoriesTab({ slug, allMachines, machineId }: { slug: string; a
 
   const delCat = async (id: string) => {
     if (!confirm('Delete this reject category?')) return;
-    await deleteMachineRejectCategory(slug, id);
+    try {
+      await deleteMachineRejectCategory(slug, id);
+    } catch (e) {
+      alert(t('equipment.deleteFailed', { detail: errDetail(e) }));
+      return;
+    }
     if (selected?.id === id) setSelected(null);
     await load();
   };
@@ -374,18 +498,36 @@ function RejectCategoriesTab({ slug, allMachines, machineId }: { slug: string; a
     await addRejectSubcategory(slug, selected.id, addSubForm);
     setAddSubForm({ name: '', icon: 'quality', color: '#6b7280', comment_required: false });
     setShowAddSub(false);
-    const refreshed = await fetchMachineRejectCategories(slug);
-    setCats(refreshed);
-    setSelected(refreshed.find((c) => c.id === selected.id) ?? null);
+    await refreshKeepingSelection(selected.id);
     setBusy(false);
+  };
+
+  const startEditSub = (sub: RejectSubcategoryOut) => {
+    setEditSubId(sub.id);
+    setEditSubForm({ name: sub.name, icon: sub.icon || 'quality', color: sub.color || '#6b7280' });
+  };
+
+  const saveEditSub = async () => {
+    if (!selected || !editSubId || !editSubForm.name.trim()) return;
+    setBusy(true);
+    try {
+      await updateRejectSubcategory(slug, editSubId, editSubForm);
+      setEditSubId(null);
+      await refreshKeepingSelection(selected.id);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const delSub = async (subId: string) => {
     if (!selected) return;
-    await deleteRejectSubcategory(slug, subId);
-    const refreshed = await fetchMachineRejectCategories(slug);
-    setCats(refreshed);
-    setSelected(refreshed.find((c) => c.id === selected.id) ?? null);
+    try {
+      await deleteRejectSubcategory(slug, subId);
+    } catch (e) {
+      alert(t('equipment.deleteFailed', { detail: errDetail(e) }));
+      return;
+    }
+    await refreshKeepingSelection(selected.id);
   };
 
   return (
@@ -453,11 +595,27 @@ function RejectCategoriesTab({ slug, allMachines, machineId }: { slug: string; a
           )}
           <div className="space-y-1.5">
             {(selected.subcategories || []).map((sub: RejectSubcategoryOut) => (
-              <div key={sub.id} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-white/[0.03]">
-                <IconRenderer icon={sub.icon || 'quality'} color={sub.color || '#6b7280'} size={16} />
-                <span className="flex-1 text-sm text-gray-300">{sub.name}</span>
-                <button onClick={() => delSub(sub.id)} className="p-1 rounded-lg text-gray-700 hover:text-red-400 hover:bg-red-400/10 transition-colors"><Trash2 size={11} /></button>
-              </div>
+              editSubId === sub.id ? (
+                <div key={sub.id} className="p-3 bg-[#0d1421] rounded-xl space-y-2 border border-blue-500/30">
+                  <input value={editSubForm.name} onChange={(e) => setEditSubForm((f) => ({ ...f, name: e.target.value }))}
+                    placeholder={t('equipment.subNamePlaceholder')} className="w-full bg-[#0b1120] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+                  <div className="flex gap-3 items-center">
+                    <IconPicker value={editSubForm.icon} onChange={(k) => setEditSubForm((f) => ({ ...f, icon: k }))} />
+                    <input type="color" value={editSubForm.color} onChange={(e) => setEditSubForm((f) => ({ ...f, color: e.target.value }))} className="w-9 h-9 rounded-lg cursor-pointer border-0 bg-transparent" />
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={saveEditSub} disabled={busy || !editSubForm.name.trim()} className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold disabled:opacity-50 flex items-center gap-1"><Check size={11} /> {t('common.save')}</button>
+                    <button onClick={() => setEditSubId(null)} className="text-gray-500 px-3 py-1.5 border border-white/10 rounded-lg text-xs"><X size={11} /></button>
+                  </div>
+                </div>
+              ) : (
+                <div key={sub.id} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-white/[0.03]">
+                  <IconRenderer icon={sub.icon || 'quality'} color={sub.color || '#6b7280'} size={16} />
+                  <span className="flex-1 text-sm text-gray-300">{sub.name}</span>
+                  <button onClick={() => startEditSub(sub)} title={t('common.edit')} className="p-1 rounded-lg text-gray-700 hover:text-blue-400 hover:bg-blue-400/10 transition-colors"><Pencil size={11} /></button>
+                  <button onClick={() => delSub(sub.id)} className="p-1 rounded-lg text-gray-700 hover:text-red-400 hover:bg-red-400/10 transition-colors"><Trash2 size={11} /></button>
+                </div>
+              )
             ))}
             {(selected.subcategories || []).length === 0 && <p className="text-xs text-gray-700 text-center py-4">No subcategories</p>}
           </div>
@@ -740,6 +898,7 @@ function InterventionTypesConfigTab({ equipmentId }: { equipmentId: string }) {
   const [allEquipment, setAllEquipment] = useState<Equipment[]>([]);
   const [showClone, setShowClone] = useState(false);
   const [cloneTargets, setCloneTargets] = useState<string[]>([]);
+  const [cloneQuery, setCloneQuery] = useState('');
   const [cloning, setCloning] = useState(false);
   const [cloneMsg, setCloneMsg] = useState('');
   useEffect(() => { fetchEquipment({ limit: '1000' }).then(setAllEquipment).catch(() => {}); }, []);
@@ -753,7 +912,7 @@ function InterventionTypesConfigTab({ equipmentId }: { equipmentId: string }) {
         source_equipment_id: equipmentId, target_equipment_ids: cloneTargets,
       });
       setCloneMsg(t('equipment.cloneITSuccess', { count: r.data.cloned_to, defaultValue: `Copié vers ${r.data.cloned_to} équipement(s)` }));
-      setShowClone(false); setCloneTargets([]);
+      setShowClone(false); setCloneTargets([]); setCloneQuery('');
       setTimeout(() => setCloneMsg(''), 4000);
     } finally { setCloning(false); }
   };
@@ -813,6 +972,14 @@ function InterventionTypesConfigTab({ equipmentId }: { equipmentId: string }) {
     await load();
   };
 
+  // Clone-target list filtered by the search box (matches name or location).
+  const cloneCandidates = allEquipment.filter((eq) => eq.id !== equipmentId);
+  const cloneQ = cloneQuery.trim().toLowerCase();
+  const filteredCloneEquipment = cloneQ
+    ? cloneCandidates.filter((eq) =>
+        eq.name.toLowerCase().includes(cloneQ) || (eq.location ?? '').toLowerCase().includes(cloneQ))
+    : cloneCandidates;
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -839,14 +1006,25 @@ function InterventionTypesConfigTab({ equipmentId }: { equipmentId: string }) {
         <div className="p-4 bg-[#0d1421] rounded-2xl border border-teal-500/30 space-y-3">
           <p className="text-sm font-semibold text-white">{t('equipment.cloneITTitle', 'Copier ces types vers…')}</p>
           <p className="text-xs text-gray-500">{t('equipment.cloneITHint', 'Les types actifs de l’équipement cible sont remplacés par ceux-ci.')}</p>
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+            <input
+              value={cloneQuery}
+              onChange={(e) => setCloneQuery(e.target.value)}
+              placeholder={t('equipment.cloneITSearch', 'Rechercher un équipement…')}
+              className="w-full bg-[#0b1120] border border-white/10 rounded-xl pl-9 pr-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-teal-500" />
+          </div>
           <div className="max-h-52 overflow-y-auto space-y-1 pr-1">
-            {allEquipment.filter((eq) => eq.id !== equipmentId).map((eq) => (
+            {filteredCloneEquipment.map((eq) => (
               <label key={eq.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/5 cursor-pointer text-sm text-gray-200">
                 <input type="checkbox" checked={cloneTargets.includes(eq.id)} onChange={() => toggleCloneTarget(eq.id)}
                   className="w-4 h-4 rounded border-gray-600 bg-[#0b1120] text-teal-500" />
                 {eq.name}{eq.location ? <span className="text-gray-600 text-xs">· {eq.location}</span> : null}
               </label>
             ))}
+            {filteredCloneEquipment.length === 0 && (
+              <p className="text-center py-4 text-gray-600 text-sm">{t('equipment.cloneITNoMatch', 'Aucun équipement trouvé')}</p>
+            )}
           </div>
           <div className="flex gap-2">
             <button onClick={handleCloneIT} disabled={cloning || cloneTargets.length === 0}
@@ -854,7 +1032,7 @@ function InterventionTypesConfigTab({ equipmentId }: { equipmentId: string }) {
               {cloning ? <Loader2 size={13} className="animate-spin" /> : <Copy size={13} />}
               {t('pm.copyAction', 'Copier')} ({cloneTargets.length})
             </button>
-            <button onClick={() => { setShowClone(false); setCloneTargets([]); }}
+            <button onClick={() => { setShowClone(false); setCloneTargets([]); setCloneQuery(''); }}
               className="text-gray-500 px-4 py-2 border border-white/10 rounded-xl text-sm">
               <X size={13} />
             </button>

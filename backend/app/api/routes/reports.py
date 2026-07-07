@@ -19,11 +19,12 @@ from sqlalchemy import select, func, and_, or_
 from app.db.session import get_db
 from app.models.models import (
     Machine, Equipment, WorkOrder, WorkOrderStatus, WorkOrderType, WOCost,
-    MachineStop, StopCategory, StopCategoryType, MachineProductionLog,
+    MachineStop, StopCategory, StopSubcategory, StopCategoryType, MachineProductionLog,
     MaintenanceTicket, MachineIntervention, User, WOPart, InterventionPart,
 )
 from app.core.security import get_current_user
 from app.services.mes_service import shift_windows, overlap_seconds
+from app.services.work_calendar import working_dates
 
 router = APIRouter()
 
@@ -90,15 +91,17 @@ async def _fetch_stops(db: AsyncSession, since: datetime, machine_id: Optional[U
     """Stops since `since` with category info, normalized to UTC and clipped at now."""
     now = datetime.now(timezone.utc)
     q = (
-        select(MachineStop, StopCategory.type, StopCategory.name, StopCategory.color)
+        select(MachineStop, StopCategory.type, StopCategory.name, StopCategory.color,
+               StopSubcategory.name, StopSubcategory.color)
         .outerjoin(StopCategory, MachineStop.stop_category_id == StopCategory.id)
+        .outerjoin(StopSubcategory, MachineStop.stop_subcategory_id == StopSubcategory.id)
         .where(MachineStop.started_at >= since)
     )
     if machine_id is not None:
         q = q.where(MachineStop.machine_id == machine_id)
     rows = (await db.execute(q)).all()
     stops = []
-    for stop, cat_type, cat_name, cat_color in rows:
+    for stop, cat_type, cat_name, cat_color, sub_name, sub_color in rows:
         start = _as_utc(stop.started_at)
         end = min(_as_utc(stop.ended_at), now) if stop.ended_at else now
         if end <= start:
@@ -110,13 +113,17 @@ async def _fetch_stops(db: AsyncSession, since: datetime, machine_id: Optional[U
             "type": cat_type,
             "category": cat_name or "Uncategorized",
             "color": cat_color or "#6b7280",
+            "subcategory": sub_name,                       # None when not classified
+            "sub_color": sub_color or cat_color or "#6b7280",
         })
     return stops
 
 
-def _availability_over_period(machine: Machine, stops: list, start_date: date, end_date: date):
+def _availability_over_period(machine: Machine, stops: list, start_date: date, end_date: date,
+                              working: Optional[set] = None):
     """Daily availability trend + period totals from unplanned stop time vs
-    planned time (shifts_config, full day when unset)."""
+    planned time (shifts_config, full day when unset). Days outside `working`
+    (idle weekends/holidays per the factory calendar) are skipped entirely."""
     now = datetime.now(timezone.utc)
     unplanned = [s for s in stops if s["type"] != StopCategoryType.planned]
     trend = []
@@ -124,6 +131,9 @@ def _availability_over_period(machine: Machine, stops: list, start_date: date, e
     total_stopped = 0.0
     d = start_date
     while d <= end_date:
+        if working is not None and d not in working:
+            d += timedelta(days=1)
+            continue
         windows = shift_windows(machine.shifts_config, d)
         planned = sum(overlap_seconds(ws, we, ws, min(we, now)) for ws, we in windows)
         if planned > 0:
@@ -149,6 +159,7 @@ def _downtime_summary(stops: list):
     unplanned_min = 0
     planned_min = 0
     pareto: dict = {}
+    sub_pareto: dict = {}
     for s in stops:
         minutes = int((s["end"] - s["start"]).total_seconds() / 60)
         if s["type"] == StopCategoryType.planned:
@@ -166,11 +177,23 @@ def _downtime_summary(stops: list):
             }
         pareto[key]["count"] += 1
         pareto[key]["minutes"] += minutes
+        # subcategory Pareto — stops with no subcategory fall under "Unspecified"
+        sub_key = s.get("subcategory") or "Unspecified"
+        if sub_key not in sub_pareto:
+            sub_pareto[sub_key] = {
+                "category": sub_key,
+                "color": s.get("sub_color") if s.get("subcategory") else "#475569",
+                "count": 0,
+                "minutes": 0,
+            }
+        sub_pareto[sub_key]["count"] += 1
+        sub_pareto[sub_key]["minutes"] += minutes
     return {
         "unplanned_minutes": unplanned_min,
         "planned_minutes": planned_min,
         "stops_count": len(stops),
         "pareto": sorted(pareto.values(), key=lambda x: x["minutes"], reverse=True),
+        "sub_pareto": sorted(sub_pareto.values(), key=lambda x: x["minutes"], reverse=True),
     }
 
 
@@ -195,8 +218,9 @@ async def machine_report(
 
     # ── Stops: availability trend, downtime, Pareto ──────────────────────────
     stops = await _fetch_stops(db, since, machine.id)
+    working = await working_dates(db, since_date, now.date(), [machine.id])
     trend, avg_availability, planned_hours = _availability_over_period(
-        machine, stops, since_date, now.date()
+        machine, stops, since_date, now.date(), working
     )
     downtime = _downtime_summary(stops)
 
@@ -565,8 +589,9 @@ async def compare_machines(
     items = []
     for eq, m in entities:
         m_stops = stops_by_machine.get(m.id, [])
+        working = await working_dates(db, since_date, now.date(), [m.id])
         _, avg_availability, planned_hours = _availability_over_period(
-            m, m_stops, since_date, now.date()
+            m, m_stops, since_date, now.date(), working
         )
         downtime = _downtime_summary(m_stops)
         a = agg[m.id]

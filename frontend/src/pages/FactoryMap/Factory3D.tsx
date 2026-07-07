@@ -791,20 +791,22 @@ function KpiBillboard({ m, cx, cy, kpi }: { m: M3D; cx: number; cy: number; kpi:
   const z = ((m.pos_y + m.pos_h / 2) - cy) * SCALE;
   const color = STATUS_COLORS[m.status] ?? STATUS_COLORS.idle;
   const cell = (label: string, value: string) => (
-    <div style={{ background: '#0d1421', border: '1px solid #1f2937', borderRadius: 4, padding: '2px 5px', minWidth: 0 }}>
-      <div style={{ fontSize: 7, color: '#64748b', lineHeight: 1.1 }}>{label}</div>
-      <div style={{ fontSize: 10, color: '#e5e7eb', fontWeight: 600, lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+    <div style={{ background: '#0d1421', border: '1px solid #1f2937', borderRadius: 6, padding: '5px 8px', minWidth: 0 }}>
+      <div style={{ fontSize: 10, color: '#64748b', lineHeight: 1.15 }}>{label}</div>
+      <div style={{ fontSize: 15, color: '#e5e7eb', fontWeight: 600, lineHeight: 1.25, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
     </div>
   );
+  // No `distanceFactor` → the card keeps a constant on-screen size, so it stays
+  // legible at any zoom level (it always anchors above the clicked machine).
   return (
     <group position={[x, 0, z]}>
-      <Html position={[0, h + 1.9, 0]} center distanceFactor={26} zIndexRange={[40, 0]} style={{ pointerEvents: 'none' }}>
-        <div style={{ width: 132, background: 'rgba(13,20,33,0.92)', border: `1px solid ${color}`, borderRadius: 7, padding: 6, color: '#e5e7eb', boxShadow: '0 4px 14px rgba(0,0,0,0.5)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 5 }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
-            <span style={{ fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name}</span>
+      <Html position={[0, h + 1.9, 0]} center zIndexRange={[40, 0]} style={{ pointerEvents: 'none' }}>
+        <div style={{ width: 224, background: 'rgba(13,20,33,0.94)', border: `1.5px solid ${color}`, borderRadius: 10, padding: 10, color: '#e5e7eb', boxShadow: '0 6px 20px rgba(0,0,0,0.55)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8 }}>
+            <span style={{ width: 11, height: 11, borderRadius: '50%', background: color, flexShrink: 0 }} />
+            <span style={{ fontSize: 15, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name}</span>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 3 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 5 }}>
             {kpi ? (
               <>
                 {cell(t('factoryMap.oee'), pct(kpi.oee_pct))}
@@ -815,7 +817,7 @@ function KpiBillboard({ m, cx, cy, kpi }: { m: M3D; cx: number; cy: number; kpi:
                 {cell(t('factoryMap.operator'), kpi.operator || '—')}
               </>
             ) : (
-              <div style={{ gridColumn: '1 / 3', fontSize: 9, color: '#64748b' }}>…</div>
+              <div style={{ gridColumn: '1 / 3', fontSize: 12, color: '#64748b' }}>…</div>
             )}
           </div>
         </div>
