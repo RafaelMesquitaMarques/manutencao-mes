@@ -2,14 +2,15 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
-import { AlertTriangle, CheckCircle2, X, Play, ChevronLeft, ChevronRight, User, Clock, Cog, Maximize2, Minimize2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, X, Play, ChevronLeft, ChevronRight, User, Clock, Cog, Maximize2, Minimize2, MessageSquare } from 'lucide-react';
 import {
   fetchMachinePage, fetchTodayStops, fetchMESData, fetchMachineOperators,
   updateMachineStatus, updateMachineJob, updateMachineOperator,
   createMachineStop, closeMachineStop, fetchMachineStopCategories,
   fetchMachineRejectCategories, logReject, addRejects, reclassifyStop,
-  fetchProductionHourly, type HourlyPoint,
+  fetchProductionHourly, fetchTodayRejects, type HourlyPoint, type RejectLogItem,
 } from '../../api/machines';
+import EventsModal from './EventsModal';
 import { openTicketField, closeTicket } from '../../api/maintenance';
 import { callMaintenance } from '../../api/machineOperator';
 import { MaintenancePanel } from '../MachineView/MachineOperatorPage';
@@ -96,6 +97,14 @@ const I18N = {
     changeOperator: 'Change operator',
     stopCount: 'stops today',
     waitTime: 'Wait',
+    viewEvents: 'Events', eventsTitle: 'Events',
+    tabStatus: 'Machine status', tabPerformance: 'Performance',
+    colStart: 'Start', colDuration: 'Duration', colOperator: 'Operator', colJob: 'Job',
+    colCause: 'Stop cause', colComment: 'Comment',
+    onlyWithComment: 'Only events with a comment',
+    noEvents: 'No events', comingSoon: 'Coming soon',
+    editComment: 'Edit comment', ongoingStop: 'Ongoing', save: 'Save',
+    changeCauseSelected: 'Change cause ({n})',
   },
   fr: {
     running: 'EN MARCHE', stopped: 'ARRÊTÉE', maintenance: 'MAINTENANCE',
@@ -149,6 +158,14 @@ const I18N = {
     changeOperator: 'Changer d\'opérateur',
     stopCount: 'arrêts aujourd\'hui',
     waitTime: 'Attente',
+    viewEvents: 'Évènements', eventsTitle: 'Évènements',
+    tabStatus: 'Statut de la machine', tabPerformance: 'Performance',
+    colStart: 'Début', colDuration: 'Durée', colOperator: 'Opérateur', colJob: 'Job',
+    colCause: 'Cause d\'arrêt', colComment: 'Commentaire',
+    onlyWithComment: 'Seulement les évènements avec commentaire',
+    noEvents: 'Aucun évènement', comingSoon: 'Bientôt disponible',
+    editComment: 'Modifier le commentaire', ongoingStop: 'En cours', save: 'Enregistrer',
+    changeCauseSelected: 'Changer la cause ({n})',
   },
   es: {
     running: 'EN MARCHA', stopped: 'DETENIDA', maintenance: 'MANTENIMIENTO',
@@ -202,6 +219,14 @@ const I18N = {
     changeOperator: 'Cambiar operador',
     stopCount: 'paradas hoy',
     waitTime: 'Espera',
+    viewEvents: 'Eventos', eventsTitle: 'Eventos',
+    tabStatus: 'Estado de la máquina', tabPerformance: 'Rendimiento',
+    colStart: 'Inicio', colDuration: 'Duración', colOperator: 'Operador', colJob: 'Trabajo',
+    colCause: 'Causa de parada', colComment: 'Comentario',
+    onlyWithComment: 'Solo eventos con comentario',
+    noEvents: 'Sin eventos', comingSoon: 'Próximamente',
+    editComment: 'Editar comentario', ongoingStop: 'En curso', save: 'Guardar',
+    changeCauseSelected: 'Cambiar causa ({n})',
   },
 } as const;
 export type Lang = keyof typeof I18N;
@@ -231,7 +256,7 @@ const INTERVENTION_COLOR = '#a855f7'; // technician working (purple); maintenanc
 const STOP_TYPE_COLORS: Record<string, string> = {
   planned: '#3b82f6', unplanned: '#ef4444', maintenance: '#eab308',
 };
-function stopColor(stop: MachineStopOut): string {
+export function stopColor(stop: MachineStopOut): string {
   if (!stop.category) return UNJUSTIFIED_COLOR;
   return STOP_TYPE_COLORS[stop.category.type] || stop.category.color || '#6b7280';
 }
@@ -644,6 +669,10 @@ export default function MachinePage() {
   const [reclassTarget, setReclassTarget] = useState<MachineStopOut | null>(null);
   const [reclassCat, setReclassCat]       = useState<StopCategoryOut | null>(null);
   const [reclassBusy, setReclassBusy]     = useState(false);
+  const [showEvents, setShowEvents]       = useState(false);
+  const [rejectLogs, setRejectLogs]       = useState<RejectLogItem[]>([]);
+  const [bulkStops, setBulkStops]         = useState<MachineStopOut[] | null>(null);
+  const [selResetKey, setSelResetKey]     = useState(0);
 
   // Ticket close state
   const [closingTicketId, setClosingTicketId] = useState<string | null>(null);
@@ -710,12 +739,17 @@ export default function MachinePage() {
   }, [slug, winStartISO, winEndISO, liveTick]);
 
   const doReclassify = async (catId: string | null, subId?: string | null) => {
-    if (!slug || !reclassTarget) return;
+    // Single stop (timeline / cause cell) or a bulk selection from the events table.
+    const targets = reclassTarget ? [reclassTarget] : (bulkStops || []);
+    if (!slug || targets.length === 0) return;
     setReclassBusy(true);
     try {
-      await reclassifyStop(slug, reclassTarget.id, { stop_category_id: catId, stop_subcategory_id: subId ?? null });
+      for (const st of targets) {
+        await reclassifyStop(slug, st.id, { stop_category_id: catId, stop_subcategory_id: subId ?? null });
+      }
       setReclassTarget(null);
       setReclassCat(null);
+      if (bulkStops) { setBulkStops(null); setSelResetKey((k) => k + 1); }
       if (winStartISO && winEndISO) {
         fetchTodayStops(slug, { start: winStartISO, end: winEndISO }).then(setTimelineStops).catch(() => {});
       }
@@ -724,6 +758,26 @@ export default function MachinePage() {
       setReclassBusy(false);
     }
   };
+
+  // Save/edit a stop's comment from the events table. Pass the current cause so
+  // the reclassify endpoint (which overwrites category) doesn't clear it.
+  const saveStopComment = async (stop: MachineStopOut, comment: string) => {
+    if (!slug) return;
+    await reclassifyStop(slug, stop.id, {
+      stop_category_id: stop.category?.id ?? null,
+      stop_subcategory_id: stop.subcategory?.id ?? null,
+      comments: comment,
+    });
+    if (winStartISO && winEndISO) {
+      fetchTodayStops(slug, { start: winStartISO, end: winEndISO }).then(setTimelineStops).catch(() => {});
+    }
+  };
+
+  // Load reject events when the events modal opens (read-only tab).
+  useEffect(() => {
+    if (!showEvents || !slug) return;
+    fetchTodayRejects(slug).then((r) => setRejectLogs(r.logs || [])).catch(() => {});
+  }, [showEvents, slug, liveTick]);
 
   // Apply the machine's saved panel layout once it loads
   useEffect(() => {
@@ -783,14 +837,14 @@ export default function MachinePage() {
   useEffect(() => {
     if (machine?.current_status === 'running') { autoPromptedStopId.current = null; return; }
     if (machine?.current_status !== 'unjustified') return;
-    if (reclassTarget || showModal) return;
+    if (reclassTarget || bulkStops || showModal) return;
     const detected = [...timelineStops, ...stops].find((s) => !s.ended_at && !s.category);
     if (detected && autoPromptedStopId.current !== detected.id) {
       autoPromptedStopId.current = detected.id;
       setReclassCat(null);
       setReclassTarget(detected);
     }
-  }, [machine?.current_status, timelineStops, stops, reclassTarget, showModal]);
+  }, [machine?.current_status, timelineStops, stops, reclassTarget, bulkStops, showModal]);
 
   const openStopModal = () => {
     setStopTime(new Date().toTimeString().slice(0, 8));
@@ -1190,7 +1244,23 @@ export default function MachinePage() {
         <div key="timeline" className="h-full relative">
           {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.todayTimeline}</div>}
           <div className="h-full flex flex-col overflow-hidden bg-[#0d1421] rounded-2xl border border-white/[0.06] p-4">
-            <p className="text-xs text-gray-400 uppercase tracking-widest mb-3 font-semibold">{t.todayTimeline}</p>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs text-gray-400 uppercase tracking-widest font-semibold">{t.todayTimeline}</p>
+              {!editLayout && (
+                <button
+                  onClick={() => setShowEvents(true)}
+                  title={t.viewEvents}
+                  className="relative flex items-center justify-center w-8 h-8 rounded-lg text-gray-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+                >
+                  <MessageSquare size={16} />
+                  {timelineStops.length > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center">
+                      {timelineStops.length}
+                    </span>
+                  )}
+                </button>
+              )}
+            </div>
             <div className="flex-1 min-h-0">
             <StopTimeline
               win={displayWin}
@@ -1617,18 +1687,32 @@ export default function MachinePage() {
 
       {/* ── Reclassify-stop modal — click a timeline segment to change its cause.
           Only the cause changes; a stop is never turned back into running time. ── */}
-      {reclassTarget && (
+      {showEvents && (
+        <EventsModal
+          t={t}
+          stops={timelineStops}
+          rejects={rejectLogs}
+          resetKey={selResetKey}
+          onClose={() => setShowEvents(false)}
+          onEditCause={(stop) => { setReclassTarget(stop); setBulkStops(null); setReclassCat(null); }}
+          onBulkEditCause={(stopsSel) => { setBulkStops(stopsSel); setReclassTarget(null); setReclassCat(null); }}
+          onSaveComment={saveStopComment}
+        />
+      )}
+
+      {(reclassTarget || bulkStops) && (
         <div className="fixed inset-0 z-50 bg-black/90 flex flex-col">
           <div className="flex items-center justify-between px-8 py-6 border-b border-white/[0.06]">
             <div>
               <h2 className="text-2xl font-black text-white">
-                {(!reclassTarget.ended_at && !reclassTarget.category) ? t.stopDetected : t.changeCause}
+                {reclassTarget && !reclassTarget.ended_at && !reclassTarget.category ? t.stopDetected : t.changeCause}
               </h2>
               <p className="text-gray-400 text-base mt-1">
-                {new Date(reclassTarget.started_at).toTimeString().slice(0, 5)}
-                {'–'}
-                {reclassTarget.ended_at ? new Date(reclassTarget.ended_at).toTimeString().slice(0, 5) : '…'}
-                {reclassTarget.category?.name ? ` · ${reclassTarget.category.name}` : ''}
+                {reclassTarget ? (
+                  `${new Date(reclassTarget.started_at).toTimeString().slice(0, 5)}–${reclassTarget.ended_at ? new Date(reclassTarget.ended_at).toTimeString().slice(0, 5) : '…'}${reclassTarget.category?.name ? ` · ${reclassTarget.category.name}` : ''}`
+                ) : (
+                  t.changeCauseSelected.replace('{n}', String(bulkStops?.length ?? 0))
+                )}
               </p>
             </div>
             {reclassCat && (
@@ -1636,7 +1720,7 @@ export default function MachinePage() {
                 <ChevronLeft size={20} /> {t.backToMachines}
               </button>
             )}
-            <button onClick={() => { setReclassTarget(null); setReclassCat(null); }}>
+            <button onClick={() => { setReclassTarget(null); setBulkStops(null); setReclassCat(null); }}>
               <X size={28} className="text-gray-600 hover:text-gray-300" />
             </button>
           </div>

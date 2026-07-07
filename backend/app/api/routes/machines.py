@@ -342,7 +342,39 @@ async def today_rejects(ref: str, db: AsyncSession = Depends(get_db)):
     for l in logs:
         cat_id = str(l.reject_category_id) if l.reject_category_id else "uncategorized"
         by_cat[cat_id] = by_cat.get(cat_id, 0) + l.quantity
-    return {"total": total, "by_category": by_cat, "logs": [{"id": str(l.id), "quantity": l.quantity, "category_id": str(l.reject_category_id) if l.reject_category_id else None} for l in logs]}
+
+    # Resolve names for the events table (category / subcategory / operator).
+    cat_ids = {l.reject_category_id for l in logs if l.reject_category_id}
+    sub_ids = {l.reject_subcategory_id for l in logs if l.reject_subcategory_id}
+    op_ids = {l.operator_id for l in logs if l.operator_id}
+    cat_names = dict((await db.execute(
+        select(RejectCategory.id, RejectCategory.name).where(RejectCategory.id.in_(cat_ids))
+    )).all()) if cat_ids else {}
+    sub_names = dict((await db.execute(
+        select(RejectSubcategory.id, RejectSubcategory.name).where(RejectSubcategory.id.in_(sub_ids))
+    )).all()) if sub_ids else {}
+    op_names = dict((await db.execute(
+        select(MachineOperator.id, MachineOperator.name).where(MachineOperator.id.in_(op_ids))
+    )).all()) if op_ids else {}
+
+    return {
+        "total": total,
+        "by_category": by_cat,
+        "logs": [
+            {
+                "id": str(l.id),
+                "created_at": l.created_at.isoformat() if l.created_at else None,
+                "quantity": l.quantity,
+                "comments": l.comments,
+                "category_id": str(l.reject_category_id) if l.reject_category_id else None,
+                "category_name": cat_names.get(l.reject_category_id),
+                "subcategory_id": str(l.reject_subcategory_id) if l.reject_subcategory_id else None,
+                "subcategory_name": sub_names.get(l.reject_subcategory_id),
+                "operator_name": op_names.get(l.operator_id),
+            }
+            for l in logs
+        ],
+    }
 
 
 # ── Production counter ────────────────────────────────────────────────────────
