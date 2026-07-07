@@ -11,7 +11,7 @@ from sqlalchemy import select, func
 
 from app.db.session import get_db
 from app.models.models import (
-    Machine, Equipment, MaintenanceTicket, TicketStatus, WorkOrder,
+    Machine, Equipment, MaintenanceTicket, TicketStatus, WorkOrder, WorkOrderType,
     User, MachineStatus, AlertPriority,
     MachineStop, MachineOperator, StopCategory, StopSubcategory,
     RejectCategory, RejectSubcategory, RejectLog,
@@ -766,6 +766,11 @@ async def reclassify_stop(
     return {"status": "ok"}
 
 
+def _as_utc(dt: datetime) -> datetime:
+    """Treat naive datetimes as UTC (defensive; timestamptz cols are already aware)."""
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
 @router.get("/{ref}/stops/today", response_model=List[MachineStopOut])
 async def today_stops(
     ref: str,
@@ -796,6 +801,50 @@ async def today_stops(
         .order_by(MachineStop.started_at)
     )
     stops = r.scalars().all()
+
+    # Interventions for this machine (started ones), matched to stops below by
+    # ticket link OR time overlap — the kiosk "start intervention" flow has no ticket.
+    now_utc = datetime.now(timezone.utc)
+    machine_ivs = (await db.execute(
+        select(MachineIntervention).where(
+            MachineIntervention.machine_id == machine.id,
+            MachineIntervention.started_at.isnot(None),
+        )
+    )).scalars().all()
+
+    def _iv_for(st: MachineStop) -> Optional[MachineIntervention]:
+        if st.ticket_id:
+            for iv in machine_ivs:
+                if iv.ticket_id == st.ticket_id:
+                    return iv
+        st_s = _as_utc(st.started_at)
+        st_e = _as_utc(st.ended_at) if st.ended_at else now_utc
+        match = None
+        for iv in machine_ivs:
+            iv_s = _as_utc(iv.started_at)
+            iv_e = _as_utc(iv.completed_at) if iv.completed_at else now_utc
+            if iv_s < st_e and iv_e > st_s and (match is None or iv_s > _as_utc(match.started_at)):
+                match = iv
+        return match
+
+    # An intervention is "preventive" (→ planned, not downtime) when it comes from a
+    # preventive/predictive/inspection work order (via its ticket). Corrective/kiosk
+    # interventions (no such WO) are unplanned.
+    iv_preventive: dict = {}
+    tkt_ids = {iv.ticket_id for iv in machine_ivs if iv.ticket_id}
+    if tkt_ids:
+        tkt_wo = dict((await db.execute(
+            select(MaintenanceTicket.id, MaintenanceTicket.work_order_id).where(MaintenanceTicket.id.in_(tkt_ids))
+        )).all())
+        wo_ids = {w for w in tkt_wo.values() if w}
+        wo_types = dict((await db.execute(
+            select(WorkOrder.id, WorkOrder.type).where(WorkOrder.id.in_(wo_ids))
+        )).all()) if wo_ids else {}
+        planned_types = {WorkOrderType.preventive, WorkOrderType.predictive, WorkOrderType.inspection}
+        for iv in machine_ivs:
+            wid = tkt_wo.get(iv.ticket_id)
+            iv_preventive[iv.id] = bool(wid and wo_types.get(wid) in planned_types)
+
     result = []
     for s in stops:
         cat_mini = None
@@ -819,19 +868,19 @@ async def today_stops(
             op = await db.get(MachineOperator, s.operator_id)
             if op:
                 op_name = op.name
-        # Linked intervention timing (for the timeline's yellow wait → purple work split).
+        # Linked intervention timing (for the timeline's wait → purple work split).
+        # Matched by ticket OR time overlap (kiosk "start intervention" has no ticket).
         interv_started = interv_completed = wait_min = None
-        if s.ticket_id:
-            iv = (await db.execute(
-                select(MachineIntervention)
-                .where(MachineIntervention.ticket_id == s.ticket_id)
-                .order_by(MachineIntervention.called_at.desc())
-                .limit(1)
-            )).scalar_one_or_none()
-            if iv:
-                interv_started = iv.started_at
-                interv_completed = iv.completed_at
-                wait_min = iv.response_time_minutes
+        interv_type = interv_by = None
+        interv_preventive = False
+        iv = _iv_for(s)
+        if iv:
+            interv_started = iv.started_at
+            interv_completed = iv.completed_at
+            wait_min = iv.response_time_minutes
+            interv_type = iv.intervention_type_name
+            interv_by = iv.started_by_name
+            interv_preventive = iv_preventive.get(iv.id, False)
         result.append(MachineStopOut(
             id=s.id, machine_id=s.machine_id,
             started_at=s.started_at, ended_at=s.ended_at,
@@ -843,6 +892,9 @@ async def today_stops(
             intervention_started_at=interv_started,
             intervention_completed_at=interv_completed,
             wait_minutes=wait_min,
+            intervention_type_name=interv_type,
+            intervention_by=interv_by,
+            intervention_is_preventive=interv_preventive,
         ))
     return result
 

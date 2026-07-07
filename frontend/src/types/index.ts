@@ -769,6 +769,9 @@ export interface MachineStopOut {
   intervention_started_at?:   string;
   intervention_completed_at?: string;
   wait_minutes?:              number;
+  intervention_type_name?:    string;
+  intervention_by?:           string;
+  intervention_is_preventive?: boolean;
 }
 
 export interface MachineOperatorOut {

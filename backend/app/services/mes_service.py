@@ -4,15 +4,43 @@ Each method is shaped exactly as real MES API integration would return.
 Replace mock implementations with real MES API calls per method.
 """
 from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Optional
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 
 from app.models.models import (
     Machine, MachineStop, MachineProductionLog, MachineProductionHourly, AlertShift,
-    StopCategory, StopCategoryType,
+    StopCategory, StopCategoryType, Plant,
 )
+
+
+def current_shift_window(
+    shifts_config: Optional[dict], tz: ZoneInfo, now_utc: datetime,
+) -> Optional[tuple[datetime, datetime]]:
+    """The (start_utc, end_utc) of the shift active *now*, from shifts_config whose
+    HH:MM are LOCAL wall-clock in `tz`. Overnight shifts (end ≤ start) roll past
+    midnight. Checks yesterday+today so an overnight shift started before midnight
+    is found. Returns None if no shift contains `now` (or none configured)."""
+    now_local = now_utc.astimezone(tz)
+    for base in (now_local.date() - timedelta(days=1), now_local.date()):
+        for cfg in (shifts_config or {}).values():
+            if not isinstance(cfg, dict):
+                continue
+            try:
+                sh, sm = [int(x) for x in str(cfg.get("start", "")).split(":")[:2]]
+                eh, em = [int(x) for x in str(cfg.get("end", "")).split(":")[:2]]
+            except (ValueError, TypeError):
+                continue
+            start_local = datetime(base.year, base.month, base.day, sh, sm, tzinfo=tz)
+            end_local = datetime(base.year, base.month, base.day, eh, em, tzinfo=tz)
+            if end_local <= start_local:
+                end_local += timedelta(days=1)
+            ws, we = start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
+            if ws <= now_utc < we:
+                return ws, we
+    return None
 
 
 def shift_windows(shifts_config: Optional[dict], for_date: date) -> list[tuple[datetime, datetime]]:
@@ -179,36 +207,57 @@ class MesService:
         log.oee_pct = round(avail * perf * qual * 100, 1)
 
     async def get_availability(self, machine_id: UUID, for_date: date) -> float:
-        """Availability % for a date: planned production time (from the
-        machine's shifts_config, full day when unset) minus unplanned stop
-        time, over planned time. Stops in 'planned' categories don't count."""
+        """Availability % for the CURRENT shift: elapsed shift time minus
+        non-planned stop time, over elapsed shift time. Planned stops count as
+        available; every other stop — including unjustified ones with no category
+        (pink) — counts as downtime.
+
+        The shift window comes from the machine's shifts_config, whose HH:MM are
+        LOCAL wall-clock in the plant's timezone (matches the kiosk timeline). We
+        scope to the shift active now (not a merged 24 h day) so the gauge means
+        'availability this shift'."""
         now = datetime.now(timezone.utc)
         machine = await self.db.get(Machine, machine_id)
-        windows = shift_windows(machine.shifts_config if machine else None, for_date)
 
-        # For today, only count planned time elapsed so far
-        planned_seconds = sum(
-            overlap_seconds(ws, we, ws, min(we, now)) for ws, we in windows
-        )
+        tz = ZoneInfo("America/Toronto")
+        if machine and machine.plant_id:
+            plant = await self.db.get(Plant, machine.plant_id)
+            if plant and plant.timezone:
+                try:
+                    tz = ZoneInfo(plant.timezone)
+                except Exception:
+                    pass
+
+        win = current_shift_window(machine.shifts_config if machine else None, tz, now)
+        if win is None:
+            # No shift configured / none active now → fall back to the local day so far.
+            local_midnight = now.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+            win = (local_midnight.astimezone(timezone.utc),
+                   (local_midnight + timedelta(days=1)).astimezone(timezone.utc))
+
+        ws, we = win
+        end_cap = min(we, now)
+        planned_seconds = (end_cap - ws).total_seconds()
         if planned_seconds <= 0:
             return 100.0
 
+        # Stops overlapping the shift window so far.
         r = await self.db.execute(
             select(MachineStop, StopCategory.type)
             .outerjoin(StopCategory, MachineStop.stop_category_id == StopCategory.id)
             .where(
                 MachineStop.machine_id == machine_id,
-                func.date(MachineStop.started_at) == for_date,
+                MachineStop.started_at < end_cap,
+                or_(MachineStop.ended_at.is_(None), MachineStop.ended_at > ws),
             )
         )
         stopped_seconds = 0.0
         for stop, cat_type in r.all():
             if cat_type == StopCategoryType.planned:
-                continue
+                continue  # planned stops stay "available"
             s = _as_utc(stop.started_at)
             e = _as_utc(stop.ended_at) if stop.ended_at else now
-            for ws, we in windows:
-                stopped_seconds += overlap_seconds(s, e, ws, min(we, now))
+            stopped_seconds += overlap_seconds(s, e, ws, end_cap)
 
         availability = max(0.0, min(100.0, (planned_seconds - stopped_seconds) / planned_seconds * 100))
         return round(availability, 1)

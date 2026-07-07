@@ -105,6 +105,7 @@ const I18N = {
     noEvents: 'No events', comingSoon: 'Coming soon',
     editComment: 'Edit comment', ongoingStop: 'Ongoing', save: 'Save',
     changeCauseSelected: 'Change cause ({n})',
+    intervention_label: 'Intervention', preventive: 'Preventive', corrective: 'Corrective', technician: 'Technician',
   },
   fr: {
     running: 'EN MARCHE', stopped: 'ARRÊTÉE', maintenance: 'MAINTENANCE',
@@ -166,6 +167,7 @@ const I18N = {
     noEvents: 'Aucun évènement', comingSoon: 'Bientôt disponible',
     editComment: 'Modifier le commentaire', ongoingStop: 'En cours', save: 'Enregistrer',
     changeCauseSelected: 'Changer la cause ({n})',
+    intervention_label: 'Intervention', preventive: 'Préventive', corrective: 'Corrective', technician: 'Technicien',
   },
   es: {
     running: 'EN MARCHA', stopped: 'DETENIDA', maintenance: 'MANTENIMIENTO',
@@ -227,6 +229,7 @@ const I18N = {
     noEvents: 'Sin eventos', comingSoon: 'Próximamente',
     editComment: 'Editar comentario', ongoingStop: 'En curso', save: 'Guardar',
     changeCauseSelected: 'Cambiar causa ({n})',
+    intervention_label: 'Intervención', preventive: 'Preventiva', corrective: 'Correctiva', technician: 'Técnico',
   },
 } as const;
 export type Lang = keyof typeof I18N;
@@ -367,7 +370,7 @@ export function StopTimeline({
   onSegmentClick?: (stop: MachineStopOut) => void;
   hint?: string;
 }) {
-  const [tip, setTip] = useState<{ stop: MachineStopOut; x: number; y: number } | null>(null);
+  const [tip, setTip] = useState<{ stop: MachineStopOut; x: number; y: number; phase: 'stop' | 'intervention' } | null>(null);
   if (!win) return null;
   const startMs = win.start.getTime();
   const endMs = win.end.getTime();
@@ -432,18 +435,20 @@ export function StopTimeline({
           const s = new Date(stop.started_at).getTime();
           const e = stop.ended_at ? new Date(stop.ended_at).getTime() : elapsedEnd;
           const clickable = !!onSegmentClick;
-          // A maintenance stop splits into the yellow "wait" (call→technician start)
-          // and the purple "intervention" (start→end). Everything else is one segment.
+          // A stop under intervention splits into the "wait" (its own colour —
+          // yellow for maintenance, red for unplanned, etc.) and the purple
+          // "intervention" (technician working). Applies to ANY stop, not just
+          // maintenance: the machine turns purple whenever a technician is on it.
+          const base = stopColor(stop);
           const ivStart = stop.intervention_started_at ? new Date(stop.intervention_started_at).getTime() : null;
-          const isMaint = stop.category?.type === 'maintenance';
-          const segs: { a: number; b: number; color: string }[] = [];
-          if (isMaint && ivStart && ivStart > s) {
-            segs.push({ a: s, b: Math.min(ivStart, e), color: stopColor(stop) });
-            if (ivStart < e) segs.push({ a: ivStart, b: e, color: INTERVENTION_COLOR });
-          } else if (isMaint && ivStart) {
-            segs.push({ a: s, b: e, color: INTERVENTION_COLOR });
+          const ivEnd = stop.intervention_completed_at ? new Date(stop.intervention_completed_at).getTime() : e;
+          const segs: { a: number; b: number; color: string; kind: 'stop' | 'intervention' }[] = [];
+          if (ivStart && ivStart < e) {
+            if (ivStart > s) segs.push({ a: s, b: ivStart, color: base, kind: 'stop' });
+            segs.push({ a: Math.max(ivStart, s), b: Math.min(ivEnd, e), color: INTERVENTION_COLOR, kind: 'intervention' });
+            if (ivEnd < e) segs.push({ a: ivEnd, b: e, color: base, kind: 'stop' });
           } else {
-            segs.push({ a: s, b: e, color: stopColor(stop) });
+            segs.push({ a: s, b: e, color: base, kind: 'stop' });
           }
           return segs.map((sg, idx) => {
             const left = pct(sg.a);
@@ -452,8 +457,8 @@ export function StopTimeline({
               <div
                 key={`${stop.id}-${idx}`}
                 onClick={clickable ? () => onSegmentClick!(stop) : undefined}
-                onMouseEnter={(ev) => setTip({ stop, x: ev.clientX, y: ev.clientY })}
-                onMouseMove={(ev) => setTip({ stop, x: ev.clientX, y: ev.clientY })}
+                onMouseEnter={(ev) => setTip({ stop, x: ev.clientX, y: ev.clientY, phase: sg.kind })}
+                onMouseMove={(ev) => setTip({ stop, x: ev.clientX, y: ev.clientY, phase: sg.kind })}
                 onMouseLeave={() => setTip(null)}
                 className={`absolute top-0 h-full transition-[filter] ${clickable ? 'cursor-pointer hover:brightness-125 hover:ring-2 hover:ring-white hover:z-10' : ''}`}
                 style={{ left: `${left}%`, width: `${width}%`, backgroundColor: sg.color }}
@@ -475,8 +480,18 @@ export function StopTimeline({
       </div>
 
       {tip && (() => {
-        const s = new Date(tip.stop.started_at);
-        const e = tip.stop.ended_at ? new Date(tip.stop.ended_at) : new Date(Math.min(endMs, nowMs));
+        // The purple "intervention" segment describes the intervention itself
+        // (its own time/duration/technician/type), not the parent stop.
+        const isIv = tip.phase === 'intervention';
+        const fallbackEnd = new Date(Math.min(endMs, nowMs));
+        const ivS = tip.stop.intervention_started_at ? new Date(tip.stop.intervention_started_at) : null;
+        const s = isIv && ivS ? ivS : new Date(tip.stop.started_at);
+        const ongoing = isIv ? !tip.stop.intervention_completed_at : !tip.stop.ended_at;
+        const e = isIv
+          ? (tip.stop.intervention_completed_at ? new Date(tip.stop.intervention_completed_at) : fallbackEnd)
+          : (tip.stop.ended_at ? new Date(tip.stop.ended_at) : fallbackEnd);
+        const nature = tip.stop.intervention_is_preventive ? tt.preventive : tt.corrective;
+        const title = isIv ? `${tt.intervention_label} · ${nature}` : stopReason(tip.stop);
         const W = 240;
         const left = tip.x + 16 + W > window.innerWidth ? tip.x - 16 - W : tip.x + 16;
         const top = Math.min(tip.y + 16, window.innerHeight - 160);
@@ -488,26 +503,45 @@ export function StopTimeline({
             className="fixed z-[9999] pointer-events-none rounded-lg border border-white/10 bg-[#2b2f36]/95 px-3 py-2 text-xs text-gray-200 shadow-xl backdrop-blur-sm"
             style={{ left, top, minWidth: W, maxWidth: W }}
           >
-            <div className="text-[11px] text-gray-400">{hms(s)} - {tip.stop.ended_at ? hms(e) : '…'}</div>
-            <div className="mb-1.5 font-bold text-white">{stopReason(tip.stop)}</div>
+            <div className="text-[11px] text-gray-400">{hms(s)} - {ongoing ? '…' : hms(e)}</div>
+            <div className="mb-1.5 font-bold text-white">{title}</div>
             <div className="space-y-1">
               <div className="flex items-center gap-1.5">
                 <Clock size={13} className="shrink-0 text-gray-400" />
                 <span>{fmtDur(e.getTime() - s.getTime())}</span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <User size={13} className="shrink-0 text-gray-400" />
-                <span className="truncate">{tip.stop.operator_name || tt.noOperator}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <Cog size={13} className="shrink-0 text-gray-400" />
-                <span className="truncate">{tip.stop.job_number || tt.noJob}</span>
-              </div>
-              {tip.stop.wait_minutes != null && (
-                <div className="flex items-center gap-1.5 text-yellow-400">
-                  <AlertTriangle size={13} className="shrink-0" />
-                  <span>{tt.waitTime}: {Math.round(tip.stop.wait_minutes)} {tt.min}</span>
-                </div>
+              {isIv ? (
+                <>
+                  {tip.stop.intervention_by && (
+                    <div className="flex items-center gap-1.5">
+                      <User size={13} className="shrink-0 text-gray-400" />
+                      <span className="truncate">{tip.stop.intervention_by}</span>
+                    </div>
+                  )}
+                  {tip.stop.intervention_type_name && (
+                    <div className="flex items-center gap-1.5">
+                      <Cog size={13} className="shrink-0 text-gray-400" />
+                      <span className="truncate">{tip.stop.intervention_type_name}</span>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center gap-1.5">
+                    <User size={13} className="shrink-0 text-gray-400" />
+                    <span className="truncate">{tip.stop.operator_name || tt.noOperator}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Cog size={13} className="shrink-0 text-gray-400" />
+                    <span className="truncate">{tip.stop.job_number || tt.noJob}</span>
+                  </div>
+                  {tip.stop.wait_minutes != null && (
+                    <div className="flex items-center gap-1.5 text-yellow-400">
+                      <AlertTriangle size={13} className="shrink-0" />
+                      <span>{tt.waitTime}: {Math.round(tip.stop.wait_minutes)} {tt.min}</span>
+                    </div>
+                  )}
+                </>
               )}
             </div>
             {onSegmentClick && hint && (

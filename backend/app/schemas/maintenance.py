@@ -412,6 +412,10 @@ class MachineStopOut(BaseModel):
     intervention_started_at:   Optional[datetime] = None
     intervention_completed_at: Optional[datetime] = None
     wait_minutes:              Optional[float]    = None
+    # Intervention identity for the purple timeline segment / its own tooltip.
+    intervention_type_name:    Optional[str]  = None
+    intervention_by:           Optional[str]  = None   # technician who worked it
+    intervention_is_preventive: bool          = False  # from a preventive PM/WO → planned, not downtime
 
 
 # ── Machine Operators ─────────────────────────────────────────────────────────
