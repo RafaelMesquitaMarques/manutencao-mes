@@ -69,12 +69,17 @@
 > Verified by rollback-only checks (4/4: numbering, settings fallback/override, membership contacts,
 > calendar) + calendar API identical in QS/QM contexts + regression 200s + tests 7/7. **No real SMS
 > was triggered during verification.**
-> **DECISION (deviation from original phase-3 plan):** the deep costs refactor (`_site_of` name rule →
-> plant_id columns in `_cc_actuals`/`_wo_type_actuals`/…) is intentionally NOT applied: for WO-derived
-> actuals the name rule (cost-center) and plant_id (equipment) can legitimately disagree, so swapping
-> silently could move numbers between QS and QM on financial reports. The membership lock
-> (`_resolve_site`) already isolates plants; the repartition-basis change needs a business sign-off
-> first (flagged to the user).
+> **Costs repartition refactor — APPROVED + DONE (2026-07-10).** After the comparison proved it a
+> no-op on today's data (WO-derived cost tables empty; SAP lines agree 100% between name rule and
+> plant_id — zero disagreement rows), the user approved it. Implemented via `_row_site_ok(plant_id,
+> cc, site, site_ids)` replacing `_site_ok` across all ~9 cost aggregators (`_cc_actuals`,
+> `_wo_type_actuals`, `_daily_actuals`, `_cc_budgets_map`, `_sap_data`, `_commitments`,
+> `_machine_actuals`, `/transactions`, `/by-supplier`): attribute by the row's `plant_id`
+> (WorkOrder/MachineIntervention/SapCostLine/CostCenterBudget/PurchaseOrder), fall back to the name
+> rule ONLY for NULL-plant legacy rows; a plant outside QS/QM (NL) never lands on the Quebec ledger.
+> `_resolve_site` membership lock retained. **Verified output-identical:** pnl fiscal-2026 QS
+> actual 744195 / budget 912719, QM 95162 / 176927, combined = exact sum — unchanged from before.
+> Logic proven for NL exclusion, plant_id-over-misleading-name, and NULL name-fallback.
 > **Phase 4 DELIVERED (same day) — unauthenticated surfaces.**
 > *Live WS (`/api/live/ws`):* token → user → allowed plants at connect; machine-scoped events whose
 > machine belongs to another plant are dropped (ref→plant memoized per connection); corporate admin

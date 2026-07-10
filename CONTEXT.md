@@ -1012,10 +1012,12 @@ survives).
 **Per-plant configuration** (own row wins, else the shared legacy NULL row that QS+QM edit together):
 escalation settings + contacts + shift reports, working calendar + holidays, document numbering
 series (ungrouped plants get a `<CODE>-` prefix → `NL-WO-2026-…`), AI insights (cron generates one
-per plant; NULL-plant legacy insights visible to grouped plants only). Costs still separate QS/QM by
-the cost-center **name** rule (`_site_of`), now locked to the caller's memberships via `_resolve_site`;
-the name→`plant_id` repartition refactor is deferred pending business sign-off (WO-derived actuals
-where the name and the equipment plant can legitimately disagree).
+per plant; NULL-plant legacy insights visible to grouped plants only). **Costs repartition** attributes
+each cost line by its row's `plant_id` (`_row_site_ok` in `costs.py`), falling back to the legacy
+cost-center **name** rule (`_site_of`) only for rows with a NULL plant (pre-stamping). A line owned by
+a plant outside QS/QM (e.g. NL) never lands on the Quebec cost page. The `_resolve_site` membership
+lock still restricts the QS/QM site filter to the caller's plants. Verified output-identical on
+current data (SAP totals unchanged: QS 744k / QM 95k actual, fiscal 2026).
 
 **Kiosk** — historically token-less shop-floor endpoints. `machines.kiosk_token` +
 `POST /api/machines/{ref}/kiosk-token`; `core/kiosk_guard.py` router guard requires the token OR a
