@@ -10,6 +10,8 @@ from app.db.session import get_db
 from app.models.models import User, Equipment, EquipmentStatus
 from app.schemas.equipment import EquipmentCreate, EquipmentUpdate, EquipmentOut, EquipmentListResponse
 from app.core.security import get_current_user
+from app.core.plant_context import ERR_PLANT_NOT_AUTHORIZED, PlantContext, get_plant_context
+from app.core.plant_scope import ensure_same_plant, plant_scoped
 from app.services.equipment_machine_sync import ensure_machine_for_equipment
 from app.services.live_status import live_status_by_equipment
 
@@ -28,10 +30,11 @@ async def list_equipment(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, le=2000),   # selectors (parent machine, PM clone targets) pull the whole catalog
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    query = select(Equipment).where(Equipment.active == True)
+    query = plant_scoped(select(Equipment).where(Equipment.active == True), Equipment, ctx)  # noqa: E712
 
+    # Legacy explicit ?plant_id= narrows further (ctx filter above is the boundary).
     if plant_id:
         query = query.where(Equipment.plant_id == plant_id)
     if asset_type:
@@ -71,22 +74,25 @@ async def list_equipment(
 async def get_equipment(
     equipment_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     result = await db.execute(select(Equipment).where(Equipment.id == equipment_id))
-    equip = result.scalar_one_or_none()
-    if not equip:
-        raise HTTPException(status_code=404, detail="Equipment not found")
-    return equip
+    return ensure_same_plant(result.scalar_one_or_none(), ctx, detail="Equipment not found")
 
 
 @router.post("/", response_model=EquipmentOut, status_code=201)
 async def create_equipment(
     data: EquipmentCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     equip = Equipment(**data.model_dump())
+    # The payload may choose a plant, but only one the caller is a member of;
+    # absent → the active plant.
+    if equip.plant_id is None:
+        equip.plant_id = ctx.plant_id
+    elif not ctx.can_access(equip.plant_id):
+        raise HTTPException(status_code=403, detail=ERR_PLANT_NOT_AUTHORIZED)
     db.add(equip)
     await db.flush()  # assign equip.id before generating the QR / kiosk
 
@@ -109,12 +115,10 @@ async def update_equipment(
     equipment_id: UUID,
     data: EquipmentUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     result = await db.execute(select(Equipment).where(Equipment.id == equipment_id))
-    equip = result.scalar_one_or_none()
-    if not equip:
-        raise HTTPException(status_code=404, detail="Equipment not found")
+    equip = ensure_same_plant(result.scalar_one_or_none(), ctx, detail="Equipment not found")
 
     for field, value in data.model_dump(exclude_none=True).items():
         setattr(equip, field, value)
@@ -131,12 +135,10 @@ async def update_equipment(
 async def delete_equipment(
     equipment_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     result = await db.execute(select(Equipment).where(Equipment.id == equipment_id))
-    equip = result.scalar_one_or_none()
-    if not equip:
-        raise HTTPException(status_code=404, detail="Equipment not found")
+    equip = ensure_same_plant(result.scalar_one_or_none(), ctx, detail="Equipment not found")
     equip.active = False  # soft delete
     await ensure_machine_for_equipment(db, equip)  # deactivate its kiosk too
     await db.commit()
@@ -147,13 +149,11 @@ async def update_hour_meter(
     equipment_id: UUID,
     hours: float,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     """Update equipment hour meter (accumulated hours)."""
     result = await db.execute(select(Equipment).where(Equipment.id == equipment_id))
-    equip = result.scalar_one_or_none()
-    if not equip:
-        raise HTTPException(status_code=404, detail="Equipment not found")
+    equip = ensure_same_plant(result.scalar_one_or_none(), ctx, detail="Equipment not found")
     equip.hour_meter = hours
     await db.commit()
     return {"hour_meter": equip.hour_meter}

@@ -6,7 +6,7 @@ import {
   Settings, Factory, CalendarDays, CalendarCheck, CalendarClock, Bell, Ticket,
   Activity, Briefcase, X, UserCog, Package, Building2, ShoppingCart,
   ChevronsLeft, ChevronsRight, Brain, Map as MapIcon, ClipboardCheck, ListChecks,
-  DollarSign, Cpu, type LucideIcon,
+  DollarSign, Cpu, Clock, type LucideIcon,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import type { UserRole } from '../../types';
@@ -103,6 +103,7 @@ const NAV_PERM: Record<string, string> = {
   purchaseOrders: 'purchase_orders', intelligence: 'intelligence',
   escalationSettings: 'settings_escalation', gestionBT: 'alerts',
   factoryCalendar: 'calendar', deviceSettings: 'settings_devices',
+  shiftSettings: 'technicians',
 };
 
 const Sidebar = ({ onClose }: SidebarProps) => {
@@ -131,6 +132,7 @@ const Sidebar = ({ onClose }: SidebarProps) => {
     { to: '/technicians', icon: Users, key: 'technicians', roles: SUPERVISOR_UP },
     { to: '/settings/escalation', icon: Bell, key: 'escalationSettings', roles: SUPERVISOR_UP },
     { to: '/settings/calendar', icon: CalendarDays, key: 'factoryCalendar', roles: SUPERVISOR_UP },
+    { to: '/settings/shifts', icon: Clock, key: 'shiftSettings', roles: SUPERVISOR_UP },
     { to: '/settings/devices', icon: Cpu, key: 'deviceSettings', roles: SUPERVISOR_UP },
     ...(isAdmin() ? [{ to: '/settings/users', icon: UserCog, key: 'userManagement' }] : []),
   ];

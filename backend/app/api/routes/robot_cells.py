@@ -20,6 +20,8 @@ from app.models.models import (
 )
 from app.core.security import get_current_user
 from app.core.permissions import require_permission
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import ensure_same_plant, plant_scoped
 from app.schemas.robot_cell import (
     CellTelemetry, RobotCellUpsert, RobotCellConfigOut, RobotCellStateOut, RobotCellOut,
 )
@@ -52,11 +54,12 @@ async def _to_out(db: AsyncSession, cell: RobotCell, eq_name: Optional[str]) -> 
 @router.get("/", response_model=List[RobotCellOut])
 async def list_cells(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    rows = (await db.execute(
-        select(RobotCell, Equipment.name).join(Equipment, RobotCell.equipment_id == Equipment.id)
-    )).all()
+    rows = (await db.execute(plant_scoped(
+        select(RobotCell, Equipment.name).join(Equipment, RobotCell.equipment_id == Equipment.id),
+        RobotCell, ctx,
+    ))).all()
     return [await _to_out(db, cell, name) for cell, name in rows]
 
 
@@ -64,13 +67,14 @@ async def list_cells(
 async def get_cell(
     equipment_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     cell = (await db.execute(
         select(RobotCell).where(RobotCell.equipment_id == equipment_id)
     )).scalar_one_or_none()
     if not cell:
         raise HTTPException(status_code=404, detail="Cell not configured for this equipment")
+    ensure_same_plant(cell, ctx, detail="Cell not configured for this equipment")
     eq = await db.get(Equipment, equipment_id)
     return await _to_out(db, cell, eq.name if eq else None)
 

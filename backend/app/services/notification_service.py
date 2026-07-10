@@ -13,13 +13,13 @@ from typing import Optional
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings as app_settings
 from app.models.models import (
     EscalationContact, EscalationSettings, Machine, MaintenanceAlert,
-    NotificationLog, Plant, Technician, User, UserRole,
+    NotificationLog, Plant, Technician, User, UserPlant, UserRole,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,9 +105,20 @@ CLAIMABLE_MIN_PRIORITIES = {"high", "critical"}
 ALERT_TO_TECH_SHIFT = {"morning": "day", "afternoon": "evening", "night": "night"}
 
 
-async def get_escalation_settings(db: AsyncSession) -> EscalationSettings:
-    """Get-or-create the singleton settings row."""
-    row = (await db.execute(select(EscalationSettings).limit(1))).scalar_one_or_none()
+async def get_escalation_settings(db: AsyncSession, plant_id=None) -> EscalationSettings:
+    """Settings for a plant: its own row when one exists, else the legacy/shared
+    row (plant_id NULL — what QS+QM edit together today). Get-or-create the
+    shared row. A plant that needs independent SLAs (Las Vegas) gets its own row
+    at onboarding and stops following the shared one."""
+    if plant_id is not None:
+        row = (await db.execute(
+            select(EscalationSettings).where(EscalationSettings.plant_id == plant_id).limit(1)
+        )).scalar_one_or_none()
+        if row:
+            return row
+    row = (await db.execute(
+        select(EscalationSettings).where(EscalationSettings.plant_id.is_(None)).limit(1)
+    )).scalar_one_or_none()
     if not row:
         row = EscalationSettings()
         db.add(row)
@@ -265,17 +276,38 @@ class NotificationService:
         level: int,
         machine: Optional[Machine] = None,
         priority=None,
+        plant_id=None,
     ) -> list[dict]:
         """Configured contacts for a level, filtered by machine scope and quiet
-        hours; falls back to users by role when nobody matches."""
+        hours; falls back to users by role when nobody matches.
+
+        Plant rule: an explicit per-plant contact fires only for its plant; a
+        legacy contact (plant_id NULL) fires only for plants its USER holds a
+        membership in. The shared QS+QM team therefore keeps getting both
+        plants' notifications, while a new plant (NL) notifies nobody until its
+        own contacts/memberships exist."""
+        if plant_id is None and machine is not None:
+            plant_id = machine.plant_id
+        conds = [
+            EscalationContact.level == level,
+            EscalationContact.is_active == True,  # noqa: E712
+            User.active == True,                  # noqa: E712
+        ]
+        if plant_id is not None:
+            conds.append(or_(
+                EscalationContact.plant_id == plant_id,
+                and_(
+                    EscalationContact.plant_id.is_(None),
+                    exists(select(UserPlant.id).where(
+                        UserPlant.user_id == EscalationContact.user_id,
+                        UserPlant.plant_id == plant_id,
+                    )),
+                ),
+            ))
         rows = (await self.db.execute(
             select(EscalationContact, User)
             .join(User, EscalationContact.user_id == User.id)
-            .where(
-                EscalationContact.level == level,
-                EscalationContact.is_active == True,
-                User.active == True,
-            )
+            .where(*conds)
         )).all()
         if rows:
             now_min = await self._local_now_minutes(machine)
@@ -296,9 +328,10 @@ class NotificationService:
         role = LEVEL_FALLBACK_ROLES.get(level)
         if not role:
             return []
-        users = (await self.db.execute(
-            select(User).where(User.role == role, User.active == True)
-        )).scalars().all()
+        q = select(User).where(User.role == role, User.active == True)  # noqa: E712
+        if plant_id is not None:
+            q = q.join(UserPlant, UserPlant.user_id == User.id).where(UserPlant.plant_id == plant_id)
+        users = (await self.db.execute(q)).scalars().all()
         return [{"user": u, "via_sms": True, "via_email": True} for u in users]
 
     async def _dispatch(
@@ -333,9 +366,10 @@ class NotificationService:
     # ── Event notifications ──────────────────────────────────────────────────
 
     async def send_escalation(self, level: int, alert, reminder: bool = False) -> None:
-        esc = await get_escalation_settings(self.db)
+        plant_id = getattr(alert, "plant_id", None)
+        esc = await get_escalation_settings(self.db, plant_id)
         machine = await self.db.get(Machine, alert.machine_id) if alert.machine_id else None
-        recipients = await self._level_recipients(level, machine=machine, priority=alert.priority)
+        recipients = await self._level_recipients(level, machine=machine, priority=alert.priority, plant_id=plant_id)
         if not recipients:
             logger.warning("[ESCALATION] No recipients for level %s", level)
             return
@@ -373,10 +407,11 @@ class NotificationService:
     ) -> None:
         """Immediate notification to level-1 contacts when a critical
         alert/ticket is created (no SLA wait)."""
-        esc = await get_escalation_settings(self.db)
+        plant_id = machine.plant_id if machine is not None else None
+        esc = await get_escalation_settings(self.db, plant_id)
         if not esc.notify_on_critical_alert:
             return
-        recipients = await self._level_recipients(1, machine=machine, priority="critical")
+        recipients = await self._level_recipients(1, machine=machine, priority="critical", plant_id=plant_id)
         if not recipients:
             return
         where = f" — {machine_name}" if machine_name else ""
@@ -415,7 +450,7 @@ class NotificationService:
         (+ rotating) are pinged. When self-assign is OFF, a supervisor dispatches
         the work, so nobody is pinged here — mirrors the technician_self_assign
         rule enforced on POST /tickets/{id}/claim."""
-        esc = await get_escalation_settings(self.db)
+        esc = await get_escalation_settings(self.db, getattr(ticket, "plant_id", None))
         if not esc.technician_self_assign:
             return
         if ticket.assigned_to_id:                       # already taken / dispatched
@@ -434,11 +469,17 @@ class NotificationService:
             if alert and alert.shift is not None:
                 ashift = alert.shift.value if hasattr(alert.shift, "value") else str(alert.shift)
                 target_shift = ALERT_TO_TECH_SHIFT.get(ashift)
-        rows = (await self.db.execute(
+        pool_q = (
             select(User, Technician.shift)
             .join(Technician, Technician.user_id == User.id)
-            .where(Technician.active == True, User.active == True)
-        )).all()
+            .where(Technician.active == True, User.active == True)  # noqa: E712
+        )
+        # Only technicians with access to the ticket's plant get the ping.
+        if getattr(ticket, "plant_id", None) is not None:
+            pool_q = pool_q.join(UserPlant, UserPlant.user_id == User.id).where(
+                UserPlant.plant_id == ticket.plant_id
+            )
+        rows = (await self.db.execute(pool_q)).all()
 
         def _on_shift(tshift) -> bool:
             if target_shift is None or tshift is None:
@@ -483,7 +524,7 @@ class NotificationService:
         """Every new ticket → SMS/email to the level-0 contact group, plus the
         technician pool when self-assignment is on (independent of the toggle below)."""
         await self.notify_claimable_to_technicians(ticket, machine_name)
-        esc = await get_escalation_settings(self.db)
+        esc = await get_escalation_settings(self.db, getattr(ticket, "plant_id", None))
         if not esc.notify_on_ticket_opened:
             return
         if not self._meets_group_min_priority(esc, ticket.priority):
@@ -491,7 +532,8 @@ class NotificationService:
         if await self._already_sent(ticket.id, "ticket_opened"):
             return
         machine = await self.db.get(Machine, ticket.machine_id) if ticket.machine_id else None
-        recipients = await self._level_recipients(0, machine=machine, priority=ticket.priority)
+        recipients = await self._level_recipients(0, machine=machine, priority=ticket.priority,
+                                                  plant_id=getattr(ticket, "plant_id", None))
         if not recipients:
             return
         where = machine_name or "Machine"
@@ -515,7 +557,7 @@ class NotificationService:
 
     async def notify_ticket_completed(self, ticket, machine_name: Optional[str]) -> None:
         """Ticket closed → SMS/email to the level-0 contact group (once)."""
-        esc = await get_escalation_settings(self.db)
+        esc = await get_escalation_settings(self.db, getattr(ticket, "plant_id", None))
         if not esc.notify_on_ticket_completed:
             return
         if not self._meets_group_min_priority(esc, ticket.priority):
@@ -523,7 +565,8 @@ class NotificationService:
         if await self._already_sent(ticket.id, "ticket_closed"):
             return
         machine = await self.db.get(Machine, ticket.machine_id) if ticket.machine_id else None
-        recipients = await self._level_recipients(0, machine=machine, priority=ticket.priority)
+        recipients = await self._level_recipients(0, machine=machine, priority=ticket.priority,
+                                                  plant_id=getattr(ticket, "plant_id", None))
         if not recipients:
             return
         where = machine_name or "Machine"
@@ -547,7 +590,7 @@ class NotificationService:
 
     async def notify_ticket_assigned(self, ticket, user: User, machine_name: str) -> None:
         """Notify the technician when a ticket is assigned to them."""
-        esc = await get_escalation_settings(self.db)
+        esc = await get_escalation_settings(self.db, getattr(ticket, "plant_id", None))
         if not esc.notify_on_ticket_assigned:
             return
         subject = f"[MES] Ticket {ticket.ticket_number} assigned to you"

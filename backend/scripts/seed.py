@@ -28,11 +28,11 @@ async def main() -> None:
 
     async with Session() as db:
 
-        # ── Plant ─────────────────────────────────────────────────────────────
-        r = await db.execute(select(Plant).where(Plant.code == "PLT1"))
-        plant = r.scalar_one_or_none()
+        # ── Plant ── official site codes: QS = Saint-Jérôme, QM = Mirabel, NL = Las Vegas
+        r = await db.execute(select(Plant).where(Plant.code.in_(["QS", "PLT1"])))
+        plant = r.scalars().first()
         if not plant:
-            plant = Plant(code="PLT1", name="Foliot Furniture - Plant 1")
+            plant = Plant(code="QS", name="Foliot Furniture (Saint-Jérôme)", group_code="QC")
             db.add(plant)
             await db.flush()
             print(f"[+] Plant created:  {plant.name}  (id={plant.id})")

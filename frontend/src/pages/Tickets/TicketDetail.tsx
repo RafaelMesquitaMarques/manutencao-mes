@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft, Info, Wrench, Package, History, MessageSquare,
   CheckCircle2, Clock, User, UserCheck, AlertTriangle, ChevronRight,
+  Mic, MicOff,
 } from 'lucide-react';
 import {
   fetchTicket, updateTicketStatus, closeTicket, addTicketComment,
@@ -13,6 +15,7 @@ import { fetchTechniciansFull } from '../../api/workOrders';
 import type { TechnicianFull } from '../../types';
 import api from '../../api/axios';
 import Spinner from '../../components/ui/Spinner';
+import { useSpeechDictation } from '../../hooks/useSpeechDictation';
 
 type Tab = 'details' | 'workorder' | 'parts' | 'history';
 
@@ -117,6 +120,7 @@ export default function TicketDetail() {
 // ── Details Tab ───────────────────────────────────────────────────────────────
 
 function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket; wo: WorkOrder | null; onRefresh: () => void }) {
+  const { t, i18n } = useTranslation();
   const [techs, setTechs]         = useState<TechnicianFull[]>([]);
   const [techId, setTechId]       = useState('');
   const [assigning, setAssigning] = useState(false);
@@ -127,6 +131,12 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
   const [postingComment, setPostingComment] = useState(false);
   const [closeForm, setCloseForm] = useState({ diagnosis: '', corrective_action: '', total_intervention_minutes: '' });
   const [err, setErr] = useState('');
+
+  // Voice dictation appends each spoken chunk to whatever is already typed.
+  const { supported: micSupported, isRecording, toggle: toggleMic } = useSpeechDictation(
+    (chunk) => setCommentText((prev) => (prev ? `${prev} ${chunk}` : chunk)),
+    i18n.language,
+  );
 
   useEffect(() => {
     if (!ticket.work_order_id) fetchTechniciansFull().then(setTechs).catch(() => {});
@@ -282,6 +292,21 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
             <textarea placeholder="Add a comment…" value={commentText}
               onChange={(e) => setCommentText(e.target.value)}
               className="input-field flex-1 h-16 resize-none text-sm" />
+            {micSupported && (
+              <button
+                type="button"
+                onClick={toggleMic}
+                title={isRecording ? t('workOrders.dictateStop') : t('workOrders.dictate')}
+                aria-label={isRecording ? t('workOrders.dictateStop') : t('workOrders.dictate')}
+                className={`p-2.5 rounded-lg border transition-colors flex-shrink-0 self-end ${
+                  isRecording
+                    ? 'bg-red-600/80 border-red-400 animate-pulse text-white'
+                    : 'bg-white/[0.03] border-white/10 text-gray-400 hover:border-blue-500 hover:text-blue-400'
+                }`}
+              >
+                {isRecording ? <MicOff size={16} /> : <Mic size={16} />}
+              </button>
+            )}
             <button onClick={doComment} disabled={postingComment || !commentText.trim()}
               className="btn-primary px-3 self-end py-2 text-sm">
               {postingComment ? '…' : 'Post'}

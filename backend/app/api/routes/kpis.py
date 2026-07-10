@@ -14,6 +14,8 @@ from app.models.models import (
     StopCategory, StopSubcategory, StopCategoryType, Plant,
 )
 from app.core.security import get_current_user
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import ensure_same_plant, plant_condition
 from app.services.work_calendar import working_dates
 
 router = APIRouter()
@@ -55,34 +57,42 @@ def _window(period_days: int, start: Optional[date], end: Optional[date], tz: Zo
     return since, now, since.date(), now.date(), period_days
 
 
-async def _machine_eq_ids(db: AsyncSession, machine_id: Optional[UUID]) -> Optional[set]:
+async def _machine_eq_ids(db: AsyncSession, machine_id: Optional[UUID], ctx: PlantContext) -> Optional[set]:
     """Equipment ids linked to a machine: explicit Machine.equipment_id plus
-    the shared UUID for machines auto-provisioned from equipment."""
+    the shared UUID for machines auto-provisioned from equipment. A machine or
+    equipment id owned by a plant the caller cannot see 404s like a bogus id —
+    the KPI endpoints must not be usable as a cross-plant probe."""
     if machine_id is None:
         return None
     eq_ids = {machine_id}
     machine = await db.get(Machine, machine_id)
-    if machine and machine.equipment_id:
-        eq_ids.add(machine.equipment_id)
+    if machine:
+        ensure_same_plant(machine, ctx, detail="Machine not found")
+        if machine.equipment_id:
+            eq_ids.add(machine.equipment_id)
+    else:
+        eq = await db.get(Equipment, machine_id)
+        if eq:
+            ensure_same_plant(eq, ctx, detail="Machine not found")
     return eq_ids
 
 
-async def _machine_cond(db: AsyncSession, machine_id: Optional[UUID]):
-    """WorkOrder filter for a machine. No-op when machine_id is None."""
+async def _machine_cond(db: AsyncSession, machine_id: Optional[UUID], ctx: PlantContext):
+    """WorkOrder filter: one visible machine, or the whole active plant."""
     if machine_id is None:
-        return true()
-    eq_ids = await _machine_eq_ids(db, machine_id)
+        return plant_condition(WorkOrder, ctx)
+    eq_ids = await _machine_eq_ids(db, machine_id, ctx)
     return or_(
         WorkOrder.machine_id == machine_id,
         WorkOrder.equipment_id.in_(list(eq_ids)),
     )
 
 
-async def _machine_int_cond(db: AsyncSession, machine_id: Optional[UUID]):
-    """MachineIntervention filter for a machine. No-op when machine_id is None."""
+async def _machine_int_cond(db: AsyncSession, machine_id: Optional[UUID], ctx: PlantContext):
+    """MachineIntervention filter: one visible machine, or the whole active plant."""
     if machine_id is None:
-        return true()
-    eq_ids = await _machine_eq_ids(db, machine_id)
+        return plant_condition(MachineIntervention, ctx)
+    eq_ids = await _machine_eq_ids(db, machine_id, ctx)
     return or_(
         MachineIntervention.machine_id == machine_id,
         MachineIntervention.equipment_id.in_(list(eq_ids)),
@@ -135,7 +145,8 @@ def _shift_minutes(shifts_config, shift_value: str) -> float:
         return default
 
 
-async def _oee_metrics(db: AsyncSession, machine_ids, since, until, start_date, end_date) -> dict:
+async def _oee_metrics(db: AsyncSession, machine_ids, since, until, start_date, end_date,
+                       ctx: Optional[PlantContext] = None) -> dict:
     """OEE on the TPM planned-time basis, for one machine, a set, or all (None).
 
     Planned Production Time = scheduled shift time (recorded production shifts ×
@@ -149,10 +160,13 @@ async def _oee_metrics(db: AsyncSession, machine_ids, since, until, start_date, 
     Only working-calendar dates count (Mon-Fri minus holidays; weekends/holidays
     auto-included when production was recorded) — idle weekends don't drag the
     numbers down."""
-    wdays = await working_dates(db, start_date, end_date, machine_ids)
+    wdays = await working_dates(db, start_date, end_date, machine_ids,
+                                plant_id=ctx.plant_id if ctx is not None else None)
     log_cond = [MachineProductionLog.date >= start_date, MachineProductionLog.date <= end_date]
     if machine_ids is not None:
         log_cond.append(MachineProductionLog.machine_id.in_(list(machine_ids)))
+    elif ctx is not None:
+        log_cond.append(plant_condition(MachineProductionLog, ctx))
     logs = (await db.execute(
         select(
             MachineProductionLog.machine_id, MachineProductionLog.date,
@@ -184,6 +198,8 @@ async def _oee_metrics(db: AsyncSession, machine_ids, since, until, start_date, 
                  MachineStop.duration_minutes.isnot(None)]
     if machine_ids is not None:
         stop_cond.append(MachineStop.machine_id.in_(list(machine_ids)))
+    elif ctx is not None:
+        stop_cond.append(plant_condition(MachineStop, ctx))
     d_expr = func.date(MachineStop.started_at)
     stop_rows = (await db.execute(
         select(d_expr.label("d"), StopCategory.type, func.sum(MachineStop.duration_minutes))
@@ -229,11 +245,11 @@ async def get_kpi_summary(
     start: Optional[date] = Query(None),
     end: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     tz = await _range_tz(db, machine_id)
     since, until, start_date, end_date, window_days = _window(period_days, start, end, tz)
-    m_cond = await _machine_cond(db, machine_id)
+    m_cond = await _machine_cond(db, machine_id, ctx)
 
     # MTTR: corrective WO repair hours plus machine intervention durations,
     # skipping interventions whose ticket already produced a counted WO
@@ -252,7 +268,7 @@ async def get_kpi_summary(
     repair_samples = [float(r.repair_hours) for r in wo_repair_rows]
     counted_tickets = {r.ticket_id for r in wo_repair_rows if r.ticket_id}
 
-    i_cond = await _machine_int_cond(db, machine_id)
+    i_cond = await _machine_int_cond(db, machine_id, ctx)
     int_rows = (await db.execute(
         select(
             MachineIntervention.intervention_duration_minutes,
@@ -341,7 +357,7 @@ async def get_kpi_summary(
                  WorkOrder.opened_at >= since, WorkOrder.opened_at <= until)
         )
     )).scalar() or 0.0
-    stop_cond = (MachineStop.machine_id == machine_id) if machine_id else true()
+    stop_cond = (MachineStop.machine_id == machine_id) if machine_id else plant_condition(MachineStop, ctx)
     stop_minutes = (await db.execute(
         select(func.sum(MachineStop.duration_minutes)).where(
             and_(stop_cond, MachineStop.started_at >= since, MachineStop.started_at <= until,
@@ -361,17 +377,20 @@ async def get_kpi_summary(
     if machine_id:
         scope_machines = 1
     else:
-        scope_machines = (await db.execute(select(func.count(Machine.id)))).scalar() or 1
+        scope_machines = (await db.execute(
+            select(func.count(Machine.id)).where(plant_condition(Machine, ctx))
+        )).scalar() or 1
     # Capacity counts working-calendar days only (Mon-Fri minus holidays, plus
     # weekends/holidays that were actually worked or when count_weekends is on).
     work_days = len(await working_dates(db, start_date, end_date,
-                                        [machine_id] if machine_id else None))
+                                        [machine_id] if machine_id else None,
+                                        plant_id=ctx.plant_id))
     capacity_hours = max(scope_machines, 1) * max(work_days, 1) * 24.0
     operating_hours = max(capacity_hours - downtime_hours, 0.0)
     mtbf_hours = round(operating_hours / failures, 1) if failures > 0 else round(operating_hours, 1)
 
     # ── OEE (TPM planned-time basis) — one machine or plant-wide ─────────────
-    oee = await _oee_metrics(db, [machine_id] if machine_id else None, since, until, start_date, end_date)
+    oee = await _oee_metrics(db, [machine_id] if machine_id else None, since, until, start_date, end_date, ctx)
 
     # Live status/operator for a single machine.
     current_status = None
@@ -410,10 +429,10 @@ async def get_kpi_summary(
 async def get_backlog(
     machine_id: Optional[UUID] = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     now = datetime.now(timezone.utc)
-    m_cond = await _machine_cond(db, machine_id)
+    m_cond = await _machine_cond(db, machine_id, ctx)
     result = await db.execute(
         select(WorkOrder.id, WorkOrder.opened_at).where(
             and_(
@@ -451,11 +470,11 @@ async def get_mttr_by_equipment(
     start: Optional[date] = Query(None),
     end: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     tz = await _range_tz(db, machine_id)
     since, until, _sd, _ed, _wd = _window(period_days, start, end, tz)
-    m_cond = await _machine_cond(db, machine_id)
+    m_cond = await _machine_cond(db, machine_id, ctx)
 
     # WO-based repairs grouped by equipment
     wo_rows = (await db.execute(
@@ -482,7 +501,7 @@ async def get_mttr_by_equipment(
             counted_tickets.add(r.ticket_id)
 
     # Machine interventions grouped by machine, merged by display name
-    i_cond = await _machine_int_cond(db, machine_id)
+    i_cond = await _machine_int_cond(db, machine_id, ctx)
     int_rows = (await db.execute(
         select(
             MachineIntervention.machine_id,
@@ -501,7 +520,9 @@ async def get_mttr_by_equipment(
     )).all()
     if int_rows:
         machines_map = {
-            m.id: m for m in (await db.execute(select(Machine))).scalars().all()
+            m.id: m for m in (await db.execute(
+                select(Machine).where(plant_condition(Machine, ctx))
+            )).scalars().all()
         }
         for r in int_rows:
             if r.ticket_id and r.ticket_id in counted_tickets:
@@ -538,11 +559,11 @@ async def get_cost_by_type(
     start: Optional[date] = Query(None),
     end: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     tz = await _range_tz(db, machine_id)
     since, until, start_date, end_date, _wd = _window(period_days, start, end, tz)
-    m_cond = await _machine_cond(db, machine_id)
+    m_cond = await _machine_cond(db, machine_id, ctx)
     result = await db.execute(
         select(WOCost.transaction_type, func.sum(WOCost.amount).label("total"))
         .join(WorkOrder, WOCost.work_order_id == WorkOrder.id)
@@ -552,7 +573,7 @@ async def get_cost_by_type(
     rows = result.all()
     out = [{"type": row.transaction_type, "total": round(float(row.total), 2)} for row in rows]
 
-    i_cond = await _machine_int_cond(db, machine_id)
+    i_cond = await _machine_int_cond(db, machine_id, ctx)
     parts_total = await _parts_cost(db, since, m_cond, i_cond, until)
     if parts_total:
         out.append({"type": "parts_used", "total": round(parts_total, 2)})
@@ -566,7 +587,7 @@ async def get_downtime_pareto(
     start: Optional[date] = Query(None),
     end: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     """Downtime grouped by stop reason (category) → subcategory, worst first — the
     actionable Pareto with drill-down. Each category carries its own subcategory
@@ -578,7 +599,10 @@ async def get_downtime_pareto(
     cond = [MachineStop.started_at >= since, MachineStop.started_at <= until,
             MachineStop.duration_minutes.isnot(None)]
     if machine_id:
+        await _machine_eq_ids(db, machine_id, ctx)   # 404 on wrong-plant probes
         cond.append(MachineStop.machine_id == machine_id)
+    else:
+        cond.append(plant_condition(MachineStop, ctx))
     # One row per (category × subcategory); fold into nested groups below.
     rows = (await db.execute(
         select(
@@ -644,7 +668,7 @@ async def get_oee_trend(
     start: Optional[date] = Query(None),
     end: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     """Daily Availability / Performance / Quality / OEE over the period, same
     planned-time methodology as /summary, bucketed per calendar day. Non-working
@@ -652,10 +676,14 @@ async def get_oee_trend(
     tz = await _range_tz(db, machine_id)
     since, until, start_date, end_date, _wd = _window(period_days, start, end, tz)
     wdays = await working_dates(db, start_date, end_date,
-                                [machine_id] if machine_id else None)
+                                [machine_id] if machine_id else None,
+                                plant_id=ctx.plant_id)
     log_cond = [MachineProductionLog.date >= start_date, MachineProductionLog.date <= end_date]
     if machine_id:
+        await _machine_eq_ids(db, machine_id, ctx)   # 404 on wrong-plant probes
         log_cond.append(MachineProductionLog.machine_id == machine_id)
+    else:
+        log_cond.append(plant_condition(MachineProductionLog, ctx))
     logs = (await db.execute(
         select(
             MachineProductionLog.date, MachineProductionLog.machine_id,
@@ -676,6 +704,8 @@ async def get_oee_trend(
                  MachineStop.duration_minutes.isnot(None)]
     if machine_id:
         stop_cond.append(MachineStop.machine_id == machine_id)
+    else:
+        stop_cond.append(plant_condition(MachineStop, ctx))
     stop_rows = (await db.execute(
         select(d_expr.label("d"), StopCategory.type, func.sum(MachineStop.duration_minutes))
         .select_from(MachineStop)
@@ -722,14 +752,15 @@ async def get_oee_by_machine(
     start: Optional[date] = Query(None),
     end: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     """Per-machine OEE for the period — worst first, so problem machines surface."""
     tz = await _range_tz(db, None)
     since, until, start_date, end_date, _wd = _window(period_days, start, end, tz)
     mids = [r[0] for r in (await db.execute(
         select(MachineProductionLog.machine_id)
-        .where(MachineProductionLog.date >= start_date, MachineProductionLog.date <= end_date)
+        .where(MachineProductionLog.date >= start_date, MachineProductionLog.date <= end_date,
+               plant_condition(MachineProductionLog, ctx))
         .group_by(MachineProductionLog.machine_id)
     )).all()]
     if not mids:

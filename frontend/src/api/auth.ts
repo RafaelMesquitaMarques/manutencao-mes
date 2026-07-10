@@ -1,5 +1,5 @@
 import api from './axios';
-import type { LoginResponse, LoginCredentials, User } from '../types';
+import type { LoginResponse, LoginCredentials, PlantMembership, User } from '../types';
 
 export const login = async (credentials: LoginCredentials): Promise<LoginResponse> => {
   const { data } = await api.post<LoginResponse>('/api/auth/login', {
@@ -18,6 +18,17 @@ export const getMe = async (): Promise<User> => {
 export const fetchMyPermissions = async (): Promise<string[]> => {
   const { data } = await api.get<{ permissions: string[] }>('/api/auth/permissions');
   return data.permissions ?? [];
+};
+
+/** Plant memberships of the logged-in user (default first). */
+export const fetchMyPlants = async (): Promise<{
+  plants: PlantMembership[];
+  default_plant_id: string | null;
+}> => {
+  const { data } = await api.get<{ plants: PlantMembership[]; default_plant_id: string | null }>(
+    '/api/auth/me/plants'
+  );
+  return { plants: data.plants ?? [], default_plant_id: data.default_plant_id ?? null };
 };
 
 export const updateMe = async (payload: {

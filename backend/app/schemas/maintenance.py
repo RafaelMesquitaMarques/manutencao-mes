@@ -43,6 +43,7 @@ class MachineOut(BaseModel):
     hourly_rate:             Optional[float] = None
     hourly_rate_currency:    Optional[str] = "CAD"
     target_count_per_shift:  Optional[int] = None
+    target_count_per_hour:   Optional[int] = None
     shifts_config:           Optional[dict] = None
     created_at:              datetime
 
@@ -124,6 +125,7 @@ class MachinePageData(BaseModel):
     hourly_rate:             Optional[float] = None
     hourly_rate_currency:    Optional[str] = "CAD"
     target_count_per_shift:  Optional[int] = None
+    target_count_per_hour:   Optional[int] = None
     kiosk_layout:            Optional[list] = None
     shifts_config:           Optional[dict] = None
     signal_driven:           bool = False   # production status fed by I/O signal (ADAM) → no manual restart
@@ -153,6 +155,7 @@ class MachineConfigUpdate(BaseModel):
     target_availability_pct: Optional[float] = None
     target_count:            Optional[int]   = None
     target_count_per_shift:  Optional[int]   = None
+    target_count_per_hour:   Optional[int]   = None
     show_production_panel:   Optional[bool]  = None
     show_reject_panel:       Optional[bool]  = None
     show_availability_gauge: Optional[bool]  = None

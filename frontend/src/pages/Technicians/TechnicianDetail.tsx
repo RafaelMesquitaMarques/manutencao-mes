@@ -1,11 +1,19 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, User, AlertCircle, CheckCircle, Trash2 } from 'lucide-react';
+import { ArrowLeft, User, AlertCircle, CheckCircle, Trash2, Plus, Palmtree } from 'lucide-react';
 import api from '../../api/axios';
-import type { TechnicianFull } from '../../types';
+import type { TechnicianFull, TechnicianUnavailability, UnavailabilityType } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import AvailabilityBadge from '../../components/AvailabilityBadge';
+import {
+  fetchTechnicianUnavailability, addTechnicianUnavailability,
+  deleteTechnicianUnavailability,
+} from '../../api/shifts';
 import { usePermission } from '../../hooks/usePermission';
+
+const UNAVAILABILITY_TYPES: UnavailabilityType[] =
+  ['vacation', 'sick', 'absence', 'training', 'unavailable', 'other'];
 
 const SPECIALTIES = [
   'electromechanical', 'mechanical', 'electrical',
@@ -111,6 +119,7 @@ export default function TechnicianDetail() {
           </h1>
           {tech?.email && <p className="text-gray-500 text-sm mt-0.5">{tech.email}</p>}
         </div>
+        {tech?.availability && <AvailabilityBadge availability={tech.availability} />}
         {canDelete && (
           <button onClick={handleDelete} className="btn-danger py-1.5 px-3" title={t('technicians.deactivate')}>
             <Trash2 size={15} />
@@ -220,6 +229,154 @@ export default function TechnicianDetail() {
           </div>
         )}
       </form>
+
+      {id && <UnavailabilitySection technicianId={id} canEdit={canUpdate} />}
+    </div>
+  );
+}
+
+// ─── Vacation / unavailability calendar for one technician ────────────────────
+
+function UnavailabilitySection({ technicianId, canEdit }: { technicianId: string; canEdit: boolean }) {
+  const { t } = useTranslation();
+  const [rows, setRows] = useState<TechnicianUnavailability[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+  const [form, setForm] = useState<{ type: UnavailabilityType; start_date: string; end_date: string; notes: string }>({
+    type: 'vacation',
+    start_date: new Date().toISOString().slice(0, 10),
+    end_date: new Date().toISOString().slice(0, 10),
+    notes: '',
+  });
+
+  const load = () => {
+    setLoading(true);
+    fetchTechnicianUnavailability(technicianId)
+      .then(setRows)
+      .catch(() => setErr(t('common.error')))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, [technicianId]);
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canEdit) return;
+    if (form.end_date < form.start_date) { setErr(t('availability.endBeforeStart')); return; }
+    setSaving(true);
+    setErr('');
+    try {
+      await addTechnicianUnavailability(technicianId, {
+        type: form.type,
+        start_date: form.start_date,
+        end_date: form.end_date,
+        notes: form.notes || undefined,
+      });
+      setShowForm(false);
+      setForm({ ...form, notes: '' });
+      load();
+    } catch {
+      setErr(t('common.error'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (rowId: string) => {
+    if (!canEdit || !window.confirm(t('availability.deletePeriodConfirm'))) return;
+    try {
+      await deleteTechnicianUnavailability(technicianId, rowId);
+      load();
+    } catch {
+      setErr(t('common.error'));
+    }
+  };
+
+  const fmtDate = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString();
+
+  return (
+    <div className="glass-card p-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-white font-semibold flex items-center gap-2">
+          <Palmtree size={18} className="text-purple-400" />
+          {t('availability.unavailabilityTitle')}
+        </h2>
+        {canEdit && (
+          <button onClick={() => setShowForm(!showForm)} className="btn-secondary py-1.5 px-3 text-sm">
+            <Plus size={14} /> {t('availability.addPeriod')}
+          </button>
+        )}
+      </div>
+      <p className="text-xs text-gray-600 -mt-2">{t('availability.unavailabilityHelp')}</p>
+
+      {err && (
+        <div className="flex items-center gap-2.5 p-3 bg-red-500/10 border border-red-500/25 rounded-lg">
+          <AlertCircle size={14} className="text-red-400 flex-shrink-0" />
+          <p className="text-red-400 text-sm">{err}</p>
+        </div>
+      )}
+
+      {showForm && canEdit && (
+        <form onSubmit={handleAdd} className="p-4 bg-white/[0.02] border border-white/[0.06] rounded-lg space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="label">{t('availability.type')}</label>
+              <select className="input-field" value={form.type}
+                onChange={(e) => setForm({ ...form, type: e.target.value as UnavailabilityType })}>
+                {UNAVAILABILITY_TYPES.map((ty) => (
+                  <option key={ty} value={ty}>{t(`unavailabilityType.${ty}`)}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">{t('availability.startDate')}</label>
+              <input type="date" className="input-field" value={form.start_date}
+                onChange={(e) => setForm({ ...form, start_date: e.target.value })} />
+            </div>
+            <div>
+              <label className="label">{t('availability.endDate')}</label>
+              <input type="date" className="input-field" value={form.end_date}
+                onChange={(e) => setForm({ ...form, end_date: e.target.value })} />
+            </div>
+          </div>
+          <div>
+            <label className="label">{t('common.notes')}</label>
+            <input type="text" className="input-field" value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+          </div>
+          <div className="flex justify-end">
+            <button type="submit" disabled={saving} className="btn-primary py-1.5">
+              {saving ? t('technicians.saving') : t('common.save')}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {loading ? (
+        <p className="text-gray-600 text-sm py-4 text-center">{t('common.loading')}</p>
+      ) : rows.length === 0 ? (
+        <p className="text-gray-600 text-sm py-4 text-center">{t('availability.noPeriods')}</p>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((r) => (
+            <div key={r.id} className="flex items-center justify-between p-2.5 bg-white/[0.02] border border-white/[0.05] rounded-lg">
+              <div className="flex items-center gap-3">
+                <span className="text-xs bg-purple-500/15 text-purple-400 border border-purple-500/25 px-2 py-0.5 rounded-full">
+                  {t(`unavailabilityType.${r.type}`)}
+                </span>
+                <span className="text-gray-300 text-sm font-mono">{fmtDate(r.start_date)} → {fmtDate(r.end_date)}</span>
+                {r.notes && <span className="text-gray-500 text-xs">{r.notes}</span>}
+              </div>
+              {canEdit && (
+                <button onClick={() => handleDelete(r.id)} className="text-gray-500 hover:text-red-400 transition-colors" title={t('common.delete')}>
+                  <Trash2 size={14} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

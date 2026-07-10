@@ -6,14 +6,15 @@ import {
   DollarSign, Wallet, TrendingUp, PiggyBank, Plus, Loader2, Check,
   ChevronRight, ChevronDown, BarChart3, Table2, Factory, Building2, Trash2, X,
   Flame, Receipt, CalendarRange, Upload, MessageSquareText, Landmark, Truck,
+  ShoppingCart, MapPin,
 } from 'lucide-react';
 import {
   fetchCostPnL, fetchCostCenters, fetchCostCenterBudgets, saveCostCenterBudgets,
   fetchCostByMachine, fetchManageCostCenters, createCostCenter, updateCostCenter,
-  deleteCostCenter, saveDeptMap, fetchCostTransactions, importSapCosts,
+  deleteCostCenter, saveDeptMap, fetchCostTransactions, importSapCosts, fetchCostBySupplier,
   type CostPnL, type CostCenterBudgetRow, type CCBudgetItem, type MonthMapEntry,
   type CostByMachine, type CostCenterManaged, type CostTransactions, type CostScope,
-  type SapImportResult,
+  type SapImportResult, type CostSite, type CostBySupplier, type SupplierSpend,
 } from '../../api/costs';
 import { usePermission } from '../../hooks/usePermission';
 import Spinner from '../../components/ui/Spinner';
@@ -71,7 +72,11 @@ const parseCustomPeriod = (key: string): { from: number; to: number } | null => 
   return { from, to };
 };
 
-type Tab = 'pnl' | 'machine' | 'budget' | 'manage';
+type Tab = 'pnl' | 'machine' | 'supplier' | 'budget' | 'manage';
+
+// Site filter: null = both sites combined. QS = Saint-Jérôme, QM = Mirabel
+// (told apart by the cost-center name, which carries "Mirabel" for QM).
+const SITE_OPTIONS: (CostSite | null)[] = [null, 'QS', 'QM'];
 
 export default function CostsDashboard() {
   const { t, i18n } = useTranslation();
@@ -81,9 +86,13 @@ export default function CostsDashboard() {
   const thisYear = new Date().getFullYear();
   const [tab, setTab] = useState<Tab>('pnl');
   const [year, setYear] = useState(thisYear);
+  const [site, setSite] = useState<CostSite | null>(null);
   const [pnl, setPnl] = useState<CostPnL | null>(null);
   const [loading, setLoading] = useState(true);
   const [importOpen, setImportOpen] = useState(false);
+
+  const siteLabel = (s: CostSite | null) =>
+    s === null ? t('costs.siteAll') : s === 'QS' ? t('costs.siteQS') : t('costs.siteQM');
 
   // Months map: which calendar (year, month) sits behind each of the 12 slots.
   // Calendar years map Jan..Dec; SAP fiscal years map Dec of year-1 .. Nov.
@@ -138,9 +147,9 @@ export default function CostsDashboard() {
 
   const loadPnl = useCallback(async () => {
     setLoading(true);
-    try { setPnl(await fetchCostPnL(year)); }
+    try { setPnl(await fetchCostPnL(year, site)); }
     finally { setLoading(false); }
-  }, [year]);
+  }, [year, site]);
   useEffect(() => { loadPnl(); }, [loadPnl]);
 
   const YEARS = [thisYear - 2, thisYear - 1, thisYear, thisYear + 1];
@@ -166,6 +175,18 @@ export default function CostsDashboard() {
               <Upload size={14} /> {t('costs.importSap')}
             </button>
           )}
+          {/* Site filter (QS = Saint-Jérôme, QM = Mirabel) — narrows every tab. */}
+          <div className="flex items-center gap-1 bg-[#0d1421] border border-white/[0.06] rounded-lg p-1"
+            title={t('costs.siteFilterHint')}>
+            <MapPin size={13} className="text-gray-500 ml-1.5" />
+            {SITE_OPTIONS.map((s) => (
+              <button key={s ?? 'all'} onClick={() => setSite(s)}
+                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                  site === s ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
+                {siteLabel(s)}
+              </button>
+            ))}
+          </div>
           <div className="flex gap-1 bg-[#0d1421] border border-white/[0.06] rounded-lg p-1">
             {YEARS.map((y) => (
               <button key={y} onClick={() => setYear(y)}
@@ -188,6 +209,7 @@ export default function CostsDashboard() {
         {([
           ['pnl', Table2, t('costs.tabControl')],
           ['machine', Factory, t('costs.tabByMachine')],
+          ['supplier', ShoppingCart, t('costs.tabBySupplier')],
           ['budget', Wallet, t('costs.tabBudget')],
           ...(canEdit ? [['manage', Building2, t('costs.tabManage')] as const] : []),
         ] as const).map(([id, Icon, label]) => (
@@ -204,15 +226,17 @@ export default function CostsDashboard() {
       ) : tab === 'pnl' ? (
         <ControlTab pnl={pnl} months={months} periodKey={periodKey} setPeriodKey={setPeriodKey}
           periods={PERIODS} periodLabel={periodLabel} monthLabel={monthLabel} ccLabel={ccLabel} typeLabel={typeLabel} year={year}
-          todaySlot={todaySlot} sapMode={sapMode} fiscal={fiscal} />
+          todaySlot={todaySlot} sapMode={sapMode} fiscal={fiscal} site={site} />
       ) : tab === 'machine' ? (
         <ByMachineTab year={year} months={months} periodKey={periodKey} setPeriodKey={setPeriodKey}
-          periods={PERIODS} periodLabel={periodLabel} monthLabel={monthLabel} typeLabel={typeLabel} fiscal={fiscal} />
+          periods={PERIODS} periodLabel={periodLabel} monthLabel={monthLabel} typeLabel={typeLabel} fiscal={fiscal} site={site} />
+      ) : tab === 'supplier' ? (
+        <SupplierTab year={year} fiscal={fiscal} site={site} siteLabel={siteLabel} ccLabel={ccLabel} />
       ) : tab === 'manage' ? (
-        <ManageTab ccLabel={ccLabel} onSaved={loadPnl} />
+        <ManageTab onSaved={loadPnl} />
       ) : (
         <BudgetTab year={year} canEdit={canEdit} monthLabel={calMonthLabel} ccLabel={ccLabel}
-          onSaved={loadPnl} sapMode={sapMode} />
+          onSaved={loadPnl} sapMode={sapMode} site={site} />
       )}
     </div>
   );
@@ -301,7 +325,7 @@ function PeriodPicker({ periodKey, setPeriodKey, periods, periodLabel, monthLabe
 
 // ─── Budget vs Actual tab (cost-control statement) ────────────────────────────
 
-function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel, monthLabel, ccLabel, typeLabel, year, todaySlot, sapMode, fiscal }: {
+function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel, monthLabel, ccLabel, typeLabel, year, todaySlot, sapMode, fiscal, site }: {
   pnl: CostPnL | null;
   months: number[];
   periodKey: string;
@@ -315,6 +339,7 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
   todaySlot: number;              // slot of the current calendar month (0 = outside this year)
   sapMode: boolean;
   fiscal: boolean;
+  site: CostSite | null;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -974,7 +999,7 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
 
       {txCc && (
         <TransactionsModal year={year} monthFrom={monthFrom} monthTo={monthTo}
-          costCenter={txCc} scope={scope} fiscal={fiscal}
+          costCenter={txCc} scope={scope} fiscal={fiscal} site={site}
           title={`${ccLabel(txCc)} — ${periodLabel} (${t(isOpex ? 'costs.scopeOpex' : 'costs.scopeCapex')})`}
           typeLabel={typeLabel} onClose={() => setTxCc(null)} />
       )}
@@ -984,7 +1009,7 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
 
 // ─── Transactions drill-down modal (audit trail) ─────────────────────────────
 
-function TransactionsModal({ year, monthFrom, monthTo, costCenter, equipmentId, scope, fiscal, title, typeLabel, onClose }: {
+function TransactionsModal({ year, monthFrom, monthTo, costCenter, equipmentId, scope, fiscal, site, title, typeLabel, onClose }: {
   year: number;
   monthFrom: number;
   monthTo: number;
@@ -992,6 +1017,7 @@ function TransactionsModal({ year, monthFrom, monthTo, costCenter, equipmentId, 
   equipmentId?: string;
   scope?: CostScope;
   fiscal?: boolean;
+  site?: CostSite | null;
   title: string;
   typeLabel: (ty: string) => string;
   onClose: () => void;
@@ -1002,9 +1028,9 @@ function TransactionsModal({ year, monthFrom, monthTo, costCenter, equipmentId, 
 
   useEffect(() => {
     setLoading(true);
-    fetchCostTransactions({ year, month_from: monthFrom, month_to: monthTo, cost_center: costCenter, equipment_id: equipmentId, scope, fiscal })
+    fetchCostTransactions({ year, month_from: monthFrom, month_to: monthTo, cost_center: costCenter, equipment_id: equipmentId, scope, site, fiscal })
       .then(setData).finally(() => setLoading(false));
-  }, [year, monthFrom, monthTo, costCenter, equipmentId, scope, fiscal]);
+  }, [year, monthFrom, monthTo, costCenter, equipmentId, scope, site, fiscal]);
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
@@ -1087,7 +1113,7 @@ function TransactionsModal({ year, monthFrom, monthTo, costCenter, equipmentId, 
 
 // ─── By-machine tab ───────────────────────────────────────────────────────────
 
-function ByMachineTab({ year, months, periodKey, setPeriodKey, periods, periodLabel, monthLabel, typeLabel, fiscal }: {
+function ByMachineTab({ year, months, periodKey, setPeriodKey, periods, periodLabel, monthLabel, typeLabel, fiscal, site }: {
   year: number;
   months: number[];
   periodKey: string;
@@ -1097,6 +1123,7 @@ function ByMachineTab({ year, months, periodKey, setPeriodKey, periods, periodLa
   monthLabel: (m: number) => string;
   typeLabel: (ty: string) => string;
   fiscal: boolean;
+  site: CostSite | null;
 }) {
   const { t } = useTranslation();
   const [data, setData] = useState<CostByMachine | null>(null);
@@ -1106,8 +1133,8 @@ function ByMachineTab({ year, months, periodKey, setPeriodKey, periods, periodLa
 
   useEffect(() => {
     setLoading(true);
-    fetchCostByMachine(year, fiscal).then(setData).finally(() => setLoading(false));
-  }, [year, fiscal]);
+    fetchCostByMachine(year, fiscal, site).then(setData).finally(() => setLoading(false));
+  }, [year, fiscal, site]);
 
   const rows = useMemo(() => {
     if (!data) return [];
@@ -1247,22 +1274,202 @@ function ByMachineTab({ year, months, periodKey, setPeriodKey, periods, periodLa
 
       {txMachine && (
         <TransactionsModal year={year} monthFrom={Math.min(...months)} monthTo={Math.max(...months)}
-          equipmentId={txMachine.id} fiscal={fiscal} title={`${txMachine.label} — ${periodLabel}`}
+          equipmentId={txMachine.id} fiscal={fiscal} site={site} title={`${txMachine.label} — ${periodLabel}`}
           typeLabel={typeLabel} onClose={() => setTxMachine(null)} />
       )}
     </div>
   );
 }
 
+// ─── By-supplier tab (procurement expense report) ────────────────────────────
+
+function SupplierTab({ year, fiscal, site, siteLabel, ccLabel }: {
+  year: number;
+  fiscal: boolean;
+  site: CostSite | null;
+  siteLabel: (s: CostSite | null) => string;
+  ccLabel: (cc: string) => string;
+}) {
+  const { t, i18n } = useTranslation();
+  const lang = (i18n.language || 'en').slice(0, 2);
+  const [data, setData] = useState<CostBySupplier | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState<'all' | 'received'>('all');
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    fetchCostBySupplier({ year, fiscal, site, status }).then(setData).finally(() => setLoading(false));
+  }, [year, fiscal, site, status]);
+
+  const suppliers: SupplierSpend[] = data?.suppliers ?? [];
+  const total = data?.total_amount ?? 0;
+  const top = suppliers.slice(0, 15);
+
+  // Pareto: bars = spend per supplier, line = cumulative share of the total.
+  let running = 0;
+  const paretoCum = top.map((s) => { running += s.total; return total > 0 ? Math.round((running / total) * 100) : 0; });
+  const paretoOption = {
+    backgroundColor: 'transparent',
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    legend: { textStyle: { color: '#94a3b8' }, top: 0, itemWidth: 14, itemHeight: 8 },
+    grid: { left: '3%', right: '4%', top: '16%', bottom: '2%', containLabel: true },
+    xAxis: { type: 'category', data: top.map((s) => s.supplier), axisLabel: { color: '#94a3b8', rotate: 40, fontSize: 10 } },
+    yAxis: [
+      { type: 'value', axisLabel: { color: '#94a3b8', formatter: (v: number) => `$${v >= 1000 ? `${v / 1000}k` : v}` }, splitLine: { lineStyle: { color: '#1e293b' } } },
+      { type: 'value', min: 0, max: 100, axisLabel: { color: '#94a3b8', formatter: '{value}%' }, splitLine: { show: false } },
+    ],
+    series: [
+      { name: t('costs.spend'), type: 'bar', barMaxWidth: 22, data: top.map((s) => s.total),
+        itemStyle: { color: '#10b981', borderRadius: [4, 4, 0, 0] },
+        tooltip: { valueFormatter: (v: number | null) => (v == null ? '—' : money(v)) } },
+      { name: t('costs.cumulativePct'), type: 'line', yAxisIndex: 1, symbol: 'circle', symbolSize: 5,
+        data: paretoCum, lineStyle: { color: '#f59e0b', width: 2 }, itemStyle: { color: '#f59e0b' },
+        tooltip: { valueFormatter: (v: number | null) => (v == null ? '—' : `${v}%`) } },
+    ],
+  };
+
+  const fmtDate = (iso: string) => new Date(iso).toLocaleDateString(lang, { year: 'numeric', month: 'short', day: 'numeric' });
+  const poStatusLabel = (s: string) => t(`costs.po_${s}`, s);
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Spinner size="lg" /></div>;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-4 flex-wrap">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-500 uppercase tracking-wide">{t('costs.supplierSpendScope')}</span>
+          <div className="flex gap-1 bg-[#0d1421] border border-white/[0.06] rounded-lg p-1">
+            {(['all', 'received'] as const).map((s) => (
+              <button key={s} onClick={() => setStatus(s)}
+                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                  status === s ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
+                {t(s === 'all' ? 'costs.supplierStatusAll' : 'costs.supplierStatusReceived')}
+              </button>
+            ))}
+          </div>
+        </div>
+        {site && <span className="text-xs text-gray-500">{siteLabel(site)}</span>}
+        <span className="text-xs text-gray-600">{t('costs.supplierSapNote')}</span>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+        <Card icon={<ShoppingCart size={20} className="text-emerald-400" />} label={t('costs.supplierTotalSpend')}
+          value={money(total)} sub={t(status === 'received' ? 'costs.supplierStatusReceived' : 'costs.supplierStatusAll')} color="green" />
+        <Card icon={<Building2 size={20} className="text-blue-400" />} label={t('costs.supplierCount')}
+          value={String(suppliers.length)} sub={String(year)} color="blue" />
+        <Card icon={<TrendingUp size={20} className="text-amber-400" />} label={t('costs.topSupplier')}
+          value={suppliers[0]?.supplier ?? '—'} sub={suppliers[0] ? money(suppliers[0].total) : ''} color="amber" />
+      </div>
+
+      <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
+        <div className="flex items-center gap-2 mb-1"><BarChart3 size={15} className="text-gray-500" />
+          <h3 className="text-sm font-semibold text-gray-300">{t('costs.topSuppliersTitle')}</h3></div>
+        <p className="text-xs text-gray-600 mb-2">{t('costs.topSuppliersSub')}</p>
+        {top.length === 0 ? <div className="flex items-center justify-center h-40 text-gray-600 text-sm">{t('common.noData')}</div>
+          : <ReactECharts option={paretoOption} style={{ height: 340 }} theme="dark" />}
+      </div>
+
+      <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
+        <div className="flex items-center gap-2 mb-3"><Table2 size={15} className="text-gray-500" />
+          <h3 className="text-sm font-semibold text-gray-300">{t('costs.supplierReportTitle', { year })}</h3></div>
+        {suppliers.length === 0 ? <div className="flex items-center justify-center h-40 text-gray-600 text-sm">{t('costs.noSupplierData')}</div> : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-white/[0.06] text-gray-500 text-xs uppercase tracking-wider">
+                  <th className="text-left py-2 pr-4 font-medium">{t('costs.supplier')}</th>
+                  <th className="text-right py-2 px-3 font-medium">{t('costs.received')}</th>
+                  <th className="text-right py-2 px-3 font-medium">{t('costs.committed')}</th>
+                  <th className="text-right py-2 px-3 font-medium">{t('costs.supplierPoCount')}</th>
+                  <th className="text-right py-2 px-3 font-medium">{t('costs.spend')}</th>
+                  <th className="text-right py-2 pl-3 font-medium">{t('costs.pctOfTotal')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {suppliers.map((s) => {
+                  const isOpen = expanded === s.supplier;
+                  const pct = total > 0 ? Math.round((s.total / total) * 100) : 0;
+                  return (
+                    <Fragment key={s.supplier}>
+                      <tr onClick={() => setExpanded(isOpen ? null : s.supplier)}
+                        className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors cursor-pointer">
+                        <td className="py-2 pr-4 text-gray-200">
+                          <span className="flex items-center gap-1.5">
+                            {isOpen ? <ChevronDown size={13} className="text-gray-500" /> : <ChevronRight size={13} className="text-gray-500" />}
+                            {s.supplier}
+                          </span>
+                        </td>
+                        <td className="py-2 px-3 text-right text-gray-300 font-mono">{money(s.received)}</td>
+                        <td className="py-2 px-3 text-right text-cyan-300/80 font-mono">{s.committed ? money(s.committed) : '—'}</td>
+                        <td className="py-2 px-3 text-right text-gray-400 font-mono">{s.po_count}</td>
+                        <td className="py-2 px-3 text-right text-gray-100 font-mono">{money(s.total)}</td>
+                        <td className="py-2 pl-3 text-right text-gray-400 font-mono">{pct}%</td>
+                      </tr>
+                      {isOpen && (
+                        <tr className="bg-white/[0.015]">
+                          <td colSpan={6} className="px-8 py-3">
+                            <div className="flex flex-wrap gap-x-6 gap-y-1 mb-3 text-xs">
+                              <span className="text-gray-500">{t('costs.scopeOpex')}: <span className="text-gray-300 font-mono">{money(s.by_scope.opex)}</span></span>
+                              <span className="text-gray-500">{t('costs.scopeCapex')}: <span className="text-gray-300 font-mono">{money(s.by_scope.capex)}</span></span>
+                              {s.parts_total > 0 && <span className="text-gray-500">{t('costType.parts')}: <span className="text-gray-300 font-mono">{money(s.parts_total)}</span></span>}
+                            </div>
+                            {s.orders.length === 0 ? <span className="text-xs text-gray-600">{t('costs.noSupplierOrders')}</span> : (
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-gray-600 uppercase tracking-wider">
+                                    <th className="text-left py-1 pr-3 font-medium">{t('costs.poNumber')}</th>
+                                    <th className="text-left py-1 px-3 font-medium">{t('costs.date')}</th>
+                                    <th className="text-left py-1 px-3 font-medium">{t('costs.status')}</th>
+                                    <th className="text-left py-1 px-3 font-medium">{t('costs.costCenter')}</th>
+                                    <th className="text-right py-1 pl-3 font-medium">{t('costs.amount')}</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {s.orders.map((o) => (
+                                    <tr key={o.order_number} className="border-t border-white/[0.03]">
+                                      <td className="py-1 pr-3 text-gray-300 font-mono">{o.order_number}</td>
+                                      <td className="py-1 px-3 text-gray-400">{fmtDate(o.date)}</td>
+                                      <td className="py-1 px-3 text-gray-400">{poStatusLabel(o.status)}</td>
+                                      <td className="py-1 px-3 text-gray-400">{o.cost_center ? ccLabel(o.cost_center) : '—'}</td>
+                                      <td className="py-1 pl-3 text-right text-gray-200 font-mono">{money(o.amount)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="border-t-2 border-white/[0.1] font-semibold">
+                  <td className="py-2.5 pr-4 text-white" colSpan={4}>{t('costs.totalLabel')}</td>
+                  <td className="py-2.5 px-3 text-right text-white font-mono">{money(total)}</td>
+                  <td className="py-2.5 pl-3 text-right text-gray-400 font-mono">100%</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Budget tab ───────────────────────────────────────────────────────────────
 
-function BudgetTab({ year, canEdit, monthLabel, ccLabel, onSaved, sapMode }: {
+function BudgetTab({ year, canEdit, monthLabel, ccLabel, onSaved, sapMode, site }: {
   year: number;
   canEdit: boolean;
   monthLabel: (m: number) => string;
   ccLabel: (cc: string) => string;
   onSaved: () => void;
   sapMode: boolean;
+  site: CostSite | null;
 }) {
   const { t, i18n } = useTranslation();
   const lang = (i18n.language || 'en').slice(0, 2);
@@ -1281,13 +1488,13 @@ function BudgetTab({ year, canEdit, monthLabel, ccLabel, onSaved, sapMode }: {
     setLoading(true);
     setSuccess(false);
     try {
-      const [b, k] = await Promise.all([fetchCostCenterBudgets(year, kind), fetchCostCenters()]);
+      const [b, k] = await Promise.all([fetchCostCenterBudgets(year, kind, site), fetchCostCenters()]);
       setRows(b.rows);
       setReadOnly(b.read_only);
       setMonthMap(b.month_map);
       setKnown(k);
     } finally { setLoading(false); }
-  }, [year, kind]);
+  }, [year, kind, site]);
   useEffect(() => { load(); }, [load]);
 
   // SAP OPEX years label columns by fiscal month (Dec–Nov); everything else is

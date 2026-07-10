@@ -13,9 +13,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import (
-    Equipment, Machine, MaintenanceTicket, TicketStatus,
-    RobotCell, RobotCellState,
+    Equipment, InterventionTechnician, LaborRecord, Machine, MachineIntervention,
+    MaintenanceTicket, Technician, TicketStatus, User, WorkOrder, RobotCell,
+    RobotCellState,
 )
+
+# Intervention statuses that mean a technician is actively on the machine.
+ACTIVE_INTERVENTION_STATUSES = ("in_progress", "waiting")
 
 # Static equipment.status → map/live status vocabulary
 EQ_STATUS_MAP = {
@@ -62,6 +66,11 @@ class LiveAsset:
     operator: Optional[str]
     machine: Optional[Machine]
     open_ticket: Optional[dict]
+    # Technicians actively working the machine (only when the effective status is
+    # "intervention" / purple) — one entry per tech on the clock, each
+    # ``{"name": str, "since": str|None}`` (ISO start). Drives the map pictograms
+    # (one figure per technician). Empty/None when not purple or nobody clocked in.
+    technicians: Optional[list] = None
 
 
 async def live_details_by_equipment(
@@ -96,6 +105,54 @@ async def live_details_by_equipment(
         select(RobotCell.equipment_id, RobotCellState.run_state)
         .join(RobotCellState, RobotCellState.cell_id == RobotCell.id)
     )).all())
+
+    # Technicians actively working each machine (for the purple/intervention
+    # pictograms — one figure per tech). PRIMARY source: OPEN labor records
+    # (stopped_at IS NULL) → one per technician on the clock, each with its own
+    # started_at, joined to the machine via the work order's equipment.
+    labor_by_eq: dict[str, list[dict]] = {}
+    for eq_id, name, since in (await db.execute(
+        select(WorkOrder.equipment_id, User.name, LaborRecord.started_at)
+        .select_from(LaborRecord)
+        .join(WorkOrder, LaborRecord.work_order_id == WorkOrder.id)
+        .join(Technician, LaborRecord.technician_id == Technician.id)
+        .join(User, Technician.user_id == User.id)
+        .where(LaborRecord.stopped_at.is_(None), WorkOrder.equipment_id.isnot(None))
+        .order_by(LaborRecord.started_at.asc().nullslast())
+    )).all():
+        if eq_id and name:
+            labor_by_eq.setdefault(str(eq_id), []).append(
+                {"name": name, "since": since.isoformat() if since else None})
+
+    # Kiosk check-ins: every tech checked in on the machine's active intervention
+    # (the kiosk flow has no WO labor records, so this is its multi-tech source).
+    checkin_by_machine: dict[str, list[dict]] = {}
+    for mid, name, since in (await db.execute(
+        select(MachineIntervention.machine_id, InterventionTechnician.name,
+               InterventionTechnician.checked_in_at)
+        .select_from(InterventionTechnician)
+        .join(MachineIntervention,
+              InterventionTechnician.intervention_id == MachineIntervention.id)
+        .where(InterventionTechnician.checked_out_at.is_(None),
+               MachineIntervention.status.in_(ACTIVE_INTERVENTION_STATUSES))
+        .order_by(InterventionTechnician.checked_in_at.asc())
+    )).all():
+        if mid and name:
+            checkin_by_machine.setdefault(str(mid), []).append(
+                {"name": name, "since": since.isoformat() if since else None})
+
+    # FALLBACK (e.g. kiosk intervention with no WO labor): the single tech who
+    # started the newest active intervention, keyed by machine.
+    fallback_by_machine: dict[str, dict] = {}
+    for mid, name, since in (await db.execute(
+        select(MachineIntervention.machine_id, MachineIntervention.started_by_name,
+               MachineIntervention.started_at)
+        .where(MachineIntervention.status.in_(ACTIVE_INTERVENTION_STATUSES))
+        .order_by(MachineIntervention.started_at.desc().nullslast(),
+                  MachineIntervention.called_at.desc())
+    )).all():
+        if mid and name and str(mid) not in fallback_by_machine:
+            fallback_by_machine[str(mid)] = {"name": name, "since": since.isoformat() if since else None}
 
     def _own_status(eid, eq_status: Optional[str], machine: Optional[Machine]) -> str:
         """One asset's operational status: machine status > cell run_state > equipment status."""
@@ -140,11 +197,27 @@ async def live_details_by_equipment(
             elif pstat:
                 status = pstat
         ticket = open_by_machine.get(str(m.id)) if m else None
+        eff = effective_status(status, ticket is not None)
+        # Only surface technicians when the asset is actually purple: the open
+        # labor records for this machine's equipment, else the intervention starter.
+        techs = None
+        if m and eff == "intervention":
+            # WO labor records + kiosk check-ins, deduped by name (a tech can
+            # have both); else the intervention starter as a last resort.
+            merged = list(labor_by_eq.get(str(e.id)) or [])
+            for ci in checkin_by_machine.get(str(m.id), []):
+                if all(t["name"] != ci["name"] for t in merged):
+                    merged.append(ci)
+            if not merged:
+                fb = fallback_by_machine.get(str(m.id))
+                merged = [fb] if fb else []
+            techs = merged or None
         out[str(e.id)] = LiveAsset(
-            status=effective_status(status, ticket is not None),
+            status=eff,
             operator=operator,
             machine=m,
             open_ticket=ticket,
+            technicians=techs,
         )
     return out
 

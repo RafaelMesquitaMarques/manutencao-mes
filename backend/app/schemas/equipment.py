@@ -20,6 +20,7 @@ class EquipmentCreate(BaseModel):
     subtype: Optional[str] = None
     function_label: Optional[str] = None
     department: Optional[str] = None
+    cost_center: Optional[str] = None
     family: Optional[str] = None
     pm_strategy: Optional[str] = None
     cleaning_priority: Optional[str] = None
@@ -44,6 +45,7 @@ class EquipmentUpdate(BaseModel):
     subtype: Optional[str] = None
     function_label: Optional[str] = None
     department: Optional[str] = None
+    cost_center: Optional[str] = None
     family: Optional[str] = None
     pm_strategy: Optional[str] = None
     cleaning_priority: Optional[str] = None
@@ -78,6 +80,7 @@ class EquipmentOut(BaseModel):
     subtype: Optional[str] = None
     function_label: Optional[str] = None
     department: Optional[str] = None
+    cost_center: Optional[str] = None
     family: Optional[str] = None
     pm_strategy: Optional[str] = None
     cleaning_priority: Optional[str] = None

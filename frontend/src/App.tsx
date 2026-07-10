@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
-import { fetchMyPermissions } from './api/auth';
+import { usePlantStore } from './store/plantStore';
+import { fetchMyPermissions, fetchMyPlants } from './api/auth';
 import ProtectedRoute from './pages/ProtectedRoute';
 import RequireView from './pages/RequireView';
 import Layout from './components/Layout/Layout';
@@ -49,6 +50,7 @@ import UsersSetup from './pages/Settings/UsersSetup';
 import EscalationSettingsPage from './pages/Settings/EscalationSettings';
 import FactoryCalendarPage from './pages/Settings/FactoryCalendar';
 import DeviceSettingsPage from './pages/Settings/DeviceSettings';
+import ShiftSettings from './pages/Settings/ShiftSettings';
 import UserDetail from './pages/Settings/UserDetail';
 import MyProfile from './pages/Settings/MyProfile';
 import ChangePassword from './pages/Settings/ChangePassword';
@@ -71,6 +73,15 @@ const App = () => {
   useEffect(() => {
     if (isAuthenticated) fetchMyPermissions().then(setPermissions).catch(() => {});
   }, [isAuthenticated, setPermissions]);
+  // Hydrate plant memberships for sessions that logged in before the login
+  // response carried them (login itself fills the store directly).
+  useEffect(() => {
+    if (!isAuthenticated || usePlantStore.getState().memberships.length > 0) return;
+    fetchMyPlants()
+      .then(({ plants, default_plant_id }) =>
+        usePlantStore.getState().setMemberships(plants, default_plant_id))
+      .catch(() => {});
+  }, [isAuthenticated]);
 
   return (
   <BrowserRouter>
@@ -153,6 +164,7 @@ const App = () => {
         <Route path="settings/escalation"         element={<RequireView resource="settings_escalation"><EscalationSettingsPage /></RequireView>} />
         <Route path="settings/calendar"           element={<RequireView resource="calendar"><FactoryCalendarPage /></RequireView>} />
         <Route path="settings/devices"            element={<RequireView resource="settings_devices"><DeviceSettingsPage /></RequireView>} />
+        <Route path="settings/shifts"             element={<RequireView resource="technicians"><ShiftSettings /></RequireView>} />
         <Route path="settings/users"              element={<UsersSetup />} />
         <Route path="settings/users/:id"          element={<UserDetail />} />
         <Route path="settings/profile"            element={<MyProfile />} />

@@ -125,10 +125,11 @@ async def create_next_occurrence(db: AsyncSession, plan: MaintenancePlan) -> Opt
 
 # ─── Work order + ticket generation ──────────────────────────────────────────────
 
-async def _next_wo_number(db: AsyncSession) -> str:
-    from app.services.numbering import next_number
+async def _next_wo_number(db: AsyncSession, plant_id=None) -> str:
+    from app.services.numbering import next_number, series_prefix
     year = datetime.now(timezone.utc).year
-    return await next_number(db, WorkOrder.wo_number, f"WO-{year}")
+    sp = await series_prefix(db, plant_id)
+    return await next_number(db, WorkOrder.wo_number, f"{sp}WO-{year}")
 
 
 async def generate_wo_and_ticket(db: AsyncSession, plan: MaintenancePlan, occurrence: PlanOccurrence) -> WorkOrder:
@@ -148,8 +149,9 @@ async def generate_wo_and_ticket(db: AsyncSession, plan: MaintenancePlan, occurr
         title = f"{title} – {equipment.name}"
 
     wo = WorkOrder(
-        wo_number=await _next_wo_number(db),
+        wo_number=await _next_wo_number(db, plan.plant_id),
         equipment_id=plan.equipment_id,
+        plant_id=plan.plant_id,
         plan_id=plan.id,
         occurrence_id=occurrence.id,
         executor_id=plan.assigned_technician_id,

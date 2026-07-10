@@ -7,7 +7,7 @@ from typing import List
 from uuid import UUID
 
 from app.db.session import get_db
-from app.models.models import User, UserPlant, UserRole, Permission
+from app.models.models import Plant, User, UserPlant, UserRole, Permission
 from app.schemas.user import UserOut, UserAdminUpdate, PermissionOut, PermissionSet, UserCreate, AdminPasswordResetRequest
 from app.core.security import hash_password
 from app.core.permissions import require_admin
@@ -292,10 +292,21 @@ async def get_user_plants(
     _: User = Depends(require_admin),
 ):
     result = await db.execute(
-        select(UserPlant).where(UserPlant.user_id == user_id)
+        select(UserPlant, Plant)
+        .join(Plant, UserPlant.plant_id == Plant.id)
+        .where(UserPlant.user_id == user_id)
+        .order_by(UserPlant.is_default.desc(), UserPlant.created_at)
     )
-    links = result.scalars().all()
-    return [{"plant_id": str(lnk.plant_id), "role": lnk.role} for lnk in links]
+    return [
+        {
+            "plant_id": str(lnk.plant_id),
+            "code": plant.code,
+            "name": plant.name,
+            "role": lnk.role,
+            "is_default": lnk.is_default,
+        }
+        for lnk, plant in result.all()
+    ]
 
 
 @router.post("/{user_id}/plants/{plant_id}")
@@ -303,8 +314,9 @@ async def assign_plant(
     user_id: UUID,
     plant_id: UUID,
     role: UserRole = UserRole.technician,
+    is_default: bool = False,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ):
     existing = await db.execute(
         select(UserPlant).where(
@@ -314,7 +326,17 @@ async def assign_plant(
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="User already assigned to this plant")
-    link = UserPlant(user_id=user_id, plant_id=plant_id, role=role)
+    others = (await db.execute(
+        select(UserPlant).where(UserPlant.user_id == user_id)
+    )).scalars().all()
+    # First membership is always the default; an explicit new default demotes the old one.
+    if is_default:
+        for o in others:
+            o.is_default = False
+    link = UserPlant(
+        user_id=user_id, plant_id=plant_id, role=role,
+        is_default=is_default or not others, granted_by_id=admin.id,
+    )
     db.add(link)
     await db.commit()
     return {"message": "User assigned to plant successfully"}
@@ -333,4 +355,11 @@ async def remove_plant(
             UserPlant.plant_id == plant_id,
         )
     )
+    # Never leave a user with memberships but no default plant.
+    remaining = (await db.execute(
+        select(UserPlant).where(UserPlant.user_id == user_id)
+        .order_by(UserPlant.created_at)
+    )).scalars().all()
+    if remaining and not any(l.is_default for l in remaining):
+        remaining[0].is_default = True
     await db.commit()

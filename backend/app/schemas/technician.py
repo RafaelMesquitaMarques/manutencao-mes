@@ -3,6 +3,7 @@ from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
 from app.models.models import TechnicianSpecialty, TechnicianShift
+from app.schemas.shift import AvailabilityOut
 
 
 class TechnicianCreate(BaseModel):
@@ -28,6 +29,7 @@ class TechnicianOut(BaseModel):
     created_at: datetime
     full_name: Optional[str] = None
     email: Optional[str] = None
+    availability: Optional[AvailabilityOut] = None
 
 
 class TechnicianListResponse(BaseModel):

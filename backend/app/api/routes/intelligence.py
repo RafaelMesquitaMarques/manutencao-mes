@@ -20,6 +20,20 @@ from sqlalchemy import select, desc, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import plant_condition
+
+
+def _insight_plant_cond(ctx: PlantContext):
+    """An insight is visible in its own plant's context. Legacy NULL-plant
+    insights predate the per-plant split and describe the grouped (QC) world —
+    they stay visible to grouped plants only; an ungrouped plant (Las Vegas)
+    never sees them."""
+    from sqlalchemy import and_ as _and, or_ as _or
+    cond = AIInsight.plant_id == ctx.plant_id
+    if len(ctx.group_plant_ids) > 1:      # active plant belongs to a group
+        cond = _or(cond, AIInsight.plant_id.is_(None))
+    return cond
 from app.db.session import get_db
 from app.models.models import (
     User, AIInsight, AIRecommendation, MachineRiskScore, SparePartRisk
@@ -108,14 +122,18 @@ async def ask_intelligence(
     body:         ChatAskRequest,
     db:           AsyncSession = Depends(get_db),
     current_user: User         = Depends(get_current_user),
+    ctx:          PlantContext = Depends(get_plant_context),
 ):
     """Answer a natural-language question by letting Claude call read-only data
-    tools (machines, KPIs, tickets, findings). Analysis only — never acts."""
+    tools (machines, KPIs, tickets, findings). Analysis only — never acts.
+    Every tool answers within the caller's plant context; the raw SQL tool is
+    fenced by row-level security keyed on the user's memberships."""
     _check_maintenance_access(current_user)
     result = await answer_question(
         db=db,
         current_user=current_user,
         messages=[m.model_dump() for m in body.messages],
+        ctx=ctx,
         language=body.language,
     )
     return ChatAskResponse(**result)
@@ -130,6 +148,7 @@ async def generate_insight(
     body:         GenerateInsightRequest,
     db:           AsyncSession  = Depends(get_db),
     current_user: User          = Depends(get_current_user),
+    ctx:          PlantContext  = Depends(get_plant_context),
 ):
     """
     Generates a new maintenance intelligence insight.
@@ -144,6 +163,13 @@ async def generate_insight(
     period regenerates a fresh insight (new row — history is preserved).
     """
     _check_maintenance_access(current_user)
+
+    # Insights are per plant: default to the active plant; an explicit plant in
+    # the body must be one the caller can access.
+    if body.plant_id is None:
+        body.plant_id = ctx.plant_id
+    elif not ctx.can_access(body.plant_id):
+        raise HTTPException(status_code=404, detail="Plant not found")
 
     now          = datetime.now(timezone.utc)
     period_end   = now
@@ -253,6 +279,7 @@ async def get_latest_insight(
     insight_type: str           = Query(default="full_report"),
     db:           AsyncSession  = Depends(get_db),
     current_user: User          = Depends(get_current_user),
+    ctx:          PlantContext  = Depends(get_plant_context),
 ):
     """
     Returns the most recently generated insight for the given language and type.
@@ -266,6 +293,7 @@ async def get_latest_insight(
             and_(
                 AIInsight.language     == language,
                 AIInsight.insight_type == insight_type,
+                _insight_plant_cond(ctx),
             )
         )
         .order_by(desc(AIInsight.generated_at))
@@ -295,6 +323,7 @@ async def get_insight_history(
     offset:       int           = Query(default=0, ge=0),
     db:           AsyncSession  = Depends(get_db),
     current_user: User          = Depends(get_current_user),
+    ctx:          PlantContext  = Depends(get_plant_context),
 ):
     """
     Returns paginated history of all generated insights.
@@ -302,20 +331,17 @@ async def get_insight_history(
     """
     _check_maintenance_access(current_user)
 
-    filters = []
+    filters = [_insight_plant_cond(ctx)]
     if language:
         filters.append(AIInsight.language == language)
     if insight_type:
         filters.append(AIInsight.insight_type == insight_type)
 
-    count_result = await db.execute(
-        select(AIInsight).where(and_(*filters)) if filters
-        else select(AIInsight)
-    )
+    count_result = await db.execute(select(AIInsight).where(and_(*filters)))
     total = len(count_result.scalars().all())
 
     result = await db.execute(
-        (select(AIInsight).where(and_(*filters)) if filters else select(AIInsight))
+        select(AIInsight).where(and_(*filters))
         .order_by(desc(AIInsight.generated_at))
         .limit(limit)
         .offset(offset)
@@ -340,6 +366,7 @@ async def get_risk_scores(
     risk_level:   Optional[str] = Query(default=None),
     db:           AsyncSession  = Depends(get_db),
     current_user: User          = Depends(get_current_user),
+    ctx:          PlantContext  = Depends(get_plant_context),
 ):
     """
     Returns the latest risk score per machine.
@@ -359,6 +386,7 @@ async def get_risk_scores(
         .subquery()
     )
 
+    from app.models.models import Machine as _Machine
     query = (
         select(MachineRiskScore)
         .join(
@@ -368,6 +396,8 @@ async def get_risk_scores(
                 MachineRiskScore.computed_at  == subq.c.latest,
             )
         )
+        .join(_Machine, _Machine.id == MachineRiskScore.machine_id)
+        .where(plant_condition(_Machine, ctx))
         .order_by(desc(MachineRiskScore.score))
         .limit(limit)
     )
@@ -401,6 +431,7 @@ async def get_spare_parts_risk(
     risk_level: Optional[str] = Query(default=None),
     db:         AsyncSession  = Depends(get_db),
     current_user: User        = Depends(get_current_user),
+    ctx:          PlantContext = Depends(get_plant_context),
 ):
     """
     Returns the latest spare parts risk assessment.
@@ -420,6 +451,7 @@ async def get_spare_parts_risk(
         .subquery()
     )
 
+    from app.models.models import StockItem as _StockItem
     query = (
         select(SparePartRisk)
         .join(
@@ -429,6 +461,8 @@ async def get_spare_parts_risk(
                 SparePartRisk.computed_at   == subq.c.latest,
             )
         )
+        .join(_StockItem, _StockItem.id == SparePartRisk.stock_item_id)
+        .where(plant_condition(_StockItem, ctx))   # group pool, like the UI
         .order_by(desc(SparePartRisk.computed_at))
     )
 

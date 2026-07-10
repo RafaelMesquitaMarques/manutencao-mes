@@ -35,6 +35,8 @@ from app.schemas.maintenance import (
     JobOrderOut, JobOrderCreate,
 )
 from app.core.security import get_current_user
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import ensure_same_plant, plant_condition, plant_scoped
 from app.services.ticket_service import TicketService, _next_ticket_number, _next_alert_number
 from app.services.mes_service import MesService, shift_windows
 from app.services.intervention_sync import apply_production_signal
@@ -75,6 +77,13 @@ async def _get_machine(ref: str, db: AsyncSession) -> Machine:
     return m
 
 
+async def _get_machine_scoped(ref: str, db: AsyncSession, ctx: PlantContext) -> Machine:
+    """_get_machine + plant visibility: a ref owned by a plant the user has no
+    membership in gets the same 404 as a missing machine. Only for the
+    authenticated (non-kiosk) endpoints — kiosk auth is phase 4."""
+    return ensure_same_plant(await _get_machine(ref, db), ctx, detail="Machine not found")
+
+
 def _machine_to_page_data(machine: Machine, open_tickets: list) -> MachinePageData:
     cstatus = machine.current_status.value if hasattr(machine.current_status, "value") else str(machine.current_status or MachineStatus.running)
     # An active maintenance ticket/intervention means the machine is NOT simply "running"
@@ -101,6 +110,7 @@ def _machine_to_page_data(machine: Machine, open_tickets: list) -> MachinePageDa
         target_availability_pct=machine.target_availability_pct or 70.0,
         target_count=machine.target_count,
         target_count_per_shift=getattr(machine, "target_count_per_shift", None),
+        target_count_per_hour=getattr(machine, "target_count_per_hour", None),
         show_production_panel=machine.show_production_panel if machine.show_production_panel is not None else True,
         show_reject_panel=machine.show_reject_panel if machine.show_reject_panel is not None else True,
         show_availability_gauge=machine.show_availability_gauge if machine.show_availability_gauge is not None else True,
@@ -122,12 +132,12 @@ def _machine_to_page_data(machine: Machine, open_tickets: list) -> MachinePageDa
 async def list_machines(
     include_inactive: bool = False,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     # Soft-deleted machines (is_active=False, set by DELETE) must not surface in
     # dropdowns/lists — they "no longer exist" to the user. Callers that manage
     # deleted records can opt in with ?include_inactive=true.
-    stmt = select(Machine).order_by(Machine.name)
+    stmt = plant_scoped(select(Machine).order_by(Machine.name), Machine, ctx)
     if not include_inactive:
         stmt = stmt.where(Machine.is_active == True)  # noqa: E712
     r = await db.execute(stmt)
@@ -139,9 +149,11 @@ async def list_machines(
 async def create_machine(
     data: MachineCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    # New records are born in the active plant — never inferred from the payload.
     machine = Machine(**data.model_dump(exclude_none=True))
+    machine.plant_id = ctx.plant_id
     db.add(machine)
     await db.commit()
     await db.refresh(machine)
@@ -153,11 +165,9 @@ async def update_machine(
     machine_id: UUID,
     data: MachinePatch,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    machine = await db.get(Machine, machine_id)
-    if not machine:
-        raise HTTPException(404, "Machine not found")
+    machine = ensure_same_plant(await db.get(Machine, machine_id), ctx, detail="Machine not found")
     for k, v in data.model_dump(exclude_none=True).items():
         setattr(machine, k, v)
     await db.commit()
@@ -165,15 +175,36 @@ async def update_machine(
     return machine
 
 
+class CloneLayoutIn(BaseModel):
+    layout: list = []
+    target_ids: List[UUID] = []
+
+
+@router.post("/clone-layout")
+async def clone_kiosk_layout(
+    data: CloneLayoutIn,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+):
+    """Copy a kiosk panel layout onto other machines (from the edit-layout view)."""
+    if not data.target_ids:
+        return {"updated": 0}
+    rows = (await db.execute(select(Machine).where(
+        Machine.id.in_(data.target_ids), plant_condition(Machine, ctx)
+    ))).scalars().all()
+    for m in rows:
+        m.kiosk_layout = data.layout
+    await db.commit()
+    return {"updated": len(rows)}
+
+
 @router.delete("/{machine_id}", status_code=204)
 async def delete_machine(
     machine_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    machine = await db.get(Machine, machine_id)
-    if not machine:
-        raise HTTPException(404, "Machine not found")
+    machine = ensure_same_plant(await db.get(Machine, machine_id), ctx, detail="Machine not found")
     machine.is_active = False
     await db.commit()
 
@@ -312,6 +343,7 @@ async def log_reject(
 
     log = RejectLog(
         machine_id=machine.id,
+        plant_id=machine.plant_id,
         date=date.today(),
         shift=shift_enum,
         job_number=data.job_number or machine.current_job_number,
@@ -409,6 +441,7 @@ async def add_production(
     if not log:
         log = MachineProductionLog(
             machine_id=machine.id,
+            plant_id=machine.plant_id,
             date=today,
             shift=shift_enum,
             actual_count=0,
@@ -475,6 +508,7 @@ async def create_stop(
 
     stop = MachineStop(
         machine_id=machine.id,
+        plant_id=machine.plant_id,
         started_at=now,
         stop_category_id=data.stop_category_id,
         stop_subcategory_id=data.stop_subcategory_id,
@@ -492,8 +526,9 @@ async def create_stop(
         # otherwise callMaintenance later adopts this ticket and no alert is ever
         # created. Mirror call_maintenance: alert ↔ ticket linked both ways.
         alert = MaintenanceAlert(
-            alert_number=await _next_alert_number(db),
+            alert_number=await _next_alert_number(db, machine.plant_id),
             machine_id=machine.id,
+            plant_id=machine.plant_id,
             department=machine.department,
             problem_type=AlertProblemType.mechanical,
             priority=AlertPriority.high,
@@ -504,8 +539,9 @@ async def create_stop(
         db.add(alert)
         await db.flush()
         ticket = MaintenanceTicket(
-            ticket_number=await _next_ticket_number(db),
+            ticket_number=await _next_ticket_number(db, machine.plant_id),
             machine_id=machine.id,
+            plant_id=machine.plant_id,
             alert_id=alert.id,
             priority=AlertPriority.high,
             problem_type=None,
@@ -600,14 +636,33 @@ class ProductionSignalIn(BaseModel):
 async def provision_signal_token(
     ref: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     """Generate (or rotate) the production-signal ingest token for a machine. The
     ADAM-6050 gateway presents it as X-Signal-Token on every reading."""
-    machine = await _get_machine(ref, db)
+    machine = await _get_machine_scoped(ref, db, ctx)
     machine.signal_ingest_token = secrets.token_urlsafe(24)
     await db.commit()
     return {"machine_id": str(machine.id), "signal_ingest_token": machine.signal_ingest_token}
+
+
+@router.post("/{ref}/kiosk-token")
+async def provision_kiosk_token(
+    ref: str,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+):
+    """Generate (or rotate) the kiosk access token for a machine. Tablets open
+    /machines/<slug>?k=<token>; enforced once KIOSK_ENFORCE_TOKEN is on."""
+    machine = await _get_machine_scoped(ref, db, ctx)
+    machine.kiosk_token = secrets.token_urlsafe(24)
+    await db.commit()
+    slug = machine.page_slug or str(machine.id)
+    return {
+        "machine_id": str(machine.id),
+        "kiosk_token": machine.kiosk_token,
+        "kiosk_url": f"/machines/{slug}?k={machine.kiosk_token}",
+    }
 
 
 @router.post("/{ref}/production-signal")
@@ -684,6 +739,37 @@ def _shift_and_date_for(machine, wall: datetime):
     return AlertShift.morning, wall.date()         # fallback (no window matched)
 
 
+def _shift_hours(shifts_config) -> tuple[float, int]:
+    """(total operating hours/day, shift count) derived from shifts_config,
+    overnight-aware. Falls back to 3 shifts × 8h = 24h/day when none configured —
+    the platform's default shift pattern."""
+    durations: list[float] = []
+    for cfg in (shifts_config or {}).values():
+        if not isinstance(cfg, dict):
+            continue
+        try:
+            sh, sm = [int(x) for x in str(cfg.get("start", "")).split(":")[:2]]
+            eh, em = [int(x) for x in str(cfg.get("end", "")).split(":")[:2]]
+        except (ValueError, TypeError):
+            continue
+        s, e = sh * 60 + sm, eh * 60 + em
+        span = (e - s) if e > s else (e + 24 * 60 - s)   # overnight-aware
+        if span > 0:
+            durations.append(span / 60.0)
+    if not durations:
+        return 24.0, 3
+    return sum(durations), len(durations)
+
+
+def _derive_targets_from_hourly(per_hour: int, shifts_config) -> tuple[int, int]:
+    """(per-shift target, daily target) derived from the master hourly goal:
+    per-shift = per_hour × the average shift length; daily = per_hour × total
+    operating hours/day — both taken from the machine's configured work shifts."""
+    total_h, n = _shift_hours(shifts_config)
+    avg_h = total_h / n if n else 8.0
+    return round(per_hour * avg_h), round(per_hour * total_h)
+
+
 @router.post("/{ref}/production-count")
 async def ingest_production_count(
     ref: str,
@@ -731,9 +817,11 @@ async def reclassify_stop(
     db: AsyncSession = Depends(get_db),
 ):
     """Change the CAUSE of an existing stop (clicked on the kiosk timeline).
-    A stop never becomes "running" again here (anti-cheat) and no maintenance
-    ticket is created — this only relabels the stop's category/subcategory. If the
-    stop is still ongoing, the machine's live status/color reflects the new cause."""
+    A stop never becomes "running" again here (anti-cheat). CLOSED stops only get
+    relabeled — no retroactive tickets. But if the stop is still OPEN and the new
+    cause is a maintenance one, this behaves like declaring a maintenance stop:
+    alert + ticket + "waiting for mechanic" intervention, mirroring create_stop —
+    otherwise the kiosk turns yellow "MAINTENANCE" while nobody was notified."""
     machine = await _get_machine(ref, db)
     stop = await db.get(MachineStop, stop_id)
     if not stop or stop.machine_id != machine.id:
@@ -747,13 +835,19 @@ async def reclassify_stop(
         stop.justified_by = data.justified_by
 
     # Reflect the new cause in the machine's live status only while the stop is open.
+    ticket_number = None
     if stop.ended_at is None:
         cat_type = None
         if stop.stop_category_id:
             cat = await db.get(StopCategory, stop.stop_category_id)
             if cat:
                 cat_type = cat.type.value if hasattr(cat.type, "value") else str(cat.type)
-        if cat_type == "maintenance":
+        triggers = cat_type == "maintenance"
+        if not triggers and stop.stop_subcategory_id:
+            sub = await db.get(StopSubcategory, stop.stop_subcategory_id)
+            triggers = bool(sub and sub.triggers_maintenance)
+
+        if triggers:
             machine.current_status = MachineStatus.maintenance
         elif cat_type == "planned":
             machine.current_status = MachineStatus.planned_stop
@@ -762,8 +856,60 @@ async def reclassify_stop(
         else:
             machine.current_status = MachineStatus.stopped
 
+        if triggers and stop.ticket_id is None:
+            from app.api.routes.machine_operator import _active_intervention, _STATUS_WAITING
+
+            # Skip if a mechanic is already called/on the machine — relabel only.
+            if not await _active_intervention(machine.id, db):
+                alert = MaintenanceAlert(
+                    alert_number=await _next_alert_number(db, machine.plant_id),
+                    machine_id=machine.id,
+                    plant_id=machine.plant_id,
+                    department=machine.department,
+                    problem_type=AlertProblemType.mechanical,
+                    priority=AlertPriority.high,
+                    description=stop.comments or "Arrêt maintenance (poste opérateur)",
+                    created_by=stop.justified_by or "operator",
+                    status=AlertStatus.new_alert,
+                )
+                db.add(alert)
+                await db.flush()
+                ticket = MaintenanceTicket(
+                    ticket_number=await _next_ticket_number(db, machine.plant_id),
+                    machine_id=machine.id,
+                    plant_id=machine.plant_id,
+                    alert_id=alert.id,
+                    priority=AlertPriority.high,
+                    problem_type=None,
+                    description=stop.comments,
+                    machine_page_source=True,
+                )
+                db.add(ticket)
+                await db.flush()
+                alert.ticket_id = ticket.id
+                stop.ticket_id = ticket.id
+                ticket_number = ticket.ticket_number
+                machine.last_maintenance_at = datetime.now(timezone.utc)
+
+                equipment = await db.get(Equipment, machine.id)
+                if not equipment and machine.code:
+                    equipment = (await db.execute(
+                        select(Equipment).where(Equipment.code == machine.code)
+                    )).scalar_one_or_none()
+                db.add(MachineIntervention(
+                    machine_id=machine.id,
+                    plant_id=machine.plant_id,
+                    equipment_id=equipment.id if equipment else None,
+                    ticket_id=ticket.id,
+                    status=_STATUS_WAITING,
+                    operator_note=stop.comments,
+                ))
+
+                from app.services.notification_service import NotificationService
+                await NotificationService(db).notify_ticket_opened(ticket, machine.name)
+
     await db.commit()
-    return {"status": "ok"}
+    return {"status": "ok", "ticket_number": ticket_number}
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -1011,6 +1157,16 @@ async def production_hourly(
         q = q.where(MachineProductionLog.shift == shift_enum)
     total = int((await db.execute(q)).scalar() or 0)
 
+    # Hourly production goal that drives the target line on the kiosk's "pieces
+    # produced" chart. The per-hour target is the master goal set on the machine;
+    # legacy machines without it fall back to the old per-shift ÷ shift-length
+    # derivation. 0 when nothing is configured (chart hides the line).
+    if machine.target_count_per_hour:
+        target_per_hour = machine.target_count_per_hour
+    else:
+        shift_target = machine.target_count_per_shift or machine.target_count or 0
+        target_per_hour = round(shift_target / span_h) if span_h > 0 and shift_target else 0
+
     # REAL per-hour buckets (ADAM feed) within the window. Each part is bucketed by
     # the hour it was actually produced, so the chart shows the true curve.
     real = (await db.execute(
@@ -1031,11 +1187,11 @@ async def production_hourly(
         while b < win_end:
             hours.append({"hour": b.isoformat(), "pieces": by_hour.get(b, 0)})
             b = b + timedelta(hours=1)
-        return {"hours": hours, "shift_total": total or sum(by_hour.values())}
+        return {"hours": hours, "shift_total": total or sum(by_hour.values()), "target_per_hour": target_per_hour}
 
     # No real hourly feed (demo/simulated machines) → synthetic spread of the total.
     seed = (machine.id.int + win_start.date().toordinal()) & 0xFFFFFFFF
-    return {"hours": _derive_hourly(total, win_start, win_end, now, seed), "shift_total": total}
+    return {"hours": _derive_hourly(total, win_start, win_end, now, seed), "shift_total": total, "target_per_hour": target_per_hour}
 
 
 # ── Machine config ────────────────────────────────────────────────────────────
@@ -1045,11 +1201,19 @@ async def update_config(
     ref: str,
     data: MachineConfigUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    machine = await _get_machine(ref, db)
+    machine = await _get_machine_scoped(ref, db, ctx)
     for k, v in data.model_dump(exclude_none=True).items():
         setattr(machine, k, v)
+    # Hourly target is the master production goal: derive the per-shift and daily
+    # targets from it + the machine's work shifts, so the whole system (kiosk chart,
+    # MES logs, reports) stays consistent with what the operator configured.
+    if data.target_count_per_hour is not None:
+        per_shift, daily = _derive_targets_from_hourly(
+            data.target_count_per_hour, machine.shifts_config)
+        machine.target_count_per_shift = per_shift
+        machine.target_count = daily
     await db.commit()
     return {"status": "ok"}
 
@@ -1082,10 +1246,11 @@ async def add_operator(
     ref: str,
     data: MachineOperatorCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    machine = await _get_machine(ref, db)
-    op = MachineOperator(machine_id=machine.id, **data.model_dump())
+    machine = await _get_machine_scoped(ref, db, ctx)
+    # Child rows inherit the PARENT machine's plant, never the request context.
+    op = MachineOperator(machine_id=machine.id, plant_id=machine.plant_id, **data.model_dump())
     db.add(op)
     await db.commit()
     await db.refresh(op)
@@ -1097,11 +1262,9 @@ async def update_operator_record(
     op_id: UUID,
     data: OperatorPatch,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    op = await db.get(MachineOperator, op_id)
-    if not op:
-        raise HTTPException(404, "Operator not found")
+    op = ensure_same_plant(await db.get(MachineOperator, op_id), ctx, detail="Operator not found")
     for k, v in data.model_dump(exclude_none=True).items():
         setattr(op, k, v)
     await db.commit()
@@ -1119,8 +1282,9 @@ async def request_maintenance(
 ):
     machine = await _get_machine(ref, db)
     ticket = MaintenanceTicket(
-        ticket_number=await _next_ticket_number(db),
+        ticket_number=await _next_ticket_number(db, machine.plant_id),
         machine_id=machine.id,
+        plant_id=machine.plant_id,
         priority=data.priority,
         problem_type=data.problem_type,
         description=data.description,
@@ -1213,9 +1377,9 @@ async def create_machine_stop_category(
     ref: str,
     data: StopCategoryCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    machine = await _get_machine(ref, db)
+    machine = await _get_machine_scoped(ref, db, ctx)
     cat = StopCategory(machine_id=machine.id, is_global=False, **data.model_dump())
     db.add(cat)
     await db.commit()
@@ -1232,8 +1396,9 @@ async def create_machine_stop_category(
 async def reorder_machine_stop_categories(
     ref: str, items: List[SortOrderItem],
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    await _get_machine_scoped(ref, db, ctx)
     for item in items:
         cat = await db.get(StopCategory, item.id)
         if cat:
@@ -1246,9 +1411,9 @@ async def reorder_machine_stop_categories(
 async def update_machine_stop_category(
     ref: str, cat_id: UUID, data: StopCategoryUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    await _get_machine(ref, db)
+    await _get_machine_scoped(ref, db, ctx)
     cat = await db.get(StopCategory, cat_id)
     if not cat:
         raise HTTPException(404, "Category not found")
@@ -1275,8 +1440,9 @@ async def update_machine_stop_category(
 async def delete_machine_stop_category(
     ref: str, cat_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    await _get_machine_scoped(ref, db, ctx)
     cat = await db.get(StopCategory, cat_id)
     if not cat:
         raise HTTPException(404, "Category not found")
@@ -1305,8 +1471,9 @@ async def delete_machine_stop_category(
 async def add_stop_subcategory(
     ref: str, cat_id: UUID, data: StopSubcategoryCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    await _get_machine_scoped(ref, db, ctx)
     cat = await db.get(StopCategory, cat_id)
     if not cat:
         raise HTTPException(404, "Category not found")
@@ -1321,8 +1488,9 @@ async def add_stop_subcategory(
 async def update_stop_subcategory(
     ref: str, sub_id: UUID, data: StopSubcategoryUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    await _get_machine_scoped(ref, db, ctx)
     sub = await db.get(StopSubcategory, sub_id)
     if not sub:
         raise HTTPException(404, "Subcategory not found")
@@ -1337,8 +1505,9 @@ async def update_stop_subcategory(
 async def delete_stop_subcategory(
     ref: str, sub_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    await _get_machine_scoped(ref, db, ctx)
     sub = await db.get(StopSubcategory, sub_id)
     if not sub:
         raise HTTPException(404, "Subcategory not found")
@@ -1401,9 +1570,9 @@ async def get_machine_reject_categories(ref: str, db: AsyncSession = Depends(get
 async def create_machine_reject_category(
     ref: str, data: RejectCategoryCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    machine = await _get_machine(ref, db)
+    machine = await _get_machine_scoped(ref, db, ctx)
     cat = RejectCategory(machine_id=machine.id, is_global=False, **data.model_dump())
     db.add(cat)
     await db.commit()
@@ -1419,8 +1588,9 @@ async def create_machine_reject_category(
 async def reorder_machine_reject_categories(
     ref: str, items: List[SortOrderItem],
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    await _get_machine_scoped(ref, db, ctx)
     for item in items:
         cat = await db.get(RejectCategory, item.id)
         if cat:
@@ -1433,9 +1603,9 @@ async def reorder_machine_reject_categories(
 async def update_machine_reject_category(
     ref: str, cat_id: UUID, data: RejectCategoryUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    await _get_machine(ref, db)
+    await _get_machine_scoped(ref, db, ctx)
     cat = await db.get(RejectCategory, cat_id)
     if not cat:
         raise HTTPException(404, "Reject category not found")
@@ -1461,8 +1631,9 @@ async def update_machine_reject_category(
 async def delete_machine_reject_category(
     ref: str, cat_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    await _get_machine_scoped(ref, db, ctx)
     cat = await db.get(RejectCategory, cat_id)
     if not cat:
         raise HTTPException(404, "Reject category not found")
@@ -1490,8 +1661,9 @@ async def delete_machine_reject_category(
 async def add_reject_subcategory(
     ref: str, cat_id: UUID, data: RejectSubcategoryCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    await _get_machine_scoped(ref, db, ctx)
     cat = await db.get(RejectCategory, cat_id)
     if not cat:
         raise HTTPException(404, "Reject category not found")
@@ -1506,8 +1678,9 @@ async def add_reject_subcategory(
 async def update_reject_subcategory(
     ref: str, sub_id: UUID, data: RejectSubcategoryUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    await _get_machine_scoped(ref, db, ctx)
     sub = await db.get(RejectSubcategory, sub_id)
     if not sub:
         raise HTTPException(404, "Reject subcategory not found")
@@ -1522,8 +1695,9 @@ async def update_reject_subcategory(
 async def delete_reject_subcategory(
     ref: str, sub_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    await _get_machine_scoped(ref, db, ctx)
     sub = await db.get(RejectSubcategory, sub_id)
     if not sub:
         raise HTTPException(404, "Reject subcategory not found")
@@ -1543,11 +1717,9 @@ async def delete_reject_subcategory(
 async def delete_operator(
     op_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    op = await db.get(MachineOperator, op_id)
-    if not op:
-        raise HTTPException(404, "Operator not found")
+    op = ensure_same_plant(await db.get(MachineOperator, op_id), ctx, detail="Operator not found")
     await db.delete(op)
     await db.commit()
 
@@ -1558,10 +1730,15 @@ async def delete_operator(
 async def clone_categories(
     data: CloneCategoriesRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     """Clone all stop or reject categories from source machine to target machines."""
     import copy
+
+    # Source and every target must be visible machines — cloning never crosses plants.
+    ensure_same_plant(await db.get(Machine, data.source_machine_id), ctx, detail="Machine not found")
+    for target_id in data.target_machine_ids:
+        ensure_same_plant(await db.get(Machine, target_id), ctx, detail="Machine not found")
 
     if data.category_type == "stop":
         src_cats_r = await db.execute(
@@ -1640,9 +1817,9 @@ async def get_machine_history(
     skip: int = 0,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    machine = await _get_machine(ref, db)
+    machine = await _get_machine_scoped(ref, db, ctx)
     r = await db.execute(
         select(MachineHistory)
         .where(MachineHistory.machine_id == machine.id)

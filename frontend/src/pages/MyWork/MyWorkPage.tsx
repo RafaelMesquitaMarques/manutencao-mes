@@ -10,6 +10,7 @@ import { fetchAvailableTickets, claimTicket } from '../../api/maintenance';
 import { fetchEscalationSettings } from '../../api/escalation';
 import type { WorkOrder, Priority, WorkOrderStatus, MaintenanceTicket } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import InterventionCheckin from '../../components/InterventionCheckin';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 
 const PRIORITY_BADGE: Record<Priority, string> = {
@@ -50,6 +51,7 @@ export default function MyWorkPage() {
   const [actionId, setActionId]     = useState<string | null>(null);
   const [completeId, setCompleteId] = useState<string | null>(null);
   const [claimErr, setClaimErr] = useState('');
+  const [actionErr, setActionErr] = useState('');
   const [form, setForm]         = useState<CompleteForm>(EMPTY_FORM);
   const [formErr, setFormErr]   = useState('');
   const [tick, setTick]         = useState(0);
@@ -106,35 +108,28 @@ export default function MyWorkPage() {
     () => load(true),
   );
 
-  const handleStart = async (id: string) => {
+  // Start / hold / resume all share the same shape. On failure we must NOT
+  // stay silent: a stale list (WO no longer in the expected state → 400) would
+  // otherwise make the button appear to "do nothing". Surface the error and
+  // resync so the card reflects reality.
+  const runAction = async (id: string, fn: (id: string) => Promise<WorkOrder>) => {
     setActionId(id);
+    setActionErr('');
     try {
-      const updated = await startWorkOrder(id);
+      const updated = await fn(id);
       setWOs((prev) => prev.map((w) => (w.id === id ? updated : w)));
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      setActionErr(status === 400 ? t('myWork.actionOutOfSync') : t('myWork.actionFailed'));
+      await load(true);
     } finally {
       setActionId(null);
     }
   };
 
-  const handleHold = async (id: string) => {
-    setActionId(id);
-    try {
-      const updated = await holdWorkOrder(id);
-      setWOs((prev) => prev.map((w) => (w.id === id ? updated : w)));
-    } finally {
-      setActionId(null);
-    }
-  };
-
-  const handleResume = async (id: string) => {
-    setActionId(id);
-    try {
-      const updated = await resumeWorkOrder(id);
-      setWOs((prev) => prev.map((w) => (w.id === id ? updated : w)));
-    } finally {
-      setActionId(null);
-    }
-  };
+  const handleStart  = (id: string) => runAction(id, startWorkOrder);
+  const handleHold   = (id: string) => runAction(id, holdWorkOrder);
+  const handleResume = (id: string) => runAction(id, resumeWorkOrder);
 
   const handleComplete = async () => {
     if (!completeId) return;
@@ -186,6 +181,11 @@ export default function MyWorkPage() {
         <div className="flex items-center justify-center h-40"><Spinner size="lg" /></div>
       ) : (
         <>
+          {actionErr && (
+            <p className="text-sm text-amber-400 bg-amber-500/10 border border-amber-500/25 rounded-lg px-3 py-2">
+              {actionErr}
+            </p>
+          )}
           {/* Unassigned tickets — claimable (shifts without a supervisor).
               Hidden when the supervisor turned self-assignment off. */}
           {selfAssignOn && available.length > 0 && (
@@ -402,6 +402,8 @@ function WOCard({ wo, onStart, onHold, onResume, onComplete, actionId, tick: _ti
           {t('myWork.due', { date: wo.due_date })}
         </div>
       )}
+
+      <InterventionCheckin workOrderId={wo.id} />
 
       <div className="flex gap-2 pt-1">
         {wo.status === 'open' && (

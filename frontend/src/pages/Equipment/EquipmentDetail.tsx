@@ -784,34 +784,68 @@ function WorkShiftsTab({ machineId, savedConfig }: {
 
 // ─── Parameters tab ───────────────────────────────────────────────────────────────
 
-function ParametersTab({ form, set }: {
+// Total operating hours/day and shift count from the machine's shifts_config
+// (overnight-aware). Mirrors the backend's _shift_hours so the per-shift/daily
+// preview matches what gets persisted. Falls back to 3 shifts × 8h = 24h/day.
+export function shiftHours(cfg?: Record<string, { start: string; end: string }> | null): { total: number; count: number } {
+  const durations: number[] = [];
+  for (const s of Object.values(cfg || {})) {
+    const [sh, sm] = String(s?.start ?? '').split(':').map(Number);
+    const [eh, em] = String(s?.end ?? '').split(':').map(Number);
+    if ([sh, sm, eh, em].some((n) => Number.isNaN(n))) continue;
+    const start = sh * 60 + sm, end = eh * 60 + em;
+    const span = end > start ? end - start : end + 24 * 60 - start;  // overnight-aware
+    if (span > 0) durations.push(span / 60);
+  }
+  if (!durations.length) return { total: 24, count: 3 };
+  return { total: durations.reduce((a, b) => a + b, 0), count: durations.length };
+}
+
+function ParametersTab({ form, set, shiftsConfig }: {
   form: MachineConfigUpdate;
   set: <K extends keyof MachineConfigUpdate>(k: K, v: MachineConfigUpdate[K]) => void;
+  shiftsConfig?: Record<string, { start: string; end: string }> | null;
 }) {
+  const { t } = useTranslation();
+  const { total: dayHours, count: shiftCount } = shiftHours(shiftsConfig);
+  const avgShiftHours = shiftCount ? dayHours / shiftCount : 8;
+  const perHour  = form.target_count_per_hour ?? 0;
+  const perShift = Math.round(perHour * avgShiftHours);
+  const daily    = Math.round(perHour * dayHours);
+  const fmtH = (h: number) => (Number.isInteger(h) ? String(h) : h.toFixed(1));
+  const calcBadge = (
+    <span className="text-[10px] uppercase tracking-wide text-blue-400/80 bg-blue-500/10 px-1.5 py-0.5 rounded">{t('equipment.paramCalculated')}</span>
+  );
   return (
     <div className="space-y-6">
       <div className="bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 space-y-4">
-        <h2 className="text-sm font-bold text-gray-400 uppercase tracking-widest">Targets</h2>
+        <h2 className="text-sm font-bold text-gray-400 uppercase tracking-widest">{t('equipment.paramTargets')}</h2>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm text-gray-500 mb-1.5">Target Availability (%)</label>
+            <label className="block text-sm text-gray-500 mb-1.5">{t('equipment.paramTargetAvailability')}</label>
             <input type="number" min={0} max={100} value={form.target_availability_pct ?? 70}
               onChange={(e) => set('target_availability_pct', Number(e.target.value))}
               className="w-full bg-[#0b1120] border border-white/10 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-blue-500" />
           </div>
           <div>
-            <label className="block text-sm text-gray-500 mb-1.5">Daily Production Target</label>
-            <input type="number" min={0} value={form.target_count ?? 0}
-              onChange={(e) => set('target_count', Number(e.target.value))}
-              className="w-full bg-[#0b1120] border border-white/10 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-blue-500" />
+            <label className="block text-sm text-gray-500 mb-1.5">{t('equipment.paramHourlyTarget')}</label>
+            <input type="number" min={0} value={form.target_count_per_hour ?? 0}
+              onChange={(e) => set('target_count_per_hour', Number(e.target.value))}
+              className="w-full bg-[#0b1120] border border-blue-500/40 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-blue-500" />
+            <p className="mt-1.5 text-xs text-gray-600">{t('equipment.paramHourlyTargetHint')}</p>
           </div>
           <div>
-            <label className="block text-sm text-gray-500 mb-1.5">Per-Shift Target</label>
-            <input type="number" min={0} value={form.target_count_per_shift ?? 0}
-              onChange={(e) => set('target_count_per_shift', Number(e.target.value))}
-              className="w-full bg-[#0b1120] border border-white/10 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-blue-500" />
+            <label className="flex items-center gap-2 text-sm text-gray-500 mb-1.5">{t('equipment.paramPerShiftTarget')} {calcBadge}</label>
+            <input type="number" value={perShift || ''} readOnly disabled tabIndex={-1}
+              className="w-full bg-white/[0.02] border border-white/10 rounded-xl px-4 py-2.5 text-gray-400 cursor-not-allowed" />
+          </div>
+          <div>
+            <label className="flex items-center gap-2 text-sm text-gray-500 mb-1.5">{t('equipment.paramDailyTarget')} {calcBadge}</label>
+            <input type="number" value={daily || ''} readOnly disabled tabIndex={-1}
+              className="w-full bg-white/[0.02] border border-white/10 rounded-xl px-4 py-2.5 text-gray-400 cursor-not-allowed" />
           </div>
         </div>
+        <p className="text-xs text-gray-600">{t('equipment.paramDerivedNote', { shifts: shiftCount, total: fmtH(dayHours) })}</p>
       </div>
 
       <div className="bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 space-y-4">
@@ -1688,6 +1722,7 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
     target_availability_pct: 70,
     target_count:            0,
     target_count_per_shift:  0,
+    target_count_per_hour:   0,
     hourly_rate_currency:    'CAD',
     show_production_panel:   true,
     show_reject_panel:       true,
@@ -1716,6 +1751,15 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
           || machines.find((m) => m.code && equipment.code && m.code === equipment.code);
         if (found) {
           setMachine(found);
+          // Hourly target is the master goal. Legacy machines configured before it
+          // existed only have per-shift/daily → back-derive an hourly value from
+          // their shifts so the field isn't empty on first open.
+          const sh = shiftHours(found.shifts_config);
+          const avg = sh.count ? sh.total / sh.count : 8;
+          const perHour = found.target_count_per_hour
+            ?? (found.target_count_per_shift ? Math.round(found.target_count_per_shift / avg)
+              : found.target_count ? Math.round(found.target_count / sh.total)
+              : 0);
           setForm({
             display_name:            found.display_name || '',
             page_language:           found.page_language || 'fr',
@@ -1723,6 +1767,7 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
             target_availability_pct: found.target_availability_pct ?? 70,
             target_count:            found.target_count ?? 0,
             target_count_per_shift:  found.target_count_per_shift ?? 0,
+            target_count_per_hour:   perHour,
             hourly_rate:             found.hourly_rate,
             hourly_rate_currency:    found.hourly_rate_currency ?? 'CAD',
             show_production_panel:   found.show_production_panel ?? true,
@@ -1866,7 +1911,7 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
         {configTab === 'reject' && <RejectCategoriesTab slug={machineRef} allMachines={allMachines} machineId={machineId} />}
         {configTab === 'operators' && <OperatorsTab machineRef={machineRef} />}
         {configTab === 'shifts' && <WorkShiftsTab machineId={machineId} savedConfig={machine?.shifts_config} />}
-        {configTab === 'parameters' && <ParametersTab form={form} set={set} />}
+        {configTab === 'parameters' && <ParametersTab form={form} set={set} shiftsConfig={machine?.shifts_config} />}
         {configTab === 'indicators' && (
           <div className="flex flex-col items-center justify-center py-24 text-center">
             <Activity size={40} className="text-gray-700 mb-4" />
@@ -1891,6 +1936,9 @@ export default function EquipmentDetail() {
   const [wos, setWOs] = useState<WorkOrder[]>([]);
   const [plans, setPlans] = useState<MaintenancePlan[]>([]);
   const [loading, setLoading] = useState(true);
+  // Cost centers usable as the machine's default (same list the WO-approval picker
+  // uses, so the stored name always matches an approval option).
+  const [costCenters, setCostCenters] = useState<{ name: string; code: string | null }[]>([]);
 
   useEffect(() => {
     if (!id) return;
@@ -1905,6 +1953,12 @@ export default function EquipmentDetail() {
       setLoading(false);
     });
   }, [id]);
+
+  useEffect(() => {
+    api.get<{ name: string; code: string | null }[]>('/api/wo-approval/cost-centers')
+      .then(({ data }) => setCostCenters(data))
+      .catch(() => {});
+  }, []);
 
   if (loading) {
     return (
@@ -2104,6 +2158,21 @@ export default function EquipmentDetail() {
               field="department"
               placeholder="e.g. Assemblage"
               onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, department: v } : prev))}
+            />
+            <EditableSpecRow
+              label={t('equipment.costCenter', 'Cost center')}
+              value={equipment.cost_center}
+              equipmentId={equipment.id}
+              field="cost_center"
+              type="select"
+              options={[
+                { value: '', label: '—' },
+                ...costCenters.map((cc) => ({
+                  value: cc.name,
+                  label: cc.code ? `${cc.code} · ${cc.name}` : cc.name,
+                })),
+              ]}
+              onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, cost_center: v } : prev))}
             />
             <EditableSpecRow
               label={t('equipment.family', 'Family')}

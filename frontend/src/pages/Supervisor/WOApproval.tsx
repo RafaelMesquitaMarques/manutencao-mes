@@ -41,6 +41,8 @@ interface WorkOrder {
   parts: PartItem[];
   parts_total: number;
   cost_center: string | null;
+  /** Machine's default cost center — pre-selected in the picker until overridden. */
+  default_cost_center: string | null;
   supports_part_reject: boolean;
   can_edit_diagnosis: boolean;
 }
@@ -196,7 +198,7 @@ export default function WOApproval() {
   };
 
   const approve = async (wo: WorkOrder) => {
-    const cost_center = (ccChoice[wo.id] ?? wo.cost_center ?? '').trim();
+    const cost_center = (ccChoice[wo.id] ?? wo.cost_center ?? wo.default_cost_center ?? '').trim();
     if (!cost_center) {
       setCcError((prev) => ({ ...prev, [wo.id]: true }));
       return;
@@ -543,7 +545,7 @@ export default function WOApproval() {
                     <div className="flex items-center gap-1.5">
                       <span className="text-[11px] text-gray-500 uppercase tracking-wide">{t('woApproval.costCenter')}</span>
                       <select
-                        value={ccChoice[wo.id] ?? wo.cost_center ?? ''}
+                        value={ccChoice[wo.id] ?? wo.cost_center ?? wo.default_cost_center ?? ''}
                         onChange={(e) => {
                           const v = e.target.value;
                           setCcChoice((prev) => ({ ...prev, [wo.id]: v }));

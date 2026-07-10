@@ -12,7 +12,8 @@ from app.models.models import (
     Equipment, Machine, MachineStatus, MachineIntervention, MaintenanceTicket,
     TicketStatus, AlertPriority, MaintenanceAlert, AlertStatus, AlertProblemType,
     InterventionType, SafetyChecklist, SafetyChecklistItem,
-    InterventionChecklistResponse, InterventionPart, StockItem, User,
+    InterventionChecklistResponse, InterventionPart, InterventionTechnician,
+    StockItem, Technician, User,
 )
 from app.services.ticket_service import _next_ticket_number, _next_alert_number, sync_alert_from_ticket
 
@@ -47,7 +48,8 @@ async def _resolve(machine_id: str, db: AsyncSession) -> tuple:
             existing = r.scalar_one_or_none()
             if existing:
                 return existing, equipment
-        machine = Machine(id=equipment.id, name=equipment.name, code=equipment.code, is_active=True)
+        machine = Machine(id=equipment.id, name=equipment.name, code=equipment.code,
+                          plant_id=equipment.plant_id, is_active=True)
         db.add(machine)
         await db.commit()
         await db.refresh(machine)
@@ -82,7 +84,25 @@ async def _last_intervention(machine_id, db: AsyncSession) -> Optional[MachineIn
     return r.scalar_one_or_none()
 
 
-def _intervention_dict(i: Optional[MachineIntervention]) -> Optional[dict]:
+async def _checkins(db: AsyncSession, intervention_id) -> list[dict]:
+    """Open check-ins (techs currently on the intervention), oldest first."""
+    rows = (await db.execute(
+        select(InterventionTechnician)
+        .where(
+            InterventionTechnician.intervention_id == intervention_id,
+            InterventionTechnician.checked_out_at.is_(None),
+        )
+        .order_by(InterventionTechnician.checked_in_at.asc())
+    )).scalars().all()
+    return [{
+        "id":            str(r.id),
+        "technician_id": str(r.technician_id) if r.technician_id else None,
+        "name":          r.name,
+        "checked_in_at": r.checked_in_at.isoformat() if r.checked_in_at else None,
+    } for r in rows]
+
+
+def _intervention_dict(i: Optional[MachineIntervention], technicians: Optional[list] = None) -> Optional[dict]:
     if not i:
         return None
     return {
@@ -98,6 +118,8 @@ def _intervention_dict(i: Optional[MachineIntervention]) -> Optional[dict]:
         "started_by_id":  str(i.started_by_id) if i.started_by_id else None,
         "operator_note":  i.operator_note,
         "mechanic_note":  i.mechanic_note,
+        "started_by_name": i.started_by_name,
+        "technicians":    technicians or [],
     }
 
 
@@ -139,7 +161,7 @@ async def get_state(machine_id: str, db: AsyncSession = Depends(get_db)):
             "location":   equipment.location or "",
             "hour_meter": equipment.hour_meter or 0,
         } if equipment else None,
-        "active_intervention":  _intervention_dict(active),
+        "active_intervention":  _intervention_dict(active, await _checkins(db, active.id) if active else None),
         "last_intervention":    _intervention_dict(last),
         "open_tickets_count":   open_tickets,
         "last_maintenance_days_ago": last_maint_days,
@@ -175,6 +197,7 @@ async def call_maintenance(machine_id: str, body: CallBody, db: AsyncSession = D
     if prior:
         intervention = MachineIntervention(
             machine_id=machine.id,
+            plant_id=machine.plant_id,
             equipment_id=equipment.id if equipment else None,
             ticket_id=prior.id,
             status=_STATUS_WAITING,
@@ -191,8 +214,9 @@ async def call_maintenance(machine_id: str, body: CallBody, db: AsyncSession = D
         }
 
     alert = MaintenanceAlert(
-        alert_number=await _next_alert_number(db),
+        alert_number=await _next_alert_number(db, machine.plant_id),
         machine_id=machine.id,
+        plant_id=machine.plant_id,
         department=machine.department,
         problem_type=AlertProblemType.mechanical,
         priority=AlertPriority.medium,
@@ -203,10 +227,11 @@ async def call_maintenance(machine_id: str, body: CallBody, db: AsyncSession = D
     db.add(alert)
     await db.flush()
 
-    ticket_number = await _next_ticket_number(db)
+    ticket_number = await _next_ticket_number(db, machine.plant_id)
     ticket = MaintenanceTicket(
         ticket_number=ticket_number,
         machine_id=machine.id,
+        plant_id=machine.plant_id,
         alert_id=alert.id,
         priority=AlertPriority.medium,
         status=TicketStatus.open,
@@ -220,6 +245,7 @@ async def call_maintenance(machine_id: str, body: CallBody, db: AsyncSession = D
 
     intervention = MachineIntervention(
         machine_id=machine.id,
+        plant_id=machine.plant_id,
         equipment_id=equipment.id if equipment else None,
         ticket_id=ticket.id,
         status=_STATUS_WAITING,
@@ -255,6 +281,20 @@ async def start_intervention(machine_id: str, body: StartBody, db: AsyncSession 
     if body.mechanic_note:
         intervention.mechanic_note = body.mechanic_note
 
+    # A tech may have checked in while the call was still waiting — credit the
+    # first one as the starter so the map pictogram/history carry a name.
+    if not intervention.started_by_name:
+        first = (await db.execute(
+            select(InterventionTechnician)
+            .where(
+                InterventionTechnician.intervention_id == intervention.id,
+                InterventionTechnician.checked_out_at.is_(None),
+            )
+            .order_by(InterventionTechnician.checked_in_at.asc())
+        )).scalars().first()
+        if first:
+            intervention.started_by_name = first.name
+
     if intervention.called_at and intervention.started_at:
         delta = intervention.started_at - intervention.called_at
         intervention.response_time_minutes = round(delta.total_seconds() / 60, 2)
@@ -273,7 +313,95 @@ async def start_intervention(machine_id: str, body: StartBody, db: AsyncSession 
 
     await db.commit()
     await db.refresh(intervention)
-    return {"status": "started", "intervention": _intervention_dict(intervention)}
+    return {"status": "started", "intervention": _intervention_dict(intervention, await _checkins(db, intervention.id))}
+
+
+@router.get("/{machine_id}/technicians")
+async def list_kiosk_technicians(machine_id: str, db: AsyncSession = Depends(get_db)):
+    """Active technicians for the kiosk check-in picker (id + display name)."""
+    await _resolve(machine_id, db)
+    rows = (await db.execute(
+        select(Technician.id, User.name, Technician.specialty)
+        .join(User, Technician.user_id == User.id)
+        .where(Technician.active == True)  # noqa: E712
+        .order_by(User.name.asc())
+    )).all()
+    return {"items": [
+        {"id": str(tid), "name": name, "specialty": spec.value if spec else None}
+        for tid, name, spec in rows
+    ]}
+
+
+class CheckInBody(BaseModel):
+    technician_id: str
+
+
+@router.post("/{machine_id}/checkin")
+async def check_in_technician(machine_id: str, body: CheckInBody, db: AsyncSession = Depends(get_db)):
+    """A technician joins the active intervention (waiting or in progress).
+    Several techs can be checked in at once; idempotent per technician. The
+    first check-in backfills started_by so the map pictogram has a name."""
+    machine, _ = await _resolve(machine_id, db)
+    intervention = await _active_intervention(machine.id, db)
+    if not intervention:
+        raise HTTPException(404, "No active intervention to check in to")
+
+    try:
+        tech_uid = UUID(body.technician_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid technician_id")
+    row = (await db.execute(
+        select(Technician, User.name)
+        .join(User, Technician.user_id == User.id)
+        .where(Technician.id == tech_uid)
+    )).first()
+    if not row:
+        raise HTTPException(404, "Technician not found")
+    tech, tech_name = row
+
+    already = (await db.execute(
+        select(InterventionTechnician).where(
+            InterventionTechnician.intervention_id == intervention.id,
+            InterventionTechnician.technician_id == tech_uid,
+            InterventionTechnician.checked_out_at.is_(None),
+        )
+    )).scalars().first()
+    if not already:
+        db.add(InterventionTechnician(
+            intervention_id=intervention.id,
+            technician_id=tech_uid,
+            name=tech_name,
+        ))
+        if not intervention.started_by_name:
+            intervention.started_by_name = tech_name
+            intervention.started_by_id = tech.user_id
+        await db.commit()
+
+    return {"status": "checked_in", "intervention": _intervention_dict(intervention, await _checkins(db, intervention.id))}
+
+
+@router.post("/{machine_id}/checkout")
+async def check_out_technician(machine_id: str, body: CheckInBody, db: AsyncSession = Depends(get_db)):
+    """A technician leaves the active intervention (the work itself continues)."""
+    machine, _ = await _resolve(machine_id, db)
+    intervention = await _active_intervention(machine.id, db)
+    if not intervention:
+        raise HTTPException(404, "No active intervention")
+    try:
+        tech_uid = UUID(body.technician_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid technician_id")
+    open_row = (await db.execute(
+        select(InterventionTechnician).where(
+            InterventionTechnician.intervention_id == intervention.id,
+            InterventionTechnician.technician_id == tech_uid,
+            InterventionTechnician.checked_out_at.is_(None),
+        )
+    )).scalars().first()
+    if open_row:
+        open_row.checked_out_at = datetime.now(timezone.utc)
+        await db.commit()
+    return {"status": "checked_out", "intervention": _intervention_dict(intervention, await _checkins(db, intervention.id))}
 
 
 @router.get("/{machine_id}/intervention-types")
@@ -355,12 +483,22 @@ async def complete_intervention(machine_id: str, body: CompleteBody, db: AsyncSe
             ticket.closed_by_technician_at = now
             await sync_alert_from_ticket(ticket, db)
 
+    # The work is done — close whatever check-ins are still open so the techs'
+    # time on the intervention ends with it.
+    for open_ci in (await db.execute(
+        select(InterventionTechnician).where(
+            InterventionTechnician.intervention_id == intervention.id,
+            InterventionTechnician.checked_out_at.is_(None),
+        )
+    )).scalars().all():
+        open_ci.checked_out_at = now
+
     machine.last_maintenance_at = now
     # Do NOT assume production resumed. Close the maintenance downtime and repaint:
     # a positive production signal → green; otherwise → pink (waiting for production).
     # A signal-driven machine only goes green once the ADAM signal confirms it.
     from app.services.intervention_sync import repaint_after_maintenance
-    await repaint_after_maintenance(db, machine, ticket_id=intervention.ticket_id)
+    await repaint_after_maintenance(db, machine, ticket_id=intervention.ticket_id, from_intervention=True)
     await db.commit()
     await db.refresh(intervention)
     return {

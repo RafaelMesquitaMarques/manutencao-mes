@@ -71,10 +71,11 @@ async def _has_active_intervention(db: AsyncSession, machine_id) -> bool:
     return r.scalar_one_or_none() is not None
 
 
-async def _next_alert_number(db: AsyncSession) -> str:
-    from app.services.numbering import next_number
+async def _next_alert_number(db: AsyncSession, plant_id=None) -> str:
+    from app.services.numbering import next_number, series_prefix
     year = datetime.now(timezone.utc).year
-    return await next_number(db, MaintenanceAlert.alert_number, f"ALT-{year}")
+    sp = await series_prefix(db, plant_id)
+    return await next_number(db, MaintenanceAlert.alert_number, f"{sp}ALT-{year}")
 
 
 async def _close_linked_wo(ticket: MaintenanceTicket, db: AsyncSession) -> None:
@@ -95,7 +96,9 @@ async def _close_linked_wo(ticket: MaintenanceTicket, db: AsyncSession) -> None:
         if not wo.completed_at:
             wo.completed_at = ticket.completed_at or now
 
-    # Stamp any in-flight labor records
+    # Stamp any in-flight labor records: hours_worked stays raw (feeds
+    # repair_hours/MTTR); labor_cost is recomputed from effective working time.
+    from app.services import labor_time_service
     r = await db.execute(
         select(LaborRecord).where(
             LaborRecord.work_order_id == wo.id,
@@ -107,8 +110,7 @@ async def _close_linked_wo(ticket: MaintenanceTicket, db: AsyncSession) -> None:
         if rec.started_at:
             started = rec.started_at if rec.started_at.tzinfo else rec.started_at.replace(tzinfo=timezone.utc)
             rec.hours_worked = round((now - started).total_seconds() / 3600, 4)
-            if rec.hourly_rate:
-                rec.labor_cost = round(rec.hourly_rate * rec.hours_worked, 2)
+        await labor_time_service.apply_to_record(db, rec, work_order=wo)
 
     # Repair time fallback from the WO's own start
     if wo.status == WorkOrderStatus.completed and not wo.repair_hours and wo.started_at:
@@ -150,10 +152,11 @@ async def sync_alert_from_ticket(ticket: MaintenanceTicket, db: AsyncSession) ->
         alert.status = new_status
 
 
-async def _next_ticket_number(db: AsyncSession) -> str:
-    from app.services.numbering import next_number
+async def _next_ticket_number(db: AsyncSession, plant_id=None) -> str:
+    from app.services.numbering import next_number, series_prefix
     year = datetime.now(timezone.utc).year
-    return await next_number(db, MaintenanceTicket.ticket_number, f"TKT-{year}")
+    sp = await series_prefix(db, plant_id)
+    return await next_number(db, MaintenanceTicket.ticket_number, f"{sp}TKT-{year}")
 
 
 class TicketService:
@@ -220,8 +223,9 @@ class TicketService:
         new_alert = None
         if not alert_id:
             new_alert = MaintenanceAlert(
-                alert_number=await _next_alert_number(self.db),
+                alert_number=await _next_alert_number(self.db, machine.plant_id),
                 machine_id=data.machine_id,
+                plant_id=machine.plant_id,
                 department=machine.department,
                 problem_type=data.problem_type or AlertProblemType.other,
                 priority=data.priority,
@@ -234,9 +238,10 @@ class TicketService:
             alert_id = new_alert.id
 
         ticket = MaintenanceTicket(
-            ticket_number=await _next_ticket_number(self.db),
+            ticket_number=await _next_ticket_number(self.db, machine.plant_id),
             alert_id=alert_id,
             machine_id=data.machine_id,
+            plant_id=machine.plant_id,   # ticket belongs to its machine's plant
             priority=data.priority,
             assigned_to_id=data.assigned_to_id,
             estimated_downtime_minutes=data.estimated_downtime_minutes,
@@ -258,6 +263,7 @@ class TicketService:
             if not await _has_active_intervention(self.db, data.machine_id):
                 self.db.add(MachineIntervention(
                     machine_id=data.machine_id,
+                    plant_id=machine.plant_id,
                     equipment_id=machine.equipment_id,
                     ticket_id=ticket.id,
                     status="waiting",
@@ -369,6 +375,7 @@ class TicketService:
         wo = WorkOrder(
             wo_number=wo_number,
             equipment_id=equip.id,
+            plant_id=ticket.plant_id if ticket.plant_id else equip.plant_id,
             machine_id=ticket.machine_id,
             created_by_id=created_by_id,
             type=WorkOrderType.corrective,
@@ -452,6 +459,7 @@ class TicketService:
         wo = WorkOrder(
             wo_number=wo_number,
             equipment_id=equip.id,
+            plant_id=ticket.plant_id if ticket.plant_id else equip.plant_id,
             machine_id=ticket.machine_id,
             created_by_id=assigned_by_id,
             assigned_to_id=tech.user_id,
@@ -514,8 +522,9 @@ async def backfill_missing_alerts(db: AsyncSession) -> int:
         machine = await db.get(Machine, ticket.machine_id)
         alert_status = _BACKFILL_STATUS_MAP.get(ticket.status, AlertStatus.new_alert)
         alert = MaintenanceAlert(
-            alert_number=await _next_alert_number(db),
+            alert_number=await _next_alert_number(db, ticket.plant_id),
             machine_id=ticket.machine_id,
+            plant_id=ticket.plant_id if ticket.plant_id else (machine.plant_id if machine else None),
             ticket_id=ticket.id,
             department=machine.department if machine else None,
             problem_type=ticket.problem_type or AlertProblemType.other,

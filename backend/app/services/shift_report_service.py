@@ -294,7 +294,8 @@ async def _plant_tz_names(db: AsyncSession) -> dict:
 
 
 async def _candidate_groups(db: AsyncSession, now: datetime) -> dict:
-    """Shift windows grouped by (key, start, end): {group: {"machines": [...], "tz": name}}."""
+    """Shift windows grouped by (plant, key, start, end): one report per PLANT
+    per shift — a plant's summary never mixes in (or leaks to) another plant."""
     tz_by_plant = await _plant_tz_names(db)
     machines = (await db.execute(
         select(Machine).where(Machine.is_active == True, Machine.shifts_config.isnot(None))  # noqa: E712
@@ -306,7 +307,7 @@ async def _candidate_groups(db: AsyncSession, now: datetime) -> dict:
         today_local = now.astimezone(tz).date()
         for d in (today_local, today_local - timedelta(days=1)):
             for key, ws, we in keyed_shift_windows(m.shifts_config, d, tz):
-                g = groups.setdefault((key, ws, we), {"machines": [], "tz": tz_name})
+                g = groups.setdefault((m.plant_id, key, ws, we), {"machines": [], "tz": tz_name})
                 if m not in g["machines"]:
                     g["machines"].append(m)
     return groups
@@ -314,26 +315,31 @@ async def _candidate_groups(db: AsyncSession, now: datetime) -> dict:
 
 async def check_and_send(db: AsyncSession) -> int:
     """Cron entry point: generate + send reports for windows that just ended.
+    One report per plant per shift; enablement and recipients resolve per plant.
     Returns the number of reports generated."""
-    esc = await get_escalation_settings(db)
-    if not getattr(esc, "shift_report_enabled", False):
-        return 0
     now = datetime.now(timezone.utc)
     generated = 0
     groups = await _candidate_groups(db, now)
-    for (key, ws, we), g in sorted(groups.items(), key=lambda kv: kv[0][2]):
+    esc_cache: dict = {}
+    for (plant_id, key, ws, we), g in sorted(groups.items(), key=lambda kv: kv[0][3]):
         if not (we <= now < we + timedelta(minutes=GRACE_MINUTES)):
+            continue
+        if plant_id not in esc_cache:
+            esc_cache[plant_id] = await get_escalation_settings(db, plant_id)
+        esc = esc_cache[plant_id]
+        if not getattr(esc, "shift_report_enabled", False):
             continue
         exists = (await db.execute(
             select(ShiftReport.id).where(
                 ShiftReport.shift_key == key, ShiftReport.window_start == ws,
+                ShiftReport.plant_id == plant_id,
             ).limit(1)
         )).first()
         if exists:
             continue
         data = await build_report_data(db, g["machines"], key, ws, we, g["tz"])
         notif = NotificationService(db)
-        recipients = await notif._level_recipients(1)
+        recipients = await notif._level_recipients(1, plant_id=plant_id)
         sent = 0
         for r in recipients:
             user = r["user"]
@@ -346,6 +352,7 @@ async def check_and_send(db: AsyncSession) -> int:
             )
             sent += 1
         db.add(ShiftReport(
+            plant_id=plant_id,
             shift_key=key, window_start=ws, window_end=we,
             body=render_report(data, "en"),
             machines_included=len(data["machines"]),
@@ -363,8 +370,8 @@ async def latest_ended_window(db: AsyncSession, now: Optional[datetime] = None):
     or None when no machine has a shifts_config."""
     now = now or datetime.now(timezone.utc)
     groups = await _candidate_groups(db, now)
-    ended = [(k, g) for k, g in groups.items() if k[2] <= now]
+    ended = [(k, g) for k, g in groups.items() if k[3] <= now]
     if not ended:
         return None
-    (key, ws, we), g = max(ended, key=lambda kv: kv[0][2])
+    (_plant, key, ws, we), g = max(ended, key=lambda kv: kv[0][3])
     return key, ws, we, g["tz"], g["machines"]

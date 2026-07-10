@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { AlertTriangle, Clock, Wrench, CheckCircle, Loader2, Mic, MicOff, Shield, Package, X, Plus, Trash2, Search } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { AlertTriangle, Clock, Wrench, CheckCircle, Loader2, Mic, MicOff, Shield, Package, X, Plus, Trash2, Search, Users, UserPlus } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
 import {
   fetchMachineOperatorState,
@@ -14,15 +15,20 @@ import {
   addInterventionPart,
   removeInterventionPart,
   searchInventory,
+  fetchKioskTechnicians,
+  checkInTechnician,
+  checkOutTechnician,
 } from '../../api/machineOperator';
 import type {
   MachineOperatorState,
+  MachineIntervention,
   InterventionType,
 } from '../../types';
 import type {
   ChecklistItem,
   InterventionPartItem,
   InventorySearchItem,
+  KioskTechnician,
 } from '../../api/machineOperator';
 import { useMachineLive } from '../../hooks/useLiveEvents';
 
@@ -401,6 +407,103 @@ export default function MachineOperatorPage() {
   return <MaintenancePanel machineId={machine_id} />;
 }
 
+// ── Technician check-in ───────────────────────────────────────────────────────
+// Several technicians can work the same intervention (e.g. two mechanics on one
+// ticket). Each one checks in/out here; the factory-map pictograms and the
+// intervention's started_by credit follow these check-ins.
+function TechnicianCheckinCard({ machineId, intervention, onChanged }: {
+  machineId: string;
+  intervention: MachineIntervention;
+  onChanged: () => Promise<void> | void;
+}) {
+  const { t } = useTranslation();
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [allTechs, setAllTechs] = useState<KioskTechnician[]>([]);
+  const [busy, setBusy] = useState(false);
+  const checkedIn = intervention.technicians ?? [];
+
+  const openPicker = async () => {
+    setPickerOpen(true);
+    try {
+      const d = await fetchKioskTechnicians(machineId);
+      setAllTechs(d.items || []);
+    } catch {
+      setAllTechs([]);
+    }
+  };
+
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    try { await fn(); await onChanged(); } finally { setBusy(false); }
+  };
+
+  const available = allTechs.filter((tech) => !checkedIn.some((c) => c.technician_id === tech.id));
+
+  return (
+    <div className="w-full rounded-2xl px-5 py-4" style={{ background: '#111318', border: '1px solid #21262d' }}>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs text-gray-400 uppercase tracking-widest font-semibold flex items-center gap-2">
+          <Users size={14} /> {t('kiosk.techniciansOnJob')}
+        </p>
+        {!pickerOpen && (
+          <button disabled={busy} onClick={openPicker}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all active:scale-95 disabled:opacity-50"
+            style={{ background: '#1e3a5f', border: '1px solid #3b82f6', color: '#93c5fd' }}>
+            <UserPlus size={13} /> {t('kiosk.checkIn')}
+          </button>
+        )}
+      </div>
+
+      {checkedIn.length === 0 && !pickerOpen && (
+        <p className="text-gray-600 text-sm">{t('kiosk.noneCheckedIn')}</p>
+      )}
+
+      {checkedIn.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {checkedIn.map((c) => (
+            <span key={c.id} className="flex items-center gap-2 pl-3 pr-1.5 py-1.5 rounded-full text-sm"
+              style={{ background: '#a855f715', border: '1px solid #a855f750', color: '#d8b4fe' }}>
+              {c.name}
+              {c.checked_in_at && <span className="text-purple-400/60 text-xs">{elapsed(c.checked_in_at)}</span>}
+              {c.technician_id && (
+                <button disabled={busy} title={t('kiosk.checkOut')}
+                  onClick={() => run(() => checkOutTechnician(machineId, c.technician_id!))}
+                  className="p-1 rounded-full hover:bg-purple-500/20 transition-colors disabled:opacity-50">
+                  <X size={13} />
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {pickerOpen && (
+        <div className="mt-3">
+          <p className="text-gray-400 text-sm mb-2">{t('kiosk.whoChecksIn')}</p>
+          <div className="grid grid-cols-2 gap-2 max-h-52 overflow-y-auto">
+            {available.map((tech) => (
+              <button key={tech.id} disabled={busy}
+                onClick={() => run(async () => { await checkInTechnician(machineId, tech.id); setPickerOpen(false); })}
+                className="px-3 py-3 rounded-xl text-sm text-left text-gray-200 transition-all active:scale-95 disabled:opacity-50 hover:border-blue-500"
+                style={{ background: '#0d1117', border: '1px solid #21262d' }}>
+                {tech.name}
+                {tech.specialty && <span className="block text-[11px] text-gray-500 mt-0.5">{tech.specialty}</span>}
+              </button>
+            ))}
+            {available.length === 0 && (
+              <p className="text-gray-600 text-sm col-span-2">{t('kiosk.noTechniciansAvailable')}</p>
+            )}
+          </div>
+          <button onClick={() => setPickerOpen(false)}
+            className="mt-2 text-xs text-gray-600 hover:text-gray-400 transition-colors">
+            {t('common.cancel')}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Intervention flow as an embeddable panel. `embedded` strips the full-screen chrome
 // (header/footer/side info) so it can live inside the unified MES kiosk (MachinePage).
 export function MaintenancePanel({ machineId, embedded = false }: { machineId: string; embedded?: boolean }) {
@@ -692,6 +795,7 @@ export function MaintenancePanel({ machineId, embedded = false }: { machineId: s
                   <p className="text-gray-400 text-sm mt-3 italic">"{intervention!.operator_note}"</p>
                 )}
               </div>
+              <TechnicianCheckinCard machineId={machine_id!} intervention={intervention!} onChanged={load} />
               <textarea value={note} onChange={(e) => setNote(e.target.value)}
                 placeholder="Note mécanicien (optionnel)"
                 className="w-full h-20 bg-[#111318] border border-[#21262d] rounded-xl px-4 py-3 text-sm text-gray-300 placeholder-gray-600 resize-none focus:outline-none focus:border-blue-700/60"
@@ -718,6 +822,9 @@ export function MaintenancePanel({ machineId, embedded = false }: { machineId: s
                   <p className="text-gray-400 text-xs mt-2 italic">"{intervention!.operator_note}"</p>
                 )}
               </div>
+
+              {/* Technicians on the intervention — check-in/out, multi-tech */}
+              <TechnicianCheckinCard machineId={machine_id!} intervention={intervention!} onChanged={load} />
 
               {/* Parts panel — always visible in state 3 */}
               <PartsPanel machineId={machine_id!} interventionId={intervention!.id} />

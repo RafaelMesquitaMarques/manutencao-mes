@@ -165,7 +165,7 @@ def parse_inventory(xml_path: str) -> list[dict]:
 # ─── DB operations ───────────────────────────────────────────────────────────
 
 async def get_plant_id(conn) -> str | None:
-    row = await conn.fetchrow("SELECT id FROM plants WHERE code = 'PLT1' LIMIT 1")
+    row = await conn.fetchrow("SELECT id FROM plants WHERE code IN ('QS', 'PLT1') LIMIT 1")
     return str(row["id"]) if row else None
 
 

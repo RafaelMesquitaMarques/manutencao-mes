@@ -16,6 +16,8 @@ from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
 from app.core.security import get_current_user
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import ensure_same_plant, plant_condition, plant_scoped
 from app.models.models import (
     Supplier, StockItem, PurchaseOrder, PurchaseOrderItem,
     InventoryMovement, User, PurchaseOrderStatus, CostCenter,
@@ -109,16 +111,18 @@ def _po_out(po: PurchaseOrder, include_items: bool = False) -> dict:
     return d
 
 
-async def _next_po_number(db: AsyncSession) -> str:
+async def _next_po_number(db: AsyncSession, plant_id=None) -> str:
+    from app.services.numbering import series_prefix
+    sp = await series_prefix(db, plant_id)
     year = date.today().year
     result = await db.execute(
         select(func.max(PurchaseOrder.order_number)).where(
-            PurchaseOrder.order_number.like(f"PO-{year}-%")
+            PurchaseOrder.order_number.like(f"{sp}PO-{year}-%")
         )
     )
     last = result.scalar_one_or_none()
     seq = int(last.split("-")[-1]) + 1 if last else 1
-    return f"PO-{year}-{seq:04d}"
+    return f"{sp}PO-{year}-{seq:04d}"
 
 
 # ─── SUPPLIERS ────────────────────────────────────────────────────────────────
@@ -131,9 +135,9 @@ async def list_suppliers(
     skip: int = 0,
     limit: int = Query(default=100, le=500),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    q = select(Supplier)
+    q = plant_scoped(select(Supplier), Supplier, ctx)   # group-scoped: QC pool
     if active_only:
         q = q.where(Supplier.is_active == True)
     if category:
@@ -367,9 +371,13 @@ async def list_purchase_orders(
     skip: int = 0,
     limit: int = Query(default=50, le=200),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    q = select(PurchaseOrder).options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items))
+    # POs are PLANT-scoped (the buying plant), unlike suppliers (group pool).
+    q = plant_scoped(
+        select(PurchaseOrder).options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items)),
+        PurchaseOrder, ctx,
+    )
     if status:
         q = q.where(PurchaseOrder.status == status)
     if supplier_id:
@@ -393,17 +401,22 @@ async def create_purchase_order(
     body: dict,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     if not body.get("supplier_id"):
         raise HTTPException(422, "supplier_id is required")
-    supplier = await db.get(Supplier, uuid.UUID(body["supplier_id"]))
-    if not supplier:
-        raise HTTPException(404, "Supplier not found")
+    # Supplier must be visible in the active plant's group (QC pool / LV own list).
+    supplier = ensure_same_plant(
+        await db.get(Supplier, uuid.UUID(body["supplier_id"])), ctx,
+        grouped=True, detail="Supplier not found",
+    )
 
-    order_number = await _next_po_number(db)
+    order_number = await _next_po_number(db, ctx.plant_id)
     po = PurchaseOrder(
         order_number=order_number,
         supplier_id=uuid.UUID(body["supplier_id"]),
+        plant_id=ctx.plant_id,   # the buying plant is the active context
+
         status=PurchaseOrderStatus(body.get("status", "draft")),
         order_date=date.fromisoformat(body.get("order_date") or str(date.today())),
         expected_date=date.fromisoformat(body["expected_date"]) if body.get("expected_date") else None,
@@ -727,6 +740,7 @@ async def replenishment_generate(
     body: dict,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     """Create one draft PO per supplier from the selected items.
     Body: { items: [{stock_item_id, quantity}], notes?: str }"""
@@ -767,7 +781,7 @@ async def replenishment_generate(
         raise HTTPException(422, "No orderable items (missing supplier or already on an open PO)")
 
     # Sequential numbers computed once to avoid duplicates within the batch
-    base_number = await _next_po_number(db)
+    base_number = await _next_po_number(db, ctx.plant_id)
     year_prefix, seq = base_number.rsplit("-", 1)
     seq = int(seq)
 
@@ -782,6 +796,7 @@ async def replenishment_generate(
         po = PurchaseOrder(
             order_number=f"{year_prefix}-{seq:04d}",
             supplier_id=supplier_id,
+            plant_id=ctx.plant_id,
             status=PurchaseOrderStatus.draft,
             order_date=today,
             expected_date=today + timedelta(days=supplier.lead_time_days) if supplier.lead_time_days else None,

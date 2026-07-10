@@ -70,6 +70,11 @@ services:
       # the "I'm on it" ack link in escalation SMS. Empty = no link.
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Note organizing: primary = Anthropic API (fast) when ANTHROPIC_API_KEY is
+      # set; the Ollama vars point at the token-free offline fallback. Empty
+      # OLLAMA_BASE_URL disables that fallback (local formatting when the API fails).
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
     volumes:
       - uploads_data:/app/uploads
     depends_on:
@@ -119,6 +124,28 @@ services:
     depends_on:
       - backend
       - db
+
+  # ─── LLM local (Ollama) — fallback offline do organizador de notas ────────────
+  # Caminho primário é a API da Anthropic (ANTHROPIC_API_KEY no backend); este
+  # serviço só atende quando a API falha/está sem internet. Modelo roda on-prem,
+  # sem custo por token. Após subir, baixe o modelo uma vez:
+  #   docker compose exec ollama ollama pull llama3.2
+  # Sem GPU funciona (lento em CPU). Se este serviço estiver fora do ar, as notas
+  # recebem apenas formatação local básica quando a API falhar (o app continua).
+  ollama:
+    image: ollama/ollama:latest
+    container_name: mes_ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    # Descomente para acelerar com GPU NVIDIA (requer nvidia-container-toolkit):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
 
   # ─── Frontend React ──────────────────────────────────────────────────────────
   frontend:
@@ -184,3 +211,4 @@ volumes:
   redis_data:
   mqtt_data:
   uploads_data:
+  ollama_data:

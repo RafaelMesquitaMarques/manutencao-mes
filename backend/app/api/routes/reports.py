@@ -23,6 +23,8 @@ from app.models.models import (
     MaintenanceTicket, MachineIntervention, User, WOPart, InterventionPart,
 )
 from app.core.security import get_current_user
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import ensure_same_plant, plant_condition
 from app.services.mes_service import shift_windows, overlap_seconds
 from app.services.work_calendar import working_dates
 
@@ -76,6 +78,7 @@ async def _resolve_entity_machine(db: AsyncSession, entity_id: UUID) -> Optional
         return m
     return Machine(
         id=eq.id, name=eq.name, code=eq.code, equipment_id=eq.id,
+        plant_id=eq.plant_id,
         target_availability_pct=70.0, shifts_config=None, is_active=True,
     )
 
@@ -202,11 +205,12 @@ async def machine_report(
     machine_id: UUID,
     period_days: int = Query(30, ge=1, le=365),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     machine = await _resolve_entity_machine(db, machine_id)
     if not machine:
         raise HTTPException(404, "Equipment / machine not found")
+    ensure_same_plant(machine, ctx, detail="Equipment / machine not found")
 
     now = datetime.now(timezone.utc)
     since = now - timedelta(days=period_days)
@@ -437,7 +441,7 @@ async def machine_report(
 async def compare_machines(
     period_days: int = Query(30, ge=1, le=365),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     now = datetime.now(timezone.utc)
     since = now - timedelta(days=period_days)
@@ -452,6 +456,7 @@ async def compare_machines(
         .where(
             Equipment.active == True,
             func.coalesce(Equipment.asset_type, "production") != "auxiliary",
+            plant_condition(Equipment, ctx),
         )
         .order_by(Equipment.name)
     )).scalars().all()

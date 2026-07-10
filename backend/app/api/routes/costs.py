@@ -19,11 +19,12 @@ from sqlalchemy import delete as sa_delete, distinct, extract, func, select, upd
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
+from app.core.plant_context import ERR_PLANT_NOT_AUTHORIZED, PlantContext, get_plant_context
 from app.db.session import get_db
 from app.models.models import (
-    CostCenter, CostCenterBudget, CostCenterDepartment, Equipment, InterventionPart,
-    MachineIntervention, MaintenanceBudget, PurchaseOrder, SapCostLine, User,
-    WOCost, WOPart, WorkOrder,
+    CostCenter, CostCenterBudget, CostCenterDepartment, CostTransactionType,
+    Equipment, InterventionPart, LaborRecord, MachineIntervention, MaintenanceBudget,
+    Plant, PurchaseOrder, SapCostLine, Supplier, User, WOCost, WOPart, WorkOrder,
 )
 
 router = APIRouter()
@@ -102,6 +103,47 @@ def _resolve_cc_explicit(explicit: Optional[str], dept: Optional[str], mapping: 
     equipment department's mapping (legacy / not-yet-approved lines)."""
     e = (explicit or "").strip()
     return e if e else _resolve_cc(dept, mapping)
+
+
+# ─── Site scoping (QS = Saint-Jérôme, QM = Mirabel) ───────────────────────────
+#
+# The plant runs from two sites. They are told apart by the cost-center name:
+# Mirabel cost centers carry "Mirabel" in their name (e.g. "Maintenance -
+# Mirabel", "Warehouse Mirabel"); every other cost center is Saint-Jérôme. The
+# optional `site` filter narrows every aggregate on the page to one site.
+
+SITES = ("QS", "QM")
+
+
+def _site_of(cost_center: Optional[str]) -> str:
+    return "QM" if cost_center and "mirabel" in cost_center.lower() else "QS"
+
+
+def _site_ok(cost_center: Optional[str], site: Optional[str]) -> bool:
+    """True when the cost center belongs to the requested site (or no site set)."""
+    return not site or _site_of(cost_center) == site
+
+
+async def _resolve_site(db: AsyncSession, ctx: PlantContext, site: Optional[str]) -> Optional[str]:
+    """Constrain the QS/QM site filter to the caller's plant memberships.
+    Members of both Quebec plants (and corporate) keep the free choice,
+    including the combined view (None). Single-site users are locked to their
+    plant's site; requesting the other one is refused. Phase 3 replaces the
+    name-rule site entirely with the plant_id columns."""
+    codes = set((await db.execute(
+        select(Plant.code).where(Plant.id.in_(list(ctx.allowed_plant_ids)))
+    )).scalars().all())
+    allowed = {c for c in SITES if c in codes}
+    if ctx.is_corporate or len(allowed) >= 2:
+        return site
+    if not allowed:
+        # A plant outside the QS/QM cost universe (e.g. future NL before its own
+        # cost wiring) must not see the Quebec ledger at all.
+        raise HTTPException(status_code=403, detail=ERR_PLANT_NOT_AUTHORIZED)
+    only = next(iter(allowed))
+    if site and site != only:
+        raise HTTPException(status_code=403, detail=ERR_PLANT_NOT_AUTHORIZED)
+    return only
 
 
 class BudgetItem(BaseModel):
@@ -262,7 +304,7 @@ def _scope_of(wo_type) -> str:
     return "capex" if wt in CAPEX_WO_TYPES else "opex"
 
 
-async def _cc_actuals(db: AsyncSession, mmap: MonthsMap) -> dict[str, dict]:
+async def _cc_actuals(db: AsyncSession, mmap: MonthsMap, site: Optional[str] = None) -> dict[str, dict]:
     """Per cost center and scope (opex | capex): actuals per months-map slot [12]
     and a by-expense-type breakdown, each type also [12] (so the client can
     slice by period). Costs group by the equipment department, mapped to a cost
@@ -275,7 +317,7 @@ async def _cc_actuals(db: AsyncSession, mmap: MonthsMap) -> dict[str, dict]:
 
     def add(cc: str, scope: str, y: int, m: int, amount: float, ttype: str) -> None:
         i = slots.get((y, m))
-        if i is None or ttype == "labor":
+        if i is None or ttype == "labor" or not _site_ok(cc, site):
             return
         cc_b = out.setdefault(cc, {k: {"monthly": [0.0] * 12, "by_type": {}} for k in KINDS})
         b = cc_b[scope]
@@ -335,122 +377,147 @@ async def _cc_actuals(db: AsyncSession, mmap: MonthsMap) -> dict[str, dict]:
     return out
 
 
-async def _wo_type_actuals(db: AsyncSession, mmap: MonthsMap) -> dict[str, dict[str, list]]:
+async def _wo_type_actuals(db: AsyncSession, mmap: MonthsMap, site: Optional[str] = None) -> dict[str, dict[str, list]]:
     """Plant-wide actuals grouped by work-order type (corrective, preventive, …),
     each carrying a by-expense-type breakdown per months-map slot [12].
     Intervention parts count as corrective — kiosk interventions are reactive by
     nature. Internal labor is excluded (it never enters the comparative). Powers
-    the planned-vs-unplanned analysis and (summed) the previous-year comparison."""
+    the planned-vs-unplanned analysis and (summed) the previous-year comparison.
+    When `site` is set, each line is booked to its cost center (explicit or
+    department-mapped) and dropped if it belongs to the other site."""
+    mapping = await _dept_map(db)
     slots = _slot_index(mmap)
     years = _map_years(mmap)
     out: dict[str, dict[str, list]] = {}
 
-    def add(wo_type: str, expense: str, y: int, m: int, amount: float) -> None:
+    def add(wo_type: str, expense: str, cc: str, y: int, m: int, amount: float) -> None:
         i = slots.get((y, m))
-        if i is None or expense == "labor":
+        if i is None or expense == "labor" or not _site_ok(cc, site):
             return
         out.setdefault(wo_type, {}).setdefault(expense, [0.0] * 12)[i] += amount
 
     rows = (await db.execute(
-        select(WorkOrder.type, WOCost.transaction_type, extract("year", WOCost.date).label("y"),
+        select(WorkOrder.type, WorkOrder.cost_center, Equipment.department,
+               WOCost.transaction_type, extract("year", WOCost.date).label("y"),
                extract("month", WOCost.date).label("m"), func.sum(WOCost.amount))
         .select_from(WOCost)
         .join(WorkOrder, WOCost.work_order_id == WorkOrder.id)
+        .join(Equipment, WorkOrder.equipment_id == Equipment.id, isouter=True)
         .where(extract("year", WOCost.date).in_(years))
-        .group_by(WorkOrder.type, WOCost.transaction_type, extract("year", WOCost.date),
+        .group_by(WorkOrder.type, WorkOrder.cost_center, Equipment.department,
+                  WOCost.transaction_type, extract("year", WOCost.date),
                   extract("month", WOCost.date))
     )).all()
-    for wt, ttype, y, m, total in rows:
+    for wt, cc, dept, ttype, y, m, total in rows:
         wt_s = wt.value if hasattr(wt, "value") else (wt or "corrective")
         tt = ttype.value if hasattr(ttype, "value") else (ttype or "other")
-        add(wt_s, tt, int(y), int(m), float(total or 0))
+        add(wt_s, tt, _resolve_cc_explicit(cc, dept, mapping), int(y), int(m), float(total or 0))
 
     rows = (await db.execute(
-        select(WorkOrder.type, extract("year", WOPart.created_at).label("y"),
+        select(WorkOrder.type, WorkOrder.cost_center, Equipment.department,
+               extract("year", WOPart.created_at).label("y"),
                extract("month", WOPart.created_at).label("m"), func.sum(WOPart.total_cost))
         .select_from(WOPart)
         .join(WorkOrder, WOPart.work_order_id == WorkOrder.id)
+        .join(Equipment, WorkOrder.equipment_id == Equipment.id, isouter=True)
         .where(extract("year", WOPart.created_at).in_(years), WOPart.total_cost.isnot(None))
-        .group_by(WorkOrder.type, extract("year", WOPart.created_at),
-                  extract("month", WOPart.created_at))
+        .group_by(WorkOrder.type, WorkOrder.cost_center, Equipment.department,
+                  extract("year", WOPart.created_at), extract("month", WOPart.created_at))
     )).all()
-    for wt, y, m, total in rows:
+    for wt, cc, dept, y, m, total in rows:
         wt_s = wt.value if hasattr(wt, "value") else (wt or "corrective")
-        add(wt_s, "parts", int(y), int(m), float(total or 0))
+        add(wt_s, "parts", _resolve_cc_explicit(cc, dept, mapping), int(y), int(m), float(total or 0))
 
     rows = (await db.execute(
-        select(extract("year", InterventionPart.added_at).label("y"),
+        select(MachineIntervention.cost_center, Equipment.department,
+               extract("year", InterventionPart.added_at).label("y"),
                extract("month", InterventionPart.added_at).label("m"),
                func.sum(InterventionPart.total_cost))
+        .select_from(InterventionPart)
+        .join(MachineIntervention, InterventionPart.intervention_id == MachineIntervention.id)
+        .join(Equipment, MachineIntervention.equipment_id == Equipment.id, isouter=True)
         .where(extract("year", InterventionPart.added_at).in_(years),
                InterventionPart.approval_status == "approved",
                InterventionPart.total_cost.isnot(None))
-        .group_by(extract("year", InterventionPart.added_at),
+        .group_by(MachineIntervention.cost_center, Equipment.department,
+                  extract("year", InterventionPart.added_at),
                   extract("month", InterventionPart.added_at))
     )).all()
-    for y, m, total in rows:
-        add("corrective", "parts", int(y), int(m), float(total or 0))
+    for cc, dept, y, m, total in rows:
+        add("corrective", "parts", _resolve_cc_explicit(cc, dept, mapping), int(y), int(m), float(total or 0))
 
     return out
 
 
-async def _daily_actuals(db: AsyncSession, year: int, month: int) -> dict[str, dict]:
+async def _daily_actuals(db: AsyncSession, year: int, month: int, site: Optional[str] = None) -> dict[str, dict]:
     """Plant-wide actuals per day of (year, month), split by scope (opex | capex),
     each with an expense-type breakdown (also daily). Same rules as the P&L:
     internal labor excluded, scope from the WO type, intervention parts are
-    corrective → OPEX. Powers the month-landing chart."""
+    corrective → OPEX. Powers the month-landing chart. When `site` is set, lines
+    are booked to their cost center and the other site is dropped."""
+    mapping = await _dept_map(db)
     ndays = monthrange(year, month)[1]
     out: dict[str, dict] = {k: {"daily": [0.0] * ndays, "by_type": {}} for k in KINDS}
 
-    def add(wo_type, expense: str, day: int, amount: float) -> None:
-        if expense == "labor" or not (1 <= day <= ndays):
+    def add(wo_type, expense: str, cc: str, day: int, amount: float) -> None:
+        if expense == "labor" or not (1 <= day <= ndays) or not _site_ok(cc, site):
             return
         b = out[_scope_of(wo_type)]
         b["daily"][day - 1] += amount
         b["by_type"].setdefault(expense, [0.0] * ndays)[day - 1] += amount
 
     rows = (await db.execute(
-        select(WorkOrder.type, WOCost.transaction_type,
+        select(WorkOrder.type, WorkOrder.cost_center, Equipment.department,
+               WOCost.transaction_type,
                extract("day", WOCost.date).label("d"), func.sum(WOCost.amount))
         .select_from(WOCost)
         .join(WorkOrder, WOCost.work_order_id == WorkOrder.id)
+        .join(Equipment, WorkOrder.equipment_id == Equipment.id, isouter=True)
         .where(extract("year", WOCost.date) == year,
                extract("month", WOCost.date) == month)
-        .group_by(WorkOrder.type, WOCost.transaction_type, extract("day", WOCost.date))
+        .group_by(WorkOrder.type, WorkOrder.cost_center, Equipment.department,
+                  WOCost.transaction_type, extract("day", WOCost.date))
     )).all()
-    for wt, ttype, d, total in rows:
+    for wt, cc, dept, ttype, d, total in rows:
         tt = ttype.value if hasattr(ttype, "value") else (ttype or "other")
-        add(wt, tt, int(d), float(total or 0))
+        add(wt, tt, _resolve_cc_explicit(cc, dept, mapping), int(d), float(total or 0))
 
     rows = (await db.execute(
-        select(WorkOrder.type, extract("day", WOPart.created_at).label("d"),
-               func.sum(WOPart.total_cost))
+        select(WorkOrder.type, WorkOrder.cost_center, Equipment.department,
+               extract("day", WOPart.created_at).label("d"), func.sum(WOPart.total_cost))
         .select_from(WOPart)
         .join(WorkOrder, WOPart.work_order_id == WorkOrder.id)
+        .join(Equipment, WorkOrder.equipment_id == Equipment.id, isouter=True)
         .where(extract("year", WOPart.created_at) == year,
                extract("month", WOPart.created_at) == month,
                WOPart.total_cost.isnot(None))
-        .group_by(WorkOrder.type, extract("day", WOPart.created_at))
+        .group_by(WorkOrder.type, WorkOrder.cost_center, Equipment.department,
+                  extract("day", WOPart.created_at))
     )).all()
-    for wt, d, total in rows:
-        add(wt, "parts", int(d), float(total or 0))
+    for wt, cc, dept, d, total in rows:
+        add(wt, "parts", _resolve_cc_explicit(cc, dept, mapping), int(d), float(total or 0))
 
     rows = (await db.execute(
-        select(extract("day", InterventionPart.added_at).label("d"),
+        select(MachineIntervention.cost_center, Equipment.department,
+               extract("day", InterventionPart.added_at).label("d"),
                func.sum(InterventionPart.total_cost))
+        .select_from(InterventionPart)
+        .join(MachineIntervention, InterventionPart.intervention_id == MachineIntervention.id)
+        .join(Equipment, MachineIntervention.equipment_id == Equipment.id, isouter=True)
         .where(extract("year", InterventionPart.added_at) == year,
                extract("month", InterventionPart.added_at) == month,
                InterventionPart.approval_status == "approved",
                InterventionPart.total_cost.isnot(None))
-        .group_by(extract("day", InterventionPart.added_at))
+        .group_by(MachineIntervention.cost_center, Equipment.department,
+                  extract("day", InterventionPart.added_at))
     )).all()
-    for d, total in rows:
-        add("corrective", "parts", int(d), float(total or 0))
+    for cc, dept, d, total in rows:
+        add("corrective", "parts", _resolve_cc_explicit(cc, dept, mapping), int(d), float(total or 0))
 
     return out
 
 
-async def _cc_budgets_map(db: AsyncSession, mmap: MonthsMap) -> dict[str, dict[str, list]]:
+async def _cc_budgets_map(db: AsyncSession, mmap: MonthsMap, site: Optional[str] = None) -> dict[str, dict[str, list]]:
     """Per cost center: budget per months-map slot [12] per kind (opex | capex)."""
     slots = _slot_index(mmap)
     out: dict[str, dict[str, list]] = {}
@@ -458,7 +525,7 @@ async def _cc_budgets_map(db: AsyncSession, mmap: MonthsMap) -> dict[str, dict[s
         select(CostCenterBudget).where(CostCenterBudget.year.in_(_map_years(mmap)))
     )).scalars().all():
         i = slots.get((b.year, b.month))
-        if i is None:
+        if i is None or not _site_ok(b.cost_center, site):
             continue
         kind = b.kind if b.kind in KINDS else "opex"
         arrs = out.setdefault(b.cost_center, {k: [0.0] * 12 for k in KINDS})
@@ -466,10 +533,11 @@ async def _cc_budgets_map(db: AsyncSession, mmap: MonthsMap) -> dict[str, dict[s
     return out
 
 
-async def _sap_data(db: AsyncSession, fiscal_year: int) -> Optional[dict]:
+async def _sap_data(db: AsyncSession, fiscal_year: int, site: Optional[str] = None) -> Optional[dict]:
     """SAP GL lines for a fiscal year, rolled up per cost center: budget/actual
     per fiscal slot [12] plus a by-account breakdown of the actuals and the
-    analyst comments. None when the fiscal year was never imported."""
+    analyst comments. None when the fiscal year was never imported. When `site`
+    is set, only that site's cost centers are kept."""
     lines = (await db.execute(
         select(SapCostLine).where(SapCostLine.fiscal_year == fiscal_year)
     )).scalars().all()
@@ -479,7 +547,7 @@ async def _sap_data(db: AsyncSession, fiscal_year: int) -> Optional[dict]:
     tot_budget = [0.0] * 12
     tot_actual = [0.0] * 12
     for ln in lines:
-        if not (1 <= ln.pos <= 12):
+        if not (1 <= ln.pos <= 12) or not _site_ok(ln.cost_center, site):
             continue
         i = ln.pos - 1
         # Display labels carry the SAP codes ("63008000 R&M - Equipment").
@@ -507,7 +575,7 @@ async def _sap_data(db: AsyncSession, fiscal_year: int) -> Optional[dict]:
 OPEN_PO_STATUSES = ("sent", "confirmed")
 
 
-async def _commitments(db: AsyncSession, mmap: MonthsMap) -> dict:
+async def _commitments(db: AsyncSession, mmap: MonthsMap, site: Optional[str] = None) -> dict:
     """Open-PO commitments per cost center and scope: amount per months-map slot
     [12]. Placed by the PO's expected delivery month (order_date as fallback);
     only sent/confirmed POs with a cost center count. Powers the forecast."""
@@ -524,7 +592,7 @@ async def _commitments(db: AsyncSession, mmap: MonthsMap) -> dict:
     )).all()
     for cc, scope, expected, order_date, amount, status in rows:
         st = status.value if hasattr(status, "value") else status
-        if st not in OPEN_PO_STATUSES or not cc:
+        if st not in OPEN_PO_STATUSES or not cc or not _site_ok(cc, site):
             continue
         when = expected or order_date
         if not when:
@@ -557,9 +625,11 @@ async def list_cost_centers(
 @router.get("/pnl")
 async def cost_pnl(
     year: int = Query(default=None, ge=2000, le=2100),
+    site: Optional[str] = Query(default=None, pattern="^(QS|QM)$"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    site = await _resolve_site(db, ctx, site)
     """Budget vs actual by cost center for a year — the cost-control statement,
     split into OPEX and CAPEX scopes (CAPEX = improvement work orders; internal
     labor excluded from both — it lives in the informative by-machine view).
@@ -577,13 +647,16 @@ async def cost_pnl(
     if year is None:
         year = date.today().year
     await _ensure_seeded(db)
-    sap = await _sap_data(db, year)
+    sap = await _sap_data(db, year, site)
+    # Fiscal mode is a property of the year, not the site: _sap_data only returns
+    # None when the year has no SAP lines at all (the site filter narrows the
+    # rolled-up cost centers, never whether the year is fiscal).
     fiscal = sap is not None
     mmap = _months_map(year, fiscal)
-    actuals = await _cc_actuals(db, mmap)
-    budgets = await _cc_budgets_map(db, mmap)
-    by_wo_type = await _wo_type_actuals(db, mmap)
-    commitments = await _commitments(db, mmap)
+    actuals = await _cc_actuals(db, mmap, site)
+    budgets = await _cc_budgets_map(db, mmap, site)
+    by_wo_type = await _wo_type_actuals(db, mmap, site)
+    commitments = await _commitments(db, mmap, site)
 
     cc_codes = await _cc_code_map(db)
 
@@ -664,7 +737,7 @@ async def cost_pnl(
     # Previous-year totals per scope, for the YoY comparison — previous fiscal
     # year from SAP when imported, platform-tracked otherwise.
     prev_mmap = _months_map(year - 1, fiscal)
-    prev_wo_type = await _wo_type_actuals(db, prev_mmap)
+    prev_wo_type = await _wo_type_actuals(db, prev_mmap, site)
     prev_actual = {k: [0.0] * 12 for k in KINDS}
     for wt, expenses in prev_wo_type.items():
         scope = _scope_of(wt)
@@ -672,7 +745,7 @@ async def cost_pnl(
             for i in range(12):
                 prev_actual[scope][i] += arr[i]
     if fiscal:
-        prev_sap = await _sap_data(db, year - 1)
+        prev_sap = await _sap_data(db, year - 1, site)
         prev_actual["opex"] = prev_sap["tot_actual"] if prev_sap else [0.0] * 12
 
     # Current-month daily actuals (only meaningful when today falls inside the
@@ -680,7 +753,7 @@ async def cost_pnl(
     today = date.today()
     current_month = None
     if (today.year, today.month) in _slot_index(mmap):
-        daily = await _daily_actuals(db, today.year, today.month)
+        daily = await _daily_actuals(db, today.year, today.month, site)
         # Per-type totals cut at today — the monthly by_type arrays can't be used
         # for the landing bridge because they include future-dated lines.
         mtd_by_type = {
@@ -719,11 +792,13 @@ async def cost_pnl(
     }
 
 
-async def _machine_actuals(db: AsyncSession, mmap: MonthsMap) -> dict:
+async def _machine_actuals(db: AsyncSession, mmap: MonthsMap, site: Optional[str] = None) -> dict:
     """Per machine (equipment): actuals per months-map slot [12] and a
     by-expense-type breakdown. Same sources as the P&L, grouped by the work
     order's / intervention's equipment. Costs with no equipment fall under the
-    'none' bucket."""
+    'none' bucket. When `site` is set, each line is booked to its cost center
+    (explicit or department-mapped) and dropped if it belongs to the other site."""
+    mapping = await _dept_map(db)
     slots = _slot_index(mmap)
     years = _map_years(mmap)
     out: dict = {}
@@ -736,32 +811,58 @@ async def _machine_actuals(db: AsyncSession, mmap: MonthsMap) -> dict:
             out[key] = b
         return b
 
-    def add(eid, name, code, y, m, amount, ttype):
+    def add(eid, name, code, cc, y, m, amount, ttype):
         i = slots.get((y, m))
-        if i is None:
+        if i is None or not _site_ok(cc, site):
             return
         key = str(eid) if eid else "none"
         b = bucket(key, name, code)
         b["monthly"][i] += amount
         b["by_type"].setdefault(ttype, [0.0] * 12)[i] += amount
 
+    # WOCost lines EXCEPT labor — internal technician labor is sourced from
+    # labor_records (effective cost) below, which is the source of truth. This
+    # avoids double-counting with any legacy manual WOCost 'labor' line and lets
+    # the by-machine view reflect the effective-labor accounting (breaks/lunch/
+    # off-shift/vacation excluded). Machine downtime / MTTR are unaffected.
     rows = (await db.execute(
         select(WorkOrder.equipment_id, Equipment.name, Equipment.code,
+               WorkOrder.cost_center, Equipment.department,
                extract("year", WOCost.date).label("y"), extract("month", WOCost.date).label("m"),
                WOCost.transaction_type, func.sum(WOCost.amount))
         .select_from(WOCost)
         .join(WorkOrder, WOCost.work_order_id == WorkOrder.id)
         .join(Equipment, WorkOrder.equipment_id == Equipment.id, isouter=True)
-        .where(extract("year", WOCost.date).in_(years))
+        .where(extract("year", WOCost.date).in_(years),
+               WOCost.transaction_type != CostTransactionType.labor)
         .group_by(WorkOrder.equipment_id, Equipment.name, Equipment.code,
+                  WorkOrder.cost_center, Equipment.department,
                   extract("year", WOCost.date), extract("month", WOCost.date), WOCost.transaction_type)
     )).all()
-    for eid, name, code, y, m, ttype, total in rows:
+    for eid, name, code, cc, dept, y, m, ttype, total in rows:
         tt = ttype.value if hasattr(ttype, "value") else (ttype or "other")
-        add(eid, name, code, int(y), int(m), float(total or 0), tt)
+        add(eid, name, code, _resolve_cc_explicit(cc, dept, mapping), int(y), int(m), float(total or 0), tt)
+
+    # Internal effective labor cost, per machine + month, from labor_records.
+    rows = (await db.execute(
+        select(WorkOrder.equipment_id, Equipment.name, Equipment.code,
+               WorkOrder.cost_center, Equipment.department,
+               extract("year", LaborRecord.date).label("y"),
+               extract("month", LaborRecord.date).label("m"), func.sum(LaborRecord.labor_cost))
+        .select_from(LaborRecord)
+        .join(WorkOrder, LaborRecord.work_order_id == WorkOrder.id)
+        .join(Equipment, WorkOrder.equipment_id == Equipment.id, isouter=True)
+        .where(extract("year", LaborRecord.date).in_(years), LaborRecord.labor_cost.isnot(None))
+        .group_by(WorkOrder.equipment_id, Equipment.name, Equipment.code,
+                  WorkOrder.cost_center, Equipment.department,
+                  extract("year", LaborRecord.date), extract("month", LaborRecord.date))
+    )).all()
+    for eid, name, code, cc, dept, y, m, total in rows:
+        add(eid, name, code, _resolve_cc_explicit(cc, dept, mapping), int(y), int(m), float(total or 0), "labor")
 
     rows = (await db.execute(
         select(WorkOrder.equipment_id, Equipment.name, Equipment.code,
+               WorkOrder.cost_center, Equipment.department,
                extract("year", WOPart.created_at).label("y"),
                extract("month", WOPart.created_at).label("m"), func.sum(WOPart.total_cost))
         .select_from(WOPart)
@@ -769,13 +870,15 @@ async def _machine_actuals(db: AsyncSession, mmap: MonthsMap) -> dict:
         .join(Equipment, WorkOrder.equipment_id == Equipment.id, isouter=True)
         .where(extract("year", WOPart.created_at).in_(years), WOPart.total_cost.isnot(None))
         .group_by(WorkOrder.equipment_id, Equipment.name, Equipment.code,
+                  WorkOrder.cost_center, Equipment.department,
                   extract("year", WOPart.created_at), extract("month", WOPart.created_at))
     )).all()
-    for eid, name, code, y, m, total in rows:
-        add(eid, name, code, int(y), int(m), float(total or 0), "parts")
+    for eid, name, code, cc, dept, y, m, total in rows:
+        add(eid, name, code, _resolve_cc_explicit(cc, dept, mapping), int(y), int(m), float(total or 0), "parts")
 
     rows = (await db.execute(
         select(MachineIntervention.equipment_id, Equipment.name, Equipment.code,
+               MachineIntervention.cost_center, Equipment.department,
                extract("year", InterventionPart.added_at).label("y"),
                extract("month", InterventionPart.added_at).label("m"), func.sum(InterventionPart.total_cost))
         .select_from(InterventionPart)
@@ -784,10 +887,11 @@ async def _machine_actuals(db: AsyncSession, mmap: MonthsMap) -> dict:
         .where(extract("year", InterventionPart.added_at).in_(years),
                InterventionPart.approval_status == "approved", InterventionPart.total_cost.isnot(None))
         .group_by(MachineIntervention.equipment_id, Equipment.name, Equipment.code,
+                  MachineIntervention.cost_center, Equipment.department,
                   extract("year", InterventionPart.added_at), extract("month", InterventionPart.added_at))
     )).all()
-    for eid, name, code, y, m, total in rows:
-        add(eid, name, code, int(y), int(m), float(total or 0), "parts")
+    for eid, name, code, cc, dept, y, m, total in rows:
+        add(eid, name, code, _resolve_cc_explicit(cc, dept, mapping), int(y), int(m), float(total or 0), "parts")
 
     return out
 
@@ -796,15 +900,17 @@ async def _machine_actuals(db: AsyncSession, mmap: MonthsMap) -> dict:
 async def cost_by_machine(
     year: int = Query(default=None, ge=2000, le=2100),
     fiscal: bool = Query(default=False),
+    site: Optional[str] = Query(default=None, pattern="^(QS|QM)$"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    site = await _resolve_site(db, ctx, site)
     """Actual cost per machine for a year — monthly arrays + by-type breakdown.
     With `fiscal`, slots follow the SAP fiscal year (Dec of year-1 … Nov).
     The client slices the month range and sorts. Highest spenders first."""
     if year is None:
         year = date.today().year
-    data = await _machine_actuals(db, _months_map(year, fiscal))
+    data = await _machine_actuals(db, _months_map(year, fiscal), site)
     machines = [{
         "equipment_id": b["equipment_id"],
         "name": b["name"] or "—",
@@ -827,12 +933,14 @@ async def cost_transactions(
     cost_center: Optional[str] = Query(default=None),
     equipment_id: Optional[UUID] = Query(default=None),
     scope: Optional[str] = Query(default=None, pattern="^(opex|capex)$"),
+    site: Optional[str] = Query(default=None, pattern="^(QS|QM)$"),
     fiscal: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    site = await _resolve_site(db, ctx, site)
     """Individual cost lines behind the aggregates — the audit trail. Same three
-    sources as the P&L, filterable by month range, cost center or machine.
+    sources as the P&L, filterable by month range, cost center, machine or site.
     `scope` mirrors the Budget-vs-Actual view: opex/capex by WO type, internal
     labor dropped; no scope = everything, labor included (by-machine view).
     With `fiscal`, month_from/month_to are fiscal slots (1 = Dec of year-1).
@@ -852,6 +960,8 @@ async def cost_transactions(
         cc = _resolve_cc_explicit(explicit, dept, mapping)
         if cost_center and cc != cost_center:
             return None
+        if not _site_ok(cc, site):
+            return None
         if equipment_id and (eq_id is None or eq_id != equipment_id):
             return None
         return cc
@@ -867,6 +977,10 @@ async def cost_transactions(
     )).all()
     for d, ttype, desc, amount, wo_id, wo_num, wo_title, wo_type, wo_cc, eq_id, eq_name, eq_code, dept in rows:
         tt = ttype.value if hasattr(ttype, "value") else (ttype or "other")
+        # Labor is sourced from labor_records (effective cost) below — skip any
+        # legacy manual WOCost 'labor' line so the ledger doesn't double-count.
+        if tt == "labor":
+            continue
         cc = keep(d, wo_cc, dept, eq_id, wo_type, tt)
         if cc is None:
             continue
@@ -875,6 +989,32 @@ async def cost_transactions(
             "expense_type": tt,
             "wo_type": wo_type.value if hasattr(wo_type, "value") else wo_type,
             "description": desc, "amount": round(float(amount or 0), 2),
+            "wo_id": str(wo_id), "wo_number": wo_num, "wo_title": wo_title,
+            "equipment_name": eq_name, "equipment_code": eq_code, "cost_center": cc,
+        })
+
+    # Internal effective labor cost from labor_records (breaks/lunch/off-shift/
+    # vacation already excluded). Dropped from the opex/capex scoped views by
+    # keep() exactly like before; shown in the unscoped by-machine ledger.
+    rows = (await db.execute(
+        select(LaborRecord.date, LaborRecord.labor_cost, LaborRecord.hours_worked,
+               LaborRecord.effective_hours, LaborRecord.technician_id,
+               WorkOrder.id, WorkOrder.wo_number, WorkOrder.title, WorkOrder.type, WorkOrder.cost_center,
+               Equipment.id, Equipment.name, Equipment.code, Equipment.department)
+        .select_from(LaborRecord)
+        .join(WorkOrder, LaborRecord.work_order_id == WorkOrder.id)
+        .join(Equipment, WorkOrder.equipment_id == Equipment.id, isouter=True)
+        .where(extract("year", LaborRecord.date).in_(years), LaborRecord.labor_cost.isnot(None))
+    )).all()
+    for d, amount, raw_h, eff_h, tech_id, wo_id, wo_num, wo_title, wo_type, wo_cc, eq_id, eq_name, eq_code, dept in rows:
+        cc = keep(d, wo_cc, dept, eq_id, wo_type, "labor")
+        if cc is None:
+            continue
+        hrs = eff_h if eff_h is not None else raw_h
+        lines.append({
+            "date": d.isoformat(), "source": "labor_record", "expense_type": "labor",
+            "wo_type": wo_type.value if hasattr(wo_type, "value") else wo_type,
+            "description": f"{round(float(hrs or 0), 2)} h", "amount": round(float(amount or 0), 2),
             "wo_id": str(wo_id), "wo_number": wo_num, "wo_title": wo_title,
             "equipment_name": eq_name, "equipment_code": eq_code, "cost_center": cc,
         })
@@ -936,6 +1076,133 @@ async def cost_transactions(
         "year": year, "currency": "CAD", "count": count, "total_amount": total_amount,
         "truncated": count > MAX_TRANSACTION_LINES,
         "lines": lines[:MAX_TRANSACTION_LINES],
+    }
+
+
+# ─── Spend by supplier (procurement view) ────────────────────────────────────
+#
+# The official SAP ledger has no supplier dimension, so this report draws on the
+# two sources that name a supplier: purchase orders (supplier + cost center +
+# scope) and work-order parts (their supplier string). "received" keeps only the
+# actual spend (received POs + parts used); "all" adds open commitments
+# (sent/confirmed POs). Drafts and cancelled POs never count.
+
+MAX_SUPPLIER_ORDERS = 100
+OPEN_PO_SET = {"sent", "confirmed"}
+
+
+@router.get("/by-supplier")
+async def cost_by_supplier(
+    year: int = Query(default=None, ge=2000, le=2100),
+    fiscal: bool = Query(default=False),
+    site: Optional[str] = Query(default=None, pattern="^(QS|QM)$"),
+    status: str = Query(default="all", pattern="^(all|received)$"),
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+):
+    site = await _resolve_site(db, ctx, site)
+    """Spend per supplier for a year — the supplier expense report. Aggregates
+    purchase orders (by supplier, with their cost center and OPEX/CAPEX scope)
+    and work-order parts that name a supplier. `status='received'` counts only
+    actual spend; `'all'` adds open-PO commitments. `site` (QS / QM) filters by
+    the cost center; `fiscal` puts the window on the SAP fiscal year (Dec–Nov)."""
+    if year is None:
+        year = date.today().year
+    mapping = await _dept_map(db)
+    window = set(_months_map(year, fiscal))
+    counted = {"received"} if status == "received" else {"received"} | OPEN_PO_SET
+
+    supp: dict[str, dict] = {}
+
+    def row(name: str) -> dict:
+        s = supp.get(name)
+        if s is None:
+            s = {"supplier": name, "po_total": 0.0, "parts_total": 0.0,
+                 "received": 0.0, "committed": 0.0, "po_count": 0,
+                 "by_scope": {"opex": 0.0, "capex": 0.0}, "orders": []}
+            supp[name] = s
+        return s
+
+    # Purchase orders — booked in their receipt month (expected/order date as
+    # fallback). Site comes from the PO's cost center; a PO with no cost center
+    # can't be placed at a site, so it's dropped when a site filter is on.
+    rows = (await db.execute(
+        select(PurchaseOrder.order_number, PurchaseOrder.status, PurchaseOrder.scope,
+               PurchaseOrder.cost_center, PurchaseOrder.total_amount,
+               PurchaseOrder.order_date, PurchaseOrder.expected_date, PurchaseOrder.received_date,
+               Supplier.name)
+        .select_from(PurchaseOrder)
+        .join(Supplier, PurchaseOrder.supplier_id == Supplier.id, isouter=True)
+    )).all()
+    for onum, st, scope, cc, amount, odate, edate, rdate, sname in rows:
+        st = st.value if hasattr(st, "value") else st
+        if st not in counted:
+            continue
+        when = rdate or edate or odate
+        if not when or (when.year, when.month) not in window:
+            continue
+        if site and (not cc or _site_of(cc) != site):
+            continue
+        amt = float(amount or 0)
+        sc = "capex" if scope == "capex" else "opex"
+        s = row((sname or "").strip() or "—")
+        s["po_total"] += amt
+        s["po_count"] += 1
+        s["by_scope"][sc] += amt
+        if st == "received":
+            s["received"] += amt
+        else:
+            s["committed"] += amt
+        if len(s["orders"]) < MAX_SUPPLIER_ORDERS:
+            s["orders"].append({"order_number": onum, "date": when.isoformat(),
+                                "status": st, "amount": round(amt, 2), "scope": sc,
+                                "cost_center": cc})
+
+    # Work-order parts that name a supplier — actual consumption, so kept in both
+    # modes. Site resolved from the WO's cost center (or its equipment department).
+    rows = (await db.execute(
+        select(WOPart.supplier, WOPart.total_cost, WOPart.created_at,
+               WorkOrder.cost_center, WorkOrder.type, Equipment.department)
+        .select_from(WOPart)
+        .join(WorkOrder, WOPart.work_order_id == WorkOrder.id)
+        .join(Equipment, WorkOrder.equipment_id == Equipment.id, isouter=True)
+        .where(WOPart.total_cost.isnot(None), WOPart.supplier.isnot(None))
+    )).all()
+    for psupplier, total, created, wcc, wtype, dept in rows:
+        if not created or (created.year, created.month) not in window:
+            continue
+        cc = _resolve_cc_explicit(wcc, dept, mapping)
+        if not _site_ok(cc, site):
+            continue
+        amt = float(total or 0)
+        sc = _scope_of(wtype)
+        s = row((psupplier or "").strip() or "—")
+        s["parts_total"] += amt
+        s["by_scope"][sc] += amt
+
+    suppliers = []
+    for s in supp.values():
+        total = s["po_total"] + s["parts_total"]
+        if round(total, 2) == 0:
+            continue
+        s["orders"].sort(key=lambda o: o["date"], reverse=True)
+        suppliers.append({
+            "supplier": s["supplier"],
+            "total": round(total, 2),
+            "po_total": round(s["po_total"], 2),
+            "parts_total": round(s["parts_total"], 2),
+            "received": round(s["received"], 2),
+            "committed": round(s["committed"], 2),
+            "po_count": s["po_count"],
+            "by_scope": {k: round(v, 2) for k, v in s["by_scope"].items()},
+            "orders": s["orders"],
+        })
+    suppliers.sort(key=lambda r: -r["total"])
+    return {
+        "year": year, "currency": "CAD", "site": site, "status": status,
+        "total_amount": round(sum(r["total"] for r in suppliers), 2),
+        "supplier_count": len(suppliers),
+        "suppliers": suppliers,
     }
 
 
@@ -1096,16 +1363,19 @@ def _cc_budget_rows(budgets: dict[str, dict[str, list]], kind: str,
 async def get_cc_budgets(
     year: int = Query(..., ge=2000, le=2100),
     kind: str = Query(default="opex", pattern="^(opex|capex)$"),
+    site: Optional[str] = Query(default=None, pattern="^(QS|QM)$"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    site = await _resolve_site(db, ctx, site)
     """Editable monthly budget grid per cost center. When the year was imported
     from SAP, the OPEX budget is the SAP ledger — return it read-only (fiscal
     Dec–Nov, with codes) instead of the manual grid, so it matches the Budget-vs-
-    Actual tab. CAPEX and non-SAP years stay editable manual budgets."""
+    Actual tab. CAPEX and non-SAP years stay editable manual budgets. `site`
+    narrows the grid to one plant (QS / QM)."""
     codes = await _cc_code_map(db)
     if kind == "opex":
-        sap = await _sap_data(db, year)
+        sap = await _sap_data(db, year, site)
         if sap:
             mmap = _months_map(year, True)
             rows = [{
@@ -1115,7 +1385,7 @@ async def get_cc_budgets(
             } for cc, d in sorted(sap["cost_centers"].items(), key=lambda kv: kv[0].lower())]
             return {"rows": rows, "read_only": True, "source": "sap",
                     "month_map": [{"year": y, "month": m} for y, m in mmap]}
-    rows = _cc_budget_rows(await _cc_budgets_map(db, _months_map(year, False)), kind, codes)
+    rows = _cc_budget_rows(await _cc_budgets_map(db, _months_map(year, False), site), kind, codes)
     return {"rows": rows, "read_only": False, "source": "internal", "month_map": None}
 
 

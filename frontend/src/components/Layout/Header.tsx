@@ -2,8 +2,9 @@ import { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, Link } from 'react-router-dom';
-import { Menu, Globe, ChevronDown, LogOut, User as UserIcon, Lock, Shield } from 'lucide-react';
+import { Menu, Globe, ChevronDown, LogOut, User as UserIcon, Lock, Shield, Factory } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
+import { usePlantStore } from '../../store/plantStore';
 import { updateMe } from '../../api/auth';
 import type { UserRole } from '../../types';
 import i18n from '../../i18n';
@@ -47,16 +48,25 @@ const Header = ({ onMenuToggle }: HeaderProps) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { user, logout } = useAuthStore();
+  const memberships = usePlantStore((s) => s.memberships);
+  const activePlantId = usePlantStore((s) => s.activePlantId);
+  const setActivePlant = usePlantStore((s) => s.setActivePlant);
 
   const [langOpen, setLangOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
+  const [plantOpen, setPlantOpen] = useState(false);
   const [langPos, setLangPos] = useState<MenuPos>({ top: 0, right: 0 });
   const [userPos, setUserPos] = useState<MenuPos>({ top: 0, right: 0 });
+  const [plantPos, setPlantPos] = useState<MenuPos>({ top: 0, right: 0 });
 
   const langBtnRef = useRef<HTMLButtonElement>(null);
   const userBtnRef = useRef<HTMLButtonElement>(null);
+  const plantBtnRef = useRef<HTMLButtonElement>(null);
   const langMenuRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const plantMenuRef = useRef<HTMLDivElement>(null);
+
+  const activePlant = memberships.find((m) => m.plant_id === activePlantId) ?? memberships[0];
 
   const currentLang = LANGUAGES.find((l) => i18n.language?.startsWith(l.code)) ?? LANGUAGES[0];
   const role = (user?.role ?? 'operator') as UserRole;
@@ -72,12 +82,24 @@ const Header = ({ onMenuToggle }: HeaderProps) => {
   };
 
   const toggleLang = () => {
-    if (!langOpen) { setLangPos(posFrom(langBtnRef.current)); setUserOpen(false); }
+    if (!langOpen) { setLangPos(posFrom(langBtnRef.current)); setUserOpen(false); setPlantOpen(false); }
     setLangOpen((o) => !o);
   };
   const toggleUser = () => {
-    if (!userOpen) { setUserPos(posFrom(userBtnRef.current)); setLangOpen(false); }
+    if (!userOpen) { setUserPos(posFrom(userBtnRef.current)); setLangOpen(false); setPlantOpen(false); }
     setUserOpen((o) => !o);
+  };
+  const togglePlant = () => {
+    if (!plantOpen) { setPlantPos(posFrom(plantBtnRef.current)); setLangOpen(false); setUserOpen(false); }
+    setPlantOpen((o) => !o);
+  };
+
+  const handlePlantSwitch = (plantId: string) => {
+    setPlantOpen(false);
+    if (plantId === activePlant?.plant_id) return;
+    setActivePlant(plantId);
+    // Full reload: no page state, filters or cached lists survive across plants.
+    window.location.reload();
   };
 
   // Close on outside click (account for the portaled menu living outside the header).
@@ -90,6 +112,9 @@ const Header = ({ onMenuToggle }: HeaderProps) => {
       if (userBtnRef.current && !userBtnRef.current.contains(tgt) && (!userMenuRef.current || !userMenuRef.current.contains(tgt))) {
         setUserOpen(false);
       }
+      if (plantBtnRef.current && !plantBtnRef.current.contains(tgt) && (!plantMenuRef.current || !plantMenuRef.current.contains(tgt))) {
+        setPlantOpen(false);
+      }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -97,10 +122,11 @@ const Header = ({ onMenuToggle }: HeaderProps) => {
 
   // Keep menus anchored to their button if the viewport changes while open.
   useEffect(() => {
-    if (!langOpen && !userOpen) return;
+    if (!langOpen && !userOpen && !plantOpen) return;
     const update = () => {
       if (langOpen) setLangPos(posFrom(langBtnRef.current));
       if (userOpen) setUserPos(posFrom(userBtnRef.current));
+      if (plantOpen) setPlantPos(posFrom(plantBtnRef.current));
     };
     window.addEventListener('resize', update);
     window.addEventListener('scroll', update, true);
@@ -108,7 +134,7 @@ const Header = ({ onMenuToggle }: HeaderProps) => {
       window.removeEventListener('resize', update);
       window.removeEventListener('scroll', update, true);
     };
-  }, [langOpen, userOpen]);
+  }, [langOpen, userOpen, plantOpen]);
 
   const handleLogout = () => {
     setUserOpen(false);
@@ -131,6 +157,61 @@ const Header = ({ onMenuToggle }: HeaderProps) => {
 
       {/* Right */}
       <div className="flex items-center gap-2">
+        {/* Active plant — selector only when the user may switch (>1 membership) */}
+        {activePlant && (memberships.length > 1 ? (
+          <button
+            ref={plantBtnRef}
+            onClick={togglePlant}
+            title={t('plants.switchPlant')}
+            className="flex items-center gap-1.5 text-gray-400 hover:text-gray-200 text-sm
+                       bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.08]
+                       px-2.5 py-1.5 rounded-lg transition-all duration-150"
+          >
+            <Factory size={14} className="text-blue-400" />
+            <span className="text-xs font-medium max-w-[150px] truncate hidden sm:block">{activePlant.name}</span>
+            <span className="font-mono font-semibold text-xs sm:hidden">{activePlant.code}</span>
+            <ChevronDown size={12} className={`transition-transform ${plantOpen ? 'rotate-180' : ''}`} />
+          </button>
+        ) : (
+          <div
+            title={t('plants.activePlant')}
+            className="flex items-center gap-1.5 text-gray-400 text-sm
+                       bg-white/[0.04] border border-white/[0.08] px-2.5 py-1.5 rounded-lg"
+          >
+            <Factory size={14} className="text-blue-400" />
+            <span className="text-xs font-medium max-w-[150px] truncate hidden sm:block">{activePlant.name}</span>
+            <span className="font-mono font-semibold text-xs sm:hidden">{activePlant.code}</span>
+          </div>
+        ))}
+
+        {plantOpen && createPortal(
+          <div
+            ref={plantMenuRef}
+            style={{ position: 'fixed', top: plantPos.top, right: plantPos.right, zIndex: 200 }}
+            className="w-64 bg-[#111827] border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-slide-in"
+          >
+            <div className="px-3 py-2 border-b border-white/[0.06] text-[10px] uppercase tracking-wider text-gray-500">
+              {t('plants.switchPlant')}
+            </div>
+            {memberships.map((m) => (
+              <button
+                key={m.plant_id}
+                onClick={() => handlePlantSwitch(m.plant_id)}
+                className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-sm transition-colors
+                  ${m.plant_id === activePlant?.plant_id
+                    ? 'text-blue-400 bg-blue-500/10'
+                    : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
+                  }`}
+              >
+                <Factory size={14} className="shrink-0" />
+                <span className="flex-1 text-left truncate">{m.name}</span>
+                <span className="font-mono text-[10px] text-gray-500">{m.code}</span>
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
+
         {/* Language switcher */}
         <button
           ref={langBtnRef}

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { User, UserRole } from '../types';
+import { usePlantStore } from './plantStore';
 
 export const ROLE_PERMISSIONS: Record<string, Set<string>> = {
   operator: new Set(['dashboard:view', 'machines:view', 'my_work:view']),
@@ -96,7 +97,11 @@ export const useAuthStore = create<AuthState>()(
       setAuth: (user, token) => set({ user, token, isAuthenticated: true, permissions: null }),
       setPermissions: (permissions) => set({ permissions }),
       patchUser: (patch) => set((state) => ({ user: state.user ? { ...state.user, ...patch } : null })),
-      logout: () => set({ user: null, token: null, isAuthenticated: false, permissions: null }),
+      logout: () => {
+        // Drop the plant context too — the next user must not inherit it.
+        usePlantStore.getState().clear();
+        set({ user: null, token: null, isAuthenticated: false, permissions: null });
+      },
       can: (resource: string, action = 'view') => {
         const { user, permissions } = get();
         if (!user) return false;

@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.core.security import get_current_user
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import ensure_same_plant, plant_condition, require_technician_in_plant
 from app.models.models import (
     User, Equipment, Machine, Technician, PmTemplate,
     MaintenancePlan, PlanOccurrence, PlanRecommendedPart, WorkOrder,
@@ -138,9 +140,9 @@ async def list_maintenance_plans(
     skip: int = 0,
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    conditions = []
+    conditions = [plant_condition(MaintenancePlan, ctx)]
     if equipment_id:
         conditions.append(MaintenancePlan.equipment_id == equipment_id)
     if plant_id:
@@ -205,16 +207,17 @@ async def create_maintenance_plan(
     data: MaintenancePlanCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    equipment = await db.get(Equipment, data.equipment_id)
-    if not equipment:
-        raise HTTPException(status_code=404, detail="Equipment not found")
+    # The plan inherits its equipment's plant; cross-plant equipment/template/
+    # technician references are refused.
+    equipment = ensure_same_plant(await db.get(Equipment, data.equipment_id), ctx, detail="Equipment not found")
 
-    if data.pm_template_id and not await db.get(PmTemplate, data.pm_template_id):
-        raise HTTPException(status_code=404, detail="PM template not found")
+    if data.pm_template_id:
+        ensure_same_plant(await db.get(PmTemplate, data.pm_template_id), ctx, detail="PM template not found")
 
-    if data.assigned_technician_id and not await db.get(Technician, data.assigned_technician_id):
-        raise HTTPException(status_code=404, detail="Technician not found")
+    if data.assigned_technician_id:
+        await require_technician_in_plant(db, data.assigned_technician_id, equipment.plant_id)
 
     plan = MaintenancePlan(
         equipment_id=data.equipment_id,
@@ -280,7 +283,7 @@ async def get_pm_calendar(
     plant_id: Optional[UUID] = None,
     equipment_id: Optional[UUID] = None,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     query = (
         select(PlanOccurrence, MaintenancePlan)
@@ -288,6 +291,7 @@ async def get_pm_calendar(
         .where(
             PlanOccurrence.scheduled_date >= start,
             PlanOccurrence.scheduled_date <= end,
+            plant_condition(MaintenancePlan, ctx),
         )
     )
     if plant_id:
@@ -363,7 +367,7 @@ async def get_pm_dashboard(
     plant_id: Optional[UUID] = None,
     machine_ids: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     today = date.today()
     week_end = today + timedelta(days=7)
@@ -375,7 +379,7 @@ async def get_pm_dashboard(
     mids = _parse_uuid_csv(machine_ids)
     eq_ids = await _resolve_equipment_ids(db, mids) if mids else None
 
-    plan_query = select(MaintenancePlan)
+    plan_query = select(MaintenancePlan).where(plant_condition(MaintenancePlan, ctx))
     if plant_id:
         plan_query = plan_query.where(MaintenancePlan.plant_id == plant_id)
     if eq_ids is not None:
@@ -389,7 +393,8 @@ async def get_pm_dashboard(
         select(func.count()).select_from(plan_query.where(MaintenancePlan.is_active == True).subquery())
     )).scalar() or 0
 
-    occ_query = select(PlanOccurrence).join(MaintenancePlan, PlanOccurrence.plan_id == MaintenancePlan.id)
+    occ_query = select(PlanOccurrence).join(MaintenancePlan, PlanOccurrence.plan_id == MaintenancePlan.id) \
+        .where(plant_condition(MaintenancePlan, ctx))
     if plant_id:
         occ_query = occ_query.where(MaintenancePlan.plant_id == plant_id)
     if eq_ids is not None:

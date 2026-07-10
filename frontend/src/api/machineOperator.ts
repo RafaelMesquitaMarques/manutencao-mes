@@ -13,6 +13,21 @@ export const callMaintenance = (id: string, operator_note?: string) =>
 export const startIntervention = (id: string, mechanic_note?: string) =>
   api.post(`/api/machine-operator/${id}/start`, { mechanic_note }).then((r) => r.data);
 
+export interface KioskTechnician {
+  id: string;
+  name: string;
+  specialty: string | null;
+}
+
+export const fetchKioskTechnicians = (id: string): Promise<{ items: KioskTechnician[] }> =>
+  api.get(`/api/machine-operator/${id}/technicians`).then((r) => r.data);
+
+export const checkInTechnician = (id: string, technician_id: string) =>
+  api.post(`/api/machine-operator/${id}/checkin`, { technician_id }).then((r) => r.data);
+
+export const checkOutTechnician = (id: string, technician_id: string) =>
+  api.post(`/api/machine-operator/${id}/checkout`, { technician_id }).then((r) => r.data);
+
 export const completeIntervention = (
   id: string,
   payload: { mechanic_note?: string; intervention_type_id?: string }

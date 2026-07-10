@@ -50,15 +50,16 @@ class EscalationService:
 
     async def check_overdue_alerts(self) -> None:
         now = datetime.now(timezone.utc)
-        esc = await get_escalation_settings(self.db)
-        sla_map = self._sla_map(esc)
-        max_level = esc.max_escalation_level or 3
-        reminder_min = esc.reminder_minutes or 0
-        paused_machines = (
-            await self._machines_in_planned_stop()
-            if (esc.pause_during_planned_stop is None or esc.pause_during_planned_stop)
-            else set()
-        )
+        # SLA thresholds/toggles resolve per PLANT (own row, else the shared
+        # legacy row) — cached per plant within one sweep of the loop.
+        esc_cache: dict = {}
+
+        async def _esc_for(plant_id):
+            if plant_id not in esc_cache:
+                esc_cache[plant_id] = await get_escalation_settings(self.db, plant_id)
+            return esc_cache[plant_id]
+
+        paused_machines = await self._machines_in_planned_stop()
 
         result = await self.db.execute(
             select(MaintenanceAlert).where(MaintenanceAlert.status.in_(OPEN_STATUSES))
@@ -71,13 +72,18 @@ class EscalationService:
             return (now - dt).total_seconds() / 60.0
 
         for alert in alerts:
+            esc = await _esc_for(alert.plant_id)
+            sla_map = self._sla_map(esc)
+            max_level = esc.max_escalation_level or 3
+            reminder_min = esc.reminder_minutes or 0
+            pause_planned = esc.pause_during_planned_stop is None or esc.pause_during_planned_stop
             sla = sla_map.get(alert.priority, 120)
             if _minutes_since(alert.created_at) < sla:
                 continue
 
             alert.is_overdue = True
 
-            if alert.machine_id in paused_machines:
+            if pause_planned and alert.machine_id in paused_machines:
                 continue                      # planned downtime — don't wake anyone
 
             # Escalate one level after each SLA interval, up to the max level

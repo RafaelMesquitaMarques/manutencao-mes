@@ -53,8 +53,12 @@ factory map, robot-cell telemetry, and an AI intelligence assistant. IoT sensor 
 sensors feeds in via MQTT. The roadmap extends this into a full MES with OEE, predictive maintenance,
 and SAP integration.
 
-**Company context:** Foliot Furniture. Plant timezone: America/Toronto. **Multi-plant note:** SJ + Mirabel
-share one base (shared team, 2 Plants); Las Vegas is intended as full isolation → separate instance.
+**Company context:** Foliot Furniture. Three plants, official codes **QS** (Saint-Jérôme,
+America/Toronto, CAD), **QM** (Mirabel, America/Toronto, CAD) and **NL** (Las Vegas,
+America/Los_Angeles, USD). QS+QM form the shared Quebec group (`plants.group_code='QC'` — one
+maintenance team, one inventory/supplier pool, one shared calendar/escalation config). NL is fully
+segregated. **This is now a single multi-plant app with real backend segregation — NOT separate
+instances (the old note here is superseded).** See **Section 15** for the full model.
 
 ---
 
@@ -963,3 +967,70 @@ The maintenance lifecycle now has two distinct colors and tracks the response (w
     (produced pieces) from the future plant production feed — until then a reject is stored but quality stays
     0 (no denominator), then lights up automatically. Verified actual=100/reject=4/target=120/avail=80 →
     perf 83.3, quality 96, OEE 64; test data cleaned up. (No `reject_categories` seeded yet → "uncategorized".)
+
+---
+
+## 15. Multi-Plant Architecture (QS / QM / NL) — 2026-07-10
+
+The platform runs **three plants from one app + one database**, with segregation
+enforced in the backend data-access path (not by login redirection or frontend
+filtering). Full design + phase-by-phase log: `docs/multi-plant-architecture-assessment.md`.
+
+**Plants & grouping**
+- `plants.code` ∈ {`QS` Saint-Jérôme, `QM` Mirabel, `NL` Las Vegas}; `plants.timezone`,
+  `plants.currency` (QC=CAD, NL=USD), `plants.group_code` (`QC` for QS+QM; NULL = isolated).
+- **Group-scoped** resources pool across a group (QS+QM share them): `stock_items`, `suppliers`.
+  Everything else is **plant-scoped** (owned by exactly one plant).
+
+**Access model** — `user_plants(user_id, plant_id, role, is_default)` is the authoritative
+source of plant access AND the role held there. `User.role` is only: `admin` = corporate
+(all active plants), and the default role template at invite time. No membership → no access.
+Login + `GET /api/auth/me/plants` return the memberships; the frontend `plantStore` drives the
+header plant selector (shown only when >1 membership; switching reloads so no cached page/list
+survives).
+
+**Enforcement (the choke points)**
+- `core/plant_context.py` — `PlantContext` dependency. Frontend sends `X-Plant-Id`; the backend
+  validates it against memberships (403 `errors.plantNotAuthorized` on a foreign plant; missing
+  header → the user's default plant, never "all"). Exposes `plant_id`, `role` (at that plant),
+  `allowed_plant_ids`, `group_plant_ids`, `allowed_group_plant_ids`, `is_corporate`.
+- `core/plant_scope.py` — the reusable helpers every read path uses (NO hand-written per-route
+  plant filters): `plant_scoped(stmt, Model, ctx)`, `plant_condition(Model, ctx)`,
+  `ensure_same_plant(obj, ctx)` (**404** on a wrong-plant record — never 403, no existence leak),
+  `path_plant_guard(Model, param)` (router-level guard covering every member route by id — used on
+  `/api/wo`, `/api/plans`, `/api/settings/pm-templates`), and `require_technician_in_plant` (blocks
+  cross-plant assignment/scheduling). Group-scoped models auto-widen to the group.
+- New records are stamped at creation from their parent (equipment/machine → plant), in the routes
+  AND the services (kiosk, cron, ticket/alert/WO generators) — so nothing depends on the idempotent
+  boot-time backfills (which stay as a safety net).
+- **RLS (defense-in-depth):** `plant_isolation` policies (ENABLE + FORCE) on ~38 tables, FAIL-OPEN
+  when the `app.plant_ids` GUC is unset — so normal app sessions, crons, workers and migrations are
+  unaffected (PlantContext is the primary control). The GUC is set ONLY inside Ask Ninja's raw-SQL
+  path, which runs under the non-superuser read-only role `kaizo_ninja` (the app's own `mesadmin`
+  login is a superuser and bypasses RLS). Group tables read a second GUC `app.plant_ids_grouped`.
+
+**Per-plant configuration** (own row wins, else the shared legacy NULL row that QS+QM edit together):
+escalation settings + contacts + shift reports, working calendar + holidays, document numbering
+series (ungrouped plants get a `<CODE>-` prefix → `NL-WO-2026-…`), AI insights (cron generates one
+per plant; NULL-plant legacy insights visible to grouped plants only). Costs still separate QS/QM by
+the cost-center **name** rule (`_site_of`), now locked to the caller's memberships via `_resolve_site`;
+the name→`plant_id` repartition refactor is deferred pending business sign-off (WO-derived actuals
+where the name and the equipment plant can legitimately disagree).
+
+**Kiosk** — historically token-less shop-floor endpoints. `machines.kiosk_token` +
+`POST /api/machines/{ref}/kiosk-token`; `core/kiosk_guard.py` router guard requires the token OR a
+bearer user with membership in the machine's plant. **Gated by `KIOSK_ENFORCE_TOKEN` (default
+FALSE)** — QC tablets keep working until re-bookmarked to `/machines/:slug?k=<token>`. Live WS
+(`/api/live/ws`, `/api/factory-map/ws/{plant}`) filters events by the token-user's plants. Media
+(`/api/media`) stays unauthenticated by accepted risk (uuid4 filenames; `<img>` can't send headers).
+
+**Tests** — `backend/tests/test_plant_context.py` (context resolution) +
+`backend/tests/test_plant_segregation.py` (8-persona matrix: scoping, guards, notifications,
+numbering, calendar, RLS fence, kiosk guard) run in-container, rollback-only. HTTP-level negative
+battery: `backend/scripts/plant_security_check.py` (needs the running API + the standing QM-only
+persona `test-mira-only@kaizo-test.com`). Backfill/ambiguity report: `scripts/plant_backfill_report.sql`.
+
+**NL go-live is an OPS task, not code** (checklist in the assessment doc §Phase 6): create NL users +
+memberships, register NL equipment/machines (born NL via the active context), provision kiosk tokens
++ enable enforcement, add Nevada holidays, configure NL escalation contacts then enable SMS, wire NL
+cost centers/SAP when its GL exists.

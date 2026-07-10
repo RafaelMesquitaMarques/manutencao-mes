@@ -12,6 +12,7 @@ import {
 import api from '../../api/axios';
 import { useTranslation } from 'react-i18next';
 import { STATUS_HEX as STATUS_COLORS, STATUS_LABEL as STATUS_LABELS } from '../../utils/statusColors';
+import { initials } from '../../utils/initials';
 import { uploadFile } from '../../api/uploads';
 import {
   fetchFactoryMap, saveMachineLayout, saveFloorPlan, createZone, saveZone, deleteZone,
@@ -22,6 +23,7 @@ import { fetchKPISummary } from '../../api/workOrders';
 import type { KPISummary } from '../../types';
 import Factory3D, { PROP_CATALOG, ORBIT_MARGIN, type M3D, type P3D, type Commit, type PropCommit } from './Factory3D';
 import { useAuthStore } from '../../store/authStore';
+import { usePlantStore } from '../../store/plantStore';
 
 interface Plant { id: string; code: string; name: string; }
 
@@ -119,14 +121,63 @@ const iconBtn: React.CSSProperties = {
   background: 'rgba(13,20,33,0.85)', border: '1px solid #374151', borderRadius: 6, color: '#cbd5e1', cursor: 'pointer',
 };
 
+// One technician pictogram: a little person silhouette with the tech's initials
+// on the head. Rendered on a machine a technician is actively working (purple).
+function TechBadge({ name, size = 30 }: { name: string; size?: number }) {
+  const ini = initials(name) || '?';
+  const purple = STATUS_COLORS.intervention;
+  return (
+    <svg viewBox="0 0 40 44" width={size} height={size * 1.1} aria-label={name}>
+      {/* shoulders / body */}
+      <path d="M3 44 C3 33 12.5 29.5 20 29.5 C27.5 29.5 37 33 37 44 Z"
+            fill={purple} stroke="#0d1421" strokeWidth="1.5" />
+      {/* head */}
+      <circle cx="20" cy="13.5" r="12.5" fill={purple} stroke="#0d1421" strokeWidth="1.5" />
+      {/* initials on the head */}
+      <text x="20" y="14.5" textAnchor="middle" dominantBaseline="middle"
+            fontSize={ini.length > 1 ? 11 : 13} fontWeight="700"
+            fill="#ffffff" fontFamily="system-ui, sans-serif">{ini}</text>
+    </svg>
+  );
+}
+
+// All technicians on the machine, one pictogram each, overlapped as a face-pile
+// in the corner (2 techs → 2 figures, 10 → 10). Each carries its own tooltip.
+function TechBadges({ names }: { names: string[] }) {
+  const size = names.length > 4 ? 22 : 28;
+  const overlap = size * 0.42;
+  return (
+    <div style={{
+      position: 'absolute', top: 3, right: 3, zIndex: 4, display: 'flex',
+      flexDirection: 'row-reverse', pointerEvents: 'none',
+      filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
+    }}>
+      {names.map((nm, i) => (
+        <div key={`${nm}-${i}`} title={nm}
+             style={{ marginRight: i === 0 ? 0 : -overlap, lineHeight: 0 }}>
+          <TechBadge name={nm} size={size} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Custom nodes ────────────────────────────────────────────────────────────
-function MachineNode({ data, selected }: NodeProps) {
+function MachineNode({ data, selected, width, height }: NodeProps) {
   const { t, i18n } = useTranslation();
   const lang = (i18n.language || 'en').slice(0, 2);
   const d = data as MachineNodeData;
   const m = d.machine;
   const color = STATUS_COLORS[m.status] ?? STATUS_COLORS.idle;
   const rot = m.rotation_deg ?? 0;
+  // Only the shape layer rotates. Labels/badges/controls live on a separate
+  // unrotated layer sized to the rotated shape's bounding box, so text always
+  // reads upright (the layer matches the node box exactly at 0°/180°).
+  const w = width ?? m.pos_w ?? 152;
+  const h = height ?? m.pos_h ?? 64;
+  const rad = (rot * Math.PI) / 180;
+  const bw = Math.abs(w * Math.cos(rad)) + Math.abs(h * Math.sin(rad));
+  const bh = Math.abs(w * Math.sin(rad)) + Math.abs(h * Math.cos(rad));
   return (
     <>
       {/* Orbit — drop a cobot/conveyor inside to auto-link it to this machine (Edit only) */}
@@ -139,19 +190,32 @@ function MachineNode({ data, selected }: NodeProps) {
       )}
       <NodeResizer isVisible={!!selected} minWidth={96} minHeight={46} onResizeEnd={(_, p) => d.onResize?.(p)}
         lineStyle={{ borderColor: '#3b82f6' }} handleStyle={{ width: 8, height: 8, background: '#3b82f6', borderRadius: 2 }} />
+      {/* Shape layer — the only part that rotates */}
       <div style={{
-        width: '100%', height: '100%', boxSizing: 'border-box', border: `2px solid ${color}`, borderRadius: 8,
-        background: '#0d1421', boxShadow: selected ? '0 0 0 2px #3b82f6' : 'none', color: '#e5e7eb',
-        overflow: 'hidden', position: 'relative', transform: rot ? `rotate(${rot}deg)` : undefined,
+        position: 'absolute', inset: 0, boxSizing: 'border-box', border: `2px solid ${color}`, borderRadius: 8,
+        background: '#0d1421', boxShadow: selected ? '0 0 0 2px #3b82f6' : 'none',
+        overflow: 'hidden', transform: rot ? `rotate(${rot}deg)` : undefined,
       }}>
         {m.icon_url && <img src={m.icon_url} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />}
         {/* status-coloured tint so the whole tile reads green/amber/red at a glance */}
         <div style={{ position: 'absolute', inset: 0, background: color, opacity: 0.2, pointerEvents: 'none' }} />
+      </div>
 
+      {/* Content layer — never rotates, so labels stay upright */}
+      <div style={{
+        position: 'absolute', left: (w - bw) / 2, top: (h - bh) / 2, width: bw, height: bh,
+        color: '#e5e7eb', borderRadius: 8, overflow: 'hidden',
+      }}>
         {m.open_ticket && (
           <span title={`${t('factoryMap.openTicket')} ${m.open_ticket_number ?? ''}`} style={{ position: 'absolute', top: 4, left: 4, width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f59e0b', color: '#3a2a06', borderRadius: 6, zIndex: 2 }}>
             <Wrench size={12} />
           </span>
+        )}
+
+        {/* Technician pictograms — one per tech actively working (purple). Hidden
+            while selected so they don't sit under the edit controls. */}
+        {!selected && m.status === 'intervention' && m.technicians && m.technicians.length > 0 && (
+          <TechBadges names={m.technicians.map((tc) => tc.name)} />
         )}
 
         {m.icon_url ? (
@@ -422,11 +486,13 @@ export default function FactoryMap() {
     api.get<Plant[] | { items: Plant[] }>('/api/plants/')
       .then(({ data }) => {
         const list = Array.isArray(data) ? data : (data.items ?? []);
-        // Saint-Jérôme (PLT1) is the main plant — show/select it first.
-        const isSJ = (p: Plant) => p.code === 'PLT1' || /j[eé]r/i.test(p.name);
+        // Follow the header's active plant; fall back to Saint-Jérôme (QS) first.
+        const isSJ = (p: Plant) => p.code === 'QS' || /j[eé]r/i.test(p.name);
         const sorted = [...list].sort((a, b) => (isSJ(a) ? 0 : 1) - (isSJ(b) ? 0 : 1) || a.name.localeCompare(b.name));
         setPlants(sorted);
-        if (sorted.length) setPlantId((p) => p || sorted[0].id);
+        const active = usePlantStore.getState().activePlantId;
+        const preferred = (active && sorted.find((p) => p.id === active)) ? active : sorted[0]?.id;
+        if (preferred) setPlantId((p) => p || preferred);
       })
       .catch(() => {});
   }, []);
@@ -463,14 +529,14 @@ export default function FactoryMap() {
     return () => clearInterval(t);
   }, [editMode, plantId, load]);
 
-  const applyStatus = useCallback((list: Array<{ id: string; status: string; operator: string | null; open_ticket: boolean; open_ticket_id: string | null; open_ticket_number: string | null }>) => {
+  const applyStatus = useCallback((list: Array<{ id: string; status: string; operator: string | null; technicians?: MapMachine['technicians']; open_ticket: boolean; open_ticket_id: string | null; open_ticket_number: string | null }>) => {
     const byId = new Map(list.map((s) => [s.id, s]));
     setNodes((nds) => nds.map((n) => {
       if (n.type !== 'machine') return n;
       const s = byId.get(n.id);
       if (!s) return n;
       const mm = (n.data as MachineNodeData).machine;
-      return { ...n, data: { ...n.data, machine: { ...mm, status: s.status, operator: s.operator, open_ticket: s.open_ticket, open_ticket_id: s.open_ticket_id, open_ticket_number: s.open_ticket_number } } };
+      return { ...n, data: { ...n.data, machine: { ...mm, status: s.status, operator: s.operator, technicians: s.technicians ?? null, open_ticket: s.open_ticket, open_ticket_id: s.open_ticket_id, open_ticket_number: s.open_ticket_number } } };
     }));
     setUnplaced((u) => u.map((m) => { const s = byId.get(m.id); return s ? { ...m, status: s.status } : m; }));
   }, [setNodes]);
@@ -581,7 +647,7 @@ export default function FactoryMap() {
     .filter((n) => n.type === 'machine')
     .map((n) => {
       const mm = (n.data as MachineNodeData).machine;
-      return { id: mm.id, name: mm.name, status: mm.status, pos_x: n.position.x, pos_y: n.position.y, pos_w: n.width ?? 152, pos_h: n.height ?? 64, icon_url: mm.icon_url, model_url: mm.model_url, height_3d: mm.height_3d, model_scale: mm.model_scale, scale_y: mm.scale_y, scale_z: mm.scale_z, rotation_deg: mm.rotation_deg, family: mm.family, subtype: mm.subtype, function_label: mm.function_label, block_kind: mm.block_kind, asset_type: mm.asset_type, orbit_x: mm.orbit_x, orbit_y: mm.orbit_y, orbit_w: mm.orbit_w, orbit_h: mm.orbit_h };
+      return { id: mm.id, name: mm.name, status: mm.status, technicians: mm.technicians, open_ticket_number: mm.open_ticket_number, pos_x: n.position.x, pos_y: n.position.y, pos_w: n.width ?? 152, pos_h: n.height ?? 64, icon_url: mm.icon_url, model_url: mm.model_url, height_3d: mm.height_3d, model_scale: mm.model_scale, scale_y: mm.scale_y, scale_z: mm.scale_z, rotation_deg: mm.rotation_deg, family: mm.family, subtype: mm.subtype, function_label: mm.function_label, block_kind: mm.block_kind, asset_type: mm.asset_type, orbit_x: mm.orbit_x, orbit_y: mm.orbit_y, orbit_w: mm.orbit_w, orbit_h: mm.orbit_h };
     }), [nodes]);
 
   const onMachine3d = useCallback((id: string) => {

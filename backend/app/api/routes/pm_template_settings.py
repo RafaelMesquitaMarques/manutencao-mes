@@ -8,6 +8,8 @@ from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
 from app.core.security import get_current_user
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import ensure_same_plant, plant_condition
 from app.models.models import Equipment, PmTemplate, PmTemplateTask, PmTaskMedia, User
 from app.schemas.pm import (
     PmTemplateCreate, PmTemplateUpdate, PmTemplateOut, PmTemplateListResponse,
@@ -59,9 +61,9 @@ async def list_pm_templates(
     plant_id: Optional[UUID] = None,
     is_active: Optional[bool] = True,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    query = select(PmTemplate)
+    query = select(PmTemplate).where(plant_condition(PmTemplate, ctx))
     if equipment_id:
         query = query.where(PmTemplate.equipment_id == equipment_id)
     if plant_id:
@@ -80,10 +82,9 @@ async def create_pm_template(
     data: PmTemplateCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    equipment = await db.get(Equipment, data.equipment_id)
-    if not equipment:
-        raise HTTPException(status_code=404, detail="Equipment not found")
+    equipment = ensure_same_plant(await db.get(Equipment, data.equipment_id), ctx, detail="Equipment not found")
 
     template = PmTemplate(
         plant_id=equipment.plant_id,

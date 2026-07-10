@@ -40,9 +40,22 @@ class Settings(BaseSettings):
     # If unset, the module runs in calculator-only mode (structured fallback text).
     anthropic_api_key: Optional[str] = None
 
+    # Local, token-free LLM (Ollama) used to tidy up / organize dictated notes.
+    # Runs on-prem with no per-token cost. If the server is unreachable, the note
+    # organizer degrades to a light local text cleanup (no AI). Set OLLAMA_BASE_URL
+    # empty to disable the AI path entirely.
+    OLLAMA_BASE_URL: str = "http://ollama:11434"
+    OLLAMA_MODEL: str = "llama3.2"
+
     # Upload
     MAX_UPLOAD_MB: int = 200   # allows short SOP videos; override via env if needed
     UPLOAD_DIR: str = "/app/uploads"
+
+    # Multi-plant phase 4 — kiosk hardening. False (default) keeps the historic
+    # open shop-floor kiosk endpoints (QC tablets bookmark /machines/:slug with
+    # no token). Flip to true only after provisioning per-machine kiosk tokens
+    # and updating tablet bookmarks to /machines/:slug?k=<token>.
+    KIOSK_ENFORCE_TOKEN: bool = False
 
     @property
     def cors_origins_list(self) -> list[str]:

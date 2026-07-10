@@ -5,6 +5,7 @@ import { Plus, Users, RefreshCw, CheckCircle2 } from 'lucide-react';
 import { fetchTechniciansFull } from '../../api/workOrders';
 import type { TechnicianFull } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import AvailabilityBadge from '../../components/AvailabilityBadge';
 import { usePermission } from '../../hooks/usePermission';
 
 const TechnicianList = () => {
@@ -85,6 +86,7 @@ const TechnicianList = () => {
                   {canSeeCosts && (
                     <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] text-right">{t('technicians.hourlyRate')}</th>
                   )}
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('availability.label')}</th>
                   <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('technicians.active')}</th>
                 </tr>
               </thead>
@@ -116,10 +118,13 @@ const TechnicianList = () => {
                       </td>
                     )}
                     <td className="table-cell">
+                      <AvailabilityBadge availability={tech.availability} />
+                    </td>
+                    <td className="table-cell">
                       {tech.active ? (
                         <CheckCircle2 size={16} className="text-green-400" />
                       ) : (
-                        <span className="text-gray-600 text-xs">Inactive</span>
+                        <span className="text-gray-600 text-xs">{t('availability.inactive')}</span>
                       )}
                     </td>
                   </tr>

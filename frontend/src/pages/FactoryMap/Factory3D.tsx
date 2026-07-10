@@ -1,10 +1,12 @@
 import { useMemo, useRef, useEffect, useState, forwardRef, Suspense } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Grid, Html, Edges, useTexture, useGLTF, useAnimations, TransformControls } from '@react-three/drei';
+import { OrbitControls, Grid, Html, Edges, useTexture, useGLTF, useAnimations, TransformControls, Billboard } from '@react-three/drei';
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { useTranslation } from 'react-i18next';
 import { STATUS_HEX as STATUS_COLORS, STATUS_LABEL as STATUS_LABELS } from '../../utils/statusColors';
+import { initials } from '../../utils/initials';
+import type { MapTechnician } from '../../api/factoryMap';
 const SCALE = 0.05;
 const FLOOR_W = 1600;
 
@@ -12,6 +14,8 @@ export interface M3D {
   id: string;
   name: string;
   status: string;
+  technicians?: MapTechnician[] | null;   // techs on the clock when status === 'intervention'
+  open_ticket_number?: string | null;
   pos_x: number;
   pos_y: number;
   pos_w: number;
@@ -699,6 +703,421 @@ function AlertBeacon({ y, color, parentScale = [1, 1, 1] }: { y: number; color: 
   );
 }
 
+// A polished cartoon ninja-mechanic mascot standing next to a machine a
+// technician is actively working (purple / intervention). Big-head cartoon
+// proportions with a strong silhouette so he reads from map distance: orange
+// hard hat with navy brim, top ridge and a gear badge, round glasses over a
+// friendly face, black balaclava with headband tails, navy suit with crossed
+// orange harness straps + chest gear, utility belt with pouches, buckle and a
+// screwdriver, dark gloves, knee pads, orange-trimmed work boots, and a big
+// wrench. He faces the machine and visibly works on it: torso leaning in, the
+// wrench arm extended and cranking back and forth, spark bursts flickering at
+// the wrench tip on each stroke, head down on the work point with occasional
+// side glances. Per-figure `phase` de-syncs crews so a pair never moves in
+// lockstep. Materials are shared (one instance each, disposed on unmount) and
+// segment counts stay low so the figure remains cheap to render.
+// A 3D speech bubble with the tech's initials floats beside his head; hovering
+// shows the technician card (name, elapsed time, ticket) in the same style as
+// the machine KPI billboard.
+// Built around the origin — the parent <TechCrew> places & sizes it.
+function TechFigure3D({
+  name, since, ticket, phase = 0,
+}: {
+  name: string; since?: string | null; ticket?: string | null; phase?: number;
+}) {
+  const { t, i18n } = useTranslation();
+  const lang = (i18n.language || 'en').slice(0, 2) as 'en' | 'fr' | 'es';
+  const [hover, setHover] = useState(false);
+  const armRef = useRef<THREE.Group>(null);      // wrench arm — extended, cranking
+  const breatheRef = useRef<THREE.Group>(null);  // upper body — lean-in + breathing
+  const headRef = useRef<THREE.Group>(null);     // head — down on the work point
+  const sparkRef = useRef<THREE.Group>(null);    // spark burst at the wrench tip
+  const bubbleRef = useRef<THREE.Group>(null);   // initials bubble — gentle bob
+  useFrame((s) => {
+    const tm = s.clock.elapsedTime + phase;
+    const stroke = Math.sin(tm * 3.4);           // one crank cycle
+    // arm swung forward toward the machine (rot.x ≈ level) and cranking
+    // side-to-side (rot.z), with a fast little effort tremble on top
+    if (armRef.current) {
+      armRef.current.rotation.x = 1.05 + Math.sin(tm * 6.8) * 0.05;
+      armRef.current.rotation.z = 0.15 + stroke * 0.4;
+    }
+    // torso leans into the job and rocks with each stroke, still breathing
+    if (breatheRef.current) {
+      breatheRef.current.rotation.x = 0.13 + stroke * 0.03;
+      breatheRef.current.position.y = Math.sin(tm * 1.6) * 0.012;
+    }
+    // head tilted down watching the wrench, with slow side glances
+    if (headRef.current) {
+      headRef.current.rotation.x = 0.22;
+      headRef.current.rotation.y = Math.sin(tm * 0.7) * 0.12;
+    }
+    // sparks pop only near the end of each stroke, flickering fast
+    if (sparkRef.current) {
+      const on = Math.abs(stroke) > 0.8;
+      sparkRef.current.visible = on;
+      if (on) {
+        sparkRef.current.scale.setScalar(0.7 + 0.5 * Math.abs(Math.sin(tm * 37)));
+        sparkRef.current.rotation.z = tm * 9;
+      }
+    }
+    // initials bubble floats gently above the head (clear of the hard hat)
+    if (bubbleRef.current) bubbleRef.current.position.y = 2.48 + Math.sin(tm * 1.7) * 0.045;
+  });
+
+  const ini = initials(name) || '?';
+  const navyDark = '#141c2b';   // shared with the bubble initials + hover card below
+  const orange = '#f97316';
+
+  // Initials drawn once onto a canvas → texture on the bubble face. Canvas text
+  // works offline with system fonts (drei <Text>/troika font loading fails in
+  // this app), stays crisp thanks to the oversized backing canvas.
+  const iniTexture = useMemo(() => {
+    const cvs = document.createElement('canvas');
+    cvs.width = 512; cvs.height = 256;
+    const ctx = cvs.getContext('2d')!;
+    ctx.font = '900 200px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#141c2b';
+    ctx.fillText(ini, 256, 140);
+    const tex = new THREE.CanvasTexture(cvs);
+    tex.anisotropy = 8;
+    return tex;
+  }, [ini]);
+  useEffect(() => () => iniTexture.dispose(), [iniTexture]);
+
+  // Named materials shared across every mesh of the figure — 10 instances total
+  // instead of one per mesh — and disposed when the figure unmounts.
+  const mats = useMemo(() => ({
+    darkSuitMaterial:     new THREE.MeshStandardMaterial({ color: '#2a3650', roughness: 0.65 }),
+    suitShadowMaterial:   new THREE.MeshStandardMaterial({ color: '#161d2e', roughness: 0.7 }),
+    orangeAccentMaterial: new THREE.MeshStandardMaterial({ color: '#f97316', roughness: 0.5 }),
+    helmetMaterial:       new THREE.MeshStandardMaterial({ color: '#fb8a1d', roughness: 0.35 }),
+    helmetTrimMaterial:   new THREE.MeshStandardMaterial({ color: '#1e2740', roughness: 0.5 }),
+    metalToolMaterial:    new THREE.MeshStandardMaterial({ color: '#b7bfc9', metalness: 0.8, roughness: 0.25 }),
+    skinMaterial:         new THREE.MeshStandardMaterial({ color: '#f2c197', roughness: 0.55 }),
+    gloveMaterial:        new THREE.MeshStandardMaterial({ color: '#10151f', roughness: 0.6 }),
+    eyeWhiteMaterial:     new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.3 }),
+    // glossy white "3D icon" balloon — clearcoat gives the soft specular sheen
+    bubbleMaterial:       new THREE.MeshPhysicalMaterial({ color: '#ffffff', roughness: 0.18, clearcoat: 1, clearcoatRoughness: 0.25, emissive: '#ffffff', emissiveIntensity: 0.12 }),
+  }), []);
+  useEffect(() => () => { Object.values(mats).forEach((m) => m.dispose()); }, [mats]);
+
+  const el = since ? Math.max(0, Math.floor((Date.now() - new Date(since).getTime()) / 60000)) : null;
+  const elapsed = el == null ? null : el >= 60 ? `${Math.floor(el / 60)} h ${String(el % 60).padStart(2, '0')}` : `${el} min`;
+  const sinceStr = since ? new Date(since).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null;
+
+  const row = (label: string, value: string, dot?: string) => (
+    <div style={{ background: '#0d1421', border: '1px solid #1f2937', borderRadius: 6, padding: '4px 8px' }}>
+      <div style={{ fontSize: 10, color: '#64748b', lineHeight: 1.15 }}>{label}</div>
+      <div style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+        {dot && <span style={{ width: 9, height: 9, borderRadius: '50%', background: dot, display: 'inline-block', flexShrink: 0 }} />}
+        {value}
+      </div>
+    </div>
+  );
+
+  // Small gear badge (hub + 6 teeth + metal pin), reused on helmet and chest.
+  const gear = (pos: [number, number, number], tilt = 0, s = 1) => (
+    <group position={pos} rotation={[Math.PI / 2 + tilt, 0, 0]} scale={s}>
+      <mesh material={mats.helmetTrimMaterial}>
+        <cylinderGeometry args={[0.05, 0.05, 0.035, 10]} />
+      </mesh>
+      {Array.from({ length: 6 }).map((_, i) => {
+        const a = (i * Math.PI) / 3;
+        return (
+          <mesh key={`tooth${i}`} material={mats.helmetTrimMaterial} position={[Math.sin(a) * 0.056, 0, Math.cos(a) * 0.056]}>
+            <cylinderGeometry args={[0.013, 0.013, 0.038, 6]} />
+          </mesh>
+        );
+      })}
+      <mesh material={mats.metalToolMaterial} position={[0, 0.012, 0]}>
+        <cylinderGeometry args={[0.018, 0.018, 0.03, 8]} />
+      </mesh>
+    </group>
+  );
+
+  return (
+    <group>
+      {/* invisible hover hit-volume covering the whole figure (single target →
+          no over/out flicker when the pointer crosses between body parts) */}
+      <mesh
+        position={[0, 1.05, 0]}
+        onPointerOver={(e) => { e.stopPropagation(); setHover(true); document.body.style.cursor = 'pointer'; }}
+        onPointerOut={() => { setHover(false); document.body.style.cursor = 'default'; }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <cylinderGeometry args={[0.5, 0.5, 2.2, 10]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+
+      {/* ── static lower body ── */}
+      {/* work boots: orange sole, dark body, toe cap, orange lace strap */}
+      {[-1, 1].map((k) => (
+        <group key={`boot${k}`}>
+          <mesh material={mats.orangeAccentMaterial} position={[0.15 * k, 0.028, 0.05]}>
+            <boxGeometry args={[0.24, 0.055, 0.42]} />
+          </mesh>
+          <mesh material={mats.suitShadowMaterial} position={[0.15 * k, 0.135, 0.04]} castShadow>
+            <boxGeometry args={[0.21, 0.16, 0.36]} />
+          </mesh>
+          <mesh material={mats.gloveMaterial} position={[0.15 * k, 0.1, 0.225]}>
+            <boxGeometry args={[0.19, 0.09, 0.08]} />
+          </mesh>
+          <mesh material={mats.orangeAccentMaterial} position={[0.15 * k, 0.2, 0.06]}>
+            <boxGeometry args={[0.22, 0.03, 0.3]} />
+          </mesh>
+        </group>
+      ))}
+      {/* legs + strapped knee pads */}
+      {[-1, 1].map((k) => (
+        <group key={`leg${k}`}>
+          <mesh material={mats.darkSuitMaterial} position={[0.15 * k, 0.44, 0]} castShadow>
+            <cylinderGeometry args={[0.105, 0.125, 0.42, 10]} />
+          </mesh>
+          <mesh material={mats.suitShadowMaterial} position={[0.15 * k, 0.47, 0.105]} rotation={[-0.1, 0, 0]}>
+            <boxGeometry args={[0.15, 0.14, 0.05]} />
+          </mesh>
+          <mesh material={mats.orangeAccentMaterial} position={[0.15 * k, 0.41, 0.1]}>
+            <boxGeometry args={[0.16, 0.03, 0.055]} />
+          </mesh>
+        </group>
+      ))}
+      {/* hips + utility belt: orange buckle w/ metal pin, side pouches, screwdriver */}
+      <mesh material={mats.darkSuitMaterial} position={[0, 0.72, 0]} castShadow>
+        <cylinderGeometry args={[0.27, 0.25, 0.22, 14]} />
+      </mesh>
+      <mesh material={mats.suitShadowMaterial} position={[0, 0.845, 0]}>
+        <cylinderGeometry args={[0.285, 0.285, 0.07, 14]} />
+      </mesh>
+      <mesh material={mats.orangeAccentMaterial} position={[0, 0.845, 0.27]}>
+        <boxGeometry args={[0.13, 0.085, 0.05]} />
+      </mesh>
+      <mesh material={mats.metalToolMaterial} position={[0, 0.845, 0.285]}>
+        <boxGeometry args={[0.045, 0.04, 0.03]} />
+      </mesh>
+      {[-1, 1].map((k) => (
+        <group key={`pouch${k}`} position={[0.255 * k, 0.76, 0.12]} rotation={[0, 0.15 * k, 0]}>
+          <mesh material={mats.suitShadowMaterial}>
+            <boxGeometry args={[0.11, 0.14, 0.09]} />
+          </mesh>
+          <mesh material={mats.orangeAccentMaterial} position={[0, 0.065, 0]}>
+            <boxGeometry args={[0.115, 0.035, 0.095]} />
+          </mesh>
+        </group>
+      ))}
+      <group position={[-0.29, 0.66, 0.1]} rotation={[0, 0, 0.12]}>
+        <mesh material={mats.orangeAccentMaterial} position={[0, 0.04, 0]}>
+          <cylinderGeometry args={[0.026, 0.026, 0.09, 8]} />
+        </mesh>
+        <mesh material={mats.metalToolMaterial} position={[0, -0.06, 0]}>
+          <cylinderGeometry args={[0.011, 0.011, 0.11, 6]} />
+        </mesh>
+      </group>
+
+      {/* ── upper body (idle breathing) ── */}
+      <group ref={breatheRef}>
+        {/* torso + crossed orange harness straps + centre buckle + chest gear */}
+        <mesh material={mats.darkSuitMaterial} position={[0, 1.1, 0]} castShadow>
+          <capsuleGeometry args={[0.28, 0.36, 6, 14]} />
+        </mesh>
+        {[-1, 1].map((k) => (
+          <mesh key={`strap${k}`} material={mats.orangeAccentMaterial} position={[0, 1.14, 0.285]} rotation={[0, 0, 0.55 * k]}>
+            <boxGeometry args={[0.075, 0.6, 0.022]} />
+          </mesh>
+        ))}
+        <mesh material={mats.suitShadowMaterial} position={[0, 1.14, 0.3]}>
+          <boxGeometry args={[0.1, 0.07, 0.03]} />
+        </mesh>
+        {gear([0.17, 1.28, 0.24], 0, 0.72)}
+        {/* shoulder pads round out the silhouette */}
+        {[-1, 1].map((k) => (
+          <mesh key={`shoulder${k}`} material={mats.suitShadowMaterial} position={[0.285 * k, 1.38, 0]} castShadow>
+            <sphereGeometry args={[0.105, 12, 12]} />
+          </mesh>
+        ))}
+
+        {/* right arm — hand confidently on the hip */}
+        <mesh material={mats.darkSuitMaterial} position={[0.37, 1.2, 0]} rotation={[0, 0, -0.7]} castShadow>
+          <capsuleGeometry args={[0.075, 0.22, 6, 10]} />
+        </mesh>
+        <mesh material={mats.suitShadowMaterial} position={[0.45, 1.06, 0.01]}>
+          <sphereGeometry args={[0.07, 10, 10]} />
+        </mesh>
+        <mesh material={mats.darkSuitMaterial} position={[0.4, 0.95, 0.05]} rotation={[0, 0, 0.85]} castShadow>
+          <capsuleGeometry args={[0.062, 0.16, 6, 10]} />
+        </mesh>
+        <mesh material={mats.gloveMaterial} position={[0.31, 0.86, 0.09]}>
+          <sphereGeometry args={[0.09, 12, 12]} />
+        </mesh>
+
+        {/* left arm — holds the big wrench; the resting-up pose below is
+            re-posed every frame in useFrame (swung toward the machine, cranking) */}
+        <group ref={armRef} position={[-0.32, 1.28, 0]}>
+          <mesh material={mats.darkSuitMaterial} position={[-0.06, 0.09, 0.02]} rotation={[0, 0, 0.55]} castShadow>
+            <capsuleGeometry args={[0.075, 0.22, 6, 10]} />
+          </mesh>
+          <mesh material={mats.suitShadowMaterial} position={[-0.13, 0.21, 0.03]}>
+            <sphereGeometry args={[0.07, 10, 10]} />
+          </mesh>
+          <mesh material={mats.darkSuitMaterial} position={[-0.155, 0.33, 0.03]} rotation={[0, 0, 0.08]} castShadow>
+            <capsuleGeometry args={[0.062, 0.16, 6, 10]} />
+          </mesh>
+          <mesh material={mats.gloveMaterial} position={[-0.165, 0.45, 0.03]}>
+            <sphereGeometry args={[0.095, 12, 12]} />
+          </mesh>
+          {/* wrench: orange grip, long metal handle, open-end head */}
+          <mesh material={mats.orangeAccentMaterial} position={[-0.165, 0.53, 0.03]}>
+            <cylinderGeometry args={[0.036, 0.036, 0.1, 8]} />
+          </mesh>
+          <mesh material={mats.metalToolMaterial} position={[-0.165, 0.7, 0.03]} castShadow>
+            <cylinderGeometry args={[0.03, 0.03, 0.34, 8]} />
+          </mesh>
+          <mesh material={mats.metalToolMaterial} position={[-0.165, 0.9, 0.03]} rotation={[0, 0, 0.55]} castShadow>
+            <torusGeometry args={[0.085, 0.03, 8, 14, Math.PI * 1.45]} />
+          </mesh>
+          {/* spark burst at the wrench tip — rides with the arm, gated on/off
+              per stroke in useFrame; unlit materials so they read as glow */}
+          <group ref={sparkRef} position={[-0.165, 0.98, 0.05]} visible={false}>
+            {([[0.06, 0.02, 0], [-0.05, 0.06, 0.02], [0.01, -0.05, 0.04]] as const).map((p, i) => (
+              <mesh key={`spark${i}`} position={[p[0], p[1], p[2]]}>
+                <octahedronGeometry args={[0.038 - i * 0.008, 0]} />
+                <meshBasicMaterial color={i === 0 ? '#fff7cc' : '#fbbf24'} toneMapped={false} transparent opacity={0.95} depthWrite={false} />
+              </mesh>
+            ))}
+          </group>
+        </group>
+
+        {/* ── head — big cartoon proportions, sways slowly ── */}
+        <group ref={headRef} position={[0, 1.53, 0]}>
+          {/* balaclava + friendly face: skin patch, eyes, round glasses */}
+          <mesh material={mats.suitShadowMaterial} position={[0, 0.02, 0]} castShadow>
+            <sphereGeometry args={[0.3, 18, 18]} />
+          </mesh>
+          <mesh material={mats.skinMaterial} position={[0, 0.06, 0.215]} scale={[1, 0.8, 0.5]}>
+            <sphereGeometry args={[0.21, 16, 16]} />
+          </mesh>
+          {[-1, 1].map((k) => (
+            <group key={`eye${k}`}>
+              <mesh material={mats.eyeWhiteMaterial} position={[0.088 * k, 0.075, 0.295]} scale={[1, 1.2, 0.55]}>
+                <sphereGeometry args={[0.048, 12, 12]} />
+              </mesh>
+              <mesh material={mats.gloveMaterial} position={[0.082 * k, 0.07, 0.316]}>
+                <sphereGeometry args={[0.02, 8, 8]} />
+              </mesh>
+              <mesh material={mats.helmetTrimMaterial} position={[0.088 * k, 0.075, 0.322]}>
+                <torusGeometry args={[0.08, 0.013, 8, 14]} />
+              </mesh>
+              <mesh material={mats.helmetTrimMaterial} position={[0.19 * k, 0.08, 0.24]} rotation={[0, 1.1 * k, 0]}>
+                <boxGeometry args={[0.12, 0.014, 0.014]} />
+              </mesh>
+            </group>
+          ))}
+          <mesh material={mats.helmetTrimMaterial} position={[0, 0.095, 0.322]}>
+            <boxGeometry args={[0.05, 0.018, 0.016]} />
+          </mesh>
+          {/* headband knot + tails flying behind */}
+          <mesh material={mats.suitShadowMaterial} position={[0, 0.05, -0.29]}>
+            <boxGeometry args={[0.11, 0.055, 0.05]} />
+          </mesh>
+          <mesh material={mats.suitShadowMaterial} position={[0.17, 0, -0.3]} rotation={[0, 0.55, 0.18]}>
+            <boxGeometry args={[0.3, 0.05, 0.02]} />
+          </mesh>
+          <mesh material={mats.suitShadowMaterial} position={[0.1, -0.07, -0.33]} rotation={[0, 0.3, -0.3]}>
+            <boxGeometry args={[0.34, 0.045, 0.02]} />
+          </mesh>
+          {/* orange hard hat: dome, navy top ridge + brim band, gear badge */}
+          <mesh material={mats.helmetMaterial} position={[0, 0.21, 0]} scale={[1, 0.68, 1]} castShadow>
+            <sphereGeometry args={[0.32, 18, 18]} />
+          </mesh>
+          <mesh material={mats.helmetTrimMaterial} position={[0, 0.21, 0]} rotation={[0, Math.PI / 2, 0]} scale={[1, 0.68, 1]}>
+            <torusGeometry args={[0.32, 0.03, 8, 18, Math.PI]} />
+          </mesh>
+          <mesh material={mats.helmetTrimMaterial} position={[0, 0.155, 0]}>
+            <cylinderGeometry args={[0.34, 0.34, 0.05, 18]} />
+          </mesh>
+          {gear([0, 0.24, 0.3], -0.3, 1)}
+        </group>
+      </group>
+
+      {/* 3D speech bubble with the initials straight above the head — glossy
+          white "3D icon" style balloon: a squashed sphere with a horn tail
+          pointing down at the hard hat, no outline, clearcoat sheen catches
+          the sun. Billboard keeps it facing the camera from any orbit angle;
+          it bobs gently in useFrame. Anchored slightly forward (+z, toward the
+          machine) because the working torso leans in — the head ends up ~0.2
+          ahead of the hip axis, and without the offset the balloon reads as
+          floating behind the head. */}
+      <group ref={bubbleRef} position={[0, 2.48, 0.22]}>
+        <Billboard>
+          <mesh material={mats.bubbleMaterial} scale={[1, 0.8, 0.85]}>
+            <sphereGeometry args={[0.36, 24, 18]} />
+          </mesh>
+          {/* horn tail — base buried in the balloon, apex flaring down toward
+              the head; z-flattened so the tilted base disc stays inside */}
+          <mesh material={mats.bubbleMaterial} position={[-0.12, -0.27, 0]} rotation={[0, 0, 2.95]} scale={[1, 1, 0.6]}>
+            <coneGeometry args={[0.09, 0.3, 12]} />
+          </mesh>
+          <mesh position={[0, 0, 0.312]}>
+            <planeGeometry args={[0.48, 0.24]} />
+            <meshBasicMaterial map={iniTexture} transparent toneMapped={false} depthWrite={false} />
+          </mesh>
+        </Billboard>
+      </group>
+
+      {/* hover card — the technician's data, like the machine KPI billboard */}
+      {hover && (
+        <Html position={[0, 3.05, 0]} center zIndexRange={[50, 0]} style={{ pointerEvents: 'none' }}>
+          <div style={{ width: 210, background: 'rgba(13,20,33,0.95)', border: `1.5px solid ${STATUS_COLORS.intervention}`, borderRadius: 10, padding: 10, color: '#e5e7eb', boxShadow: '0 6px 20px rgba(0,0,0,0.55)', fontFamily: 'system-ui, sans-serif' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <span style={{ width: 26, height: 26, borderRadius: '50%', background: orange, color: navyDark, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 11, flexShrink: 0 }}>{ini}</span>
+              <span style={{ fontSize: 14, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
+            </div>
+            <div style={{ display: 'grid', gap: 5 }}>
+              {row(t('common.status'), STATUS_LABELS.intervention?.[lang] ?? 'Intervention', STATUS_COLORS.intervention)}
+              {sinceStr ? row(t('factoryMap.workingSince'), elapsed ? `${sinceStr} (${elapsed})` : sinceStr) : null}
+              {ticket ? row(t('factoryMap.openTicket'), ticket) : null}
+            </div>
+          </div>
+        </Html>
+      )}
+    </group>
+  );
+}
+
+// Places ONE ninja-mechanic per technician on the clock, lined up along the
+// front edge of the machine and centred, so 2 techs → 2 figures, 10 → 10.
+// Each figure is turned ~180° (with a small per-index variation so a row does
+// not look cloned) to face the machine it is working on, and gets a distinct
+// animation phase so crews never crank in lockstep.
+// Counter-scales the parent machine's scale ONCE here (figures then keep a
+// constant human size and a constant world spacing regardless of machine scale).
+function TechCrew({
+  techs, ticket, w, d, parentScale = [1, 1, 1],
+}: {
+  techs: MapTechnician[]; ticket?: string | null;
+  w: number; d: number; parentScale?: [number, number, number];
+}) {
+  const [sx, sy, sz] = parentScale;
+  const SPACING = 1.3;                       // world units between neighbours
+  const n = techs.length;
+  const rowW = (n - 1) * SPACING;
+  // Front edge of the footprint, on the floor. Nudge further out for bigger rows
+  // so a long line still clears the machine body.
+  const pz = d / 2 + 0.9 + Math.min(rowW * 0.12, 1.5);
+  return (
+    <group position={[0, 0, pz]} scale={[1 / (sx || 1), 1 / (sy || 1), 1 / (sz || 1)]}>
+      {techs.map((tech, i) => (
+        <group key={`${tech.name}-${i}`} position={[(i - (n - 1) / 2) * SPACING, 0, 0]}
+          rotation={[0, Math.PI + (i % 2 ? 0.14 : -0.14), 0]}>
+          <TechFigure3D name={tech.name} since={tech.since} ticket={ticket} phase={i * 1.7} />
+        </group>
+      ))}
+    </group>
+  );
+}
+
 const MachineBox = forwardRef<THREE.Group, { m: M3D; cx: number; cy: number; onSelect: (id: string) => void; editMode?: boolean }>(
   function MachineBox({ m, cx, cy, onSelect, editMode = false }, ref) {
     const w = Math.max(m.pos_w, 40) * SCALE;
@@ -731,6 +1150,10 @@ const MachineBox = forwardRef<THREE.Group, { m: M3D; cx: number; cy: number; onS
         ) : fallback}
         {(m.status === 'stopped' || m.status === 'maintenance' || m.status === 'planned_stop' || m.status === 'intervention' || m.status === 'unjustified') && (
           <AlertBeacon y={h + 1.2 / sy} color={color} parentScale={[sx, sy, sz]} />
+        )}
+        {m.status === 'intervention' && m.technicians && m.technicians.length > 0 && (
+          <TechCrew techs={m.technicians} ticket={m.open_ticket_number}
+            w={w} d={d} parentScale={[sx, sy, sz]} />
         )}
       </group>
     );

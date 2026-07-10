@@ -22,7 +22,10 @@ class LaborOut(BaseModel):
     technician_id: UUID
     technician_name: Optional[str] = None
     date: date
-    hours_worked: float
+    hours_worked: float                       # RAW assigned time (feeds repair_hours/MTTR)
+    effective_hours: Optional[float] = None    # after deducting non-working intervals → drives labor_cost
+    deducted_minutes: Optional[float] = None   # raw − effective, in minutes (breaks/lunch/off-shift/unavailability)
+    overtime_approved: bool = False
     hourly_rate: Optional[float] = None
     labor_cost: Optional[float] = None
     activity: Optional[str] = None
@@ -122,10 +125,14 @@ class WOActionToggle(BaseModel):
 
 
 class WOCostSummary(BaseModel):
-    labor_total: float = 0.0
+    labor_total: float = 0.0          # effective labor cost (what is billed)
     parts_total: float = 0.0
     other_total: float = 0.0
     grand_total: float = 0.0
+    # Transparency for the labor report: raw assigned time vs effective vs the gap.
+    labor_raw_hours: float = 0.0
+    labor_effective_hours: float = 0.0
+    labor_deducted_minutes: float = 0.0
 
 
 class LaborListResponse(BaseModel):

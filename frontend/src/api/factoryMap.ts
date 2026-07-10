@@ -1,5 +1,10 @@
 import api from './axios';
 
+export interface MapTechnician {
+  name: string;
+  since: string | null;   // ISO start of the technician's labor session
+}
+
 export interface MapMachine {
   id: string;
   machine_id: string | null;
@@ -9,6 +14,9 @@ export interface MapMachine {
   code: string | null;
   status: string;
   operator: string | null;
+  // Technicians working the machine when status === 'intervention' (purple) — one
+  // per tech on the clock, each with the ISO start of their labor session.
+  technicians: MapTechnician[] | null;
   department: string | null;
   family: string | null;
   subtype: string | null;

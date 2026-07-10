@@ -89,6 +89,12 @@ class MesService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def _plant_of(self, machine_id: UUID):
+        """New rows inherit the machine's plant at creation (no boot-heal wait)."""
+        return (await self.db.execute(
+            select(Machine.plant_id).where(Machine.id == machine_id)
+        )).scalar_one_or_none()
+
     async def get_today_rejects(self, machine_id: UUID) -> int:
         """Return total reject count for today across all shifts."""
         today = date.today()
@@ -117,6 +123,7 @@ class MesService:
         if not log:
             log = MachineProductionLog(
                 machine_id=machine_id,
+                plant_id=await self._plant_of(machine_id),
                 date=today,
                 shift=shift_enum,
                 reject_count=0,
@@ -149,7 +156,8 @@ class MesService:
         log = r.scalar_one_or_none()
         if not log:
             log = MachineProductionLog(
-                machine_id=machine_id, date=d, shift=shift_enum,
+                machine_id=machine_id, plant_id=await self._plant_of(machine_id),
+                date=d, shift=shift_enum,
                 target_count=int(default_target or 0), actual_count=0, reject_count=0,
             )
             self.db.add(log)

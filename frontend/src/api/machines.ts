@@ -115,8 +115,16 @@ export const reclassifyStop = async (
   ref: string,
   stopId: string,
   body: { stop_category_id?: string | null; stop_subcategory_id?: string | null; comments?: string },
-): Promise<{ status: string }> => {
+): Promise<{ status: string; ticket_number?: string | null }> => {
   const { data } = await axios.patch(`/api/machines/${ref}/stops/${stopId}/reclassify`, body);
+  return data;
+};
+
+export const cloneKioskLayout = async (
+  layout: unknown[],
+  targetIds: string[],
+): Promise<{ updated: number }> => {
+  const { data } = await api.post('/api/machines/clone-layout', { layout, target_ids: targetIds });
   return data;
 };
 
@@ -129,7 +137,7 @@ export interface HourlyPoint { hour: string; pieces: number; }
 export const fetchProductionHourly = async (
   ref: string,
   range?: { start: string; end: string },
-): Promise<{ hours: HourlyPoint[]; shift_total: number }> => {
+): Promise<{ hours: HourlyPoint[]; shift_total: number; target_per_hour: number }> => {
   const { data } = await axios.get(`/api/machines/${ref}/production-hourly`, {
     params: range ? { start: range.start, end: range.end } : undefined,
   });

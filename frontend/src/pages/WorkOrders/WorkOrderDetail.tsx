@@ -32,6 +32,9 @@ import {
   ExternalLink,
   Loader2,
   Camera,
+  Mic,
+  MicOff,
+  Sparkles,
 } from 'lucide-react';
 import {
   fetchWorkOrder,
@@ -48,13 +51,17 @@ import {
   fetchWOCostSummary,
   fetchWOActions,
   addWOAction,
+  organizeNote,
   toggleWOAction,
   setWOActionProof,
-  fetchTechnicians,
+  fetchTechniciansFull,
   addWOTechnician,
   removeWOTechnician,
+  setWOLaborOvertime,
 } from '../../api/workOrders';
 import { uploadFile } from '../../api/uploads';
+import InterventionCheckin from '../../components/InterventionCheckin';
+import { useSpeechDictation } from '../../hooks/useSpeechDictation';
 import { humanDuration } from '../../utils/duration';
 import type {
   WorkOrder,
@@ -63,7 +70,7 @@ import type {
   WOCost,
   WOCostSummary,
   WOAction,
-  Technician,
+  TechnicianFull,
 } from '../../types';
 import Badge from '../../components/ui/Badge';
 import Spinner from '../../components/ui/Spinner';
@@ -325,11 +332,19 @@ const ChecklistItem = ({
 const NotesSection = ({ woId, notes, onAdded }: {
   woId: string; notes: WOAction[]; onAdded: (a: WOAction) => void;
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [text, setText] = useState('');
   const [posting, setPosting] = useState(false);
+  const [organizing, setOrganizing] = useState(false);
+  const [organizeHint, setOrganizeHint] = useState('');
   const sorted = [...notes].sort(
     (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+
+  // Voice dictation appends each spoken chunk to whatever is already typed.
+  const { supported: micSupported, isRecording, toggle: toggleMic } = useSpeechDictation(
+    (chunk) => setText((prev) => (prev ? `${prev} ${chunk}` : chunk)),
+    i18n.language,
   );
 
   const post = async () => {
@@ -339,8 +354,25 @@ const NotesSection = ({ woId, notes, onAdded }: {
       const a = await addWOAction(woId, { action_type: 'comment', content: text.trim() });
       onAdded(a);
       setText('');
+      setOrganizeHint('');
     } finally {
       setPosting(false);
+    }
+  };
+
+  const organize = async () => {
+    if (!text.trim() || organizing) return;
+    setOrganizing(true);
+    setOrganizeHint('');
+    try {
+      const res = await organizeNote(text.trim(), i18n.language);
+      setText(res.text);
+      // Tell the tech when the AI was offline so they know it's just formatting.
+      if (!res.ai_used) setOrganizeHint(t('workOrders.organizeOffline'));
+    } catch {
+      setOrganizeHint(t('workOrders.organizeFailed'));
+    } finally {
+      setOrganizing(false);
     }
   };
 
@@ -351,14 +383,42 @@ const NotesSection = ({ woId, notes, onAdded }: {
         <h3 className="text-white font-semibold text-sm">{t('workOrders.technicianNotes')}</h3>
       </div>
       <p className="text-gray-600 text-xs mb-3">{t('workOrders.technicianNotesHint')}</p>
-      <textarea
-        rows={2}
-        className="input-field resize-none w-full"
-        placeholder={t('workOrders.commentPlaceholder')}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-      />
-      <div className="flex justify-end mt-2">
+      <div className="flex gap-2 items-start">
+        <textarea
+          rows={2}
+          className="input-field resize-none w-full flex-1"
+          placeholder={t('workOrders.commentPlaceholder')}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+        />
+        {micSupported && (
+          <button
+            type="button"
+            onClick={toggleMic}
+            title={isRecording ? t('workOrders.dictateStop') : t('workOrders.dictate')}
+            aria-label={isRecording ? t('workOrders.dictateStop') : t('workOrders.dictate')}
+            className={`p-2.5 rounded-lg border transition-colors flex-shrink-0 ${
+              isRecording
+                ? 'bg-red-600/80 border-red-400 animate-pulse text-white'
+                : 'bg-white/[0.03] border-white/10 text-gray-400 hover:border-blue-500 hover:text-blue-400'
+            }`}
+          >
+            {isRecording ? <MicOff size={18} /> : <Mic size={18} />}
+          </button>
+        )}
+      </div>
+      {organizeHint && <p className="text-amber-400/90 text-xs mt-2">{organizeHint}</p>}
+      <div className="flex justify-end items-center gap-2 mt-2">
+        <button
+          type="button"
+          onClick={organize}
+          disabled={organizing || !text.trim()}
+          className="btn-secondary py-1.5"
+          title={t('workOrders.organizeHint')}
+        >
+          {organizing ? <Spinner size="xs" /> : <Sparkles size={14} />}
+          {organizing ? t('workOrders.organizing') : t('workOrders.organizeAI')}
+        </button>
         <button onClick={post} disabled={posting || !text.trim()} className="btn-primary py-1.5">
           {posting ? <Spinner size="xs" /> : <Plus size={14} />}
           {posting ? t('common.posting') : t('workOrders.addComment')}
@@ -534,14 +594,28 @@ const LaborTab = ({
   records,
   technicians,
   onAdded,
+  onUpdated,
 }: {
   woId: string;
   records: LaborRecord[];
-  technicians: Technician[];
+  technicians: TechnicianFull[];
   onAdded: (r: LaborRecord) => void;
+  onUpdated: (r: LaborRecord) => void;
 }) => {
   const { t } = useTranslation();
   const [showForm, setShowForm] = useState(false);
+  const [otBusy, setOtBusy] = useState<string | null>(null);
+
+  const toggleOvertime = async (rec: LaborRecord) => {
+    setOtBusy(rec.id);
+    try {
+      onUpdated(await setWOLaborOvertime(woId, rec.id, !rec.overtime_approved));
+    } catch {
+      // no-op: leave the row as-is on failure
+    } finally {
+      setOtBusy(null);
+    }
+  };
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [form, setForm] = useState({
@@ -556,6 +630,10 @@ const LaborTab = ({
 
   const totalHours = records.reduce((s, r) => s + r.hours_worked, 0);
   const totalCost = records.reduce((s, r) => s + (r.labor_cost ?? 0), 0);
+  // Effective (paid working) time = raw minus breaks/lunch/off-shift/vacation.
+  // Falls back to raw for legacy records with no effective_hours computed.
+  const totalEffective = records.reduce((s, r) => s + (r.effective_hours ?? r.hours_worked), 0);
+  const totalDeducted = records.reduce((s, r) => s + (r.deducted_minutes ?? 0), 0);
 
   const byTech = records.reduce<Record<string, { name: string; hours: number; cost: number }>>(
     (acc, r) => {
@@ -603,9 +681,21 @@ const LaborTab = ({
       <div className="flex items-center justify-between">
         <div className="flex gap-6">
           <div>
-            <p className="text-gray-600 text-[11px] uppercase tracking-wide">{t('workOrders.hoursWorked')}</p>
+            <p className="text-gray-600 text-[11px] uppercase tracking-wide">{t('workOrders.rawTime')}</p>
             <p className="text-white font-mono font-semibold">{totalHours > 0 ? humanDuration(totalHours * 3600) : '0 min'}</p>
           </div>
+          {totalDeducted > 0.5 && (
+            <>
+              <div>
+                <p className="text-gray-600 text-[11px] uppercase tracking-wide">{t('workOrders.deductedTime')}</p>
+                <p className="text-amber-400 font-mono font-semibold">−{humanDuration(totalDeducted * 60)}</p>
+              </div>
+              <div>
+                <p className="text-gray-600 text-[11px] uppercase tracking-wide">{t('workOrders.effectiveTime')}</p>
+                <p className="text-blue-400 font-mono font-semibold">{humanDuration(totalEffective * 3600)}</p>
+              </div>
+            </>
+          )}
           {totalCost > 0 && (
             <div>
               <p className="text-gray-600 text-[11px] uppercase tracking-wide">{t('workOrders.laborTotal')}</p>
@@ -729,7 +819,8 @@ const LaborTab = ({
                   <th className="table-header-cell">{t('workOrders.technicianLabel')}</th>
                   <th className="table-header-cell">{t('workOrders.laborStart')}</th>
                   <th className="table-header-cell">{t('workOrders.laborEnd')}</th>
-                  <th className="table-header-cell text-right">{t('workOrders.hoursWorked')}</th>
+                  <th className="table-header-cell text-right">{t('workOrders.rawTime')}</th>
+                  <th className="table-header-cell text-right">{t('workOrders.effectiveTime')}</th>
                   <th className="table-header-cell text-right">{t('workOrders.rateLabel')}</th>
                   <th className="table-header-cell text-right">{t('workOrders.totalCost')}</th>
                   <th className="table-header-cell">{t('workOrders.activityLabel')}</th>
@@ -752,7 +843,28 @@ const LaborTab = ({
                       <td className="table-cell font-mono text-xs text-gray-400">
                         {r.stopped_at ? fmt(r.stopped_at) : <span className="text-amber-400">{t('status.in_progress')}</span>}
                       </td>
-                      <td className="table-cell text-right font-mono text-blue-400">{durStr}</td>
+                      <td className="table-cell text-right font-mono text-gray-300">{durStr}</td>
+                      <td className="table-cell text-right font-mono text-blue-400">
+                        {r.effective_hours != null ? humanDuration(r.effective_hours * 3600) : durStr}
+                        {(r.deducted_minutes ?? 0) > 0.5 && (
+                          <span className="block text-amber-400/70 text-[10px]">−{humanDuration((r.deducted_minutes ?? 0) * 60)}</span>
+                        )}
+                        {r.started_at && r.stopped_at && ((r.deducted_minutes ?? 0) > 0.5 || r.overtime_approved) && (
+                          <button
+                            onClick={() => toggleOvertime(r)}
+                            disabled={otBusy === r.id}
+                            title={t('workOrders.overtimeHint')}
+                            className={[
+                              'block ml-auto mt-1 text-[10px] px-1.5 py-0.5 rounded border transition-colors',
+                              r.overtime_approved
+                                ? 'bg-green-500/15 text-green-400 border-green-500/30'
+                                : 'bg-white/[0.03] text-gray-500 border-white/10 hover:text-gray-300',
+                            ].join(' ')}
+                          >
+                            {r.overtime_approved ? `✓ ${t('workOrders.overtimeApproved')}` : t('workOrders.approveOvertime')}
+                          </button>
+                        )}
+                      </td>
                       <td className="table-cell text-right font-mono text-gray-400 text-xs">
                         {r.hourly_rate ? `$${r.hourly_rate}/h` : '—'}
                       </td>
@@ -1051,6 +1163,23 @@ const CostsTab = ({
               </div>
             ))}
           </div>
+          {(summary.labor_deducted_minutes ?? 0) > 0.5 && (
+            <div className="glass-card p-4 flex flex-wrap gap-x-8 gap-y-2">
+              <div>
+                <p className="text-gray-600 text-[11px] uppercase tracking-wide">{t('workOrders.rawTime')}</p>
+                <p className="font-mono text-gray-200">{humanDuration((summary.labor_raw_hours ?? 0) * 3600)}</p>
+              </div>
+              <div>
+                <p className="text-gray-600 text-[11px] uppercase tracking-wide">{t('workOrders.deductedTime')}</p>
+                <p className="font-mono text-amber-400">−{humanDuration((summary.labor_deducted_minutes ?? 0) * 60)}</p>
+              </div>
+              <div>
+                <p className="text-gray-600 text-[11px] uppercase tracking-wide">{t('workOrders.effectiveTime')}</p>
+                <p className="font-mono text-blue-400">{humanDuration((summary.labor_effective_hours ?? 0) * 3600)}</p>
+              </div>
+              <p className="text-gray-600 text-[11px] self-center max-w-xs">{t('workOrders.effectiveLaborNote')}</p>
+            </div>
+          )}
           {summary.labor_total === 0 && laborRecords.length > 0 && (
             <div className="flex items-center gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
               <AlertCircle size={14} className="text-amber-400 flex-shrink-0" />
@@ -1271,7 +1400,7 @@ const WorkOrderDetail = () => {
   const [costs, setCosts] = useState<WOCost[]>([]);
   const [costSummary, setCostSummary] = useState<WOCostSummary | null>(null);
   const [actions, setActions] = useState<WOAction[]>([]);
-  const [techOptions, setTechOptions] = useState<Technician[]>([]);
+  const [techOptions, setTechOptions] = useState<TechnicianFull[]>([]);
 
   const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [isLoading, setIsLoading] = useState(true);
@@ -1293,7 +1422,7 @@ const WorkOrderDetail = () => {
       fetchWOCosts(id),
       fetchWOCostSummary(id),
       fetchWOActions(id),
-      fetchTechnicians(),
+      fetchTechniciansFull(),
     ]);
     if (results[0].status === 'fulfilled') setWo(results[0].value);
     else setError(t('common.error'));
@@ -1319,6 +1448,16 @@ const WorkOrderDetail = () => {
   const handleAddTech = async (techId: string) => {
     if (!wo) return;
     setActionError(null);
+    // Warn + confirm (never silently block) when the technician is not currently
+    // available — inactive, on vacation, off-shift, or otherwise unavailable.
+    const picked = techOptions.find((o) => o.id === techId);
+    const av = picked?.availability;
+    if (av && av.should_warn) {
+      const label = t(`availability.${av.status}`);
+      if (!window.confirm(t('availability.assignWarning', { name: picked?.full_name ?? '', status: label }))) {
+        return;
+      }
+    }
     try {
       const updated = await addWOTechnician(wo.id, techId);
       setWo(updated);
@@ -1521,7 +1660,10 @@ const WorkOrderDetail = () => {
                 {techOptions
                   .filter((o) => !(wo.technicians ?? []).some((a) => a.technician_id === o.id))
                   .map((o) => (
-                    <option key={o.id} value={o.id}>{o.full_name}</option>
+                    <option key={o.id} value={o.id}>
+                      {o.full_name}
+                      {o.availability?.should_warn ? ` — ${t(`availability.${o.availability.status}`)}` : ''}
+                    </option>
                   ))}
               </select>
             ) : (
@@ -1546,6 +1688,9 @@ const WorkOrderDetail = () => {
           <span className="font-mono text-xs">{fmtDate(wo.opened_at)}</span>
         </div>
       </div>
+
+      {/* Active intervention on the machine — technician check-in/out */}
+      {!isTerminal && <InterventionCheckin workOrderId={wo.id} />}
 
       {/* Tab bar */}
       <div className="border-b border-white/[0.06]">
@@ -1585,6 +1730,7 @@ const WorkOrderDetail = () => {
             records={labor}
             technicians={techOptions}
             onAdded={(r) => setLabor((prev) => [...prev, r])}
+            onUpdated={(r) => setLabor((prev) => prev.map((x) => (x.id === r.id ? r : x)))}
           />
         )}
         {activeTab === 'parts' && (

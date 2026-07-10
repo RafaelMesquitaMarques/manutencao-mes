@@ -10,6 +10,15 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class PlantMembershipOut(BaseModel):
+    """One plant the user may work in, with the role held there."""
+    plant_id: str
+    code: str
+    name: str
+    role: UserRole
+    is_default: bool = False
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -18,6 +27,8 @@ class TokenResponse(BaseModel):
     language: str
     role: UserRole = UserRole.operator
     must_change_password: bool = False
+    plants: List[PlantMembershipOut] = []
+    default_plant_id: Optional[str] = None
 
 
 class UserCreate(BaseModel):

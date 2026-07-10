@@ -127,6 +127,9 @@ async def _view_from_intervention(db: AsyncSession, mi: MachineIntervention) -> 
         "parts": [_intervention_part_out(p) for p in parts],
         "parts_total": parts_total,
         "cost_center": mi.cost_center,
+        # Machine's default cost center — the approval picker pre-selects it when
+        # nothing has been chosen yet (still overridable per exception).
+        "default_cost_center": equipment.cost_center if equipment else None,
         "supports_part_reject": True,
         # Diagnosis / corrective action live on the ticket for kiosk interventions,
         # so they are only editable when a ticket exists.
@@ -173,6 +176,9 @@ async def _view_from_work_order(db: AsyncSession, wo: WorkOrder) -> dict:
         "parts": [_wo_part_out(p) for p in parts],
         "parts_total": parts_total,
         "cost_center": wo.cost_center,
+        # Machine's default cost center — the approval picker pre-selects it when
+        # nothing has been chosen yet (still overridable per exception).
+        "default_cost_center": equipment.cost_center if equipment else None,
         "supports_part_reject": False,
         "can_edit_diagnosis": True,
     }

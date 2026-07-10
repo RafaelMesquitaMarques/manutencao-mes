@@ -12,6 +12,8 @@ from sqlalchemy import select, func, or_, and_, case
 
 from app.db.session import get_db
 from app.core.security import get_current_user
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import plant_condition, plant_scoped
 from app.models.models import StockItem, Supplier, User
 
 router = APIRouter()
@@ -26,9 +28,9 @@ async def list_suppliers(
     skip: int = 0,
     limit: int = 200,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    q = select(Supplier)
+    q = plant_scoped(select(Supplier), Supplier, ctx)   # group-scoped: QC pool
     if active_only:
         q = q.where(Supplier.is_active == True)
     if search:
@@ -126,9 +128,9 @@ async def list_stock_items(
     skip: int = 0,
     limit: int = Query(default=50, le=6000),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    q = select(StockItem)
+    q = plant_scoped(select(StockItem), StockItem, ctx)   # group-scoped: QC pool
 
     filters = []
     if search:
@@ -166,6 +168,7 @@ async def list_stock_items(
     # Low stock count: quantity <= 0 OR (min set AND quantity <= min)
     low_q = select(func.count()).select_from(
         select(StockItem).where(
+            plant_condition(StockItem, ctx),
             or_(
                 StockItem.quantity <= 0,
                 and_(

@@ -23,6 +23,8 @@ from sqlalchemy import select, func, text, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.plant_context import PlantContext
+from app.core.plant_scope import plant_condition
 from app.models.models import User, Equipment
 from app.services.intelligence_calculator import build_findings
 
@@ -279,9 +281,15 @@ def _validate_sql(sql: str) -> tuple[str, Optional[str]]:
     return s, None
 
 
-async def _query_database(sql: str) -> dict:
+async def _query_database(sql: str, plant_ids_csv: Optional[str] = None,
+                          grouped_ids_csv: Optional[str] = None) -> dict:
     """Execute a validated read-only SELECT in a READ ONLY transaction with a
-    statement timeout, and return the rows."""
+    statement timeout, and return the rows.
+
+    Plant isolation: for non-corporate callers, `plant_ids_csv` (the user's
+    allowed plant ids) is installed as the `app.plant_ids` GUC for this
+    transaction — the row-level-security policies then hide every other
+    plant's rows from the arbitrary SQL. Corporate callers query unscoped."""
     from app.db.session import engine
 
     safe, err = _validate_sql(sql)
@@ -291,6 +299,19 @@ async def _query_database(sql: str) -> dict:
         async with engine.connect() as conn:
             await conn.execute(text("SET TRANSACTION READ ONLY"))
             await conn.execute(text("SET LOCAL statement_timeout = 8000"))
+            if plant_ids_csv:
+                await conn.execute(
+                    text("SELECT set_config('app.plant_ids', :ids, true)"),
+                    {"ids": plant_ids_csv},
+                )
+                await conn.execute(
+                    text("SELECT set_config('app.plant_ids_grouped', :ids, true)"),
+                    {"ids": grouped_ids_csv or plant_ids_csv},
+                )
+            # The app's own login is the bootstrap superuser, which BYPASSES
+            # row-level security — drop to the read-only ninja role for the
+            # rest of the transaction so the plant policies actually apply.
+            await conn.execute(text("SET LOCAL ROLE kaizo_ninja"))
             res = await conn.execute(text(safe))
             rows = [dict(r) for r in res.mappings().all()]
             await conn.rollback()
@@ -351,20 +372,22 @@ Style:
 
 # ── Tool resolution + execution ──────────────────────────────────────────────
 
-async def _resolve_equipment_id(db: AsyncSession, raw: str) -> Optional[UUID]:
-    """Map a name / code / id string to an Equipment id."""
+async def _resolve_equipment_id(db: AsyncSession, raw: str, ctx: PlantContext) -> Optional[UUID]:
+    """Map a name / code / id string to an Equipment id (active plant only)."""
     s = (raw or "").strip()
     if not s:
         return None
     try:
         u = UUID(s)
         eq = await db.get(Equipment, u)
-        if eq:
+        if eq and ctx.can_access(eq.plant_id):
             return eq.id
     except ValueError:
         pass
 
-    rows = (await db.execute(select(Equipment).where(Equipment.active == True))).scalars().all()  # noqa: E712
+    rows = (await db.execute(
+        select(Equipment).where(Equipment.active == True, plant_condition(Equipment, ctx))  # noqa: E712
+    )).scalars().all()
     sl = s.lower()
     # exact name / code
     for e in rows:
@@ -385,8 +408,8 @@ async def _resolve_equipment_id(db: AsyncSession, raw: str) -> Optional[UUID]:
     return None
 
 
-async def _list_assets(db: AsyncSession, asset_type: Optional[str]) -> dict:
-    q = select(Equipment).where(Equipment.active == True)  # noqa: E712
+async def _list_assets(db: AsyncSession, asset_type: Optional[str], ctx: PlantContext) -> dict:
+    q = select(Equipment).where(Equipment.active == True, plant_condition(Equipment, ctx))  # noqa: E712
     if asset_type in ("production", "auxiliary"):
         q = q.where(func.coalesce(Equipment.asset_type, "production") == asset_type)
     rows = (await db.execute(q.order_by(Equipment.name))).scalars().all()
@@ -406,13 +429,13 @@ async def _list_assets(db: AsyncSession, asset_type: Optional[str]) -> dict:
     }
 
 
-async def _machine_report(db: AsyncSession, user: User, machine: str, period_days: int) -> dict:
+async def _machine_report(db: AsyncSession, ctx: PlantContext, machine: str, period_days: int) -> dict:
     from app.api.routes.reports import machine_report  # lazy import avoids cycles
 
-    eq_id = await _resolve_equipment_id(db, machine)
+    eq_id = await _resolve_equipment_id(db, machine, ctx)
     if not eq_id:
         return {"error": f"No machine matched '{machine}'. Call list_assets to see valid names."}
-    data = await machine_report(machine_id=eq_id, period_days=period_days, db=db, current_user=user)
+    data = await machine_report(machine_id=eq_id, period_days=period_days, db=db, ctx=ctx)
     # Trim verbose daily-trend arrays; keep the headline numbers + top stop causes.
     if isinstance(data.get("availability"), dict):
         data["availability"].pop("trend", None)
@@ -424,7 +447,7 @@ async def _machine_report(db: AsyncSession, user: User, machine: str, period_day
     return data
 
 
-async def _purchasing_overview(db: AsyncSession, period_days: int) -> dict:
+async def _purchasing_overview(db: AsyncSession, period_days: int, ctx: PlantContext) -> dict:
     """Spend + PO counts, ranked by supplier, over a window (from purchase_orders)."""
     from datetime import date, timedelta
     from app.models.models import PurchaseOrder, Supplier
@@ -435,7 +458,7 @@ async def _purchasing_overview(db: AsyncSession, period_days: int) -> dict:
     by_supplier_rows = (await db.execute(
         select(Supplier.name, func.count(PurchaseOrder.id), spend)
         .join(PurchaseOrder, PurchaseOrder.supplier_id == Supplier.id)
-        .where(PurchaseOrder.order_date >= since)
+        .where(PurchaseOrder.order_date >= since, plant_condition(PurchaseOrder, ctx))
         .group_by(Supplier.name)
         .order_by(spend.desc())
     )).all()
@@ -443,7 +466,7 @@ async def _purchasing_overview(db: AsyncSession, period_days: int) -> dict:
 
     by_status_rows = (await db.execute(
         select(PurchaseOrder.status, func.count(), spend)
-        .where(PurchaseOrder.order_date >= since)
+        .where(PurchaseOrder.order_date >= since, plant_condition(PurchaseOrder, ctx))
         .group_by(PurchaseOrder.status)
     )).all()
     by_status = [
@@ -461,26 +484,27 @@ async def _purchasing_overview(db: AsyncSession, period_days: int) -> dict:
     }
 
 
-async def _inventory_overview(db: AsyncSession) -> dict:
-    """Stock counts, value, and category breakdown from stock_items."""
+async def _inventory_overview(db: AsyncSession, ctx: PlantContext) -> dict:
+    """Stock counts, value, and category breakdown from stock_items (group pool)."""
     from app.models.models import StockItem
 
+    scope = plant_condition(StockItem, ctx)   # group-scoped: QC shared warehouse
     unit_cost = func.coalesce(StockItem.average_cost, StockItem.unit_cost, StockItem.last_purchase_cost)
     low_cond = or_(
         StockItem.quantity <= 0,
         and_(StockItem.min_quantity.isnot(None), StockItem.quantity <= StockItem.min_quantity),
     )
 
-    total = (await db.execute(select(func.count()).select_from(StockItem))).scalar_one()
-    zero = (await db.execute(select(func.count()).select_from(StockItem).where(StockItem.quantity <= 0))).scalar_one()
-    low = (await db.execute(select(func.count()).select_from(StockItem).where(low_cond))).scalar_one()
+    total = (await db.execute(select(func.count()).select_from(StockItem).where(scope))).scalar_one()
+    zero = (await db.execute(select(func.count()).select_from(StockItem).where(scope, StockItem.quantity <= 0))).scalar_one()
+    low = (await db.execute(select(func.count()).select_from(StockItem).where(scope, low_cond))).scalar_one()
     value = (await db.execute(
-        select(func.coalesce(func.sum(StockItem.quantity * unit_cost), 0.0)).where(unit_cost.isnot(None))
+        select(func.coalesce(func.sum(StockItem.quantity * unit_cost), 0.0)).where(scope, unit_cost.isnot(None))
     )).scalar_one()
-    priced = (await db.execute(select(func.count()).select_from(StockItem).where(unit_cost.isnot(None)))).scalar_one()
+    priced = (await db.execute(select(func.count()).select_from(StockItem).where(scope, unit_cost.isnot(None)))).scalar_one()
     cats = (await db.execute(
         select(StockItem.category, func.count())
-        .where(StockItem.category.isnot(None))
+        .where(scope, StockItem.category.isnot(None))
         .group_by(StockItem.category).order_by(func.count().desc()).limit(15)
     )).all()
 
@@ -495,17 +519,25 @@ async def _inventory_overview(db: AsyncSession) -> dict:
     }
 
 
-async def _run_tool(db: AsyncSession, user: User, name: str, args: dict) -> Any:
+async def _run_tool(db: AsyncSession, user: User, ctx: PlantContext, name: str, args: dict) -> Any:
+    # Every tool answers within the caller's plant context: curated tools carry
+    # explicit filters; raw SQL is fenced by RLS via the app.plant_ids GUC.
+    plant_ids_csv = None if ctx.is_corporate else ",".join(
+        sorted(str(p) for p in ctx.allowed_plant_ids)
+    )
+    grouped_ids_csv = None if ctx.is_corporate else ",".join(
+        sorted(str(p) for p in ctx.allowed_group_plant_ids)
+    )
     try:
         if name == "list_assets":
-            return await _list_assets(db, args.get("asset_type"))
+            return await _list_assets(db, args.get("asset_type"), ctx)
 
         if name == "compare_machines":
             from app.api.routes.reports import compare_machines
-            return await compare_machines(period_days=_clamp(args.get("period_days"), 30, 365), db=db, current_user=user)
+            return await compare_machines(period_days=_clamp(args.get("period_days"), 30, 365), db=db, ctx=ctx)
 
         if name == "machine_report":
-            return await _machine_report(db, user, args.get("machine", ""), _clamp(args.get("period_days"), 30, 365))
+            return await _machine_report(db, ctx, args.get("machine", ""), _clamp(args.get("period_days"), 30, 365))
 
         if name == "maintenance_overview":
             from app.api.routes.maintenance_dashboard import maintenance_dashboard
@@ -515,25 +547,28 @@ async def _run_tool(db: AsyncSession, user: User, name: str, args: dict) -> Any:
                 end_date=args.get("end_date"),
                 machine_ids=None,
                 db=db,
-                current_user=user,
+                ctx=ctx,
             )
             data.pop("trend", None)  # drop the long daily series
             return data
 
         if name == "intelligence_findings":
-            return await build_findings(db, period_days=_clamp(args.get("period_days"), 30, 365))
+            return await build_findings(
+                db, period_days=_clamp(args.get("period_days"), 30, 365),
+                plant_id=None if ctx.is_corporate else str(ctx.plant_id),
+            )
 
         if name == "purchasing_overview":
-            return await _purchasing_overview(db, _clamp(args.get("period_days"), 365, 3650))
+            return await _purchasing_overview(db, _clamp(args.get("period_days"), 365, 3650), ctx)
 
         if name == "inventory_overview":
-            return await _inventory_overview(db)
+            return await _inventory_overview(db, ctx)
 
         if name == "describe_schema":
             return _schema_catalog(args.get("tables"))
 
         if name == "query_database":
-            return await _query_database(args.get("sql", ""))
+            return await _query_database(args.get("sql", ""), plant_ids_csv, grouped_ids_csv)
 
         return {"error": f"Unknown tool '{name}'."}
     except Exception as exc:  # surface tool failures to the model, don't crash the turn
@@ -547,6 +582,7 @@ async def answer_question(
     db: AsyncSession,
     current_user: User,
     messages: list[dict],
+    ctx: PlantContext,
     language: str = "en",
 ) -> dict:
     """Run the tool-use loop and return {answer, used_tools, ai_generated}."""
@@ -593,7 +629,7 @@ async def answer_question(
                 for block in resp.content:
                     if getattr(block, "type", None) == "tool_use":
                         used.append(block.name)
-                        out = await _run_tool(db, current_user, block.name, dict(block.input or {}))
+                        out = await _run_tool(db, current_user, ctx, block.name, dict(block.input or {}))
                         payload = json.dumps(out, default=str)
                         if len(payload) > MAX_TOOL_RESULT_CHARS:
                             payload = payload[:MAX_TOOL_RESULT_CHARS] + ' …", "_truncated": true}'

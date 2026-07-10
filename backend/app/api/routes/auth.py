@@ -5,18 +5,55 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.db.session import get_db
-from app.models.models import User, UserInvitation, PasswordResetToken
+from app.models.models import Plant, User, UserInvitation, UserPlant, UserRole, PasswordResetToken
 from app.schemas.user import (
     LoginRequest, TokenResponse, UserCreate, UserOut, UserMeUpdate,
     InviteRequest, InviteOut, AcceptInviteRequest,
     ForgotPasswordRequest, ResetPasswordRequest, ChangePasswordRequest,
-    ForceChangePasswordRequest,
+    ForceChangePasswordRequest, PlantMembershipOut,
 )
 from app.core.security import verify_password, hash_password, create_access_token, get_current_user
 from app.core.permissions import require_admin, effective_permissions
 from app.services.email_service import EmailService
 
 router = APIRouter()
+
+
+async def _plant_memberships(db: AsyncSession, user: User) -> tuple[list[PlantMembershipOut], str | None]:
+    """The plants this user may work in, default first.
+    Corporate admin sees every active plant (membership rows only refine which
+    one is the default); everyone else sees exactly their user_plants rows."""
+    links = (await db.execute(
+        select(UserPlant, Plant)
+        .join(Plant, UserPlant.plant_id == Plant.id)
+        .where(UserPlant.user_id == user.id, Plant.active == True)  # noqa: E712
+        .order_by(UserPlant.is_default.desc(), UserPlant.created_at)
+    )).all()
+
+    if user.role == UserRole.admin:
+        default_ids = {lnk.plant_id for lnk, _ in links if lnk.is_default}
+        plants = (await db.execute(
+            select(Plant).where(Plant.active == True)  # noqa: E712
+            .order_by(Plant.created_at, Plant.code)
+        )).scalars().all()
+        items = [
+            PlantMembershipOut(
+                plant_id=str(p.id), code=p.code, name=p.name,
+                role=UserRole.admin, is_default=p.id in default_ids,
+            )
+            for p in plants
+        ]
+    else:
+        items = [
+            PlantMembershipOut(
+                plant_id=str(lnk.plant_id), code=p.code, name=p.name,
+                role=lnk.role, is_default=lnk.is_default,
+            )
+            for lnk, p in links
+        ]
+
+    default_id = next((i.plant_id for i in items if i.is_default), items[0].plant_id if items else None)
+    return items, default_id
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -35,6 +72,7 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
     user.last_login_at = datetime.now(timezone.utc)
     await db.commit()
 
+    plants, default_plant_id = await _plant_memberships(db, user)
     token = create_access_token({"sub": str(user.id), "role": user.role.value})
     return TokenResponse(
         access_token=token,
@@ -43,6 +81,8 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
         language=user.language or "en",
         role=user.role,
         must_change_password=user.must_change_password,
+        plants=plants,
+        default_plant_id=default_plant_id,
     )
 
 
@@ -74,6 +114,18 @@ async def register(
 @router.get("/me", response_model=UserOut)
 async def me(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+@router.get("/me/plants")
+async def my_plants(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Plant memberships of the logged-in user (default first). Used by the
+    frontend to (re)hydrate the plant selector for sessions that predate the
+    login response carrying `plants`."""
+    plants, default_plant_id = await _plant_memberships(db, current_user)
+    return {"plants": plants, "default_plant_id": default_plant_id}
 
 
 @router.get("/permissions")
@@ -175,6 +227,18 @@ async def accept_invite(data: AcceptInviteRequest, db: AsyncSession = Depends(ge
     )
     db.add(user)
     invitation.accepted_at = now
+    await db.flush()
+    # Plant access is intentional, never inherited: the membership comes from the
+    # invitation's plant. Invites without a plant leave the user plant-less until
+    # an admin assigns one in Settings → Users.
+    if invitation.plant_id:
+        db.add(UserPlant(
+            user_id=user.id,
+            plant_id=invitation.plant_id,
+            role=invitation.role,
+            is_default=True,
+            granted_by_id=invitation.invited_by_id,
+        ))
     await db.commit()
     await db.refresh(user)
 

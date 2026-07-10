@@ -134,6 +134,22 @@ class TechnicianShift(str, enum.Enum):
     night    = "night"
     rotating = "rotating"
 
+class ShiftBreakKind(str, enum.Enum):
+    """A non-working interval inside a shift. All kinds are deducted from
+    effective LABOR time (never from machine downtime). `paid` is informational."""
+    lunch       = "lunch"
+    short_break = "break"
+    pause       = "pause"
+
+class UnavailabilityType(str, enum.Enum):
+    """Why a technician is not available for labor over a period."""
+    vacation    = "vacation"
+    sick        = "sick"
+    absence     = "absence"
+    training    = "training"
+    unavailable = "unavailable"
+    other       = "other"
+
 class ExecutionMode(str, enum.Enum):
     internal = "internal"
     external = "external"
@@ -220,6 +236,14 @@ class Plant(Base):
     name       = Column(String(200), nullable=False)
     address    = Column(String(500))
     timezone   = Column(String(50), default="America/Toronto")
+    # Plants sharing a group_code pool their GROUP-SCOPED resources (inventory,
+    # suppliers): SJ+Mirabel = 'QC' (one shared warehouse/supplier base, business
+    # decision 2026-07-10). NULL = the plant is its own group — a new plant
+    # (Las Vegas) is fully isolated unless explicitly grouped.
+    group_code = Column(String(20), nullable=True)
+    # Default currency for the plant's money fields (budgets, POs, labor rates):
+    # QC plants = CAD, Las Vegas = USD.
+    currency   = Column(String(3), nullable=False, default="CAD")
     floor_plan_url = Column(String(500))   # uploaded top-down plant layout image (factory map)
     active     = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -249,7 +273,7 @@ class User(Base):
     invited_at           = Column(DateTime(timezone=True))
     created_at           = Column(DateTime(timezone=True), server_default=func.now())
 
-    plants               = relationship("UserPlant", back_populates="user")
+    plants               = relationship("UserPlant", back_populates="user", foreign_keys="UserPlant.user_id")
     permissions          = relationship("Permission", back_populates="user", cascade="all, delete-orphan")
     created_work_orders  = relationship("WorkOrder", back_populates="created_by",  foreign_keys="WorkOrder.created_by_id")
     assigned_work_orders = relationship("WorkOrder", back_populates="assigned_to", foreign_keys="WorkOrder.assigned_to_id")
@@ -257,15 +281,25 @@ class User(Base):
 
 
 class UserPlant(Base):
-    """Junction table: a user can have different roles at each plant."""
+    """Junction table: a user can have different roles at each plant.
+
+    THE authoritative source of plant access (multi-plant phase 0): a user may
+    only operate on plants they hold a membership row for. `User.role` stays as
+    the global role — `admin` means corporate (all plants); for everyone else
+    the per-plant `role` here is what authorization resolves against.
+    """
     __tablename__ = "user_plants"
+    __table_args__ = (UniqueConstraint("user_id", "plant_id", name="uq_user_plants_user_plant"),)
 
-    id       = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id  = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    plant_id = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False)
-    role     = Column(SAEnum(UserRole, native_enum=False), default=UserRole.technician)
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id       = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    plant_id      = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False)
+    role          = Column(SAEnum(UserRole, native_enum=False), default=UserRole.technician)
+    is_default    = Column(Boolean, nullable=False, default=False)
+    granted_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at    = Column(DateTime(timezone=True), server_default=func.now())
 
-    user  = relationship("User", back_populates="plants")
+    user  = relationship("User", back_populates="plants", foreign_keys=[user_id])
     plant = relationship("Plant", back_populates="users")
 
 
@@ -337,6 +371,9 @@ class Equipment(Base):
     orbit_h            = Column(Float, nullable=True)
     function_label     = Column(String(300))   # what the machine does, e.g. "Fraiseuse à contrôle numérique [CNC grooving machine]"
     department         = Column(String(200))   # Excel "Division proposée" — org/budget grouping (level 2)
+    # Default cost center (CostCenter.name) pre-selected when a work order on this
+    # machine is approved. The approver can still override it per exception.
+    cost_center        = Column(String(200), nullable=True)
     family             = Column(String(200))   # Excel "Famille maintenance proposée" — technical family (level 4)
     pm_strategy        = Column(String(300))   # Excel "Stratégie PM proposée"
     cleaning_priority  = Column(String(50))    # Excel "Priorité de nettoyage"
@@ -375,6 +412,7 @@ class WorkOrder(Base):
     id             = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     wo_number      = Column(String(20), unique=True, nullable=False)
     equipment_id   = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=False)
+    plant_id       = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from equipment/machine
     created_by_id  = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     assigned_to_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     plan_id        = Column(UUID(as_uuid=True), ForeignKey("maintenance_plans.id"), nullable=True)
@@ -641,6 +679,8 @@ class Supplier(Base):
     __tablename__ = "suppliers"
 
     id             = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # NULL = shared/corporate supplier (per-plant vs shared is an open business decision)
+    plant_id       = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
     code           = Column(String(50),  nullable=True)
     name           = Column(String(300), nullable=False)
     contact_name   = Column(String(200), nullable=True)
@@ -717,6 +757,7 @@ class Sensor(Base):
 
     id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=False)
+    plant_id     = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from equipment
     code         = Column(String(100), nullable=False)  # MQTT topic identifier
     name         = Column(String(200))
     type         = Column(String(50))   # vibration | temperature | current | pressure
@@ -754,6 +795,7 @@ class Alert(Base):
     id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     sensor_id     = Column(UUID(as_uuid=True), ForeignKey("sensors.id"), nullable=False)
     equipment_id  = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=False)
+    plant_id      = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from equipment
     type          = Column(String(50))
     severity      = Column(String(20))
     value_read    = Column(Float)
@@ -784,6 +826,7 @@ class Technician(Base):
     labor_records = relationship("LaborRecord", back_populates="technician")
     assigned_maintenance_plans = relationship("MaintenancePlan", back_populates="assigned_technician", foreign_keys="MaintenancePlan.assigned_technician_id")
     work_order_links = relationship("WorkOrderTechnician", back_populates="technician", cascade="all, delete-orphan")
+    unavailability   = relationship("TechnicianUnavailability", back_populates="technician", cascade="all, delete-orphan")
 
 
 class WorkOrderTechnician(Base):
@@ -820,9 +863,84 @@ class LaborRecord(Base):
     started_at    = Column(DateTime(timezone=True), nullable=True)
     stopped_at    = Column(DateTime(timezone=True), nullable=True)
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
+    # ── Effective-labor accounting (Phase 1) ─────────────────────────────────
+    # hours_worked stays RAW (feeds repair_hours / MTTR — never reduced by breaks).
+    # effective_hours = hours_worked minus overlapping non-working intervals
+    # (off-shift unless overtime_approved, lunch, breaks, vacation/unavailability)
+    # and is what drives labor_cost. deducted_minutes is kept for UI/audit.
+    effective_hours   = Column(Float, nullable=True)
+    overtime_approved = Column(Boolean, nullable=False, default=False)
+    deducted_minutes  = Column(Float, nullable=True)
 
     work_order = relationship("WorkOrder", back_populates="labor_records")
     technician = relationship("Technician", back_populates="labor_records")
+
+
+# ─── Shift templates, breaks & technician availability ───────────────────────────
+
+class ShiftTemplate(Base):
+    """A named work shift with clock times and break rules, used to compute
+    effective LABOR time and technician availability. A technician is matched to
+    a template by `key` == Technician.shift value (day|evening|night|rotating),
+    optionally scoped to a plant. Times are plant-local wall clock "HH:MM";
+    end <= start means the shift runs past midnight (overnight)."""
+    __tablename__ = "shift_templates"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id   = Column(UUID(as_uuid=True), ForeignKey("plants.id", ondelete="CASCADE"), nullable=True)
+    key        = Column(String(50), nullable=False)   # matches TechnicianShift value or custom
+    name       = Column(String(200), nullable=False, default="")
+    start_time = Column(String(5), nullable=False)     # "HH:MM"
+    end_time   = Column(String(5), nullable=False)     # "HH:MM"
+    active     = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    breaks = relationship(
+        "ShiftBreak", back_populates="template",
+        cascade="all, delete-orphan", order_by="ShiftBreak.start_time",
+    )
+
+
+class ShiftBreak(Base):
+    """A non-working interval inside a shift (lunch, break, pause). Every
+    configured break is deducted from effective LABOR time — never from machine
+    downtime, ticket duration, or MTTR. `paid` is informational only. Times are
+    plant-local wall clock "HH:MM"."""
+    __tablename__ = "shift_breaks"
+
+    id                = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shift_template_id = Column(UUID(as_uuid=True), ForeignKey("shift_templates.id", ondelete="CASCADE"), nullable=False)
+    # values_callable → persist/read the enum VALUE ("break") not the member name
+    # ("short_break"), matching the seed data and the API schema.
+    kind              = Column(SAEnum(ShiftBreakKind, native_enum=False, values_callable=lambda e: [m.value for m in e]), nullable=False, default=ShiftBreakKind.short_break)
+    name              = Column(String(200), nullable=False, default="")
+    start_time        = Column(String(5), nullable=False)   # "HH:MM"
+    end_time          = Column(String(5), nullable=False)   # "HH:MM"
+    paid              = Column(Boolean, nullable=False, default=False)
+    created_at        = Column(DateTime(timezone=True), server_default=func.now())
+
+    template = relationship("ShiftTemplate", back_populates="breaks")
+
+
+class TechnicianUnavailability(Base):
+    """A period when a technician is not available for labor: vacation, sick,
+    absence, training, or a generic unavailable window. Day-granular, inclusive
+    [start_date, end_date]. Overlap with a labor record is excluded from effective
+    labor time, and the period flags the technician unavailable for assignment and
+    capacity planning. Never alters machine downtime or MTTR."""
+    __tablename__ = "technician_unavailability"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    technician_id = Column(UUID(as_uuid=True), ForeignKey("technicians.id", ondelete="CASCADE"), nullable=False)
+    type          = Column(SAEnum(UnavailabilityType, native_enum=False, values_callable=lambda e: [m.value for m in e]), nullable=False, default=UnavailabilityType.vacation)
+    start_date    = Column(Date, nullable=False)
+    end_date      = Column(Date, nullable=False)
+    notes         = Column(Text)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at    = Column(DateTime(timezone=True), server_default=func.now())
+
+    technician = relationship("Technician", back_populates="unavailability")
 
 
 # ─── WO Parts ──────────────────────────────────────────────────────────────────
@@ -952,11 +1070,15 @@ class Machine(Base):
     hourly_rate              = Column(Float, nullable=True)
     hourly_rate_currency     = Column(SAEnum(HourlyRateCurrency, native_enum=False), default=HourlyRateCurrency.CAD)
     target_count_per_shift   = Column(Integer, nullable=True)
+    target_count_per_hour    = Column(Integer, nullable=True)   # master production goal; per-shift & daily are derived from it
     shifts_config            = Column(JSON, nullable=True)
     kiosk_layout             = Column(JSON, nullable=True)   # per-machine resizable panel layout (react-grid-layout)
     signal_ingest_token      = Column(String(120), nullable=True)   # ADAM-6050 production-signal ingest (per machine)
     # ── Factory map / digital-twin layout ──
     plant_id                 = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    # Kiosk access token (phase 4): tablets open /machines/:slug?k=<token>; the
+    # kiosk endpoints require it once KIOSK_ENFORCE_TOKEN is on.
+    kiosk_token              = Column(String(120), nullable=True)
     pos_x                    = Column(Float, nullable=True)   # top-down map coordinates
     pos_y                    = Column(Float, nullable=True)
     pos_w                    = Column(Float, nullable=True)   # block size on the map
@@ -1013,6 +1135,7 @@ class AdamDevice(Base):
     ip_address       = Column(String(64), nullable=False)
     port             = Column(Integer, default=502)
     machine_id       = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
+    plant_id         = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from machine
     enabled          = Column(Boolean, default=True)
     # Pulse source + wiring
     signal_source    = Column(SAEnum(AdamSignalSource, native_enum=False), default=AdamSignalSource.di)
@@ -1079,6 +1202,7 @@ class RobotCell(Base):
 
     id                 = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     equipment_id       = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=False, unique=True, index=True)
+    plant_id           = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from equipment
     cell_model         = Column(String(50))    # CRX-25iA | CRX-30iA | CRX-30iAL
     controller         = Column(String(80), default="FANUC R-30iB Mini Plus")
     ip_address         = Column(String(64), nullable=True)
@@ -1222,6 +1346,7 @@ class MachineStop(Base):
 
     id                  = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     machine_id          = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    plant_id            = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from machine
     started_at          = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     ended_at            = Column(DateTime(timezone=True), nullable=True)
     duration_minutes    = Column(Integer, nullable=True)
@@ -1247,6 +1372,7 @@ class MachineOperator(Base):
 
     id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     machine_id    = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    plant_id      = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from machine
     user_id       = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     name          = Column(String(200), nullable=False)
     employee_code = Column(String(50), nullable=True)
@@ -1263,6 +1389,7 @@ class MachineProductionLog(Base):
 
     id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     machine_id       = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    plant_id         = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from machine
     date             = Column(Date, nullable=False)
     shift            = Column(SAEnum(AlertShift, native_enum=False), nullable=False)
     job_number       = Column(String(100), nullable=True)
@@ -1299,6 +1426,7 @@ class MaintenanceAlert(Base):
     id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     alert_number     = Column(String(30), unique=True, nullable=False)
     machine_id       = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    plant_id         = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from machine
     ticket_id        = Column(UUID(as_uuid=True), ForeignKey("maintenance_tickets.id"), nullable=True)
     department       = Column(String(200))
     problem_type     = Column(SAEnum(AlertProblemType, native_enum=False), nullable=False)
@@ -1327,6 +1455,7 @@ class MaintenanceTicket(Base):
     ticket_number              = Column(String(30), unique=True, nullable=False)
     alert_id                   = Column(UUID(as_uuid=True), ForeignKey("maintenance_alerts.id"), nullable=True)
     machine_id                 = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    plant_id                   = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from machine
     work_order_id              = Column(UUID(as_uuid=True), ForeignKey("work_orders.id"), nullable=True)
     priority                   = Column(SAEnum(AlertPriority, native_enum=False), default=AlertPriority.medium)
     status                     = Column(SAEnum(TicketStatus, native_enum=False), default=TicketStatus.open)
@@ -1359,6 +1488,8 @@ class EscalationSettings(Base):
     __tablename__ = "escalation_settings"
 
     id                        = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # NULL = global/legacy row (phase 3 makes escalation per-plant: one row per plant)
+    plant_id                  = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
     sla_critical_minutes      = Column(Integer, default=10)
     sla_high_minutes          = Column(Integer, default=30)
     sla_medium_minutes        = Column(Integer, default=120)
@@ -1396,6 +1527,8 @@ class EscalationContact(Base):
     __tablename__ = "escalation_contacts"
 
     id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # NULL = global/legacy contact (phase 3 scopes contacts to their plant)
+    plant_id   = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
     level      = Column(Integer, nullable=False)
     user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     via_sms    = Column(Boolean, default=True)
@@ -1436,6 +1569,7 @@ class ShiftReport(Base):
     __tablename__ = "shift_reports"
 
     id                  = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id            = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # NULL = legacy (pre multi-plant) report
     shift_key           = Column(String(50), nullable=False)     # shifts_config key (morning|afternoon|night|…)
     window_start        = Column(DateTime(timezone=True), nullable=False)
     window_end          = Column(DateTime(timezone=True), nullable=False)
@@ -1505,6 +1639,7 @@ class RejectLog(Base):
 
     id                    = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     machine_id            = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    plant_id              = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from machine
     date                  = Column(Date, nullable=False)
     shift                 = Column(SAEnum(AlertShift, native_enum=False), nullable=False, default=AlertShift.morning)
     job_number            = Column(String(100), nullable=True)
@@ -1527,6 +1662,7 @@ class JobOrder(Base):
 
     id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     machine_id      = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
+    plant_id        = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from machine
     job_number      = Column(String(100), unique=True, nullable=False)
     product_name    = Column(String(300), nullable=True)
     target_quantity = Column(Integer, nullable=True)
@@ -1546,6 +1682,7 @@ class PurchaseOrder(Base):
     id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     order_number  = Column(String(50), unique=True, nullable=False)
     supplier_id   = Column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=False)
+    plant_id      = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled via cost-center site rule
     status        = Column(SAEnum(PurchaseOrderStatus, native_enum=False), default=PurchaseOrderStatus.draft)
     order_date    = Column(Date, nullable=False)
     expected_date = Column(Date, nullable=True)
@@ -1613,6 +1750,7 @@ class MachineHistory(Base):
 
     id                = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     machine_id        = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False)
+    plant_id          = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from machine
     work_order_id     = Column(UUID(as_uuid=True), nullable=True)  # soft ref
     ticket_id         = Column(UUID(as_uuid=True), nullable=True)  # soft ref
     event_type        = Column(String(30), nullable=False)  # corrective | preventive | inspection
@@ -1701,6 +1839,20 @@ class MachineIntervention(Base):
     # Cost center the approver books this intervention's cost to (SAP cost-center
     # name, e.g. "Maintenance"). Chosen at approval; drives cost attribution.
     cost_center                   = Column(String(200), nullable=True)
+
+
+class InterventionTechnician(Base):
+    """Technicians checked in on an intervention (kiosk check-in). Several techs
+    can work the same intervention; the first check-in also backfills
+    ``started_by_name`` so the map pictograms have a name. ``name`` is
+    denormalized at check-in time so history survives user renames."""
+    __tablename__ = "intervention_technicians"
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    intervention_id = Column(UUID(as_uuid=True), ForeignKey("machine_interventions.id"), nullable=False)
+    technician_id   = Column(UUID(as_uuid=True), ForeignKey("technicians.id"), nullable=True)
+    name            = Column(String(200), nullable=False)
+    checked_in_at   = Column(DateTime(timezone=True), server_default=func.now())
+    checked_out_at  = Column(DateTime(timezone=True), nullable=True)
 
 
 class SafetyChecklist(Base):
@@ -1921,6 +2073,7 @@ class MaintenanceBudget(Base):
     __table_args__ = (UniqueConstraint("year", "month", name="uq_maintenance_budget_year_month"),)
 
     id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id   = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # NULL = legacy/ambiguous — see backfill report
     year       = Column(Integer, nullable=False, index=True)
     month      = Column(Integer, nullable=False)   # 1..12
     amount     = Column(Float, nullable=False, default=0.0)
@@ -1939,6 +2092,7 @@ class CostCenterBudget(Base):
                                        name="uq_cc_budget_year_month_cc_kind"),)
 
     id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id    = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled via cost-center site rule
     cost_center = Column(String(200), nullable=False, index=True)
     year        = Column(Integer, nullable=False, index=True)
     month       = Column(Integer, nullable=False)   # 1..12
@@ -1956,6 +2110,8 @@ class FactoryCalendarSettings(Base):
     __tablename__ = "factory_calendar_settings"
 
     id             = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # NULL = global/legacy row (phase 3 makes the work calendar per-plant)
+    plant_id       = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
     count_weekends = Column(Boolean, nullable=False, default=False)
     updated_at     = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -1966,6 +2122,9 @@ class FactoryHoliday(Base):
     __tablename__ = "factory_holidays"
 
     id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # NULL = global/legacy holiday (phase 3: per-plant calendars — QC vs NV holidays;
+    # the unique(date) constraint moves to (plant_id, date) then)
+    plant_id   = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
     date       = Column(Date, nullable=False, unique=True, index=True)
     name       = Column(String(200), nullable=False, default="")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -1979,6 +2138,7 @@ class CostCenter(Base):
     __table_args__ = (UniqueConstraint("name", name="uq_cost_center_name"),)
 
     id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id   = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled via cost-center site rule (replaces name matching)
     name       = Column(String(200), nullable=False)
     code       = Column(String(50))
     active     = Column(Boolean, nullable=False, default=True)
@@ -2009,6 +2169,7 @@ class SapCostLine(Base):
                                        name="uq_sap_line_fy_pos_cc_acct"),)
 
     id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id         = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled via cost-center site rule
     fiscal_year      = Column(Integer, nullable=False, index=True)
     pos              = Column(Integer, nullable=False)   # 1..12 fiscal position (1 = Dec)
     year             = Column(Integer, nullable=False)   # calendar year of the month

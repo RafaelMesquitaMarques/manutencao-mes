@@ -17,12 +17,19 @@ from app.schemas.work_order import WorkOrderOut
 from app.services.ticket_service import TicketService, sync_alert_from_ticket, backfill_missing_alerts, DuplicateTicketError
 from app.core.security import get_current_user
 from app.core.permissions import require_permission
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import ensure_same_plant, plant_scoped, require_technician_in_plant as _require_technician_in_plant
 
 
 class TicketAssign(BaseModel):
     technician_id: UUID
 
 router = APIRouter()
+
+
+async def _get_ticket_scoped(ticket_id: UUID, db: AsyncSession, ctx: PlantContext) -> MaintenanceTicket:
+    """Fetch + plant visibility: wrong-plant ticket ids 404 like missing ones."""
+    return ensure_same_plant(await db.get(MaintenanceTicket, ticket_id), ctx, detail="Ticket not found")
 
 
 async def _require_wo_closed(ticket: MaintenanceTicket, db: AsyncSession) -> None:
@@ -155,8 +162,11 @@ async def create_ticket(
     data: TicketCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
     _perm: User = Depends(require_permission("tickets", "create")),
 ):
+    # Relational guard: the target machine must belong to a plant this user can see.
+    ensure_same_plant(await db.get(Machine, data.machine_id), ctx, detail="Machine not found")
     svc = TicketService(db)
     try:
         ticket = await svc.create_ticket(data, created_by=current_user.name)
@@ -177,9 +187,9 @@ async def list_tickets(
     skip:           int                    = Query(0, ge=0),
     limit:          int                    = Query(100, le=500),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    q = select(MaintenanceTicket)
+    q = plant_scoped(select(MaintenanceTicket), MaintenanceTicket, ctx)
     if status:
         q = q.where(MaintenanceTicket.status == status)
     if machine_id:
@@ -214,11 +224,9 @@ async def run_backfill_alerts(
 async def get_ticket(
     ticket_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    ticket = await db.get(MaintenanceTicket, ticket_id)
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = await _get_ticket_scoped(ticket_id, db, ctx)
     return await _enrich(ticket, db, with_comments=True)
 
 
@@ -227,11 +235,9 @@ async def update_ticket(
     ticket_id: UUID,
     data: TicketUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    ticket = await db.get(MaintenanceTicket, ticket_id)
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = await _get_ticket_scoped(ticket_id, db, ctx)
 
     updates = data.model_dump(exclude_none=True)
 
@@ -259,11 +265,9 @@ async def close_ticket(
     ticket_id: UUID,
     data: TicketClose,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    ticket = await db.get(MaintenanceTicket, ticket_id)
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = await _get_ticket_scoped(ticket_id, db, ctx)
     await _require_wo_closed(ticket, db)
 
     svc = TicketService(db)
@@ -280,7 +284,9 @@ async def add_comment(
     data: CommentCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    await _get_ticket_scoped(ticket_id, db, ctx)
     svc = TicketService(db)
     try:
         comment = await svc.add_comment(ticket_id, data)
@@ -295,8 +301,11 @@ async def assign_ticket(
     data: TicketAssign,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     """Assign a technician to a ticket and auto-create a linked work order."""
+    ticket = await _get_ticket_scoped(ticket_id, db, ctx)
+    await _require_technician_in_plant(db, data.technician_id, ticket.plant_id)
     svc = TicketService(db)
     try:
         ticket, wo = await svc.assign_ticket(ticket_id, data.technician_id, current_user.id)
@@ -312,21 +321,19 @@ async def claim_ticket(
     ticket_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     """Technician self-assigns an unassigned ticket — used on shifts without
     a supervisor to dispatch work. Same effect as a supervisor assignment.
     Subject to the supervisor-controlled technician_self_assign switch."""
     from app.services.notification_service import get_escalation_settings
-    esc = await get_escalation_settings(db)
+    ticket = await _get_ticket_scoped(ticket_id, db, ctx)
+    esc = await get_escalation_settings(db, ticket.plant_id)
     if not esc.technician_self_assign:
         raise HTTPException(
             status_code=403,
             detail="Self-assignment is currently disabled — your supervisor dispatches the work orders",
         )
-
-    ticket = await db.get(MaintenanceTicket, ticket_id)
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
     if ticket.assigned_to_id:
         raise HTTPException(status_code=409, detail="Ticket already taken by another technician")
     if ticket.status in (TicketStatus.completed, TicketStatus.cancelled):
@@ -400,7 +407,9 @@ async def generate_work_order(
     ticket_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    await _get_ticket_scoped(ticket_id, db, ctx)
     svc = TicketService(db)
     try:
         ticket, wo = await svc.generate_work_order(ticket_id, current_user.id)
@@ -420,11 +429,9 @@ async def generate_work_order(
 async def get_ticket_work_order(
     ticket_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    ticket = await db.get(MaintenanceTicket, ticket_id)
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = await _get_ticket_scoped(ticket_id, db, ctx)
     if not ticket.work_order_id:
         raise HTTPException(status_code=404, detail="No work order linked to this ticket")
     wo = await db.get(WorkOrder, ticket.work_order_id)
@@ -441,12 +448,10 @@ async def get_ticket_work_order(
 async def delete_ticket(
     ticket_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
     _perm: User = Depends(require_permission("tickets", "delete")),
 ):
-    ticket = await db.get(MaintenanceTicket, ticket_id)
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = await _get_ticket_scoped(ticket_id, db, ctx)
     # Remove/detach children blocked by NO ACTION FKs so the delete never 500s.
     # (linked alert cascades on delete per chosen behavior; notification_logs and
     #  machine_interventions set their ticket_id to NULL automatically.)

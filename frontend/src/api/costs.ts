@@ -45,6 +45,11 @@ export const saveBudgets = async (year: number, items: BudgetItem[]): Promise<Bu
 // appears in the informative by-machine view.
 export type CostScope = 'opex' | 'capex';
 
+// The plant runs from two sites, told apart by the cost-center name (Mirabel
+// cost centers carry "Mirabel"). A null site means both sites combined.
+// QS = Saint-Jérôme, QM = Mirabel.
+export type CostSite = 'QS' | 'QM';
+
 export interface SapComment {
   pos: number;                         // 1..12 slot in the months map
   account: string;
@@ -119,8 +124,10 @@ export interface CCBudgetItem {
   amount: number;
 }
 
-export const fetchCostPnL = async (year?: number): Promise<CostPnL> => {
-  const { data } = await api.get<CostPnL>('/api/costs/pnl', { params: year ? { year } : {} });
+export const fetchCostPnL = async (year?: number, site?: CostSite | null): Promise<CostPnL> => {
+  const { data } = await api.get<CostPnL>('/api/costs/pnl', {
+    params: { ...(year ? { year } : {}), ...(site ? { site } : {}) },
+  });
   return data;
 };
 
@@ -129,8 +136,10 @@ export const fetchCostCenters = async (): Promise<string[]> => {
   return Array.isArray(data) ? data : [];
 };
 
-export const fetchCostCenterBudgets = async (year: number, kind: CostScope): Promise<CostCenterBudgets> => {
-  const { data } = await api.get<CostCenterBudgets>('/api/costs/cost-center-budgets', { params: { year, kind } });
+export const fetchCostCenterBudgets = async (year: number, kind: CostScope, site?: CostSite | null): Promise<CostCenterBudgets> => {
+  const { data } = await api.get<CostCenterBudgets>('/api/costs/cost-center-budgets', {
+    params: { year, kind, ...(site ? { site } : {}) },
+  });
   return data;
 };
 
@@ -155,9 +164,9 @@ export interface CostByMachine {
   machines: MachineCost[];
 }
 
-export const fetchCostByMachine = async (year?: number, fiscal?: boolean): Promise<CostByMachine> => {
+export const fetchCostByMachine = async (year?: number, fiscal?: boolean, site?: CostSite | null): Promise<CostByMachine> => {
   const { data } = await api.get<CostByMachine>('/api/costs/by-machine', {
-    params: { ...(year ? { year } : {}), ...(fiscal ? { fiscal: true } : {}) },
+    params: { ...(year ? { year } : {}), ...(fiscal ? { fiscal: true } : {}), ...(site ? { site } : {}) },
   });
   return data;
 };
@@ -190,9 +199,55 @@ export interface CostTransactions {
 
 export const fetchCostTransactions = async (params: {
   year: number; month_from?: number; month_to?: number;
-  cost_center?: string; equipment_id?: string; scope?: CostScope; fiscal?: boolean;
+  cost_center?: string; equipment_id?: string; scope?: CostScope; site?: CostSite | null; fiscal?: boolean;
 }): Promise<CostTransactions> => {
   const { data } = await api.get<CostTransactions>('/api/costs/transactions', { params });
+  return data;
+};
+
+// ─── Spend by supplier (procurement report) ───────────────────────────────────
+
+export interface SupplierOrderLine {
+  order_number: string;
+  date: string;                        // ISO date
+  status: string;                      // PO status (received, sent, confirmed…)
+  amount: number;
+  scope: CostScope;
+  cost_center: string | null;
+}
+
+export interface SupplierSpend {
+  supplier: string;
+  total: number;                       // po_total + parts_total
+  po_total: number;
+  parts_total: number;                 // WO parts naming this supplier
+  received: number;                    // received-PO spend (actual)
+  committed: number;                   // open-PO spend (sent/confirmed)
+  po_count: number;
+  by_scope: Record<CostScope, number>;
+  orders: SupplierOrderLine[];         // capped list, for drill-down
+}
+
+export interface CostBySupplier {
+  year: number;
+  currency: string;
+  site: CostSite | null;
+  status: 'all' | 'received';
+  total_amount: number;
+  supplier_count: number;
+  suppliers: SupplierSpend[];
+}
+
+export const fetchCostBySupplier = async (params: {
+  year?: number; fiscal?: boolean; site?: CostSite | null; status?: 'all' | 'received';
+}): Promise<CostBySupplier> => {
+  const { year, fiscal, site, status } = params;
+  const { data } = await api.get<CostBySupplier>('/api/costs/by-supplier', {
+    params: {
+      ...(year ? { year } : {}), ...(fiscal ? { fiscal: true } : {}),
+      ...(site ? { site } : {}), ...(status ? { status } : {}),
+    },
+  });
   return data;
 };
 

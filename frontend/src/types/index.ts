@@ -84,6 +84,7 @@ export interface Equipment {
   height_3d?: number | null;
   parent_equipment_id?: string | null;
   department?: string | null;
+  cost_center?: string | null;
   family?: string | null;
   pm_strategy?: string | null;
   cleaning_priority?: string | null;
@@ -133,6 +134,7 @@ export interface WorkOrder {
   tag?: string;
   project_number?: string;
   cost_center?: string;
+  estimated_hours?: number;
   from_iot: boolean;
   total_minutes?: number;
   actual_downtime_minutes?: number;
@@ -197,6 +199,7 @@ export interface TechnicianFull {
   created_at: string;
   full_name?: string;
   email?: string;
+  availability?: TechnicianAvailability | null;
 }
 
 export interface TechnicianCreate {
@@ -214,7 +217,10 @@ export interface LaborRecord {
   technician_id: string;
   technician_name?: string;
   date: string;
-  hours_worked: number;
+  hours_worked: number;                 // RAW assigned time (feeds repair_hours/MTTR)
+  effective_hours?: number;             // after deducting non-working intervals → drives labor_cost
+  deducted_minutes?: number;            // raw − effective (breaks/lunch/off-shift/unavailability)
+  overtime_approved?: boolean;
   hourly_rate?: number;
   labor_cost?: number;
   activity?: string;
@@ -253,10 +259,64 @@ export interface WOCost {
 }
 
 export interface WOCostSummary {
-  labor_total: number;
+  labor_total: number;            // effective labor cost (what is billed)
   parts_total: number;
   other_total: number;
   grand_total: number;
+  labor_raw_hours?: number;       // raw assigned time
+  labor_effective_hours?: number; // after deductions
+  labor_deducted_minutes?: number;
+}
+
+// ─── Shift schedules, breaks, availability & unavailability ───────────────────
+
+export type AvailabilityStatus =
+  | 'available' | 'inactive' | 'on_vacation' | 'unavailable'
+  | 'off_shift' | 'at_lunch' | 'on_break';
+
+export interface TechnicianAvailability {
+  status: AvailabilityStatus;
+  available: boolean;
+  should_warn: boolean;
+  detail?: string | null;
+  has_schedule: boolean;
+}
+
+export type ShiftBreakKind = 'lunch' | 'break' | 'pause';
+
+export interface ShiftBreak {
+  id?: string;
+  kind: ShiftBreakKind;
+  name: string;
+  start_time: string;   // "HH:MM"
+  end_time: string;     // "HH:MM"
+  paid: boolean;
+}
+
+export interface ShiftTemplate {
+  id: string;
+  plant_id?: string | null;
+  key: string;
+  name: string;
+  start_time: string;   // "HH:MM"
+  end_time: string;     // "HH:MM"
+  active: boolean;
+  breaks: ShiftBreak[];
+}
+
+export type UnavailabilityType =
+  | 'vacation' | 'sick' | 'absence' | 'training' | 'unavailable' | 'other';
+
+export interface TechnicianUnavailability {
+  id: string;
+  technician_id: string;
+  type: UnavailabilityType;
+  start_date: string;   // ISO date
+  end_date: string;     // ISO date
+  notes?: string | null;
+  created_by_id?: string | null;
+  created_at: string;
+  technician_name?: string | null;
 }
 
 export interface WOAction {
@@ -280,6 +340,14 @@ export interface WOAction {
   sort_order: number;
 }
 
+export interface PlantMembership {
+  plant_id: string;
+  code: string;
+  name: string;
+  role: UserRole;
+  is_default: boolean;
+}
+
 export interface LoginResponse {
   access_token: string;
   token_type: string;
@@ -288,6 +356,8 @@ export interface LoginResponse {
   language?: string;
   role?: UserRole;
   must_change_password?: boolean;
+  plants?: PlantMembership[];
+  default_plant_id?: string | null;
 }
 
 export interface LoginCredentials {
@@ -645,6 +715,7 @@ export interface Machine {
   target_availability_pct?: number;
   target_count?:            number;
   target_count_per_shift?:  number;
+  target_count_per_hour?:   number;
   shifts_config?:           Record<string, { start: string; end: string }> | null;
   hourly_rate?:             number;
   hourly_rate_currency?:    HourlyRateCurrency;
@@ -830,6 +901,7 @@ export interface MachineConfigUpdate {
   target_availability_pct?: number;
   target_count?:            number;
   target_count_per_shift?:  number;
+  target_count_per_hour?:   number;
   hourly_rate?:             number;
   hourly_rate_currency?:    HourlyRateCurrency;
   show_production_panel?:   boolean;
@@ -1243,6 +1315,13 @@ export interface InterventionType {
   is_active: boolean;
 }
 
+export interface InterventionTechnicianEntry {
+  id: string;
+  technician_id: string | null;
+  name: string;
+  checked_in_at: string | null;
+}
+
 export interface MachineIntervention {
   id: string;
   machine_id: string | null;
@@ -1257,6 +1336,8 @@ export interface MachineIntervention {
   operator_note: string | null;
   mechanic_note: string | null;
   intervention_type_name: string | null;
+  started_by_name?: string | null;
+  technicians?: InterventionTechnicianEntry[];
 }
 
 export interface MachineOperatorState {

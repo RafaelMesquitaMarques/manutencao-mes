@@ -7,10 +7,11 @@ from app.models.models import MaintenanceAlert, MaintenanceTicket, AlertStatus, 
 from app.schemas.maintenance import AlertCreate
 
 
-async def _next_alert_number(db: AsyncSession) -> str:
-    from app.services.numbering import next_number
+async def _next_alert_number(db: AsyncSession, plant_id=None) -> str:
+    from app.services.numbering import next_number, series_prefix
     year = datetime.now(timezone.utc).year
-    return await next_number(db, MaintenanceAlert.alert_number, f"ALT-{year}")
+    sp = await series_prefix(db, plant_id)
+    return await next_number(db, MaintenanceAlert.alert_number, f"{sp}ALT-{year}")
 
 
 class AlertService:
@@ -23,8 +24,9 @@ class AlertService:
             raise ValueError("Machine not found")
 
         alert = MaintenanceAlert(
-            alert_number=await _next_alert_number(self.db),
+            alert_number=await _next_alert_number(self.db, machine.plant_id),
             machine_id=data.machine_id,
+            plant_id=machine.plant_id,   # alert belongs to its machine's plant
             department=data.department or machine.department,
             problem_type=data.problem_type,
             priority=data.priority,
@@ -58,8 +60,11 @@ class AlertService:
         department=None,
         overdue_only=False,
         include_resolved=False,
+        plant_ids=None,
     ):
         q = select(MaintenanceAlert)
+        if plant_ids is not None:
+            q = q.where(MaintenanceAlert.plant_id.in_(plant_ids))
         if not status and not include_resolved:
             q = q.where(
                 MaintenanceAlert.status.not_in([AlertStatus.resolved, AlertStatus.cancelled])

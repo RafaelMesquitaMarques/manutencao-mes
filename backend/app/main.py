@@ -17,7 +17,7 @@ from app.api.routes import (
     maintenance_plans, inventory, alerts, iot, users, kpis, technicians,
     tickets, maintenance_dashboard, machines, stop_categories, job_orders,
     suppliers as suppliers_module, reports, escalation, factory_map, costs,
-    factory_calendar, adam_devices,
+    factory_calendar, adam_devices, shift_templates,
 )
 from app.api.routes.machine_operator import router as machine_operator_router
 from app.api.routes.intervention_type_settings import router as intervention_types_router
@@ -30,7 +30,9 @@ from app.api.routes.robot_cells import router as robot_cells_router
 from app.api.routes.dashboards import router as dashboards_router
 from app.api.routes.live import router as live_router
 from app.core.permissions import resource_guard, role_write_guard
-from app.models.models import UserRole
+from app.core.kiosk_guard import kiosk_ref_guard
+from app.core.plant_scope import path_plant_guard
+from app.models.models import MaintenancePlan, PlanOccurrence, PmTemplate, UserRole, WorkOrder
 from app.services import event_bus
 
 logger = logging.getLogger(__name__)
@@ -130,6 +132,7 @@ async def _run_migrations() -> None:
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS hourly_rate FLOAT",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS hourly_rate_currency VARCHAR(10) NOT NULL DEFAULT 'CAD'",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS target_count_per_shift INT",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS target_count_per_hour INT",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS shifts_config JSONB",
         "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS machine_id UUID REFERENCES machines(id) ON DELETE CASCADE",
         "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS name_en VARCHAR(200)",
@@ -422,6 +425,17 @@ async def _run_migrations() -> None:
             mechanic_note   TEXT
         )
         """,
+        # Phase: technician check-in on interventions (multi-tech + map pictograms)
+        """
+        CREATE TABLE IF NOT EXISTS intervention_technicians (
+            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            intervention_id UUID NOT NULL REFERENCES machine_interventions(id) ON DELETE CASCADE,
+            technician_id   UUID REFERENCES technicians(id) ON DELETE SET NULL,
+            name            VARCHAR(200) NOT NULL,
+            checked_in_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            checked_out_at  TIMESTAMPTZ
+        )
+        """,
         # Phase: safety checklist + intervention parts
         """
         CREATE TABLE IF NOT EXISTS safety_checklists (
@@ -616,6 +630,8 @@ async def _run_migrations() -> None:
         "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'operator'",
         # Phase: per-machine production-signal ingest token (ADAM-6050)
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS signal_ingest_token VARCHAR(120)",
+        # Phase 4 multi-plant: per-machine kiosk access token (KIOSK_ENFORCE_TOKEN)
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS kiosk_token VARCHAR(120)",
         # Phase: PM template SOP — expected result per step (media live in pm_task_media, created by create_all)
         "ALTER TABLE pm_template_tasks ADD COLUMN IF NOT EXISTS expected_result TEXT",
         # Phase: checklist rigor on the work order (advisory | required | strict)
@@ -627,6 +643,7 @@ async def _run_migrations() -> None:
         "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS subtype VARCHAR(100)",
         # Phase: equipment classification fields (promoted from the maintenance Excel import)
         "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS department VARCHAR(200)",
+        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS cost_center VARCHAR(200)",
         "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS family VARCHAR(200)",
         "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS pm_strategy VARCHAR(300)",
         "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS cleaning_priority VARCHAR(50)",
@@ -793,6 +810,334 @@ async def _run_migrations() -> None:
         "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS cost_center VARCHAR(200)",
         "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS cost_center VARCHAR(200)",
         "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS scope VARCHAR(10) NOT NULL DEFAULT 'opex'",
+        # Phase: effective labor time (shift templates, breaks, technician
+        # unavailability). effective_hours drives labor_cost; hours_worked stays
+        # raw so repair_hours / MTTR / downtime are never affected.
+        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS effective_hours FLOAT",
+        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS overtime_approved BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS deducted_minutes FLOAT",
+        """
+        CREATE TABLE IF NOT EXISTS shift_templates (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            plant_id UUID REFERENCES plants(id) ON DELETE CASCADE,
+            key VARCHAR(50) NOT NULL,
+            name VARCHAR(200) NOT NULL DEFAULT '',
+            start_time VARCHAR(5) NOT NULL,
+            end_time VARCHAR(5) NOT NULL,
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS shift_breaks (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            shift_template_id UUID NOT NULL REFERENCES shift_templates(id) ON DELETE CASCADE,
+            kind VARCHAR(20) NOT NULL DEFAULT 'break',
+            name VARCHAR(200) NOT NULL DEFAULT '',
+            start_time VARCHAR(5) NOT NULL,
+            end_time VARCHAR(5) NOT NULL,
+            paid BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS technician_unavailability (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            technician_id UUID NOT NULL REFERENCES technicians(id) ON DELETE CASCADE,
+            type VARCHAR(20) NOT NULL DEFAULT 'vacation',
+            start_date DATE NOT NULL,
+            end_date DATE NOT NULL,
+            notes TEXT,
+            created_by_id UUID REFERENCES users(id) ON DELETE SET NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_shift_templates_key ON shift_templates (key)",
+        "CREATE INDEX IF NOT EXISTS idx_shift_breaks_template ON shift_breaks (shift_template_id)",
+        "CREATE INDEX IF NOT EXISTS idx_tech_unavail_tech ON technician_unavailability (technician_id, start_date, end_date)",
+        # Phase: multi-plant (phase 0) — user_plants becomes the authoritative
+        # plant-access table (role per plant). See docs/multi-plant-architecture-assessment.md.
+        "ALTER TABLE user_plants ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE user_plants ADD COLUMN IF NOT EXISTS granted_by_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        "ALTER TABLE user_plants ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        # De-dup defensively before the unique index (table is tiny; keeps the oldest id).
+        """
+        DELETE FROM user_plants a USING user_plants b
+        WHERE a.user_id = b.user_id AND a.plant_id = b.plant_id AND a.id > b.id
+        """,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_plants_user_plant ON user_plants (user_id, plant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_user_plants_user ON user_plants (user_id)",
+        # One-time, behavior-preserving membership backfill: every existing user gets a
+        # membership in every ACTIVE plant with their current global role — this matches
+        # today's reality (no plant enforcement existed, everyone effectively saw both
+        # plants). Users who already had exactly one membership keep that plant as their
+        # default; everyone else defaults to the oldest plant (Saint-Jérôme). Runs once
+        # (marker row), so plants created later — e.g. Las Vegas — are NEVER auto-granted.
+        """
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM _kaizo_migrations WHERE key = 'plant_membership_backfill_2026_07_10') THEN
+            UPDATE user_plants up SET is_default = TRUE
+            WHERE NOT EXISTS (SELECT 1 FROM user_plants x WHERE x.user_id = up.user_id AND x.id <> up.id)
+              AND NOT EXISTS (SELECT 1 FROM user_plants d WHERE d.user_id = up.user_id AND d.is_default);
+            INSERT INTO user_plants (id, user_id, plant_id, role, is_default)
+            SELECT gen_random_uuid(), u.id, p.id, u.role, FALSE
+            FROM users u CROSS JOIN plants p
+            WHERE p.active = TRUE
+              AND NOT EXISTS (SELECT 1 FROM user_plants up WHERE up.user_id = u.id AND up.plant_id = p.id);
+            UPDATE user_plants up SET is_default = TRUE
+            WHERE up.plant_id = (SELECT id FROM plants WHERE active = TRUE ORDER BY created_at, code LIMIT 1)
+              AND NOT EXISTS (SELECT 1 FROM user_plants d WHERE d.user_id = up.user_id AND d.is_default);
+            INSERT INTO _kaizo_migrations (key) VALUES ('plant_membership_backfill_2026_07_10');
+          END IF;
+        END $$
+        """,
+        # Phase: multi-plant (phase 1) — plant ownership columns on transactional
+        # tables. All nullable (NOT NULL comes after validation, phase 3+). The
+        # backfills are IS NULL-guarded and run every boot, so rows written by
+        # pre-phase-2 code self-heal from their machine/equipment on restart.
+        # Hypertables (sensor_readings, machine_production_hourly) deliberately get
+        # NO plant column: compressed chunks can't be updated; they derive their
+        # plant via sensor/equipment/machine joins. Technicians also get none —
+        # their plant scope IS user_plants (SJ+MIRA share the maintenance team).
+        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE sensors ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE robot_cells ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE machine_operators ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE machine_production_logs ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE maintenance_alerts ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE reject_logs ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE machine_history ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE adam_devices ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE maintenance_budgets ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE cost_center_budgets ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE cost_centers ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE sap_cost_lines ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE escalation_contacts ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE factory_calendar_settings ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE factory_holidays ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        "ALTER TABLE shift_reports ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        # ── Backfill: machine-derived (documented rule: row's plant = its machine's plant)
+        "UPDATE maintenance_alerts t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
+        "UPDATE maintenance_tickets t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
+        "UPDATE machine_stops t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
+        "UPDATE machine_operators t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
+        "UPDATE machine_production_logs t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
+        "UPDATE reject_logs t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
+        "UPDATE job_orders t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
+        "UPDATE machine_history t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
+        "UPDATE adam_devices t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
+        "UPDATE machine_interventions t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
+        # ── Backfill: equipment-derived (row's plant = its equipment's plant)
+        "UPDATE work_orders t SET plant_id = e.plant_id FROM equipment e WHERE t.equipment_id = e.id AND t.plant_id IS NULL",
+        "UPDATE work_orders t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
+        "UPDATE sensors t SET plant_id = e.plant_id FROM equipment e WHERE t.equipment_id = e.id AND t.plant_id IS NULL",
+        "UPDATE alerts t SET plant_id = e.plant_id FROM equipment e WHERE t.equipment_id = e.id AND t.plant_id IS NULL",
+        "UPDATE robot_cells t SET plant_id = e.plant_id FROM equipment e WHERE t.equipment_id = e.id AND t.plant_id IS NULL",
+        "UPDATE maintenance_plans t SET plant_id = e.plant_id FROM equipment e WHERE t.equipment_id = e.id AND t.plant_id IS NULL",
+        "UPDATE pm_templates t SET plant_id = e.plant_id FROM equipment e WHERE t.equipment_id = e.id AND t.plant_id IS NULL",
+        "UPDATE plan_occurrences t SET plant_id = e.plant_id FROM equipment e WHERE t.equipment_id = e.id AND t.plant_id IS NULL",
+        "UPDATE plan_occurrences t SET plant_id = p.plant_id FROM maintenance_plans p WHERE t.plan_id = p.id AND t.plant_id IS NULL AND p.plant_id IS NOT NULL",
+        "UPDATE intervention_types t SET plant_id = e.plant_id FROM equipment e WHERE t.equipment_id = e.id AND t.plant_id IS NULL",
+        "UPDATE safety_checklists t SET plant_id = e.plant_id FROM equipment e WHERE t.equipment_id = e.id AND t.plant_id IS NULL",
+        # ── One-time: cost site rule. Encodes the EXISTING runtime rule from
+        # costs.py::_site_of() ("mirabel" in the cost-center name → Mirabel, else
+        # Saint-Jérôme) into data — the very rule the Costs page already applies.
+        # One-time by marker so rows created later are never guessed at boot
+        # (they show up in the ambiguity report instead).
+        """
+        DO $$
+        DECLARE
+          mira UUID := (SELECT id FROM plants WHERE code IN ('MIRA', 'QM') LIMIT 1);
+          sj   UUID := (SELECT id FROM plants WHERE code IN ('PLT1', 'QS') LIMIT 1);
+        BEGIN
+          IF sj IS NOT NULL AND NOT EXISTS (SELECT 1 FROM _kaizo_migrations WHERE key = 'plant_cost_site_rule_2026_07_10') THEN
+            UPDATE cost_centers SET plant_id = CASE WHEN lower(name) LIKE '%mirabel%' THEN COALESCE(mira, sj) ELSE sj END WHERE plant_id IS NULL;
+            UPDATE cost_center_budgets SET plant_id = CASE WHEN lower(cost_center) LIKE '%mirabel%' THEN COALESCE(mira, sj) ELSE sj END WHERE plant_id IS NULL;
+            UPDATE sap_cost_lines SET plant_id = CASE WHEN lower(cost_center) LIKE '%mirabel%' THEN COALESCE(mira, sj) ELSE sj END WHERE plant_id IS NULL;
+            UPDATE purchase_orders SET plant_id = CASE WHEN lower(cost_center) LIKE '%mirabel%' THEN COALESCE(mira, sj) ELSE sj END WHERE plant_id IS NULL AND cost_center IS NOT NULL;
+            INSERT INTO _kaizo_migrations (key) VALUES ('plant_cost_site_rule_2026_07_10');
+          END IF;
+        END $$
+        """,
+        # ── One-time: open-decision answers (user, 2026-07-10). (1) The orphan
+        # machines are Saint-Jérôme's (the 4 active confirmed by name; the inactive
+        # leftovers are old SJ demos/duplicates kept under SJ until cleanup).
+        # (2) The existing supplier base belongs to the Quebec operation → owned by
+        # PLT1, shared with Mirabel via the plant group below. (3) SJ+Mirabel form
+        # group 'QC': group-scoped resources (inventory, suppliers) pool across it.
+        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS group_code VARCHAR(20)",
+        """
+        DO $$
+        DECLARE sj UUID := (SELECT id FROM plants WHERE code IN ('PLT1', 'QS') LIMIT 1);
+        BEGIN
+          IF sj IS NOT NULL AND NOT EXISTS (SELECT 1 FROM _kaizo_migrations WHERE key = 'plant_decisions_2026_07_10') THEN
+            UPDATE machines SET plant_id = sj WHERE plant_id IS NULL;
+            UPDATE suppliers SET plant_id = sj WHERE plant_id IS NULL;
+            UPDATE plants SET group_code = 'QC' WHERE code IN ('PLT1', 'MIRA', 'QS', 'QM');
+            INSERT INTO _kaizo_migrations (key) VALUES ('plant_decisions_2026_07_10');
+          END IF;
+        END $$
+        """,
+        # ── One-time: official site codes (user, 2026-07-10) — QS = Saint-Jérôme,
+        # QM = Mirabel (Las Vegas will be NL). Everything joins by plant_id (UUID),
+        # so renaming the display/lookup code is safe; the earlier one-time blocks
+        # above accept both spellings for fresh installs.
+        """
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM _kaizo_migrations WHERE key = 'plant_codes_qs_qm_2026_07_10') THEN
+            UPDATE plants SET code = 'QS' WHERE code = 'PLT1';
+            UPDATE plants SET code = 'QM' WHERE code = 'MIRA';
+            INSERT INTO _kaizo_migrations (key) VALUES ('plant_codes_qs_qm_2026_07_10');
+          END IF;
+        END $$
+        """,
+        # ── Phase 3: per-plant uniqueness. The legacy single-calendar/single-budget
+        # constraints block a second plant from having its own rows; move them to
+        # (plant_id, …) with NULLS NOT DISTINCT so the legacy shared rows (NULL)
+        # stay unique among themselves too.
+        """DO $$ BEGIN
+           ALTER TABLE factory_holidays DROP CONSTRAINT IF EXISTS factory_holidays_date_key;
+           EXCEPTION WHEN others THEN NULL; END $$""",
+        "DROP INDEX IF EXISTS ix_factory_holidays_date",
+        "CREATE INDEX IF NOT EXISTS idx_factory_holidays_date ON factory_holidays (date)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_factory_holidays_plant_date ON factory_holidays (plant_id, date) NULLS NOT DISTINCT",
+        """DO $$ BEGIN
+           ALTER TABLE maintenance_budgets DROP CONSTRAINT IF EXISTS uq_maintenance_budget_year_month;
+           EXCEPTION WHEN others THEN NULL; END $$""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_maintenance_budget_plant_ym ON maintenance_budgets (plant_id, year, month) NULLS NOT DISTINCT",
+        "CREATE INDEX IF NOT EXISTS idx_shift_reports_plant ON shift_reports (plant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_escalation_contacts_plant ON escalation_contacts (plant_id)",
+        # ── Phase 5: row-level security as defense-in-depth. Policies are
+        # FAIL-OPEN when the app.plant_ids GUC is unset — normal app sessions,
+        # crons, workers and migrations never set it, so nothing changes for
+        # them (the app-layer PlantContext remains the primary enforcement).
+        # The GUC is set ONLY inside Ask Ninja's READ ONLY SQL transaction for
+        # non-corporate users, which fences the one arbitrary-SQL path in the
+        # platform to the caller's plants. FORCE is required because the app
+        # connects as the table owner (owners bypass plain RLS). NULL-plant
+        # rows (shared/legacy config) stay visible by design.
+        """
+        DO $$
+        DECLARE
+          t text;
+          expr text := $e$ current_setting('app.plant_ids', true) IS NULL
+            OR current_setting('app.plant_ids', true) = ''
+            OR plant_id IS NULL
+            OR plant_id::text = ANY (string_to_array(current_setting('app.plant_ids', true), ',')) $e$;
+        BEGIN
+          FOREACH t IN ARRAY ARRAY[
+            'equipment','machines','work_orders','maintenance_alerts','maintenance_tickets',
+            'machine_stops','machine_interventions','machine_operators','machine_production_logs',
+            'reject_logs','job_orders','machine_history','sensors','alerts','robot_cells',
+            'suppliers','purchase_orders','stock_items','maintenance_plans','pm_templates',
+            'plan_occurrences','intervention_types','safety_checklists','factory_zones','map_props',
+            'cost_centers','cost_center_budgets','maintenance_budgets','sap_cost_lines',
+            'escalation_settings','escalation_contacts','factory_calendar_settings',
+            'factory_holidays','shift_reports','adam_devices','shift_templates','dashboards',
+            'ai_insights'
+          ] LOOP
+            IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name = t) THEN
+              EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+              EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+              IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename = t AND policyname = 'plant_isolation') THEN
+                EXECUTE format('CREATE POLICY plant_isolation ON %I FOR ALL USING (%s) WITH CHECK (%s)', t, expr, expr);
+              END IF;
+            END IF;
+          END LOOP;
+        END $$
+        """,
+        # ── Phase 6: Las Vegas onboarding. Plant currency column; the NL plant is
+        # created ISOLATED (no group → own inventory/suppliers/numbering series
+        # NL-WO-…), on America/Los_Angeles and USD, with its OWN escalation and
+        # calendar rows so it never follows the shared QC configuration. No user
+        # is granted access here — NL memberships are always assigned explicitly
+        # in Settings → Users.
+        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'CAD'",
+        """
+        DO $$
+        DECLARE nl UUID;
+        BEGIN
+          IF NOT EXISTS (SELECT 1 FROM _kaizo_migrations WHERE key = 'nl_onboarding_2026_07_10') THEN
+            IF NOT EXISTS (SELECT 1 FROM plants WHERE code = 'NL') THEN
+              INSERT INTO plants (id, code, name, timezone, currency, group_code, active)
+              VALUES (gen_random_uuid(), 'NL', 'Foliot Furniture (Las Vegas)', 'America/Los_Angeles', 'USD', NULL, TRUE);
+            END IF;
+            SELECT id INTO nl FROM plants WHERE code = 'NL';
+            -- Own escalation config: platform defaults, but SMS/email OFF until
+            -- NL contacts exist (no notification can ever route to QC people).
+            IF NOT EXISTS (SELECT 1 FROM escalation_settings WHERE plant_id = nl) THEN
+              INSERT INTO escalation_settings (id, plant_id, sms_enabled, email_enabled, shift_report_enabled)
+              VALUES (gen_random_uuid(), nl, FALSE, FALSE, FALSE);
+            END IF;
+            -- Own calendar (independent of Quebec holidays; NV dates added in Settings → Calendar).
+            IF NOT EXISTS (SELECT 1 FROM factory_calendar_settings WHERE plant_id = nl) THEN
+              INSERT INTO factory_calendar_settings (id, plant_id, count_weekends)
+              VALUES (gen_random_uuid(), nl, FALSE);
+            END IF;
+            INSERT INTO _kaizo_migrations (key) VALUES ('nl_onboarding_2026_07_10');
+          END IF;
+        END $$
+        """,
+        # ── Phase 5b: the app connects as the bootstrap SUPERUSER (mesadmin), and
+        # superusers bypass RLS entirely — so Ask Ninja's SQL runs under this
+        # dedicated non-superuser, read-only role instead (SET LOCAL ROLE inside
+        # its transaction), where the plant_isolation policies DO apply. The role
+        # can only SELECT, and never sees the credential tables at all.
+        """
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kaizo_ninja') THEN
+            CREATE ROLE kaizo_ninja NOLOGIN;
+          END IF;
+        END $$
+        """,
+        "GRANT USAGE ON SCHEMA public TO kaizo_ninja",
+        "GRANT SELECT ON ALL TABLES IN SCHEMA public TO kaizo_ninja",
+        "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO kaizo_ninja",
+        "REVOKE ALL ON password_reset_tokens FROM kaizo_ninja",
+        "REVOKE ALL ON user_invitations FROM kaizo_ninja",
+        # Group-scoped tables (shared QC warehouse/supplier base) match the UI's
+        # group visibility: their policy reads the wider app.plant_ids_grouped GUC.
+        """
+        DO $$
+        DECLARE
+          t text;
+          gexpr text := $e$ current_setting('app.plant_ids_grouped', true) IS NULL
+            OR current_setting('app.plant_ids_grouped', true) = ''
+            OR plant_id IS NULL
+            OR plant_id::text = ANY (string_to_array(current_setting('app.plant_ids_grouped', true), ',')) $e$;
+        BEGIN
+          FOREACH t IN ARRAY ARRAY['stock_items', 'suppliers'] LOOP
+            EXECUTE format('DROP POLICY IF EXISTS plant_isolation ON %I', t);
+            EXECUTE format('CREATE POLICY plant_isolation ON %I FOR ALL USING (%s) WITH CHECK (%s)', t, gexpr, gexpr);
+          END LOOP;
+        END $$
+        """,
+        # ── Indexes for plant-scoped queries (composites on the hot time-ordered lists)
+        "CREATE INDEX IF NOT EXISTS idx_wo_plant_opened ON work_orders (plant_id, opened_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_tickets_plant_opened ON maintenance_tickets (plant_id, opened_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_malerts_plant_created ON maintenance_alerts (plant_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_stops_plant_started ON machine_stops (plant_id, started_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_prodlogs_plant_date ON machine_production_logs (plant_id, date DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_rejects_plant_date ON reject_logs (plant_id, date DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_mhistory_plant_occurred ON machine_history (plant_id, occurred_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_interventions_plant_called ON machine_interventions (plant_id, called_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_machines_plant ON machines (plant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_equipment_plant ON equipment (plant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_stock_items_plant ON stock_items (plant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_job_orders_plant ON job_orders (plant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_suppliers_plant ON suppliers (plant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_pos_plant ON purchase_orders (plant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_sensors_plant ON sensors (plant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_cost_centers_plant ON cost_centers (plant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_sap_lines_plant ON sap_cost_lines (plant_id)",
     ]
     async with engine.begin() as conn:
         for stmt in stmts:
@@ -843,6 +1188,42 @@ async def _run_migrations() -> None:
             ))
         await _seed_stop_categories(conn)
         await _seed_suppliers(conn)
+        await _seed_shift_templates(conn)
+
+
+async def _seed_shift_templates(conn) -> None:
+    """Insert default shift templates + breaks if none exist. These are editable
+    in Settings; they map to Technician.shift (day|evening|night). Times are
+    plant-local wall clock. A lunch + two short breaks per shift are the common
+    Foliot layout; adjust per plant in the UI. Only used for LABOR-cost/effective
+    time and availability — machine downtime is unaffected."""
+    result = await conn.execute(text("SELECT COUNT(*) FROM shift_templates"))
+    if result.scalar() > 0:
+        return
+    # (key, name, start, end, [(kind, name, start, end, paid), ...])
+    defaults = [
+        ("day",     "Day",     "08:00", "16:30",
+         [("break", "Morning break",   "10:00", "10:15", True),
+          ("lunch", "Lunch",           "12:00", "12:30", False),
+          ("break", "Afternoon break", "14:30", "14:45", True)]),
+        ("evening", "Evening", "16:30", "00:30",
+         [("break", "Break",           "18:30", "18:45", True),
+          ("lunch", "Meal",            "20:30", "21:00", False)]),
+        ("night",   "Night",   "00:30", "08:00",
+         [("break", "Break",           "03:00", "03:15", True),
+          ("lunch", "Meal",            "05:00", "05:30", False)]),
+    ]
+    for key, name, start, end, breaks in defaults:
+        r = await conn.execute(text(
+            "INSERT INTO shift_templates (id, key, name, start_time, end_time, active) "
+            "VALUES (gen_random_uuid(), :k, :n, :s, :e, TRUE) RETURNING id"
+        ), {"k": key, "n": name, "s": start, "e": end})
+        tpl_id = r.scalar()
+        for kind, bname, bs, be, paid in breaks:
+            await conn.execute(text(
+                "INSERT INTO shift_breaks (id, shift_template_id, kind, name, start_time, end_time, paid) "
+                "VALUES (gen_random_uuid(), :t, :k, :n, :s, :e, :p)"
+            ), {"t": tpl_id, "k": kind, "n": bname, "s": bs, "e": be, "p": paid})
 
 
 async def _seed_suppliers(conn) -> None:
@@ -887,29 +1268,37 @@ async def _seed_stop_categories(conn) -> None:
 
 
 async def _intelligence_cron() -> None:
-    """Generate maintenance intelligence insights every 8 hours, all languages."""
+    """Generate maintenance intelligence insights every 8 hours, all languages —
+    one insight PER PLANT, so each plant's page (and Las Vegas especially) only
+    ever describes its own operation."""
     while True:
         await asyncio.sleep(8 * 3600)
         async with AsyncSessionLocal() as db:
-            for lang in ("en", "fr", "es"):
-                try:
-                    from app.services.intelligence_calculator import build_findings
-                    from app.services.intelligence_ai import generate_insight_text
-                    from app.models.models import AIInsight
-                    findings = await build_findings(db=db, period_days=7)
-                    text_out, ai = await generate_insight_text(findings, lang, "full_report")
-                    insight = AIInsight(
-                        insight_type="full_report", language=lang,
-                        period_start=datetime.now(timezone.utc) - timedelta(days=7),
-                        period_end=datetime.now(timezone.utc),
-                        period_days=7, findings_json=findings,
-                        insight_text=text_out, ai_generated=ai,
-                        generated_by_model="claude-sonnet-4-6" if ai else None,
-                    )
-                    db.add(insight)
-                    await db.commit()
-                except Exception as e:
-                    logger.error("Intelligence cron %s: %s", lang, e)
+            from sqlalchemy import select as _sel
+            from app.models.models import AIInsight, Plant
+            plants = (await db.execute(
+                _sel(Plant).where(Plant.active == True)  # noqa: E712
+            )).scalars().all()
+            for plant in plants:
+                for lang in ("en", "fr", "es"):
+                    try:
+                        from app.services.intelligence_calculator import build_findings
+                        from app.services.intelligence_ai import generate_insight_text
+                        findings = await build_findings(db=db, period_days=7, plant_id=str(plant.id))
+                        text_out, ai = await generate_insight_text(findings, lang, "full_report")
+                        insight = AIInsight(
+                            plant_id=plant.id,
+                            insight_type="full_report", language=lang,
+                            period_start=datetime.now(timezone.utc) - timedelta(days=7),
+                            period_end=datetime.now(timezone.utc),
+                            period_days=7, findings_json=findings,
+                            insight_text=text_out, ai_generated=ai,
+                            generated_by_model="claude-sonnet-4-6" if ai else None,
+                        )
+                        db.add(insight)
+                        await db.commit()
+                    except Exception as e:
+                        logger.error("Intelligence cron %s/%s: %s", plant.code, lang, e)
 
 
 async def _ensure_timescale() -> None:
@@ -981,11 +1370,16 @@ async def lifespan(app: FastAPI):
     pm_task = asyncio.create_task(_pm_loop())
     intel_task = asyncio.create_task(_intelligence_cron())
     shift_report_task = asyncio.create_task(_shift_report_loop())
+    # Preload the note-organizer fallback LLM (self-skips when the Anthropic
+    # API is the primary path; cold Ollama load measured at ~90s on CPU).
+    from app.services.note_organizer import warm_up as _warm_ollama
+    ollama_warmup_task = asyncio.create_task(_warm_ollama())
     yield
     task.cancel()
     pm_task.cancel()
     intel_task.cancel()
     shift_report_task.cancel()
+    ollama_warmup_task.cancel()
     await engine.dispose()
 
 
@@ -1041,8 +1435,8 @@ async def _publish_live_events(request, call_next):
 app.include_router(auth.router,                   prefix="/api/auth",          tags=["Authentication"])
 app.include_router(plants.router,                 prefix="/api/plants",        tags=["Plants"])
 app.include_router(equipment.router,              prefix="/api/equipment",     tags=["Equipment"],            dependencies=[Depends(resource_guard("equipment"))])
-app.include_router(work_orders.router,            prefix="/api/wo",            tags=["Work Orders"],          dependencies=[Depends(resource_guard("work_orders"))])
-app.include_router(maintenance_plans.router,      prefix="/api/plans",         tags=["Maintenance Plans"],     dependencies=[Depends(role_write_guard(UserRole.supervisor, UserRole.maintenance_director, UserRole.plant_manager, UserRole.director))])
+app.include_router(work_orders.router,            prefix="/api/wo",            tags=["Work Orders"],          dependencies=[Depends(resource_guard("work_orders")), Depends(path_plant_guard(WorkOrder, "work_order_id", detail="Work order not found"))])
+app.include_router(maintenance_plans.router,      prefix="/api/plans",         tags=["Maintenance Plans"],     dependencies=[Depends(role_write_guard(UserRole.supervisor, UserRole.maintenance_director, UserRole.plant_manager, UserRole.director)), Depends(path_plant_guard(MaintenancePlan, "plan_id", detail="Plan not found")), Depends(path_plant_guard(PlanOccurrence, "occurrence_id", detail="Occurrence not found"))])
 app.include_router(inventory.router,              prefix="/api/inventory",     tags=["Inventory"])
 app.include_router(alerts.router,                 prefix="/api/alerts",        tags=["Maintenance Alerts"])
 app.include_router(tickets.router,                prefix="/api/tickets",       tags=["Maintenance Tickets"])
@@ -1056,23 +1450,27 @@ app.include_router(adam_devices.router,           prefix="/api/adam-devices",  t
 app.include_router(reports.router,                prefix="/api/reports",       tags=["Reports"])
 app.include_router(escalation.router,             prefix="/api/escalation",    tags=["Escalation"])
 app.include_router(technicians.router,            prefix="/api/technicians",   tags=["Technicians"],          dependencies=[Depends(resource_guard("technicians"))])
-app.include_router(machines.router,               prefix="/api/machines",      tags=["Machines"])
+app.include_router(shift_templates.router,        prefix="/api/shift-templates", tags=["Shift Templates"],     dependencies=[Depends(resource_guard("technicians"))])
+app.include_router(machines.router,               prefix="/api/machines",      tags=["Machines"],             dependencies=[Depends(kiosk_ref_guard("ref"))])
 app.include_router(factory_map.router,            prefix="/api/factory-map",   tags=["Factory Map"])
 app.include_router(robot_cells_router,            prefix="/api/robot-cells",   tags=["Robot Cells"])
 app.include_router(stop_categories.router,        prefix="/api/stop-categories", tags=["Stop Categories"])
 app.include_router(job_orders.router,             prefix="/api/job-orders",      tags=["Job Orders"])
 app.include_router(suppliers_module.supplier_router, prefix="/api/suppliers",       tags=["Suppliers"])
 app.include_router(suppliers_module.po_router,       prefix="/api/supplier-orders", tags=["Purchase Orders"])
-app.include_router(machine_operator_router)
+app.include_router(machine_operator_router, dependencies=[Depends(kiosk_ref_guard("machine_id"))])
 app.include_router(intervention_types_router)
 app.include_router(safety_checklist_router)
 app.include_router(wo_approval_router)
 app.include_router(
     pm_template_settings_router,
-    dependencies=[Depends(role_write_guard(
-        UserRole.supervisor, UserRole.maintenance_director,
-        UserRole.plant_manager, UserRole.director,
-    ))],
+    dependencies=[
+        Depends(role_write_guard(
+            UserRole.supervisor, UserRole.maintenance_director,
+            UserRole.plant_manager, UserRole.director,
+        )),
+        Depends(path_plant_guard(PmTemplate, "template_id", detail="PM template not found")),
+    ],
 )
 app.include_router(intelligence_router)
 app.include_router(uploads_router)

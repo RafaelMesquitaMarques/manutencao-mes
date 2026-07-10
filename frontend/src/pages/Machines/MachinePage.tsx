@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useLayoutEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
@@ -8,7 +8,8 @@ import {
   updateMachineStatus, updateMachineJob, updateMachineOperator,
   createMachineStop, closeMachineStop, fetchMachineStopCategories,
   fetchMachineRejectCategories, logReject, addRejects, reclassifyStop,
-  fetchProductionHourly, fetchTodayRejects, type HourlyPoint, type RejectLogItem,
+  fetchProductionHourly, fetchTodayRejects, fetchMachinesAll, cloneKioskLayout,
+  type HourlyPoint, type RejectLogItem,
 } from '../../api/machines';
 import EventsModal from './EventsModal';
 import { openTicketField, closeTicket } from '../../api/maintenance';
@@ -17,7 +18,7 @@ import { MaintenancePanel } from '../MachineView/MachineOperatorPage';
 import type {
   MachinePageData, MachineStatus, MachineStopOut, StopCategoryOut,
   StopSubcategoryOut, MachineOperatorOut, MESDataExtended,
-  RejectCategoryOut, RejectSubcategoryOut,
+  RejectCategoryOut, RejectSubcategoryOut, Machine,
 } from '../../types';
 import { IconRenderer } from '../../components/ui/IconLibrary';
 import GridLayout, { WidthProvider, type Layout } from 'react-grid-layout';
@@ -29,18 +30,31 @@ import { STATUS_HEX, statusColor } from '../../utils/statusColors';
 import { useMachineLive } from '../../hooks/useLiveEvents';
 
 const RGL = WidthProvider(GridLayout);
-// Default arrangement of the kiosk panels (12-col grid). Saved per machine in kiosk_layout.
+// Finer grid → more precise drag-resize. Panel content scales to fit (container
+// queries), so any cell size looks right. 24 cols × 14px rows (was 12 × 28).
+const GRID_COLS = 24;
+const GRID_ROW_H = 14;
+// Default arrangement of the kiosk panels (24-col grid). Saved per machine in kiosk_layout.
 const DEFAULT_KIOSK_LAYOUT: Layout[] = [
-  { i: 'status', x: 0, y: 0, w: 4, h: 6 },
-  { i: 'job', x: 4, y: 0, w: 4, h: 6 },
-  { i: 'stop', x: 8, y: 0, w: 4, h: 6 },
-  { i: 'timeline', x: 0, y: 6, w: 12, h: 6 },
-  { i: 'passages', x: 0, y: 12, w: 12, h: 8 },
-  { i: 'production', x: 0, y: 9, w: 7, h: 6 },
-  { i: 'gauge', x: 7, y: 9, w: 5, h: 10 },
-  { i: 'rejects', x: 0, y: 15, w: 7, h: 5 },
-  { i: 'maintenance', x: 7, y: 19, w: 5, h: 10 },
+  { i: 'status', x: 0, y: 0, w: 8, h: 12 },
+  { i: 'job', x: 8, y: 0, w: 8, h: 12 },
+  { i: 'stop', x: 16, y: 0, w: 8, h: 12 },
+  { i: 'timeline', x: 0, y: 12, w: 24, h: 12 },
+  { i: 'passages', x: 0, y: 24, w: 24, h: 16 },
+  { i: 'production', x: 0, y: 18, w: 14, h: 12 },
+  { i: 'gauge', x: 14, y: 18, w: 10, h: 20 },
+  { i: 'rejects', x: 0, y: 30, w: 14, h: 10 },
+  { i: 'justification', x: 0, y: 40, w: 8, h: 10 },
+  { i: 'maintenance', x: 14, y: 38, w: 10, h: 20 },
 ];
+
+// Legacy layouts were saved on the old 12-col grid (max x+w ≤ 12). Scale them ×2
+// onto the finer 24-col grid so existing machines render unchanged.
+function migrateLayout(items: Layout[]): Layout[] {
+  const maxRight = items.reduce((m, i) => Math.max(m, i.x + i.w), 0);
+  if (maxRight > 12) return items; // already on the 24-col scale
+  return items.map((i) => ({ ...i, x: i.x * 2, y: i.y * 2, w: i.w * 2, h: i.h * 2 }));
+}
 
 // ── Local i18n (machine page has its own language setting) ────────────────────
 
@@ -106,6 +120,9 @@ const I18N = {
     editComment: 'Edit comment', ongoingStop: 'Ongoing', save: 'Save',
     changeCauseSelected: 'Change cause ({n})',
     intervention_label: 'Intervention', preventive: 'Preventive', corrective: 'Corrective', technician: 'Technician',
+    activeProduction: 'Active production', ongoing: 'ongoing',
+    justification: 'Stop justification', justificationHint: 'Share of stop time with a reason',
+    cloneLayout: 'Clone to…', cloneTitle: 'Copy this layout to machines', cloneApply: 'Apply', cloneDone: 'Layout copied to {n} machine(s)',
   },
   fr: {
     running: 'EN MARCHE', stopped: 'ARRÊTÉE', maintenance: 'MAINTENANCE',
@@ -168,6 +185,9 @@ const I18N = {
     editComment: 'Modifier le commentaire', ongoingStop: 'En cours', save: 'Enregistrer',
     changeCauseSelected: 'Changer la cause ({n})',
     intervention_label: 'Intervention', preventive: 'Préventive', corrective: 'Corrective', technician: 'Technicien',
+    activeProduction: 'En production', ongoing: 'en cours',
+    justification: 'Justification arrêts', justificationHint: 'Part du temps d\'arrêt avec un motif',
+    cloneLayout: 'Cloner vers…', cloneTitle: 'Copier cette disposition vers', cloneApply: 'Appliquer', cloneDone: 'Disposition copiée sur {n} machine(s)',
   },
   es: {
     running: 'EN MARCHA', stopped: 'DETENIDA', maintenance: 'MANTENIMIENTO',
@@ -230,6 +250,9 @@ const I18N = {
     editComment: 'Editar comentario', ongoingStop: 'En curso', save: 'Guardar',
     changeCauseSelected: 'Cambiar causa ({n})',
     intervention_label: 'Intervención', preventive: 'Preventiva', corrective: 'Correctiva', technician: 'Técnico',
+    activeProduction: 'En producción', ongoing: 'en curso',
+    justification: 'Justificación paradas', justificationHint: 'Parte del tiempo de parada con motivo',
+    cloneLayout: 'Clonar a…', cloneTitle: 'Copiar esta disposición a máquinas', cloneApply: 'Aplicar', cloneDone: 'Disposición copiada a {n} máquina(s)',
   },
 } as const;
 export type Lang = keyof typeof I18N;
@@ -370,7 +393,11 @@ export function StopTimeline({
   onSegmentClick?: (stop: MachineStopOut) => void;
   hint?: string;
 }) {
-  const [tip, setTip] = useState<{ stop: MachineStopOut; x: number; y: number; phase: 'stop' | 'intervention' } | null>(null);
+  const [tip, setTip] = useState<
+    | { kind: 'stop' | 'intervention'; stop: MachineStopOut; x: number; y: number }
+    | { kind: 'running'; a: number; b: number; ongoing: boolean; x: number; y: number }
+    | null
+  >(null);
   if (!win) return null;
   const startMs = win.start.getTime();
   const endMs = win.end.getTime();
@@ -381,6 +408,29 @@ export function StopTimeline({
   const elapsedEnd = atCurrent ? Math.min(endMs, nowMs) : endMs;
   const runningPct = pct(elapsedEnd);
   const nowInWindow = atCurrent && nowMs >= startMs && nowMs <= endMs;
+
+  // Active-production segments = the elapsed window MINUS the (merged) stops.
+  // Each green stretch between stops becomes its own hoverable band with its own
+  // duration, so the operator can see "how long was this active period".
+  const clampMs = (ms: number) => Math.min(elapsedEnd, Math.max(startMs, ms));
+  const busy = stops
+    .map((st) => [clampMs(new Date(st.started_at).getTime()),
+                  clampMs(st.ended_at ? new Date(st.ended_at).getTime() : elapsedEnd)] as [number, number])
+    .filter(([a, b]) => b > a)
+    .sort((a, b) => a[0] - b[0]);
+  const mergedBusy: [number, number][] = [];
+  for (const [a, b] of busy) {
+    const last = mergedBusy[mergedBusy.length - 1];
+    if (last && a <= last[1]) last[1] = Math.max(last[1], b);
+    else mergedBusy.push([a, b]);
+  }
+  const runSegs: { a: number; b: number }[] = [];
+  let cursor = startMs;
+  for (const [a, b] of mergedBusy) {
+    if (a > cursor) runSegs.push({ a: cursor, b: a });
+    cursor = Math.max(cursor, b);
+  }
+  if (cursor < elapsedEnd) runSegs.push({ a: cursor, b: elapsedEnd });
 
   const spanH = span / 3_600_000;
   const stepH = spanH > 12 ? 3 : 1;
@@ -431,6 +481,23 @@ export function StopTimeline({
 
       <div className="relative flex-1 min-h-[56px] rounded-lg overflow-hidden bg-[#1e293b]">
         <div className="absolute left-0 top-0 h-full" style={{ width: `${runningPct}%`, backgroundColor: RUNNING_COLOR }} />
+        {/* Hoverable active-production bands (transparent overlay on the green
+            base; stops render after so they sit on top and own their own hover). */}
+        {runSegs.map((sg, i) => {
+          const left = pct(sg.a);
+          const width = Math.max(0.6, pct(sg.b) - left);
+          const ongoing = nowInWindow && sg.b >= elapsedEnd;
+          return (
+            <div
+              key={`run-${i}`}
+              onMouseEnter={(ev) => setTip({ kind: 'running', a: sg.a, b: sg.b, ongoing, x: ev.clientX, y: ev.clientY })}
+              onMouseMove={(ev) => setTip({ kind: 'running', a: sg.a, b: sg.b, ongoing, x: ev.clientX, y: ev.clientY })}
+              onMouseLeave={() => setTip(null)}
+              className="absolute top-0 h-full cursor-help hover:brightness-110 hover:ring-2 hover:ring-white/70 hover:z-[5]"
+              style={{ left: `${left}%`, width: `${width}%`, backgroundColor: RUNNING_COLOR }}
+            />
+          );
+        })}
         {stops.flatMap((stop) => {
           const s = new Date(stop.started_at).getTime();
           const e = stop.ended_at ? new Date(stop.ended_at).getTime() : elapsedEnd;
@@ -457,8 +524,8 @@ export function StopTimeline({
               <div
                 key={`${stop.id}-${idx}`}
                 onClick={clickable ? () => onSegmentClick!(stop) : undefined}
-                onMouseEnter={(ev) => setTip({ stop, x: ev.clientX, y: ev.clientY, phase: sg.kind })}
-                onMouseMove={(ev) => setTip({ stop, x: ev.clientX, y: ev.clientY, phase: sg.kind })}
+                onMouseEnter={(ev) => setTip({ kind: sg.kind, stop, x: ev.clientX, y: ev.clientY })}
+                onMouseMove={(ev) => setTip({ kind: sg.kind, stop, x: ev.clientX, y: ev.clientY })}
                 onMouseLeave={() => setTip(null)}
                 className={`absolute top-0 h-full transition-[filter] ${clickable ? 'cursor-pointer hover:brightness-125 hover:ring-2 hover:ring-white hover:z-10' : ''}`}
                 style={{ left: `${left}%`, width: `${width}%`, backgroundColor: sg.color }}
@@ -480,9 +547,35 @@ export function StopTimeline({
       </div>
 
       {tip && (() => {
+        const W = 240;
+        const left = tip.x + 16 + W > window.innerWidth ? tip.x - 16 - W : tip.x + 16;
+        const top = Math.min(tip.y + 16, window.innerHeight - 160);
+
+        // Active-production band → its own compact card (time range + duration).
+        if (tip.kind === 'running') {
+          const rs = new Date(tip.a), re = new Date(tip.b);
+          return createPortal(
+            <div
+              className="fixed z-[9999] pointer-events-none rounded-lg border border-white/10 bg-[#2b2f36]/95 px-3 py-2 text-xs text-gray-200 shadow-xl backdrop-blur-sm"
+              style={{ left, top, minWidth: W, maxWidth: W }}
+            >
+              <div className="text-[11px] text-gray-400">{hms(rs)} - {tip.ongoing ? '…' : hms(re)}</div>
+              <div className="mb-1.5 flex items-center gap-1.5 font-bold text-white">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: RUNNING_COLOR }} />
+                {tt.activeProduction}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Clock size={13} className="shrink-0 text-gray-400" />
+                <span>{fmtDur(tip.b - tip.a)}{tip.ongoing ? ` · ${tt.ongoing}` : ''}</span>
+              </div>
+            </div>,
+            document.body,
+          );
+        }
+
         // The purple "intervention" segment describes the intervention itself
         // (its own time/duration/technician/type), not the parent stop.
-        const isIv = tip.phase === 'intervention';
+        const isIv = tip.kind === 'intervention';
         const fallbackEnd = new Date(Math.min(endMs, nowMs));
         const ivS = tip.stop.intervention_started_at ? new Date(tip.stop.intervention_started_at) : null;
         const s = isIv && ivS ? ivS : new Date(tip.stop.started_at);
@@ -492,9 +585,6 @@ export function StopTimeline({
           : (tip.stop.ended_at ? new Date(tip.stop.ended_at) : fallbackEnd);
         const nature = tip.stop.intervention_is_preventive ? tt.preventive : tt.corrective;
         const title = isIv ? `${tt.intervention_label} · ${nature}` : stopReason(tip.stop);
-        const W = 240;
-        const left = tip.x + 16 + W > window.innerWidth ? tip.x - 16 - W : tip.x + 16;
-        const top = Math.min(tip.y + 16, window.innerHeight - 160);
         // Rendered via a portal to <body> so the fixed tooltip escapes the
         // react-grid-layout panel's CSS transform (a transformed ancestor becomes
         // the containing block for `fixed`, which pushed the card down & behind).
@@ -555,13 +645,44 @@ export function StopTimeline({
   );
 }
 
+// Scales its content (via CSS transform) to fill the parent box while keeping
+// aspect — so a panel's content grows/shrinks with the card instead of staying a
+// fixed size. Content is laid out at its natural size; offsetWidth/Height are
+// pre-transform, so there's no measurement feedback loop.
+function FitToBox({ children }: { children: ReactNode }) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+  useLayoutEffect(() => {
+    const box = boxRef.current, content = contentRef.current;
+    if (!box || !content) return;
+    const measure = () => {
+      const cw = content.offsetWidth, ch = content.offsetHeight;
+      if (!cw || !ch) return;
+      const s = Math.min(box.clientWidth / cw, box.clientHeight / ch);
+      setScale(Math.max(0.1, Math.min(s, 6)));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(box);
+    ro.observe(content);
+    return () => ro.disconnect();
+  });
+  return (
+    <div ref={boxRef} className="w-full h-full flex items-center justify-center overflow-hidden">
+      <div ref={contentRef} style={{ transform: `scale(${scale})` }}>{children}</div>
+    </div>
+  );
+}
+
 // Pieces-produced-per-hour bar chart for ONE shift window — mirrors the old vendor's
 // "Nombre de passages produits" view. Shares the shift window + ◀ ▶ nav with the timeline.
 export function ProductionChart({
-  win, hours, nowMs, lang, title, canNavigate, atCurrent, canGoBack, onPrev, onNext,
+  win, hours, target = 0, nowMs, lang, title, canNavigate, atCurrent, canGoBack, onPrev, onNext,
 }: {
   win: ShiftWindow | null;
   hours: HourlyPoint[];
+  target?: number;      // per-hour production goal (from the machine setup); 0 hides the line
   nowMs: number;
   lang: Lang;
   title: string;
@@ -579,7 +700,11 @@ export function ProductionChart({
   const endHM = hm(win.end);
   const rangeLabel = `${hm(win.start)} – ${endHM === '00:00' ? '24:00' : endHM}`;
   const arrowBtn = 'w-7 h-7 flex items-center justify-center rounded-lg border border-white/10 text-gray-300 hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-not-allowed';
-  const max = Math.max(1, ...hours.map((h) => h.pieces));
+  const tt = I18N[lang];
+  // Scale the bars against both actual output and the goal so the target line is
+  // always visible on the chart (even when every hour is below target).
+  const max = Math.max(1, target, ...hours.map((h) => h.pieces));
+  const targetPct = target > 0 ? (target / max) * 100 : 0;
   const isCurrentHour = (iso: string) => {
     if (!atCurrent) return false;
     const s = new Date(iso).getTime();
@@ -592,26 +717,64 @@ export function ProductionChart({
           <p className="text-sm font-bold text-white truncate">{title}</p>
           <p className="text-[11px] text-gray-500 truncate">{shiftName} · {dateLabel} · {rangeLabel}</p>
         </div>
-        {canNavigate && (
-          <div className="flex items-center gap-1 shrink-0">
-            <button onClick={onPrev} disabled={!canGoBack} className={arrowBtn}><ChevronLeft size={16} /></button>
-            <button onClick={onNext} disabled={atCurrent} className={arrowBtn}><ChevronRight size={16} /></button>
-          </div>
-        )}
-      </div>
-      <div className="flex-1 min-h-[110px] flex items-end gap-1">
-        {hours.map((h) => {
-          const cur = isCurrentHour(h.hour);
-          return (
-            <div key={h.hour} className="flex-1 flex flex-col items-center justify-end h-full gap-1">
-              <span className={`text-[10px] font-bold ${cur ? 'text-blue-300' : 'text-gray-400'}`}>{h.pieces || ''}</span>
-              <div className="w-full rounded-t transition-all"
-                style={{ height: `${Math.max(2, (h.pieces / max) * 100)}%`, background: cur ? '#3b82f6' : '#64748b' }} />
-              <span className="text-[9px] text-gray-500 font-mono">{hm(new Date(h.hour))}</span>
+        <div className="flex items-center gap-2 shrink-0">
+          {target > 0 && (
+            <span className="flex items-center gap-1 text-[11px] text-amber-300/90 whitespace-nowrap">
+              <span className="inline-block w-3 border-t-2 border-dashed border-amber-400" />
+              {tt.target} {target}/h
+            </span>
+          )}
+          {canNavigate && (
+            <div className="flex items-center gap-1">
+              <button onClick={onPrev} disabled={!canGoBack} className={arrowBtn}><ChevronLeft size={16} /></button>
+              <button onClick={onNext} disabled={atCurrent} className={arrowBtn}><ChevronRight size={16} /></button>
             </div>
-          );
-        })}
-        {hours.length === 0 && <p className="text-xs text-gray-600 m-auto">—</p>}
+          )}
+        </div>
+      </div>
+      {/* Three aligned rows (value labels / bar band / hour labels) so the target
+          line, positioned inside the band, lines up exactly with the bars. */}
+      <div className="flex-1 min-h-[110px] flex flex-col">
+        {hours.length === 0 ? (
+          <p className="text-xs text-gray-600 m-auto">—</p>
+        ) : (
+          <>
+            <div className="flex items-end gap-1">
+              {hours.map((h) => {
+                const cur = isCurrentHour(h.hour);
+                const met = target > 0 && h.pieces >= target;
+                return (
+                  <span key={h.hour} className={`flex-1 text-center text-[10px] font-bold leading-none ${cur ? 'text-blue-300' : met ? 'text-green-300' : 'text-gray-400'}`}>{h.pieces || ''}</span>
+                );
+              })}
+            </div>
+            <div className="relative flex-1 flex items-stretch gap-1 min-h-0 my-1">
+              {/* Hourly target reference line — bottom % matches the bars' scale. */}
+              {targetPct > 0 && (
+                <div className="pointer-events-none absolute left-0 right-0 z-10 border-t-2 border-dashed border-amber-400/70"
+                  style={{ bottom: `${targetPct}%` }} />
+              )}
+              {hours.map((h) => {
+                const cur = isCurrentHour(h.hour);
+                const pct = h.pieces > 0 ? Math.max(2, (h.pieces / max) * 100) : 0;
+                // Reached the goal → green; below the goal (with output) → amber; current hour → blue.
+                const met = target > 0 && h.pieces >= target;
+                const barColor = cur ? '#3b82f6' : met ? '#22c55e' : target > 0 && h.pieces > 0 ? '#f59e0b' : '#64748b';
+                return (
+                  <div key={h.hour} className="flex-1 flex items-end min-h-0">
+                    <div className="w-full rounded-t transition-all shrink-0"
+                      style={{ height: `${pct}%`, background: barColor }} />
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex gap-1">
+              {hours.map((h) => (
+                <span key={h.hour} className="flex-1 text-center text-[9px] text-gray-500 font-mono">{hm(new Date(h.hour))}</span>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -622,11 +785,19 @@ type RejectStep = 'categories' | 'subcategories' | 'quantity';
 
 export default function MachinePage() {
   const { slug } = useParams<{ slug: string }>();
+  // Kiosk access token: tablets bookmark /machines/:slug?k=<token>. Stored for
+  // the session so every kiosk API call carries X-Kiosk-Token (see api/axios.ts);
+  // dormant until the backend enforces KIOSK_ENFORCE_TOKEN.
+  useEffect(() => {
+    const k = new URLSearchParams(window.location.search).get('k');
+    if (k) sessionStorage.setItem('kaizo-kiosk-token', k);
+  }, []);
   const [machine, setMachine] = useState<MachinePageData | null>(null);
   const [mes, setMes]         = useState<MESDataExtended | null>(null);
   const [stops, setStops]     = useState<MachineStopOut[]>([]);
   const [timelineStops, setTimelineStops] = useState<MachineStopOut[]>([]);
   const [hourly, setHourly] = useState<HourlyPoint[]>([]);
+  const [hourlyTarget, setHourlyTarget] = useState(0); // per-hour production goal (from machine setup)
   const [shiftOffset, setShiftOffset] = useState(0); // 0 = current shift; negative = past (supervisor nav)
   const [operators, setOps]   = useState<MachineOperatorOut[]>([]);
   const [categories, setCats] = useState<StopCategoryOut[]>([]);
@@ -699,7 +870,9 @@ export default function MachinePage() {
   const [stopTime, setStopTime]             = useState<string>('');
 
   // Reclassify-stop modal — click a stop on the timeline to change its cause.
-  // A stop never becomes "running" here (anti-cheat); maintenance only relabels (no ticket).
+  // A stop never becomes "running" here (anti-cheat). Closed stops only relabel;
+  // reclassifying the OPEN stop to a maintenance cause also calls maintenance
+  // (backend opens alert + ticket + intervention and returns the ticket number).
   const [reclassTarget, setReclassTarget] = useState<MachineStopOut | null>(null);
   const [reclassCat, setReclassCat]       = useState<StopCategoryOut | null>(null);
   const [reclassBusy, setReclassBusy]     = useState(false);
@@ -707,6 +880,11 @@ export default function MachinePage() {
   const [rejectLogs, setRejectLogs]       = useState<RejectLogItem[]>([]);
   const [bulkStops, setBulkStops]         = useState<MachineStopOut[] | null>(null);
   const [selResetKey, setSelResetKey]     = useState(0);
+  const [showClone, setShowClone]         = useState(false);
+  const [cloneMachines, setCloneMachines] = useState<Machine[]>([]);
+  const [cloneSel, setCloneSel]           = useState<Set<string>>(new Set());
+  const [cloneBusy, setCloneBusy]         = useState(false);
+  const [cloneMsg, setCloneMsg]           = useState('');
 
   // Ticket close state
   const [closingTicketId, setClosingTicketId] = useState<string | null>(null);
@@ -746,6 +924,21 @@ export default function MachinePage() {
   const winStartISO = displayWin?.start.toISOString();
   const winEndISO = displayWin?.end.toISOString();
 
+  // Stop-justification rate for the displayed shift: share of stop TIME that has a
+  // cause assigned (planned counts as justified; only pink/unjustified doesn't).
+  const justificationPct = (() => {
+    const cap = Math.min(displayWin?.end.getTime() ?? nowMs, nowMs);
+    let total = 0, justified = 0;
+    for (const s of timelineStops) {
+      const start = new Date(s.started_at).getTime();
+      const end = s.ended_at ? new Date(s.ended_at).getTime() : cap;
+      const dur = Math.max(0, end - start);
+      total += dur;
+      if (s.category) justified += dur;
+    }
+    return total > 0 ? Math.round((justified / total) * 100) : 100;
+  })();
+
   // Fetch the displayed window's stops (live WS push; slow fallback interval).
   useEffect(() => {
     if (!slug || !winStartISO || !winEndISO) return;
@@ -765,7 +958,7 @@ export default function MachinePage() {
     let active = true;
     const load = () =>
       fetchProductionHourly(slug, { start: winStartISO, end: winEndISO })
-        .then((r) => { if (active) setHourly(r.hours); })
+        .then((r) => { if (active) { setHourly(r.hours); setHourlyTarget(r.target_per_hour || 0); } })
         .catch(() => {});
     load();
     const id = setInterval(load, 60_000);
@@ -778,8 +971,10 @@ export default function MachinePage() {
     if (!slug || targets.length === 0) return;
     setReclassBusy(true);
     try {
+      let ticketNumber: string | null = null;
       for (const st of targets) {
-        await reclassifyStop(slug, st.id, { stop_category_id: catId, stop_subcategory_id: subId ?? null });
+        const res = await reclassifyStop(slug, st.id, { stop_category_id: catId, stop_subcategory_id: subId ?? null });
+        if (res.ticket_number) ticketNumber = res.ticket_number;
       }
       setReclassTarget(null);
       setReclassCat(null);
@@ -787,7 +982,14 @@ export default function MachinePage() {
       if (winStartISO && winEndISO) {
         fetchTodayStops(slug, { start: winStartISO, end: winEndISO }).then(setTimelineStops).catch(() => {});
       }
-      fetchMachinePage(slug).then(setMachine).catch(() => {});
+      if (ticketNumber) {
+        // The open stop's new cause called maintenance: surface the ticket and
+        // refresh the whole page so the intervention panel picks it up.
+        setConfirmedTicket(ticketNumber);
+        load(true);
+      } else {
+        fetchMachinePage(slug).then(setMachine).catch(() => {});
+      }
     } finally {
       setReclassBusy(false);
     }
@@ -813,10 +1015,28 @@ export default function MachinePage() {
     fetchTodayRejects(slug).then((r) => setRejectLogs(r.logs || [])).catch(() => {});
   }, [showEvents, slug, liveTick]);
 
+  // Clone the current kiosk layout to other machines.
+  const openClone = () => {
+    setShowClone(true); setCloneMsg(''); setCloneSel(new Set());
+    fetchMachinesAll().then((ms) => setCloneMachines(ms.filter((m) => m.id !== machine?.id))).catch(() => {});
+  };
+  const toggleCloneTarget = (id: string) => setCloneSel((prev) => {
+    const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next;
+  });
+  const applyClone = async () => {
+    if (!cloneSel.size) return;
+    setCloneBusy(true);
+    try {
+      const res = await cloneKioskLayout(layout as unknown[], [...cloneSel]);
+      setCloneMsg(t.cloneDone.replace('{n}', String(res.updated)));
+      setCloneSel(new Set());
+    } finally { setCloneBusy(false); }
+  };
+
   // Apply the machine's saved panel layout once it loads
   useEffect(() => {
     const saved = machine?.kiosk_layout;
-    if (Array.isArray(saved) && saved.length) setLayout(saved as Layout[]);
+    if (Array.isArray(saved) && saved.length) setLayout(migrateLayout(saved as Layout[]));
   }, [machine?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const saveLayout = useCallback(async (next: Layout[]) => {
@@ -1113,6 +1333,10 @@ export default function MachinePage() {
         {canEditLayout && (editLayout ? (
           <>
             <button
+              onClick={openClone}
+              className="px-3 py-1.5 rounded-lg text-sm font-semibold text-gray-300 border border-white/10 hover:bg-white/[0.05]"
+            >{t.cloneLayout}</button>
+            <button
               onClick={() => setLayout(DEFAULT_KIOSK_LAYOUT)}
               className="px-3 py-1.5 rounded-lg text-sm font-semibold text-gray-300 border border-white/10 hover:bg-white/[0.05]"
             >{t.resetLayoutBtn}</button>
@@ -1133,10 +1357,10 @@ export default function MachinePage() {
       <RGL
         className={`kiosk-grid${editLayout ? ' editing' : ''}`}
         layout={layout}
-        cols={12}
-        rowHeight={28}
-        margin={[16, 16]}
-        containerPadding={[16, 16]}
+        cols={GRID_COLS}
+        rowHeight={GRID_ROW_H}
+        margin={[10, 10]}
+        containerPadding={[12, 12]}
         isDraggable={editLayout}
         isResizable={editLayout}
         isBounded
@@ -1149,29 +1373,29 @@ export default function MachinePage() {
         {/* Panel — Status + Timer + Operator */}
         <div key="status" className="h-full relative">
           {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {statusLabel}</div>}
-          <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex flex-col gap-3">
-          <div className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border w-fit text-xl font-black ${statusCls}`}>
+          <div className="h-full overflow-hidden bg-[#0d1421] rounded-2xl border border-white/[0.06] p-[4cqmin] flex flex-col justify-center gap-[3cqmin] [container-type:size]">
+          <div className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border w-fit text-[clamp(0.85rem,5cqmin,1.5rem)] font-black ${statusCls}`}>
             <span className={`w-3 h-3 rounded-full animate-pulse ${statusDot}`} />
             {statusLabel}
           </div>
 
-          <div className="font-mono text-5xl font-black text-white tracking-wider leading-none">
+          <div className="font-mono text-[clamp(2rem,16cqmin,4.5rem)] font-black text-white tracking-wider leading-none">
             {timerStr}
           </div>
 
-          <div className="mt-auto space-y-2">
-            <p className="text-3xl font-bold text-white truncate">
+          <div className="space-y-[1.5cqmin]">
+            <p className="text-[clamp(1.75rem,14cqmin,3.6rem)] font-black text-white truncate leading-tight">
               {machine.display_name || machine.name}
             </p>
             {machine.code && (
-              <p className="text-sm font-mono text-gray-400">{machine.code}</p>
+              <p className="text-[clamp(0.85rem,4.5cqmin,1.2rem)] font-mono text-gray-400">{machine.code}</p>
             )}
 
             {/* Operator selector */}
             <div className="relative">
               <button
                 onClick={() => setShowOpList((v) => !v)}
-                className="flex items-center gap-2 text-base text-gray-300 hover:text-white transition-colors"
+                className="flex items-center gap-2 text-[clamp(1rem,5.5cqmin,1.45rem)] text-gray-300 hover:text-white transition-colors"
               >
                 <User size={16} className="text-gray-500" />
                 {machine.current_operator || t.noOperator}
@@ -1192,7 +1416,7 @@ export default function MachinePage() {
               )}
             </div>
 
-            <p className="text-sm text-gray-400">
+            <p className="text-[clamp(0.85rem,4.5cqmin,1.2rem)] text-gray-400">
               {todayStopCount} {t.stopCount}
             </p>
           </div>
@@ -1203,7 +1427,7 @@ export default function MachinePage() {
         {machine.show_job_number && (
           <div key="job" className="h-full relative">
             {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.jobNumber}</div>}
-            <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex flex-col justify-between">
+            <div className="h-full overflow-hidden bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex flex-col justify-between">
             <p className="text-sm font-semibold text-gray-400 uppercase tracking-widest">{t.jobNumber}</p>
             <div>
               <p className="text-3xl font-bold text-white mb-4">
@@ -1233,7 +1457,7 @@ export default function MachinePage() {
         {/* Panel — STOP / RESTART */}
         <div key="stop" className="h-full relative">
           {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.newStop}</div>}
-          <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex flex-col items-center justify-center gap-4">
+          <div className="h-full overflow-hidden bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex flex-col items-center justify-center gap-4">
           {machine?.signal_driven ? (
             isRunning ? (
               // Signal-driven & producing: stops are auto-detected — no manual stop
@@ -1316,10 +1540,11 @@ export default function MachinePage() {
         {/* Panel — Pieces produced per hour */}
         <div key="passages" className="h-full relative">
           {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.piecesProduced}</div>}
-          <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-4">
+          <div className="h-full overflow-hidden bg-[#0d1421] rounded-2xl border border-white/[0.06] p-4">
             <ProductionChart
               win={displayWin}
               hours={hourly}
+              target={hourlyTarget}
               nowMs={nowMs}
               lang={lang}
               title={t.piecesProduced}
@@ -1336,26 +1561,23 @@ export default function MachinePage() {
         {machine.show_production_panel && (
           <div key="production" className="h-full relative">
             {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.production}</div>}
-            <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 relative overflow-hidden">
-            <p className="text-xs text-gray-400 uppercase tracking-widest mb-2 font-semibold">{t.production}</p>
-            <div className="flex gap-8">
-              <div>
-                <p className={`text-4xl font-black ${mes?.is_placeholder ? 'text-gray-600' : 'text-emerald-400'}`}>{mes?.is_placeholder ? '—' : mes?.production_count ?? 0}</p>
-                <p className="text-xs text-gray-500 mt-1">{t.production}</p>
+            <div className="h-full bg-[#0d1421] rounded-2xl border border-white/[0.06] p-4 relative overflow-hidden">
+            <FitToBox>
+              <p className="text-sm text-gray-400 uppercase tracking-widest mb-3 font-semibold whitespace-nowrap">{t.production}</p>
+              <div className="flex gap-10 whitespace-nowrap">
+                {[
+                  { v: mes?.is_placeholder ? '—' : (mes?.production_count ?? 0), c: 'text-emerald-400', label: t.production },
+                  { v: mes?.is_placeholder ? '—' : (machine.target_count ?? mes?.target ?? 0), c: 'text-sky-400', label: t.target },
+                  { v: mes?.is_placeholder ? '—' : `${mes?.oee_pct ?? 0}%`, c: oeeColor, label: t.oee },
+                  { v: mes?.downtime_today_minutes ?? 0, c: (mes?.downtime_today_minutes ?? 0) > 0 ? 'text-amber-400' : 'text-emerald-400', label: `${t.downtime} (${t.min})` },
+                ].map((m, i) => (
+                  <div key={i}>
+                    <p className={`text-5xl font-black leading-none ${mes?.is_placeholder ? 'text-gray-600' : m.c}`}>{m.v}</p>
+                    <p className="text-sm text-gray-500 mt-1.5">{m.label}</p>
+                  </div>
+                ))}
               </div>
-              <div>
-                <p className={`text-4xl font-black ${mes?.is_placeholder ? 'text-gray-600' : 'text-sky-400'}`}>{mes?.is_placeholder ? '—' : (machine.target_count ?? mes?.target ?? 0)}</p>
-                <p className="text-xs text-gray-500 mt-1">{t.target}</p>
-              </div>
-              <div>
-                <p className={`text-4xl font-black ${mes?.is_placeholder ? 'text-gray-600' : oeeColor}`}>{mes?.is_placeholder ? '—' : `${mes?.oee_pct ?? 0}%`}</p>
-                <p className="text-xs text-gray-500 mt-1">{t.oee}</p>
-              </div>
-              <div>
-                <p className={`text-4xl font-black ${mes?.is_placeholder ? 'text-gray-600' : (mes?.downtime_today_minutes ?? 0) > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>{mes?.downtime_today_minutes ?? 0}</p>
-                <p className="text-xs text-gray-500 mt-1">{t.downtime} ({t.min})</p>
-              </div>
-            </div>
+            </FitToBox>
             {mes?.is_placeholder && (
               <div className="absolute inset-0 flex items-center justify-center bg-[#0d1421]/60 backdrop-blur-sm rounded-2xl">
                 <span className="text-xs text-gray-700 font-mono border border-gray-800 px-3 py-1.5 rounded-full">{t.mesComingSoon}</span>
@@ -1369,7 +1591,7 @@ export default function MachinePage() {
         {machine.show_availability_gauge && (
           <div key="gauge" className="h-full relative">
             {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.availability}</div>}
-            <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5">
+            <div className="h-full overflow-hidden bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5">
             <p className="text-xs text-gray-400 uppercase tracking-widest mb-1 font-semibold">{t.availability}</p>
             <AvailabilityGauge
               pct={mes?.availability_pct ?? 0}
@@ -1384,10 +1606,10 @@ export default function MachinePage() {
         {machine.show_reject_panel && (
           <div key="rejects" className="h-full relative">
             {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.rejects}</div>}
-            <div className="h-full overflow-auto bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex items-center justify-between">
-            <div>
-              <p className="text-xs text-gray-400 uppercase tracking-widest mb-1 font-semibold">{t.rejects}</p>
-              <p className="text-6xl font-black text-red-400">{mes?.reject_count ?? 0}</p>
+            <div className="h-full overflow-hidden bg-[#0d1421] rounded-2xl border border-white/[0.06] p-[4cqmin] flex items-center justify-between gap-2 [container-type:size]">
+            <div className="min-w-0">
+              <p className="text-[clamp(0.6rem,4cqmin,0.85rem)] text-gray-400 uppercase tracking-widest mb-1 font-semibold">{t.rejects}</p>
+              <p className="text-[clamp(2rem,30cqmin,5rem)] font-black text-red-400 leading-none">{mes?.reject_count ?? 0}</p>
             </div>
             <div className="flex flex-col gap-3">
               <button
@@ -1404,6 +1626,18 @@ export default function MachinePage() {
             </div>
           </div>
         )}
+
+        {/* Panel — Stop justification rate */}
+        <div key="justification" className="h-full relative">
+          {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.justification}</div>}
+          <div className="h-full overflow-hidden bg-[#0d1421] rounded-2xl border border-white/[0.06] p-[5cqmin] flex flex-col justify-center [container-type:size]">
+            <p className="text-[clamp(0.6rem,4cqmin,0.85rem)] text-gray-400 uppercase tracking-widest mb-1 font-semibold">{t.justification}</p>
+            <p className="text-[clamp(2rem,26cqmin,5rem)] font-black leading-none" style={{ color: justificationPct >= 90 ? '#22c55e' : justificationPct >= 70 ? '#eab308' : '#ef4444' }}>
+              {justificationPct}%
+            </p>
+            <p className="text-[clamp(0.55rem,3.5cqmin,0.8rem)] text-gray-500 mt-1">{t.justificationHint}</p>
+          </div>
+        </div>
 
         {/* Panel — Active maintenance (full mechanic intervention flow) */}
         <div key="maintenance" className="h-full relative">
@@ -1734,6 +1968,38 @@ export default function MachinePage() {
         />
       )}
 
+      {showClone && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setShowClone(false)}>
+          <div className="w-[min(560px,95vw)] max-h-[85vh] flex flex-col bg-[#0d1421] rounded-2xl border border-white/[0.08] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
+              <h2 className="text-lg font-bold text-white">{t.cloneTitle}</h2>
+              <button onClick={() => setShowClone(false)}><X size={24} className="text-gray-500 hover:text-gray-200" /></button>
+            </div>
+            <div className="flex-1 overflow-auto p-2">
+              {cloneMachines.length === 0 ? (
+                <p className="p-6 text-center text-gray-600 text-sm">—</p>
+              ) : cloneMachines.map((m) => (
+                <label key={m.id} className="flex items-center gap-3 px-4 py-2.5 rounded-lg hover:bg-white/[0.04] cursor-pointer">
+                  <input type="checkbox" checked={cloneSel.has(m.id)} onChange={() => toggleCloneTarget(m.id)} className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500" />
+                  <span className="text-sm text-gray-200">{m.display_name || m.name}</span>
+                  {m.code && <span className="text-xs text-gray-500 font-mono">{m.code}</span>}
+                </label>
+              ))}
+            </div>
+            <div className="flex items-center justify-between gap-3 px-6 py-4 border-t border-white/[0.06]">
+              <span className="text-sm text-green-400">{cloneMsg}</span>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setShowClone(false)} className="px-4 py-1.5 rounded-lg text-sm text-gray-300 border border-white/10 hover:bg-white/[0.05]">{t.cancel}</button>
+                <button onClick={applyClone} disabled={cloneBusy || cloneSel.size === 0}
+                  className="px-4 py-1.5 rounded-lg text-sm font-bold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-40">
+                  {cloneBusy ? '…' : `${t.cloneApply} (${cloneSel.size})`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {(reclassTarget || bulkStops) && (
         <div className="fixed inset-0 z-50 bg-black/90 flex flex-col">
           <div className="flex items-center justify-between px-8 py-6 border-b border-white/[0.06]">
@@ -1774,6 +2040,9 @@ export default function MachinePage() {
                     >
                       <IconRenderer icon={cat.icon} color={cat.color} size={36} />
                       <span className="text-base font-bold text-white text-center leading-snug">{cat.name}</span>
+                      {reclassTarget && !reclassTarget.ended_at && cat.type === 'maintenance' && (
+                        <span className="text-xs font-semibold text-amber-400 text-center leading-tight">{t.maintenanceWillBeNotified}</span>
+                      )}
                     </button>
                   ))}
                 </div>
@@ -1794,6 +2063,9 @@ export default function MachinePage() {
                     >
                       <IconRenderer icon={sub.icon || 'wrench'} color={sub.color || '#6b7280'} size={36} />
                       <span className="text-base font-bold text-white text-center">{sub.name}</span>
+                      {reclassTarget && !reclassTarget.ended_at && (reclassCat.type === 'maintenance' || sub.triggers_maintenance) && (
+                        <span className="text-xs font-semibold text-amber-400 text-center leading-tight">{t.maintenanceWillBeNotified}</span>
+                      )}
                     </button>
                   ))}
                   <button

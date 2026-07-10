@@ -10,7 +10,7 @@ from app.models.models import (
     User, WorkOrder, Equipment, WorkOrderStatus, WorkOrderType, WorkOrderPriority,
     LaborRecord, WOPart, WOCost, WOAction, Technician,
     MaintenanceTicket, TicketStatus, MachineIntervention, InterventionPart,
-    StockItem, WorkOrderTechnician, PmTaskMedia,
+    InterventionTechnician, StockItem, WorkOrderTechnician, PmTaskMedia,
 )
 from app.schemas.work_order import WorkOrderCreate, WorkOrderUpdate, WorkOrderOut, WorkOrderListResponse, WOAssign, WOSchedule
 from app.schemas.wo_subresources import (
@@ -21,13 +21,42 @@ from app.schemas.wo_subresources import (
     WOCostSummary,
 )
 from app.core.security import get_current_user
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import (
+    ensure_same_plant, plant_condition, plant_scoped, require_technician_in_plant,
+)
 from app.services.inventory_service import InventoryService
 from app.services.machine_history_service import MachineHistoryService
 from app.services.ticket_service import sync_alert_from_ticket
 from app.services import pm_service
 from app.services import intervention_sync
+from app.services import labor_time_service
+from app.services.note_organizer import organize_note
+from pydantic import BaseModel
 
 router = APIRouter()
+
+
+class NoteOrganizeRequest(BaseModel):
+    text: str
+    language: str = "en"
+
+
+class NoteOrganizeResponse(BaseModel):
+    text: str
+    ai_used: bool
+
+
+@router.post("/notes/organize", response_model=NoteOrganizeResponse)
+async def organize_technician_note(
+    body: NoteOrganizeRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Tidy up / organize a dictated technician note using the token-free local
+    LLM (Ollama). Degrades to a light local cleanup when the model is offline —
+    always returns usable text; `ai_used` says which path ran."""
+    text, ai_used = await organize_note(body.text, body.language)
+    return NoteOrganizeResponse(text=text, ai_used=ai_used)
 
 
 async def _sync_ticket_from_wo(wo: WorkOrder, db: AsyncSession) -> None:
@@ -70,9 +99,23 @@ async def _resolve_tech_for_labor(wo: WorkOrder, current_user: User, db: AsyncSe
     return None
 
 
+async def _finalize_labor_record(rec: LaborRecord, wo: Optional[WorkOrder], db: AsyncSession) -> None:
+    """Set RAW hours_worked from the record's timestamps (this is what feeds
+    work_orders.repair_hours → MTTR, so it must stay raw and is NOT reduced by
+    breaks), then stamp effective_hours / deducted_minutes and compute labor_cost
+    from EFFECTIVE working time (off-shift/lunch/breaks/vacation excluded)."""
+    if rec.started_at and rec.stopped_at:
+        started = rec.started_at if rec.started_at.tzinfo else rec.started_at.replace(tzinfo=timezone.utc)
+        stopped = rec.stopped_at if rec.stopped_at.tzinfo else rec.stopped_at.replace(tzinfo=timezone.utc)
+        rec.hours_worked = round((stopped - started).total_seconds() / 3600, 4)
+    await labor_time_service.apply_to_record(db, rec, work_order=wo)
+
+
 async def _close_open_labor_records(work_order_id: UUID, db: AsyncSession) -> None:
-    """Stamp stopped_at on any in-flight labor records and compute hours_worked."""
+    """Stamp stopped_at on any in-flight labor records, keep hours_worked raw, and
+    recompute effective_hours + labor_cost."""
     now = datetime.now(timezone.utc)
+    wo = await db.get(WorkOrder, work_order_id)
     result = await db.execute(
         select(LaborRecord).where(
             LaborRecord.work_order_id == work_order_id,
@@ -81,14 +124,7 @@ async def _close_open_labor_records(work_order_id: UUID, db: AsyncSession) -> No
     )
     for rec in result.scalars().all():
         rec.stopped_at = now
-        if rec.started_at:
-            elapsed = (now - rec.started_at).total_seconds() / 3600
-            rec.hours_worked = round(elapsed, 4)
-            tech = await db.get(Technician, rec.technician_id)
-            rate = rec.hourly_rate or (tech.hourly_rate if tech else None)
-            if rate:
-                rec.hourly_rate = rate
-                rec.labor_cost = round(rate * rec.hours_worked, 2)
+        await _finalize_labor_record(rec, wo, db)
 
 
 async def _current_tech_ids(wo: WorkOrder, db: AsyncSession) -> list:
@@ -141,11 +177,7 @@ async def _close_labor_record(wo: WorkOrder, technician_id, db: AsyncSession) ->
     )
     for rec in r.scalars().all():
         rec.stopped_at = now
-        if rec.started_at:
-            started = rec.started_at if rec.started_at.tzinfo else rec.started_at.replace(tzinfo=timezone.utc)
-            rec.hours_worked = round((now - started).total_seconds() / 3600, 4)
-            if rec.hourly_rate:
-                rec.labor_cost = round(rec.hourly_rate * rec.hours_worked, 2)
+        await _finalize_labor_record(rec, wo, db)
 
 
 async def _sync_wo_technicians(wo: WorkOrder, technician_ids: list, db: AsyncSession) -> None:
@@ -269,10 +301,11 @@ async def _enrich_wo(wo: WorkOrder, db: AsyncSession) -> WorkOrderOut:
     return out
 
 
-async def _generate_work_order_number(db: AsyncSession) -> str:
-    from app.services.numbering import next_number
+async def _generate_work_order_number(db: AsyncSession, plant_id=None) -> str:
+    from app.services.numbering import next_number, series_prefix
     year = datetime.now(timezone.utc).year
-    return await next_number(db, WorkOrder.wo_number, f"WO-{year}")
+    sp = await series_prefix(db, plant_id)
+    return await next_number(db, WorkOrder.wo_number, f"{sp}WO-{year}")
 
 
 @router.get("/my", response_model=WorkOrderListResponse)
@@ -280,11 +313,14 @@ async def my_work_orders(
     status: Optional[WorkOrderStatus] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     """WOs the current user is actually working on: ones where they are an
     assigned technician (or executor). WOs staffed by other technicians never
     show here — even for the supervisor/admin who created or started them.
-    Unstaffed WOs assigned directly to the user are still included."""
+    Unstaffed WOs assigned directly to the user are still included.
+    My Work follows the user's memberships (not just the active plant): a
+    shared SJ+Mirabel technician sees their whole personal queue."""
     from sqlalchemy import select as _sel, exists
 
     r = await db.execute(
@@ -315,7 +351,7 @@ async def my_work_orders(
     else:
         cond = unstaffed_mine
 
-    query = _sel(WorkOrder).where(cond)
+    query = _sel(WorkOrder).where(cond, WorkOrder.plant_id.in_(ctx.allowed_plant_ids))
     if status:
         query = query.where(WorkOrder.status == status)
     query = query.order_by(WorkOrder.opened_at.desc())
@@ -346,9 +382,9 @@ async def list_work_orders(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, le=200),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    query = select(WorkOrder)
+    query = plant_scoped(select(WorkOrder), WorkOrder, ctx)
 
     if equipment_id:
         query = query.where(WorkOrder.equipment_id == equipment_id)
@@ -375,8 +411,10 @@ async def list_work_orders(
             WorkOrder.title.ilike(f"%{search}%") |
             WorkOrder.wo_number.ilike(f"%{search}%")
         )
+    # Legacy explicit ?plant_id= narrows further, but only within the caller's
+    # active plant (the ctx filter above is the security boundary).
     if plant_id:
-        query = query.join(Equipment).where(Equipment.plant_id == plant_id)
+        query = query.where(WorkOrder.plant_id == plant_id)
 
     total_result = await db.execute(select(func.count()).select_from(query.subquery()))
     total = total_result.scalar()
@@ -449,21 +487,20 @@ async def list_work_orders(
 
 @router.get("/dashboard", summary="Counts by status for dashboard")
 async def wo_dashboard(
-    plant_id: Optional[UUID] = None,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
+    scope = plant_condition(WorkOrder, ctx)
     counts: dict = {}
     for st in WorkOrderStatus:
-        q = select(func.count(WorkOrder.id)).where(WorkOrder.status == st)
-        if plant_id:
-            q = q.join(Equipment).where(Equipment.plant_id == plant_id)
+        q = select(func.count(WorkOrder.id)).where(WorkOrder.status == st, scope)
         r = await db.execute(q)
         counts[st.value] = r.scalar()
 
     q = select(func.count(WorkOrder.id)).where(
         WorkOrder.priority == WorkOrderPriority.critical,
-        WorkOrder.status.in_([WorkOrderStatus.open, WorkOrderStatus.in_progress])
+        WorkOrder.status.in_([WorkOrderStatus.open, WorkOrderStatus.in_progress]),
+        scope,
     )
     critical_count = (await db.execute(q)).scalar()
 
@@ -471,12 +508,13 @@ async def wo_dashboard(
     q = select(func.count(WorkOrder.id)).where(
         WorkOrder.status == WorkOrderStatus.completed,
         func.date(WorkOrder.completed_at) == today,
+        scope,
     )
     completed_today = (await db.execute(q)).scalar()
 
     by_type = []
     for tp in WorkOrderType:
-        q = select(func.count(WorkOrder.id)).where(WorkOrder.type == tp)
+        q = select(func.count(WorkOrder.id)).where(WorkOrder.type == tp, scope)
         cnt = (await db.execute(q)).scalar()
         if cnt:
             by_type.append({"type": tp.value, "count": cnt})
@@ -512,16 +550,20 @@ async def create_work_order(
     data: WorkOrderCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
-    equip = await db.get(Equipment, data.equipment_id)
-    if not equip:
-        raise HTTPException(status_code=404, detail="Equipment not found")
+    # Relational guard: cross-plant equipment ids 404 like missing ones. The WO
+    # inherits its EQUIPMENT's plant (authoritative), not the request context.
+    equip = ensure_same_plant(await db.get(Equipment, data.equipment_id), ctx, detail="Equipment not found")
+    if data.executor_id:
+        await require_technician_in_plant(db, data.executor_id, equip.plant_id)
 
-    wo_number = await _generate_work_order_number(db)
+    wo_number = await _generate_work_order_number(db, equip.plant_id)
     wo = WorkOrder(
         wo_number=wo_number,
         created_by_id=current_user.id,
         equipment_id=data.equipment_id,
+        plant_id=equip.plant_id,
         type=data.type,
         priority=data.priority,
         title=data.title,
@@ -626,6 +668,8 @@ async def assign_work_order(
         ids = [data.executor_id]
     else:
         ids = []
+    for tech_id in ids:
+        await require_technician_in_plant(db, tech_id, wo.plant_id)
     await _sync_wo_technicians(wo, ids, db)
     await _sync_ticket_from_wo(wo, db)
     await db.commit()
@@ -643,9 +687,7 @@ async def add_wo_technician(
     wo = await db.get(WorkOrder, work_order_id)
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
-    tech = await db.get(Technician, technician_id)
-    if not tech:
-        raise HTTPException(status_code=404, detail="Technician not found")
+    await require_technician_in_plant(db, technician_id, wo.plant_id)
     ids = await _current_tech_ids(wo, db)
     if technician_id not in ids:
         ids.append(technician_id)
@@ -855,6 +897,124 @@ async def complete_work_order(
 
 # ─── Labor sub-resource ───────────────────────────────────────────────────────
 
+# ── Intervention check-in from the office (My Work / WO detail) ─────────────
+# Mirrors the kiosk check-in: the logged-in technician joins the ACTIVE
+# intervention on the WO's machine (e.g. a second tech joining a repair a
+# colleague started at the kiosk). Same intervention_technicians rows → same
+# map pictograms; detail codes are stable strings the frontend maps to t(...).
+
+async def _wo_checkin_payload(db: AsyncSession, wo: WorkOrder, current_user: User) -> dict:
+    machine = await intervention_sync._machine_for_wo(db, wo)
+    active = await intervention_sync._active_for_machine(db, machine.id) if machine else None
+    my_tech = (await db.execute(
+        select(Technician).where(Technician.user_id == current_user.id)
+    )).scalar_one_or_none()
+    rows = []
+    if active:
+        rows = (await db.execute(
+            select(InterventionTechnician)
+            .where(
+                InterventionTechnician.intervention_id == active.id,
+                InterventionTechnician.checked_out_at.is_(None),
+            )
+            .order_by(InterventionTechnician.checked_in_at.asc())
+        )).scalars().all()
+    return {
+        "active": active is not None,
+        "intervention_id": str(active.id) if active else None,
+        "technicians": [{
+            "id":            str(r.id),
+            "technician_id": str(r.technician_id) if r.technician_id else None,
+            "name":          r.name,
+            "checked_in_at": r.checked_in_at.isoformat() if r.checked_in_at else None,
+        } for r in rows],
+        "me_checked_in": bool(my_tech and any(r.technician_id == my_tech.id for r in rows)),
+        "has_tech_profile": my_tech is not None,
+    }
+
+
+@router.get("/{work_order_id}/checkin")
+async def get_wo_checkin(
+    work_order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Check-in state for the active intervention on this WO's machine."""
+    wo = await db.get(WorkOrder, work_order_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    return await _wo_checkin_payload(db, wo, current_user)
+
+
+@router.post("/{work_order_id}/checkin")
+async def checkin_wo_intervention(
+    work_order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """The logged-in technician checks in on the WO machine's active intervention."""
+    wo = await db.get(WorkOrder, work_order_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    machine = await intervention_sync._machine_for_wo(db, wo)
+    active = await intervention_sync._active_for_machine(db, machine.id) if machine else None
+    if not active:
+        raise HTTPException(status_code=404, detail="no_active_intervention")
+    my_tech = (await db.execute(
+        select(Technician).where(Technician.user_id == current_user.id)
+    )).scalar_one_or_none()
+    if not my_tech:
+        raise HTTPException(status_code=400, detail="no_technician_profile")
+
+    already = (await db.execute(
+        select(InterventionTechnician).where(
+            InterventionTechnician.intervention_id == active.id,
+            InterventionTechnician.technician_id == my_tech.id,
+            InterventionTechnician.checked_out_at.is_(None),
+        )
+    )).scalars().first()
+    if not already:
+        db.add(InterventionTechnician(
+            intervention_id=active.id,
+            technician_id=my_tech.id,
+            name=current_user.name,
+        ))
+        if not active.started_by_name:
+            active.started_by_name = current_user.name
+            active.started_by_id = current_user.id
+        await db.commit()
+    return await _wo_checkin_payload(db, wo, current_user)
+
+
+@router.post("/{work_order_id}/checkout")
+async def checkout_wo_intervention(
+    work_order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """The logged-in technician checks out of the WO machine's active intervention."""
+    wo = await db.get(WorkOrder, work_order_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    machine = await intervention_sync._machine_for_wo(db, wo)
+    active = await intervention_sync._active_for_machine(db, machine.id) if machine else None
+    my_tech = (await db.execute(
+        select(Technician).where(Technician.user_id == current_user.id)
+    )).scalar_one_or_none()
+    if active and my_tech:
+        open_row = (await db.execute(
+            select(InterventionTechnician).where(
+                InterventionTechnician.intervention_id == active.id,
+                InterventionTechnician.technician_id == my_tech.id,
+                InterventionTechnician.checked_out_at.is_(None),
+            )
+        )).scalars().first()
+        if open_row:
+            open_row.checked_out_at = datetime.now(timezone.utc)
+            await db.commit()
+    return await _wo_checkin_payload(db, wo, current_user)
+
+
 @router.post("/{work_order_id}/labor", response_model=LaborOut, status_code=201)
 async def add_labor(
     work_order_id: UUID,
@@ -868,7 +1028,6 @@ async def add_labor(
 
     technician = await db.get(Technician, data.technician_id)
     rate = data.hourly_rate or (technician.hourly_rate if technician else None)
-    labor_cost = (rate * data.hours_worked) if rate else None
 
     record = LaborRecord(
         work_order_id=work_order_id,
@@ -876,14 +1035,42 @@ async def add_labor(
         date=data.date,
         hours_worked=data.hours_worked,
         hourly_rate=rate,
-        labor_cost=labor_cost,
         activity=data.activity,
         notes=data.notes,
     )
+    # Manual entry has no start/stop timestamps → effective == raw (no schedule
+    # overlap to compute); labor_cost = rate × effective. Preserves legacy cost.
+    await labor_time_service.apply_to_record(db, record, work_order=wo)
     db.add(record)
     await db.commit()
     await db.refresh(record)
     return record
+
+
+class LaborUpdate(BaseModel):
+    overtime_approved: bool
+
+
+@router.patch("/{work_order_id}/labor/{labor_id}", response_model=LaborOut)
+async def update_labor(
+    work_order_id: UUID,
+    labor_id: UUID,
+    data: LaborUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Toggle approved-overtime on a labor record and recompute effective hours /
+    labor cost. When approved, off-shift time is no longer clipped (breaks/lunch/
+    vacation are still deducted). hours_worked (raw → MTTR) is never touched."""
+    rec = await db.get(LaborRecord, labor_id)
+    if not rec or rec.work_order_id != work_order_id:
+        raise HTTPException(status_code=404, detail="Labor record not found")
+    rec.overtime_approved = data.overtime_approved
+    wo = await db.get(WorkOrder, work_order_id)
+    await labor_time_service.apply_to_record(db, rec, work_order=wo)
+    await db.commit()
+    await db.refresh(rec)
+    return rec
 
 
 @router.get("/{work_order_id}/labor", response_model=LaborListResponse)
@@ -1031,11 +1218,19 @@ async def cost_summary(
     labor_total = sum(r.labor_cost or 0 for r in labor)
     parts_total = sum(p.total_cost or 0 for p in parts)
     other_total = sum(c.amount for c in costs)
+    # Effective vs raw transparency. effective_hours falls back to hours_worked
+    # for legacy/historical records that predate effective-time accounting.
+    raw_hours = sum(r.hours_worked or 0 for r in labor)
+    eff_hours = sum((r.effective_hours if r.effective_hours is not None else (r.hours_worked or 0)) for r in labor)
+    deducted = sum(r.deducted_minutes or 0 for r in labor)
     return WOCostSummary(
-        labor_total=labor_total,
+        labor_total=round(labor_total, 2),
         parts_total=parts_total,
         other_total=other_total,
-        grand_total=labor_total + parts_total + other_total,
+        grand_total=round(labor_total + parts_total + other_total, 2),
+        labor_raw_hours=round(raw_hours, 4),
+        labor_effective_hours=round(eff_hours, 4),
+        labor_deducted_minutes=round(deducted, 2),
     )
 
 

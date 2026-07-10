@@ -120,6 +120,44 @@ export const resumeWorkOrder = async (id: string): Promise<WorkOrder> => {
   return data;
 };
 
+// Intervention check-in from the office — the logged-in technician joins the
+// ACTIVE intervention on the WO's machine (same mechanism as the kiosk card).
+export interface WOCheckinState {
+  active: boolean;
+  intervention_id: string | null;
+  technicians: { id: string; technician_id: string | null; name: string; checked_in_at: string | null }[];
+  me_checked_in: boolean;
+  has_tech_profile: boolean;
+}
+
+export const fetchWOCheckin = async (id: string): Promise<WOCheckinState> => {
+  const { data } = await api.get<WOCheckinState>(`/api/wo/${id}/checkin`);
+  return data;
+};
+
+export const checkinWOIntervention = async (id: string): Promise<WOCheckinState> => {
+  const { data } = await api.post<WOCheckinState>(`/api/wo/${id}/checkin`);
+  return data;
+};
+
+export const checkoutWOIntervention = async (id: string): Promise<WOCheckinState> => {
+  const { data } = await api.post<WOCheckinState>(`/api/wo/${id}/checkout`);
+  return data;
+};
+
+// Token-free note tidy-up via the local LLM (Ollama). ai_used=false means the
+// model was offline and a light local cleanup ran instead.
+export const organizeNote = async (
+  text: string,
+  language: string,
+): Promise<{ text: string; ai_used: boolean }> => {
+  const { data } = await api.post<{ text: string; ai_used: boolean }>(
+    '/api/wo/notes/organize',
+    { text, language },
+  );
+  return data;
+};
+
 export const holdWorkOrder = async (id: string): Promise<WorkOrder> => {
   const { data } = await api.patch<WorkOrder>(`/api/wo/${id}`, { status: 'on_hold' });
   return data;
@@ -240,6 +278,17 @@ export const addWOLabor = async (
   }
 ): Promise<LaborRecord> => {
   const { data } = await api.post<LaborRecord>(`/api/wo/${id}/labor`, payload);
+  return data;
+};
+
+// Toggle approved-overtime on a labor record → recomputes effective_hours /
+// labor_cost server-side (off-shift time re-included; raw hours untouched).
+export const setWOLaborOvertime = async (
+  woId: string, laborId: string, overtime_approved: boolean,
+): Promise<LaborRecord> => {
+  const { data } = await api.patch<LaborRecord>(
+    `/api/wo/${woId}/labor/${laborId}`, { overtime_approved },
+  );
   return data;
 };
 

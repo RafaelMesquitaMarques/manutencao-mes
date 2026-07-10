@@ -14,6 +14,8 @@ from app.models.models import (
 )
 from app.schemas.maintenance import SupervisorOverview, TicketSummary, WOSummary
 from app.core.security import get_current_user
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import plant_condition
 
 router = APIRouter()
 
@@ -59,13 +61,14 @@ async def maintenance_dashboard(
     end_date: Optional[str] = Query(None),
     machine_ids: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     start, end = _resolve_window(period_days, start_date, end_date)
     mids = _parse_machine_ids(machine_ids)
 
     def t_conds(extra=None):
-        c = [MaintenanceTicket.opened_at >= start, MaintenanceTicket.opened_at < end]
+        c = [MaintenanceTicket.opened_at >= start, MaintenanceTicket.opened_at < end,
+             plant_condition(MaintenanceTicket, ctx)]
         if mids:
             c.append(MaintenanceTicket.machine_id.in_(mids))
         if extra:
@@ -73,7 +76,8 @@ async def maintenance_dashboard(
         return c
 
     def a_conds(extra=None):
-        c = [MaintenanceAlert.created_at >= start, MaintenanceAlert.created_at < end]
+        c = [MaintenanceAlert.created_at >= start, MaintenanceAlert.created_at < end,
+             plant_condition(MaintenanceAlert, ctx)]
         if mids:
             c.append(MaintenanceAlert.machine_id.in_(mids))
         if extra:
@@ -223,7 +227,8 @@ async def maintenance_dashboard(
         if b:
             b["tickets"] += c
 
-    int_conds = [MachineIntervention.called_at >= start, MachineIntervention.called_at < end]
+    int_conds = [MachineIntervention.called_at >= start, MachineIntervention.called_at < end,
+                 plant_condition(MachineIntervention, ctx)]
     if mids:
         int_conds.append(MachineIntervention.machine_id.in_(mids))
     i_rows = (await db.execute(
@@ -265,7 +270,7 @@ async def maintenance_dashboard(
 @router.get("/supervisor", response_model=SupervisorOverview)
 async def supervisor_overview(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     # Panel 1: tickets without linked WO, not closed
     closed_statuses = [TicketStatus.completed, TicketStatus.cancelled]
@@ -274,6 +279,7 @@ async def supervisor_overview(
         .where(
             MaintenanceTicket.status.not_in(closed_statuses),
             MaintenanceTicket.work_order_id.is_(None),
+            plant_condition(MaintenanceTicket, ctx),
         )
         .order_by(MaintenanceTicket.opened_at.asc())
         .limit(50)
@@ -304,6 +310,7 @@ async def supervisor_overview(
             WorkOrder.source == WorkOrderSource.ticket,
             WorkOrder.executor_id.is_(None),
             WorkOrder.status.in_([WorkOrderStatus.open]),
+            plant_condition(WorkOrder, ctx),
         )
         .order_by(WorkOrder.opened_at.asc())
         .limit(50)
@@ -350,6 +357,7 @@ async def supervisor_overview(
             WorkOrder.executor_id.isnot(None),
             WorkOrder.scheduled_date.is_(None),
             WorkOrder.status.in_([WorkOrderStatus.open, WorkOrderStatus.in_progress]),
+            plant_condition(WorkOrder, ctx),
         )
         .order_by(WorkOrder.opened_at.asc())
         .limit(50)
@@ -372,7 +380,7 @@ async def get_intervention_kpis(
     end_date: Optional[str] = Query(None),
     machine_ids: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    ctx: PlantContext = Depends(get_plant_context),
 ):
     start, end = _resolve_window(days, start_date, end_date)
     # Window span drives the MTBF operating-time denominator
@@ -382,6 +390,7 @@ async def get_intervention_kpis(
         MachineIntervention.status == "completed",
         MachineIntervention.called_at >= start,
         MachineIntervention.called_at < end,
+        plant_condition(MachineIntervention, ctx),
     ]
     if equipment_id:
         try:

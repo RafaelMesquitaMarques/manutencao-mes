@@ -111,7 +111,8 @@ async def apply_production_signal(db: AsyncSession, machine, is_running: bool) -
         if machine.current_status == MachineStatus.running:
             machine.current_status = MachineStatus.unjustified
             db.add(MachineStop(
-                machine_id=machine.id, started_at=now, stop_category_id=None,
+                machine_id=machine.id, plant_id=machine.plant_id,
+                started_at=now, stop_category_id=None,
                 source="mes", comments="Auto — arrêt détecté (aucune production)",
             ))
             machine.last_stop_at = now
@@ -200,6 +201,7 @@ async def on_wo_started(
         if not await _open_stop(db, machine.id):
             db.add(MachineStop(
                 machine_id=machine.id,
+                plant_id=machine.plant_id,
                 started_at=started,
                 stop_category_id=await _maintenance_category_id(db),
                 ticket_id=wo.ticket_id,
@@ -259,37 +261,30 @@ async def on_wo_finished(db: AsyncSession, wo: WorkOrder) -> None:
             st = st.replace(tzinfo=timezone.utc)
         our_stop.duration_minutes = max(int((now - st).total_seconds() / 60), 0) if st else None
 
-    # Repaint after the repair. We do NOT assume the line is producing again — with no
-    # positive production signal (the ADAM-6050 I/O isn't wired yet) the machine waits:
-    #   • another stop still open (operator/MES)  → still down → "maintenance" (amber)
-    #   • production confirmed running             → "running" (green)   [future: ADAM feed]
-    #   • otherwise                                → "unjustified" (pink) + an open,
-    #     reclassifiable MES stop so post-maintenance downtime keeps counting until the
-    #     operator restarts production or justifies it.
+    # Repaint after the repair. The machine is now RELEASED, so don't hold it amber
+    # waiting on the operator's own maintenance-justification stop — the downtime the
+    # technician just finished IS that stop. Delegate to the shared repaint (which
+    # closes whatever downtime is still open and, with no positive ADAM signal yet,
+    # goes PINK/unjustified) exactly like the kiosk complete flow. Scoped to work we
+    # actually took to "intervention" (corrective) so preventive/scheduled WOs and
+    # signal-resumed machines are left untouched.
     if machine.current_status == MachineStatus.intervention:
-        other_open = await _open_stop(db, machine.id)
-        if other_open is not None:
-            machine.current_status = MachineStatus.maintenance
-        elif (await _production_running(db, machine)) is True:
-            machine.current_status = MachineStatus.running
-            machine.last_start_at = now
-        else:
-            machine.current_status = MachineStatus.unjustified
-            db.add(MachineStop(
-                machine_id=machine.id, started_at=now, stop_category_id=None,
-                source="mes", comments="Auto — en attente de production après maintenance",
-            ))
-            machine.last_stop_at = now
+        await repaint_after_maintenance(db, machine, ticket_id=wo.ticket_id, from_intervention=True)
 
 
-async def repaint_after_maintenance(db: AsyncSession, machine, ticket_id=None) -> None:
+async def repaint_after_maintenance(db: AsyncSession, machine, ticket_id=None, from_intervention: bool = False) -> None:
     """Shared post-repair repaint (kiosk complete + WO finish). Closes the open
     maintenance downtime stop, then repaints WITHOUT assuming production resumed:
       • another stop still open      → 'maintenance' (amber)
       • production signal positive    → 'running' (green)
       • otherwise                     → 'unjustified' (pink) + an open MES stop
     So a signal-driven machine waits for the ADAM signal to go green instead of
-    being assumed back in production the moment the repair is marked done."""
+    being assumed back in production the moment the repair is marked done.
+
+    from_intervention: the trigger is an operator finishing an intervention — the
+    downtime it addressed is resolved, so close whatever stop was open (incl. an
+    operator-created one), not just work_order/mes stops. Without this the original
+    stop lingers open and the machine stays amber with an ever-growing clock."""
     now = datetime.now(timezone.utc)
     for s in (await db.execute(
         select(MachineStop).where(
@@ -300,7 +295,7 @@ async def repaint_after_maintenance(db: AsyncSession, machine, ticket_id=None) -
         # Close the maintenance downtime stop AND any auto-detected MES stop that
         # overlapped it — otherwise a stale 'detected' stop lingers and keeps the
         # machine amber (maintenance) after the repair instead of going pink.
-        if s.source in ("work_order", "mes") or (ticket_id and s.ticket_id == ticket_id):
+        if from_intervention or s.source in ("work_order", "mes") or (ticket_id and s.ticket_id == ticket_id):
             s.ended_at = now
             st = s.started_at
             if st and st.tzinfo is None:
@@ -353,3 +348,7 @@ async def on_ticket_closed(db: AsyncSession, ticket: MaintenanceTicket) -> None:
     machine = await db.get(Machine, ticket.machine_id)
     if machine:
         machine.last_maintenance_at = now
+        # Release the machine like every other complete path: close the open
+        # downtime and repaint PINK (unjustified) until the ADAM signal confirms
+        # production — never leave it stuck amber after the ticket is closed.
+        await repaint_after_maintenance(db, machine, ticket_id=ticket.id, from_intervention=True)

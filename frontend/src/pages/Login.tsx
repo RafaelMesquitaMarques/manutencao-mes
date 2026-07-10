@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Mail, Lock, Globe, ChevronDown, AlertCircle } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
+import { usePlantStore } from '../store/plantStore';
 import { login } from '../api/auth';
 import type { User } from '../types';
 import i18n from '../i18n';
@@ -45,6 +46,7 @@ const Login = () => {
         language: result.language,
         must_change_password: result.must_change_password,
       };
+      usePlantStore.getState().setMemberships(result.plants ?? [], result.default_plant_id ?? null);
       setAuth(user, result.access_token);
       navigate(result.must_change_password ? '/force-change-password' : '/dashboard', { replace: true });
     } catch (err: unknown) {

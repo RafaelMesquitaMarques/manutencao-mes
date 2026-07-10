@@ -2,9 +2,27 @@
 
 Max-based instead of count-based: deleting a record never makes the counter
 regress, so numbers are never reused and unique constraints never collide.
+
+Multi-plant: ungrouped plants (Las Vegas) run their own code-prefixed series
+(NL-WO-2026-00001) so an isolated plant's numbers never collide with — nor
+reveal the volume of — another plant's. Grouped legacy plants (QS+QM, group
+'QC') keep the shared historical series untouched.
 """
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+async def series_prefix(db: AsyncSession, plant_id) -> str:
+    """'' for the legacy shared series; '<CODE>-' for an ungrouped plant."""
+    if plant_id is None:
+        return ""
+    from app.models.models import Plant
+    row = (await db.execute(
+        select(Plant.code, Plant.group_code).where(Plant.id == plant_id)
+    )).first()
+    if row is None or row.group_code:
+        return ""
+    return f"{row.code}-"
 
 
 async def next_number(db: AsyncSession, column, prefix: str) -> str:

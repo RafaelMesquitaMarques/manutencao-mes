@@ -1,0 +1,18 @@
+table_name,record_id,label,detail,suggested_action
+machine_history,aggregate,3 rows,"machines: Edge Bander Pro 500, Hydraulic Press A, STEFANI",auto-heals once machines get a plant
+machines,59223a52-c793-4e52-b138-991f8f7ea6fe,CNC Router #1,department=Production; active=false; equipment_link=-,assign in Settings → Machines (or SQL)
+machines,989e68df-d44a-4b58-b40b-72b35f32c0c7,CNC Router #2,department=Production; active=false; equipment_link=-,assign in Settings → Machines (or SQL)
+machines,e4c46260-bc54-4985-b78d-5183f1d83674,Conveyor Belt L2,department=Assembly; active=false; equipment_link=-,assign in Settings → Machines (or SQL)
+machines,3071a8f8-e374-4f74-bc59-1cb43eea89b1,Edge Bander Pro 500,department=Finishing; active=false; equipment_link=-,assign in Settings → Machines (or SQL)
+machines,4cff9e81-fc8d-4988-9f51-3353e77ac93e,Edge Banding Machine,department=-; active=false; equipment_link=-,assign in Settings → Machines (or SQL)
+machines,d3f8300e-195b-424f-8ca1-08b270f0595a,FH6,department=-; active=false; equipment_link=-,assign in Settings → Machines (or SQL)
+machines,a34343c1-775b-45f4-8626-9bb29330e27f,Hydraulic Press A,department=Press Room; active=false; equipment_link=-,assign in Settings → Machines (or SQL)
+machines,b039f844-ae19-4e2b-8142-c2e46b9893b6,IMA 03,department=-; active=false; equipment_link=-,assign in Settings → Machines (or SQL)
+machines,7eb49361-671b-4dfa-921d-f48b710e1431,IMA 04,department=-; active=true; equipment_link=-,assign in Settings → Machines (or SQL)
+machines,6e368845-6fa5-484f-9c5d-f6623ff901dd,IMA 05,department=-; active=false; equipment_link=-,assign in Settings → Machines (or SQL)
+machines,6fa8ac78-585d-46ac-95df-658ef4fc236c,IMA02,department=-; active=false; equipment_link=-,assign in Settings → Machines (or SQL)
+machines,7cd00d69-6553-4c56-be12-0c6dd0decccd,KAL,department=-; active=true; equipment_link=-,assign in Settings → Machines (or SQL)
+machines,1b7eeb13-aa00-4402-9d58-ddbaff17e320,SCHELLING 04,department=-; active=true; equipment_link=-,assign in Settings → Machines (or SQL)
+machines,d941cc14-0517-4bb0-ad96-9cc2caab1b48,STEFANI,department=-; active=true; equipment_link=-,assign in Settings → Machines (or SQL)
+stock_items,decision,"5440 items, all in PLT1",Mirabel inventory was never separated,BUSINESS DECISION: split Mirabel stock or shared SJ+MIRA warehouse (assessment §8.2)
+suppliers,decision,"570 suppliers, all plant_id NULL",shared/corporate list today,BUSINESS DECISION: per-plant vs shared (assessment §8.3)
