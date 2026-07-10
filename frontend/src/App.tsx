@@ -73,10 +73,12 @@ const App = () => {
   useEffect(() => {
     if (isAuthenticated) fetchMyPermissions().then(setPermissions).catch(() => {});
   }, [isAuthenticated, setPermissions]);
-  // Hydrate plant memberships for sessions that logged in before the login
-  // response carried them (login itself fills the store directly).
+  // Refresh plant memberships whenever authenticated — always, not only when the
+  // store is empty. A persisted store can be stale (a plant added/renamed, or
+  // access granted/revoked since last login); setMemberships keeps the active
+  // plant if still valid, so this self-heals without forcing a re-login.
   useEffect(() => {
-    if (!isAuthenticated || usePlantStore.getState().memberships.length > 0) return;
+    if (!isAuthenticated) return;
     fetchMyPlants()
       .then(({ plants, default_plant_id }) =>
         usePlantStore.getState().setMemberships(plants, default_plant_id))
