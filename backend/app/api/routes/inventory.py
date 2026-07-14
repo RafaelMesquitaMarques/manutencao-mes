@@ -13,7 +13,7 @@ from sqlalchemy import select, func, or_, and_, case
 from app.db.session import get_db
 from app.core.security import get_current_user
 from app.core.plant_context import PlantContext, get_plant_context
-from app.core.plant_scope import plant_condition, plant_scoped
+from app.core.plant_scope import ensure_same_plant, plant_condition, plant_scoped
 from app.models.models import StockItem, Supplier, User
 
 router = APIRouter()
@@ -50,11 +50,10 @@ async def list_suppliers(
 async def get_supplier(
     supplier_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    s = await db.get(Supplier, supplier_id)
-    if not s:
-        raise HTTPException(404, "Supplier not found")
+    s = ensure_same_plant(await db.get(Supplier, supplier_id), ctx, grouped=True, detail="Supplier not found")
     return _supplier_out(s)
 
 
@@ -62,10 +61,12 @@ async def get_supplier(
 async def create_supplier(
     body: dict,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
     s = Supplier(
         id=uuid.uuid4(),
+        plant_id=ctx.plant_id,   # owned by the creator's plant (visible across its group)
         code=body.get("code", ""),
         name=body["name"],
         phone=body.get("phone"),
@@ -87,11 +88,10 @@ async def update_supplier(
     supplier_id: uuid.UUID,
     body: dict,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    s = await db.get(Supplier, supplier_id)
-    if not s:
-        raise HTTPException(404, "Supplier not found")
+    s = ensure_same_plant(await db.get(Supplier, supplier_id), ctx, grouped=True, detail="Supplier not found")
     for field in ["name", "code", "phone", "email", "fax", "website", "currency", "notes", "is_active"]:
         if field in body:
             setattr(s, field, body[field])
@@ -225,11 +225,10 @@ async def list_categories(
 async def get_stock_item(
     item_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    item = await db.get(StockItem, item_id)
-    if not item:
-        raise HTTPException(404, "Item not found")
+    item = ensure_same_plant(await db.get(StockItem, item_id), ctx, grouped=True, detail="Item not found")
     supplier_name = None
     if item.supplier_id:
         sup = await db.get(Supplier, item.supplier_id)
@@ -241,11 +240,12 @@ async def get_stock_item(
 async def create_stock_item(
     body: dict,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
     item = StockItem(
         id=uuid.uuid4(),
-        plant_id=body.get("plant_id"),
+        plant_id=ctx.plant_id,   # stamped from context, never client-controlled
         code=body["code"],
         name=body.get("name", ""),
         description=body.get("description", ""),
@@ -272,11 +272,10 @@ async def update_stock_item(
     item_id: uuid.UUID,
     body: dict,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    item = await db.get(StockItem, item_id)
-    if not item:
-        raise HTTPException(404, "Item not found")
+    item = ensure_same_plant(await db.get(StockItem, item_id), ctx, grouped=True, detail="Item not found")
 
     updatable = [
         "name", "description", "category", "part_class", "unit",
@@ -300,12 +299,11 @@ async def adjust_quantity(
     item_id: uuid.UUID,
     body: dict,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
     """Quick quantity adjustment: body = { delta: float } or { quantity: float }"""
-    item = await db.get(StockItem, item_id)
-    if not item:
-        raise HTTPException(404, "Item not found")
+    item = ensure_same_plant(await db.get(StockItem, item_id), ctx, grouped=True, detail="Item not found")
 
     if "quantity" in body:
         item.quantity = float(body["quantity"])
@@ -323,11 +321,10 @@ async def adjust_quantity(
 async def delete_stock_item(
     item_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    item = await db.get(StockItem, item_id)
-    if not item:
-        raise HTTPException(404, "Item not found")
+    item = ensure_same_plant(await db.get(StockItem, item_id), ctx, grouped=True, detail="Item not found")
     await db.delete(item)
     await db.commit()
 
