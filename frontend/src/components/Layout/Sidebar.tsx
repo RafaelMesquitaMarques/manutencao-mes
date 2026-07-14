@@ -6,7 +6,7 @@ import {
   Settings, Factory, CalendarDays, CalendarCheck, CalendarClock, Bell, Ticket,
   Activity, Briefcase, X, UserCog, Package, Building2, ShoppingCart,
   ChevronsLeft, ChevronsRight, Brain, Map as MapIcon, ClipboardCheck, ListChecks,
-  DollarSign, Cpu, Clock, type LucideIcon,
+  DollarSign, Cpu, Clock, Boxes, Home, FolderTree, Target, type LucideIcon,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import type { UserRole } from '../../types';
@@ -35,12 +35,9 @@ const TECH_UP: NavRole[] = ['technician', 'supervisor', 'maintenance_director', 
 
 const CORE_GROUPS: NavGroup[] = [
   {
-    label: 'WorkOrders',
+    label: 'Home',
     items: [
-      { to: '/dashboard',               icon: LayoutDashboard, key: 'woReports' },
-      { to: '/maintenance/wo-approval', icon: ClipboardCheck,  key: 'woApproval',  roles: SUPERVISOR_UP },
-      { to: '/work-orders',             icon: ClipboardList,   key: 'workOrders' },
-      { to: '/gestion-bt',              icon: ListChecks,      key: 'gestionBT' },
+      { to: '/home', icon: Home, key: 'home' },
     ],
   },
   {
@@ -48,15 +45,19 @@ const CORE_GROUPS: NavGroup[] = [
     items: [
       { to: '/equipment',   icon: Wrench,           key: 'equipment',   roles: TECH_UP },
       { to: '/factory-map', icon: MapIcon,          key: 'factoryMap',  roles: SUPERVISOR_UP },
-      { to: '/my-work',     icon: Briefcase,        key: 'myWork' },
+      { to: '/dashboards',  icon: LayoutGrid,       key: 'dashboards',  roles: SUPERVISOR_UP },
     ],
   },
   {
     label: 'Maintenance',
     items: [
+      { to: '/dashboard',               icon: LayoutDashboard, key: 'woReports' },
+      { to: '/maintenance/wo-approval', icon: ClipboardCheck,  key: 'woApproval',  roles: SUPERVISOR_UP },
+      { to: '/work-orders',             icon: ClipboardList,   key: 'workOrders' },
+      { to: '/gestion-bt',              icon: ListChecks,      key: 'gestionBT' },
+      { to: '/my-work',                 icon: Briefcase,    key: 'myWork' },
       { to: '/tickets',                 icon: Ticket,       key: 'tickets',              roles: TECH_UP },
       { to: '/maintenance/dashboard',      icon: Activity,     key: 'maintenanceDashboard', roles: TECH_UP },
-      { to: '/dashboards',                 icon: LayoutGrid,   key: 'dashboards',           roles: SUPERVISOR_UP },
       { to: '/schedule',                icon: CalendarDays, key: 'schedule',             roles: TECH_UP },
       { to: '/pm-calendar',             icon: CalendarCheck, key: 'pmCalendar',          roles: TECH_UP },
       { to: '/maintenance/plans',       icon: CalendarClock, key: 'maintenancePlans',    roles: TECH_UP },
@@ -75,6 +76,7 @@ const CORE_GROUPS: NavGroup[] = [
     items: [
       { to: '/kpis', icon: BarChart3, key: 'kpis', roles: SUPERVISOR_UP },
       { to: '/costs', icon: DollarSign, key: 'costs', roles: SUPERVISOR_UP },
+      { to: '/job-orders', icon: Boxes, key: 'jobOrders', roles: SUPERVISOR_UP },
       { to: '/kpis/machines', icon: Factory, key: 'machineReports', roles: SUPERVISOR_UP },
       { to: '/intelligence', icon: Brain, img: '/mirai-icon.png', key: 'intelligence', roles: TECH_UP },
     ],
@@ -98,12 +100,13 @@ const NAV_PERM: Record<string, string> = {
   equipment: 'equipment', myWork: 'my_work', tickets: 'tickets',
   maintenanceDashboard: 'maintenance',
   schedule: 'schedule', pmCalendar: 'pm_calendar', maintenancePlans: 'maintenance_plans',
-  kpis: 'kpis', costs: 'costs', machineReports: 'machine_reports', factoryMap: 'factory_map', dashboards: 'dashboards',
+  kpis: 'kpis', costs: 'costs', jobOrders: 'job_orders', machineReports: 'machine_reports', factoryMap: 'factory_map', dashboards: 'dashboards',
   woApproval: 'wo_approval', inventory: 'inventory', suppliers: 'suppliers',
   purchaseOrders: 'purchase_orders', intelligence: 'intelligence',
   escalationSettings: 'settings_escalation', gestionBT: 'alerts',
   factoryCalendar: 'calendar', deviceSettings: 'settings_devices',
-  shiftSettings: 'technicians',
+  shiftSettings: 'technicians', departmentSettings: 'settings_departments',
+  lineObjectives: 'settings_machines',
 };
 
 const Sidebar = ({ onClose }: SidebarProps) => {
@@ -133,7 +136,9 @@ const Sidebar = ({ onClose }: SidebarProps) => {
     { to: '/settings/escalation', icon: Bell, key: 'escalationSettings', roles: SUPERVISOR_UP },
     { to: '/settings/calendar', icon: CalendarDays, key: 'factoryCalendar', roles: SUPERVISOR_UP },
     { to: '/settings/shifts', icon: Clock, key: 'shiftSettings', roles: SUPERVISOR_UP },
+    { to: '/settings/departments', icon: FolderTree, key: 'departmentSettings', roles: SUPERVISOR_UP },
     { to: '/settings/devices', icon: Cpu, key: 'deviceSettings', roles: SUPERVISOR_UP },
+    { to: '/settings/line-objectives', icon: Target, key: 'lineObjectives', roles: SUPERVISOR_UP },
     ...(isAdmin() ? [{ to: '/settings/users', icon: UserCog, key: 'userManagement' }] : []),
   ];
 
@@ -152,13 +157,19 @@ const Sidebar = ({ onClose }: SidebarProps) => {
           collapsed ? 'flex-col gap-2 px-2' : 'justify-between px-4'
         }`}
       >
-        <div className="flex items-center gap-2 min-w-0">
+        <NavLink
+          to="/home"
+          onClick={() => isDrawer && onClose?.()}
+          aria-label={t('nav.home')}
+          title={t('nav.home')}
+          className="flex items-center gap-2 min-w-0 rounded-lg hover:opacity-80 transition-opacity"
+        >
           <img
             src="/mirai-icon.png"
             alt=""
             className={`object-contain ${collapsed ? 'h-9 w-auto' : 'h-11 w-auto'}`}
           />
-        </div>
+        </NavLink>
         {isDrawer ? (
           <button
             onClick={onClose}

@@ -140,11 +140,14 @@ class MesService:
 
     async def add_production(self, machine_id: UUID, count: int, reject: int,
                              shift_enum: AlertShift, default_target: int,
-                             log_date: Optional[date] = None) -> dict:
+                             log_date: Optional[date] = None,
+                             job_number: Optional[str] = None) -> dict:
         """Add produced parts (and optional rejects) to a shift's production log,
         creating the row if needed, and recompute its OEE snapshot. Does NOT
         commit — the caller commits (so status + count land in one transaction).
-        Returns the row's running totals."""
+        `job_number` (the OF loaded at the time) is stamped best-effort — the
+        authoritative per-OF count lives on JobOrderRun.pieces. Returns the row's
+        running totals."""
         d = log_date or date.today()
         r = await self.db.execute(
             select(MachineProductionLog).where(
@@ -163,6 +166,8 @@ class MesService:
             self.db.add(log)
         elif not log.target_count:
             log.target_count = int(default_target or 0)
+        if job_number:
+            log.job_number = job_number
         log.actual_count = (log.actual_count or 0) + max(0, count)
         log.reject_count = max(0, (log.reject_count or 0) + reject)
         # Fill availability from the live stop/production feed so the stored OEE
@@ -180,7 +185,8 @@ class MesService:
         }
 
     async def add_hourly_count(self, machine_id: UUID, hour_utc: datetime,
-                               count: int, reject: int = 0) -> None:
+                               count: int, reject: int = 0,
+                               job_number: Optional[str] = None) -> None:
         """Add parts to the real per-hour bucket (ADAM feed) for the pieces/hour
         chart. `hour_utc` must be truncated to the hour (UTC). Does NOT commit."""
         r = await self.db.execute(
@@ -196,6 +202,8 @@ class MesService:
             self.db.add(bucket)
         bucket.count = (bucket.count or 0) + max(0, count)
         bucket.reject_count = max(0, (bucket.reject_count or 0) + reject)
+        if job_number:
+            bucket.job_number = job_number
 
     @staticmethod
     def _recompute_oee(log: MachineProductionLog) -> None:

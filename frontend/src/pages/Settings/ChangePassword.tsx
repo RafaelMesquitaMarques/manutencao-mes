@@ -1,16 +1,21 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Lock, CheckCircle, AlertCircle } from 'lucide-react';
-import { changePassword } from '../../api/auth';
+import { Lock, CheckCircle, AlertCircle, Smile } from 'lucide-react';
+import { changePassword, updateMe } from '../../api/auth';
+import { useAuthStore } from '../../store/authStore';
 
 export default function ChangePassword() {
   const { t } = useTranslation();
+  const { user, patchUser } = useAuthStore();
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [nickname, setNickname] = useState(user?.nickname ?? '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+
+  const firstName = (user?.name ?? '').trim().split(/\s+/)[0] || '';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -20,6 +25,15 @@ export default function ChangePassword() {
     setLoading(true);
     try {
       await changePassword(oldPassword, newPassword);
+      // Save the greeting name alongside — best-effort: the password already
+      // changed, so a nickname hiccup must not read as a failed submit.
+      const wanted = nickname.trim();
+      if (wanted !== (user?.nickname ?? '')) {
+        try {
+          const updated = await updateMe({ nickname: wanted });
+          patchUser({ nickname: updated.nickname ?? null });
+        } catch { /* can still be set later in User Management */ }
+      }
       setSuccess(true);
       setOldPassword('');
       setNewPassword('');
@@ -98,6 +112,26 @@ export default function ChangePassword() {
                 disabled={loading}
               />
             </div>
+          </div>
+
+          <div>
+            <label className="label">
+              {t('settings.nicknameQuestion')}{' '}
+              <span className="text-gray-600 normal-case">({t('users.optional')})</span>
+            </label>
+            <div className="relative">
+              <Smile size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+              <input
+                type="text"
+                value={nickname}
+                onChange={(e) => setNickname(e.target.value)}
+                placeholder={firstName}
+                maxLength={100}
+                className="input-field pl-9"
+                disabled={loading}
+              />
+            </div>
+            <p className="text-[11px] text-gray-600 mt-1">{t('settings.nicknameSelfHint')}</p>
           </div>
 
           <div className="pt-2">

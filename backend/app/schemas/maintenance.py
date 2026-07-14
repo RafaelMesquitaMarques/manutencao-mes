@@ -669,9 +669,12 @@ class JobOrderOut(BaseModel):
     product_name:    Optional[str] = None
     target_quantity: Optional[int] = None
     scheduled_date:  Optional[Any] = None
+    department:      Optional[str] = None
     status:          JobOrderStatus
     source:          JobOrderSource
     erp_reference:   Optional[str] = None
+    started_at:      Optional[datetime] = None
+    completed_at:    Optional[datetime] = None
     created_at:      datetime
 
 
@@ -691,3 +694,82 @@ class JobOrderUpdate(BaseModel):
     scheduled_date:  Optional[Any]           = None
     status:          Optional[JobOrderStatus] = None
     machine_id:      Optional[UUID]          = None
+
+
+class JobOrderRunOut(BaseModel):
+    """One passage of an OF through a machine (time + attributed pieces)."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id:               UUID
+    job_order_id:     UUID
+    machine_id:       UUID
+    department:       Optional[str] = None
+    started_at:       datetime
+    ended_at:         Optional[datetime] = None
+    duration_minutes: Optional[int] = None
+    pieces:           int = 0
+    rejects:          int = 0
+    source:           JobOrderSource
+
+
+# ── OF cost (Phase 2) — productive time × hourly rate; stops excluded ──────────
+
+class JobOrderRunCostOut(BaseModel):
+    run_id:             UUID
+    machine_id:         UUID
+    machine_name:       Optional[str] = None
+    department:         Optional[str] = None
+    started_at:         datetime
+    ended_at:           Optional[datetime] = None
+    gross_minutes:      float
+    stop_minutes:       float
+    productive_minutes: float
+    pieces:             int
+    hourly_rate:        Optional[float] = None
+    currency:           str
+    cost:               float
+    open:               bool
+
+
+class CostBucketOut(BaseModel):
+    """Cost aggregated by machine or by department."""
+    key:                str
+    productive_minutes: float
+    cost:               float
+    pieces:             int
+
+
+class JobOrderCostOut(BaseModel):
+    job_order_id:             UUID
+    job_number:               str
+    product_name:             Optional[str] = None
+    status:                   JobOrderStatus
+    currency:                 str
+    total_gross_minutes:      float
+    total_stop_minutes:       float
+    total_productive_minutes: float
+    total_pieces:             int
+    total_cost:               float
+    by_machine:               List[CostBucketOut]
+    by_department:            List[CostBucketOut]
+    runs:                     List[JobOrderRunCostOut]
+
+
+class JobOrderCostRowOut(BaseModel):
+    job_order_id:             UUID
+    job_number:               str
+    product_name:             Optional[str] = None
+    status:                   JobOrderStatus
+    department:               Optional[str] = None
+    total_productive_minutes: float
+    total_pieces:             int
+    total_cost:               float
+
+
+class JobOrderCostReportOut(BaseModel):
+    currency:                 str
+    of_count:                 int
+    factory_total_cost:       float
+    total_productive_minutes: float
+    total_pieces:             int
+    items:                    List[JobOrderCostRowOut]

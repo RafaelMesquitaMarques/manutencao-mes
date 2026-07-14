@@ -33,7 +33,9 @@ export const fetchMyPlants = async (): Promise<{
 
 export const updateMe = async (payload: {
   name?: string;
+  nickname?: string;   // '' clears it (backend stores NULL)
   language?: string;
+  temp_unit?: 'C' | 'F';
   avatar_url?: string;
   phone?: string;
 }): Promise<User> => {

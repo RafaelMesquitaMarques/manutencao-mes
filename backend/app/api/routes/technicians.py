@@ -11,10 +11,11 @@ from app.models.models import (
     Technician, User, UserPlant, TechnicianSpecialty, TechnicianShift, TechnicianUnavailability,
 )
 from app.schemas.technician import TechnicianCreate, TechnicianOut, TechnicianListResponse
-from app.schemas.shift import UnavailabilityCreate, UnavailabilityOut, AvailabilityOut
+from app.schemas.shift import UnavailabilityCreate, UnavailabilityOut, AvailabilityOut, BreakOut
 from app.core.security import get_current_user
 from app.core.plant_context import PlantContext, get_plant_context
 from app.services import technician_availability_service as avail_svc
+from app.services import technician_break_service as break_svc
 
 
 async def _availability_out(db: AsyncSession, tech: Technician) -> AvailabilityOut:
@@ -22,7 +23,19 @@ async def _availability_out(db: AsyncSession, tech: Technician) -> AvailabilityO
     return AvailabilityOut(
         status=a.status, available=a.available, should_warn=a.should_warn,
         detail=a.detail, has_schedule=a.has_schedule,
+        announced=a.announced, since=a.since,
     )
+
+
+async def _my_technician(db: AsyncSession, current_user: User) -> Technician:
+    """The active technician profile for the signed-in user, or 404."""
+    result = await db.execute(
+        select(Technician).where(Technician.user_id == current_user.id, Technician.active == True)  # noqa: E712
+    )
+    tech = result.scalar_one_or_none()
+    if not tech:
+        raise HTTPException(status_code=404, detail="no_technician_profile")
+    return tech
 
 
 class TechnicianUpdate(BaseModel):
@@ -79,6 +92,47 @@ async def get_my_technician_profile(
     out.email = current_user.email
     out.availability = await _availability_out(db, t)
     return out
+
+
+# ── Announced (live) break — technician self-service ─────────────────────────
+# The signed-in technician taps "I'm on break" / "I'm back" from My Work. This is
+# presence only: it drives the live availability status the roster/scheduler
+# reads, and never affects labor cost, downtime, or MTTR.
+
+@router.get("/me/break", response_model=Optional[BreakOut])
+async def get_my_active_break(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    tech = await _my_technician(db, current_user)
+    ab = await break_svc.active_break(db, tech.id)
+    return BreakOut.model_validate(ab) if ab else None
+
+
+@router.post("/me/break", response_model=BreakOut, status_code=201)
+async def start_my_break(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    tech = await _my_technician(db, current_user)
+    rec = await break_svc.start_break(db, tech.id)
+    await db.commit()
+    await db.refresh(rec)
+    return BreakOut.model_validate(rec)
+
+
+@router.post("/me/break/end", response_model=BreakOut)
+async def end_my_break(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    tech = await _my_technician(db, current_user)
+    rec = await break_svc.end_break(db, tech.id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="not_on_break")
+    await db.commit()
+    await db.refresh(rec)
+    return BreakOut.model_validate(rec)
 
 
 # ── Technician unavailability (vacation / absence / …) ───────────────────────

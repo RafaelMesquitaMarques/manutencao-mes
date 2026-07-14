@@ -26,6 +26,7 @@ from app.models.models import (
     ShiftBreakKind, Technician, TechnicianUnavailability, User,
 )
 from app.services import labor_time_service as lts
+from app.services import technician_break_service as brk
 
 # Status values (stable strings the frontend maps to i18n keys under
 # `availability.*`). "available" is the only assignable-without-warning state.
@@ -48,6 +49,8 @@ class Availability:
     should_warn: bool               # UI should warn+confirm before assigning
     detail: Optional[str] = None    # e.g. unavailability type or shift name
     has_schedule: bool = False      # a shift template was found
+    announced: bool = False         # break was announced live (vs inferred from the schedule)
+    since: Optional[datetime] = None  # when the announced break started
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -59,9 +62,12 @@ async def availability_at(
 ) -> Availability:
     """Resolve availability for ``technician`` at instant ``at`` (default: now).
 
-    Precedence: inactive → unavailability period → off-shift → on break/lunch →
-    available. When no shift template is configured we cannot tell on/off shift,
-    so we only report inactive/unavailability and otherwise ``available`` with
+    Precedence: inactive → unavailability period → announced break → off-shift →
+    scheduled break/lunch → available. An announced (live) break is ground truth
+    and wins over the schedule, so a technician who postponed a break still reads
+    as working, and one who tapped "on break" reads as on break even mid-shift.
+    When no shift template is configured we cannot tell on/off shift, so we only
+    report inactive/unavailability/announced and otherwise ``available`` with
     ``has_schedule=False`` (conservative: never a false "off_shift")."""
     now = _as_utc(at) if at else datetime.now(timezone.utc)
 
@@ -88,6 +94,17 @@ async def availability_at(
         utype = row[0].value if hasattr(row[0], "value") else row[0]
         status = ON_VACATION if utype == "vacation" else UNAVAILABLE
         return Availability(status, False, True, detail=utype, has_schedule=False)
+
+    # 2.5) announced (live) break — ground truth, overrides the schedule so a
+    # postponed break doesn't misreport and a mid-shift break is honoured.
+    ab = await brk.active_break(db, technician.id, at=now)
+    if ab is not None:
+        kind = ab.kind.value if hasattr(ab.kind, "value") else ab.kind
+        status = AT_LUNCH if kind == ShiftBreakKind.lunch.value else ON_BREAK
+        return Availability(
+            status, False, False, detail=kind, has_schedule=False,
+            announced=True, since=ab.started_at,
+        )
 
     # 3) shift window + breaks
     tpl = await lts._shift_template_for(db, technician)

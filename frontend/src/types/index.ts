@@ -17,15 +17,17 @@ export type OperatorShift = 'morning' | 'afternoon' | 'night' | 'all';
 export type PageLanguage = 'en' | 'fr' | 'es';
 export type HourlyRateCurrency = 'CAD' | 'USD' | 'EUR';
 export type JobOrderStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
-export type JobOrderSource = 'manual' | 'erp';
+export type JobOrderSource = 'manual' | 'erp' | 'cortex' | 'smart_label';
 
 export interface User {
   id: string;
   name: string;
+  nickname?: string | null;
   email: string;
   active: boolean;
   role?: UserRole;
   language?: string;
+  temp_unit?: 'C' | 'F';
   avatar_url?: string;
   phone?: string;
   job_title?: string;
@@ -52,6 +54,7 @@ export interface UserInviteRequest {
 
 export interface UserAdminUpdate {
   name?: string;
+  nickname?: string;
   email?: string;
   language?: string;
   active?: boolean;
@@ -280,9 +283,21 @@ export interface TechnicianAvailability {
   should_warn: boolean;
   detail?: string | null;
   has_schedule: boolean;
+  announced?: boolean;          // break confirmed live by the technician (not inferred from schedule)
+  since?: string | null;        // ISO — when the announced break started
 }
 
 export type ShiftBreakKind = 'lunch' | 'break' | 'pause';
+
+// A break the technician announced live from My Work (presence, not payroll).
+// An open row (ended_at null) means they are currently on break.
+export interface TechnicianBreak {
+  id: string;
+  technician_id: string;
+  kind: ShiftBreakKind;
+  started_at: string;           // ISO
+  ended_at?: string | null;
+}
 
 export interface ShiftBreak {
   id?: string;
@@ -353,6 +368,7 @@ export interface LoginResponse {
   token_type: string;
   user_id: number | string;
   name: string;
+  nickname?: string | null;
   language?: string;
   role?: UserRole;
   must_change_password?: boolean;
@@ -805,13 +821,90 @@ export interface JobOrder {
   id:               string;
   job_number:       string;
   machine_id?:      string;
-  description?:     string;
+  product_name?:    string;
   target_quantity?: number;
+  scheduled_date?:  string;
+  department?:      string;
   status:           JobOrderStatus;
   source:           JobOrderSource;
+  erp_reference?:   string;
   started_at?:      string;
   completed_at?:    string;
   created_at:       string;
+}
+
+export interface JobOrderRun {
+  id:               string;
+  job_order_id:     string;
+  machine_id:       string;
+  department?:      string;
+  started_at:       string;
+  ended_at?:        string;
+  duration_minutes?: number;
+  pieces:           number;
+  rejects:          number;
+  source:           JobOrderSource;
+}
+
+// ── OF cost (productive time × hourly rate; stops excluded) ──────────────────
+export interface JobOrderRunCost {
+  run_id:             string;
+  machine_id:         string;
+  machine_name?:      string;
+  department?:        string;
+  started_at:         string;
+  ended_at?:          string;
+  gross_minutes:      number;
+  stop_minutes:       number;
+  productive_minutes: number;
+  pieces:             number;
+  hourly_rate?:       number;
+  currency:           string;
+  cost:               number;
+  open:               boolean;
+}
+
+export interface CostBucket {
+  key:                string;
+  productive_minutes: number;
+  cost:               number;
+  pieces:             number;
+}
+
+export interface JobOrderCost {
+  job_order_id:             string;
+  job_number:               string;
+  product_name?:            string;
+  status:                   JobOrderStatus;
+  currency:                 string;
+  total_gross_minutes:      number;
+  total_stop_minutes:       number;
+  total_productive_minutes: number;
+  total_pieces:             number;
+  total_cost:               number;
+  by_machine:               CostBucket[];
+  by_department:            CostBucket[];
+  runs:                     JobOrderRunCost[];
+}
+
+export interface JobOrderCostRow {
+  job_order_id:             string;
+  job_number:               string;
+  product_name?:            string;
+  status:                   JobOrderStatus;
+  department?:              string;
+  total_productive_minutes: number;
+  total_pieces:             number;
+  total_cost:               number;
+}
+
+export interface JobOrderCostReport {
+  currency:                 string;
+  of_count:                 number;
+  factory_total_cost:       number;
+  total_productive_minutes: number;
+  total_pieces:             number;
+  items:                    JobOrderCostRow[];
 }
 
 export interface StopCategoryMini {

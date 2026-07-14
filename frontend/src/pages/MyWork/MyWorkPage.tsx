@@ -3,12 +3,13 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import {
   Briefcase, Play, CheckCircle2, Clock, AlertTriangle,
-  ChevronRight, RefreshCw, PauseCircle, Hand, Inbox,
+  ChevronRight, RefreshCw, PauseCircle, Hand, Inbox, Coffee,
 } from 'lucide-react';
 import { fetchMyWorkOrders, startWorkOrder, holdWorkOrder, resumeWorkOrder, completeWorkOrderFull } from '../../api/workOrders';
 import { fetchAvailableTickets, claimTicket } from '../../api/maintenance';
 import { fetchEscalationSettings } from '../../api/escalation';
-import type { WorkOrder, Priority, WorkOrderStatus, MaintenanceTicket } from '../../types';
+import { fetchMyActiveBreak, startMyBreak, endMyBreak } from '../../api/technicians';
+import type { WorkOrder, Priority, WorkOrderStatus, MaintenanceTicket, TechnicianBreak } from '../../types';
 import Spinner from '../../components/ui/Spinner';
 import InterventionCheckin from '../../components/InterventionCheckin';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
@@ -55,14 +56,21 @@ export default function MyWorkPage() {
   const [form, setForm]         = useState<CompleteForm>(EMPTY_FORM);
   const [formErr, setFormErr]   = useState('');
   const [tick, setTick]         = useState(0);
+  // Announced (live) break presence. `canBreak` is only known once /me/break
+  // resolves — non-technician accounts 404 and the control stays hidden.
+  const [activeBreak, setActiveBreak] = useState<TechnicianBreak | null>(null);
+  const [canBreak, setCanBreak]       = useState(false);
+  const [breakBusy, setBreakBusy]     = useState(false);
+  const [breakErr, setBreakErr]       = useState('');
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const [items, avail, cfg] = await Promise.allSettled([
+      const [items, avail, cfg, brk] = await Promise.allSettled([
         fetchMyWorkOrders(),
         fetchAvailableTickets(),
         fetchEscalationSettings(),
+        fetchMyActiveBreak(),
       ]);
       if (items.status === 'fulfilled') {
         setWOs(items.value.filter((w) => w.status !== 'completed' && w.status !== 'cancelled'));
@@ -72,10 +80,38 @@ export default function MyWorkPage() {
       // Preventive maintenance is always assigned — never claimable here.
       if (avail.status === 'fulfilled') setAvailable(avail.value.filter((t) => t.problem_type !== 'preventive_request'));
       if (cfg.status === 'fulfilled') setSelfAssignOn(cfg.value.settings.technician_self_assign);
+      // Only technicians can take a break; a rejected call (404) hides the control.
+      if (brk.status === 'fulfilled') { setCanBreak(true); setActiveBreak(brk.value); }
+      else setCanBreak(false);
     } finally {
       if (!silent) setLoading(false);
     }
   }, []);
+
+  const handleGoOnBreak = async () => {
+    setBreakBusy(true);
+    setBreakErr('');
+    try {
+      setActiveBreak(await startMyBreak());
+    } catch {
+      setBreakErr(t('myWork.breakFailed'));
+    } finally {
+      setBreakBusy(false);
+    }
+  };
+
+  const handleReturnFromBreak = async () => {
+    setBreakBusy(true);
+    setBreakErr('');
+    try {
+      await endMyBreak();
+      setActiveBreak(null);
+    } catch {
+      setBreakErr(t('myWork.breakFailed'));
+    } finally {
+      setBreakBusy(false);
+    }
+  };
 
   const handleClaim = async (ticketId: string) => {
     setActionId(ticketId);
@@ -176,6 +212,52 @@ export default function MyWorkPage() {
           </button>
         </div>
       </div>
+
+      {/* Break presence — technician tells the team they are really on break, so a
+          postponed break no longer reads as "on break" on the roster. */}
+      {canBreak && (
+        <div>
+          {activeBreak ? (
+            <div className="glass-card border border-amber-500/30 bg-amber-500/5 p-4 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-full bg-amber-500/15 flex items-center justify-center flex-shrink-0">
+                  <Coffee size={20} className="text-amber-400" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-amber-300 font-semibold text-sm">
+                    {t('myWork.onBreakSince', {
+                      time: new Date(activeBreak.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    })}
+                  </p>
+                  <p className="text-xs text-amber-500/70">
+                    {elapsedStr(activeBreak.started_at)} · {t('myWork.onBreakHint')}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={handleReturnFromBreak}
+                disabled={breakBusy}
+                className="btn-primary py-2.5 px-4 text-sm font-semibold flex-shrink-0 flex items-center gap-2"
+              >
+                <Play size={16} />
+                {breakBusy ? t('myWork.breakUpdating') : t('myWork.returnToWork')}
+              </button>
+            </div>
+          ) : (
+            <div className="flex justify-end">
+              <button
+                onClick={handleGoOnBreak}
+                disabled={breakBusy}
+                className="btn-secondary py-2 px-4 text-sm flex items-center gap-2"
+              >
+                <Coffee size={16} />
+                {breakBusy ? t('myWork.breakUpdating') : t('myWork.goOnBreak')}
+              </button>
+            </div>
+          )}
+          {breakErr && <p className="text-xs text-amber-400 mt-1.5 text-right">{breakErr}</p>}
+        </div>
+      )}
 
       {loading ? (
         <div className="flex items-center justify-center h-40"><Spinner size="lg" /></div>

@@ -6,6 +6,7 @@ import {
   Save, Plus, Trash2, Check, X, Copy, ChevronRight, ChevronDown, ExternalLink,
   Settings, StopCircle, AlertTriangle, Users, BarChart2, Activity,
   Zap, Pencil, Shield, Loader2, Power, CalendarClock, ListChecks, Search,
+  Sparkles,
   type LucideIcon,
 } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
@@ -25,6 +26,7 @@ import {
   cloneCategories,
 } from '../../api/machines';
 import api from '../../api/axios';
+import { fetchDepartments } from '../../api/departments';
 import { uploadFile } from '../../api/uploads';
 import { saveMachineLayout } from '../../api/factoryMap';
 import type {
@@ -69,9 +71,10 @@ type TabId = 'overview' | 'workorders' | 'plans' | 'configuration' | 'history';
 
 // ─── Config sub-tab types ────────────────────────────────────────────────────────
 
-type ConfigTab = 'general' | 'stop' | 'reject' | 'operators' | 'shifts' | 'parameters' | 'indicators' | 'intervention_types' | 'safety_checklist' | 'pm_templates';
+type ConfigTab = 'general' | 'stop' | 'reject' | 'operators' | 'shifts' | 'parameters' | 'indicators' | 'intervention_types' | 'safety_checklist' | 'cleaning_checklist' | 'pm_templates';
 
-const CONFIG_TABS: { id: ConfigTab; label: string; Icon: LucideIcon }[] = [
+// labelKey (i18n) wins over label when present.
+const CONFIG_TABS: { id: ConfigTab; label: string; labelKey?: string; Icon: LucideIcon }[] = [
   { id: 'general',    label: 'General',          Icon: Settings     },
   { id: 'stop',       label: 'Stop Categories',  Icon: StopCircle   },
   { id: 'reject',     label: 'Reject Categories',Icon: AlertTriangle },
@@ -81,6 +84,7 @@ const CONFIG_TABS: { id: ConfigTab; label: string; Icon: LucideIcon }[] = [
   { id: 'indicators',          label: 'Indicators',          Icon: Activity },
   { id: 'intervention_types', label: 'Intervention Types',  Icon: Zap      },
   { id: 'safety_checklist',   label: 'Safety Checklist',    Icon: Shield   },
+  { id: 'cleaning_checklist', label: 'Cleaning Checklist',  labelKey: 'equipment.cleaningChecklist', Icon: Sparkles },
 ];
 
 const LANG_OPTIONS = [
@@ -1583,6 +1587,152 @@ function SafetyChecklistConfigTab({ equipmentId }: { equipmentId: string }) {
   );
 }
 
+// ─── Cleaning Checklist Config Tab ─────────────────────────────────────────────────
+// Operator cleaning tasks shown on the kiosk when a stop is declared with the
+// linked stop reason (e.g. "Nettoyage"). Mirrors the safety checklist CRUD.
+
+function CleaningChecklistConfigTab({ equipmentId, slug }: { equipmentId: string; slug: string }) {
+  const { t } = useTranslation();
+  const [items, setItems] = useState<SCItem[]>([]);
+  const [checklist, setChecklist] = useState<{ id: string; stop_category_id: string | null } | null>(null);
+  const [cats, setCats] = useState<StopCategoryOut[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [newText, setNewText] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await api.get(`/api/settings/cleaning-checklists/${equipmentId}`);
+      setChecklist(res.data.checklist ?? null);
+      setItems(res.data.items ?? []);
+    } catch { setItems([]); }
+    finally { setLoading(false); }
+  }, [equipmentId]);
+
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => { fetchMachineStopCategories(slug).then(setCats).catch(() => {}); }, [slug]);
+
+  const linkCategory = async (catId: string) => {
+    try {
+      await api.patch(`/api/settings/cleaning-checklists/${equipmentId}`, { stop_category_id: catId });
+      await load();
+    } catch { /* ignore */ }
+  };
+
+  const addItem = async () => {
+    if (!newText.trim()) return;
+    setSaving(true);
+    try {
+      await api.post(`/api/settings/cleaning-checklists/${equipmentId}/items`, {
+        text: newText.trim(),
+        sort_order: items.length,
+        is_required: true,
+      });
+      setNewText('');
+      await load();
+    } catch { /* ignore */ }
+    finally { setSaving(false); }
+  };
+
+  const toggleRequired = async (item: SCItem) => {
+    try {
+      await api.patch(`/api/settings/cleaning-checklists/${equipmentId}/items/${item.id}`, {
+        is_required: !item.is_required,
+      });
+      await load();
+    } catch { /* ignore */ }
+  };
+
+  const deleteItem = async (id: string) => {
+    setDeletingId(id);
+    try {
+      await api.delete(`/api/settings/cleaning-checklists/${equipmentId}/items/${id}`);
+      await load();
+    } catch { /* ignore */ }
+    finally { setDeletingId(null); }
+  };
+
+  if (loading) return <div className="p-4 text-gray-500 text-sm">{t('common.loading')}</div>;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 mb-1">
+        <Sparkles size={15} className="text-cyan-400" />
+        <p className="text-sm font-semibold text-gray-200">{t('equipment.cleaningChecklist')}</p>
+        {checklist && <span className="text-xs text-gray-600 font-mono">{checklist.id.slice(0, 8)}</span>}
+      </div>
+      <p className="text-xs text-gray-600">{t('equipment.cleaningChecklistDesc')}</p>
+
+      {/* Linked stop reason — which kiosk stop button opens this checklist */}
+      <div className="p-3 rounded-lg space-y-1.5" style={{ background: '#0d1117', border: '1px solid #21262d' }}>
+        <label className="block text-xs text-gray-500">{t('equipment.cleaningLinkedReason')}</label>
+        <select
+          value={checklist?.stop_category_id ?? ''}
+          onChange={(e) => linkCategory(e.target.value)}
+          className="w-full bg-[#0b1120] border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-200 outline-none focus:border-blue-500/50"
+        >
+          <option value="">{t('equipment.cleaningNoReason')}</option>
+          {cats.map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+        {!checklist?.stop_category_id ? (
+          <p className="text-xs text-amber-400/80">{t('equipment.cleaningNotLinkedWarning')}</p>
+        ) : (
+          <p className="text-xs text-gray-600">{t('equipment.cleaningLinkedReasonHint')}</p>
+        )}
+      </div>
+
+      {items.length === 0 && (
+        <p className="text-gray-600 text-sm py-2">{t('equipment.checklistNoItems')}</p>
+      )}
+
+      {items.map((item, idx) => (
+        <div key={item.id} className="flex items-center gap-3 py-2 px-3 rounded-lg"
+          style={{ background: '#0d1117', border: '1px solid #21262d' }}>
+          <span className="text-gray-600 text-xs w-5 text-right">{idx + 1}</span>
+          <p className="flex-1 text-sm text-gray-200">{item.text}</p>
+          <button
+            onClick={() => toggleRequired(item)}
+            className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+              item.is_required
+                ? 'text-amber-400 border-amber-500/40 bg-amber-500/10'
+                : 'text-gray-600 border-gray-700/40'
+            }`}>
+            {item.is_required ? t('equipment.checklistRequired') : t('equipment.checklistOptional')}
+          </button>
+          <button
+            onClick={() => deleteItem(item.id)}
+            disabled={deletingId === item.id}
+            className="p-1 text-gray-600 hover:text-red-400 transition-colors disabled:opacity-40">
+            {deletingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+          </button>
+        </div>
+      ))}
+
+      {/* Add new item */}
+      <div className="flex gap-2 items-center">
+        <input
+          value={newText}
+          onChange={(e) => setNewText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') addItem(); }}
+          placeholder={t('equipment.checklistNewItemPlaceholder')}
+          className="flex-1 bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 outline-none focus:border-blue-500/50"
+        />
+        <button
+          disabled={saving || !newText.trim()}
+          onClick={addItem}
+          className="px-3 py-2 rounded-lg text-sm font-medium text-white transition-all disabled:opacity-40"
+          style={{ background: '#1d4ed8' }}>
+          {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── History tab ──────────────────────────────────────────────────────────────────
 
 interface HistoryItem {
@@ -1704,6 +1854,7 @@ function HistoryTab({ equipment }: { equipment: Equipment }) {
 // ─── Configuration panel (lazy) ───────────────────────────────────────────────────
 
 function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
+  const { t } = useTranslation();
   // Auxiliary (utility) assets have no kiosk/MES layer — only maintenance-relevant
   // config (intervention types + safety checklist) applies to them.
   const isAux = equipment.asset_type === 'auxiliary';
@@ -1829,7 +1980,7 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
       {/* Config sub-tab header */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1 overflow-x-auto pb-1">
-          {visibleConfigTabs.map(({ id, label, Icon }) => (
+          {visibleConfigTabs.map(({ id, label, labelKey, Icon }) => (
             <button
               key={id}
               onClick={() => setConfigTab(id)}
@@ -1840,7 +1991,7 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
               }`}
             >
               <Icon size={12} />
-              {label}
+              {labelKey ? t(labelKey) : label}
             </button>
           ))}
         </div>
@@ -1920,6 +2071,7 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
         )}
         {configTab === 'intervention_types' && <InterventionTypesConfigTab equipmentId={equipment.id} />}
         {configTab === 'safety_checklist' && <SafetyChecklistConfigTab equipmentId={equipment.id} />}
+        {configTab === 'cleaning_checklist' && <CleaningChecklistConfigTab equipmentId={equipment.id} slug={machineRef} />}
       </div>
     </div>
   );
@@ -1939,6 +2091,8 @@ export default function EquipmentDetail() {
   // Cost centers usable as the machine's default (same list the WO-approval picker
   // uses, so the stored name always matches an approval option).
   const [costCenters, setCostCenters] = useState<{ name: string; code: string | null }[]>([]);
+  // The plant's managed departments — the field picks from this list, not free text.
+  const [departments, setDepartments] = useState<{ name: string }[]>([]);
 
   useEffect(() => {
     if (!id) return;
@@ -1958,6 +2112,7 @@ export default function EquipmentDetail() {
     api.get<{ name: string; code: string | null }[]>('/api/wo-approval/cost-centers')
       .then(({ data }) => setCostCenters(data))
       .catch(() => {});
+    fetchDepartments().then(setDepartments).catch(() => {});
   }, []);
 
   if (loading) {
@@ -2156,7 +2311,13 @@ export default function EquipmentDetail() {
               value={equipment.department}
               equipmentId={equipment.id}
               field="department"
-              placeholder="e.g. Assemblage"
+              type="select"
+              options={[
+                { value: '', label: '—' },
+                ...departments.map((d) => ({ value: d.name, label: d.name })),
+                ...(equipment.department && !departments.some((d) => d.name === equipment.department)
+                  ? [{ value: equipment.department, label: `${equipment.department} (⚠)` }] : []),
+              ]}
               onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, department: v } : prev))}
             />
             <EditableSpecRow

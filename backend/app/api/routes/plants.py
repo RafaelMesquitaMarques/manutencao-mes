@@ -22,6 +22,8 @@ class PlantOut(BaseModel):
     name: str
     address: Optional[str] = None
     timezone: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     active: bool
     created_at: datetime
 
@@ -37,6 +39,8 @@ class PlantUpdate(BaseModel):
     name: Optional[str] = None
     address: Optional[str] = None
     timezone: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     active: Optional[bool] = None
 
 
@@ -69,6 +73,27 @@ async def active_plant(ctx: PlantContext = Depends(get_plant_context), db: Async
         "role": ctx.role.value,
         "is_corporate": ctx.is_corporate,
         "allowed_plant_ids": [str(p) for p in sorted(ctx.allowed_plant_ids, key=str)],
+    }
+
+
+@router.get("/{plant_id}/weather")
+async def plant_weather(
+    plant_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+):
+    """Cached outdoor weather for the plant (refreshed by _weather_loop from
+    Open-Meteo). Feeds the factory-map overview badge. `temp_c` in Celsius; the
+    UI converts to the viewer's unit and labels the source 'MétéoMédia'."""
+    plant = await db.get(Plant, plant_id)
+    if not plant or not ctx.can_access(plant_id):
+        raise HTTPException(404, "Plant not found")
+    return {
+        "temp_c": plant.weather_temp_c,
+        "code": plant.weather_code,
+        "updated_at": plant.weather_updated_at.isoformat() if plant.weather_updated_at else None,
+        "latitude": plant.latitude,
+        "longitude": plant.longitude,
     }
 
 

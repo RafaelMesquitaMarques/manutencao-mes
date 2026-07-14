@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { User, Phone, Briefcase, Globe, ChevronDown, CheckCircle, AlertCircle, Lock } from 'lucide-react';
+import { User, Phone, Briefcase, Globe, ChevronDown, CheckCircle, AlertCircle, Lock, Thermometer } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { updateMe } from '../../api/auth';
 import type { UserRole } from '../../types';
@@ -29,6 +29,7 @@ export default function MyProfile() {
   const [phone, setPhone] = useState(user?.phone ?? '');
   const [lang, setLang] = useState(user?.language ?? 'en');
   const [langOpen, setLangOpen] = useState(false);
+  const [tempUnit, setTempUnit] = useState<'C' | 'F'>(user?.temp_unit ?? 'C');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
@@ -42,7 +43,7 @@ export default function MyProfile() {
     setSuccess(false);
     setLoading(true);
     try {
-      const updated = await updateMe({ name, phone, language: lang });
+      const updated = await updateMe({ name, phone, language: lang, temp_unit: tempUnit });
       if (user && token) {
         setAuth({ ...user, ...updated }, token);
       }
@@ -150,6 +151,26 @@ export default function MyProfile() {
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+          <div>
+            <label className="label">{t('settings.temperatureUnit')}</label>
+            <div className="relative">
+              <Thermometer size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none z-10" />
+              <div className="input-field pl-9 flex items-center gap-2">
+                {(['C', 'F'] as const).map((u) => (
+                  <button
+                    key={u}
+                    type="button"
+                    onClick={() => setTempUnit(u)}
+                    className={`px-3 py-1 rounded-md text-sm transition-colors ${
+                      tempUnit === u ? 'bg-blue-500/20 text-blue-300 border border-blue-500/40' : 'text-gray-400 hover:text-gray-200'
+                    }`}
+                  >
+                    {u === 'C' ? t('settings.celsius') : t('settings.fahrenheit')}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 

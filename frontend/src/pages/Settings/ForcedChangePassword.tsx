@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Lock, Eye, EyeOff, AlertCircle, Factory } from 'lucide-react';
-import { forcedChangePassword } from '../../api/auth';
+import { Lock, Eye, EyeOff, AlertCircle, Factory, Smile } from 'lucide-react';
+import { forcedChangePassword, updateMe } from '../../api/auth';
 import { useAuthStore } from '../../store/authStore';
+import type { User } from '../../types';
 
 export default function ForcedChangePassword() {
   const { t } = useTranslation();
@@ -11,10 +12,13 @@ export default function ForcedChangePassword() {
   const { user, patchUser } = useAuthStore();
   const [newPassword, setNewPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [nickname, setNickname] = useState(user?.nickname ?? '');
   const [showNew, setShowNew] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  const firstName = (user?.name ?? '').trim().split(/\s+/)[0] || '';
 
   const mismatch = confirm.length > 0 && newPassword !== confirm;
   const canSubmit = newPassword.length >= 8 && newPassword === confirm;
@@ -26,7 +30,17 @@ export default function ForcedChangePassword() {
     setLoading(true);
     try {
       await forcedChangePassword(newPassword);
-      patchUser({ must_change_password: false });
+      const patch: Partial<User> = { must_change_password: false };
+      // Save the greeting name alongside — best-effort: the password change is the
+      // gate here, a nickname hiccup must not lock the user on this screen.
+      const wanted = nickname.trim();
+      if (wanted !== (user?.nickname ?? '')) {
+        try {
+          const updated = await updateMe({ nickname: wanted });
+          patch.nickname = updated.nickname ?? null;
+        } catch { /* can still be set later in User Management */ }
+      }
+      patchUser(patch);
       navigate('/dashboard', { replace: true });
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -120,6 +134,26 @@ export default function ForcedChangePassword() {
                 </button>
               </div>
               {mismatch && <p className="text-red-400 text-xs mt-1">{t('settings.passwordsDoNotMatch')}</p>}
+            </div>
+
+            <div>
+              <label className="label">
+                {t('settings.nicknameQuestion')}{' '}
+                <span className="text-gray-600 normal-case">({t('users.optional')})</span>
+              </label>
+              <div className="relative">
+                <Smile size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+                <input
+                  type="text"
+                  value={nickname}
+                  onChange={(e) => setNickname(e.target.value)}
+                  placeholder={firstName}
+                  maxLength={100}
+                  className="input-field pl-9"
+                  disabled={loading}
+                />
+              </div>
+              <p className="text-[11px] text-gray-600 mt-1">{t('settings.nicknameSelfHint')}</p>
             </div>
 
             <button

@@ -27,11 +27,21 @@ export default function AvailabilityBadge({
   if (!availability) return <span className="text-gray-600 text-xs">—</span>;
   const s = STYLE[availability.status] ?? STYLE.available;
   const { Icon } = s;
+  // An announced (live) break is confirmed by the technician — mark it with a
+  // pulsing live dot + "since" tooltip so it stands apart from a merely-scheduled
+  // break window (which the technician may have postponed to finish a job).
+  const announced = !!availability.announced;
+  const title = announced && availability.since
+    ? t('availability.announcedSince', {
+        time: new Date(availability.since).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      })
+    : availability.detail ?? undefined;
   return (
     <span
       className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border ${s.cls}`}
-      title={availability.detail ?? undefined}
+      title={title}
     >
+      {announced && <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />}
       <Icon size={size} />
       {t(`availability.${availability.status}`)}
     </span>

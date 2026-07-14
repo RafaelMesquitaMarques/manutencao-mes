@@ -9,7 +9,8 @@ import {
   createMachineStop, closeMachineStop, fetchMachineStopCategories,
   fetchMachineRejectCategories, logReject, addRejects, reclassifyStop,
   fetchProductionHourly, fetchTodayRejects, fetchMachinesAll, cloneKioskLayout,
-  type HourlyPoint, type RejectLogItem,
+  fetchCleaningChecklist, fetchStopCleaningResponses, saveStopCleaningResponses,
+  type HourlyPoint, type RejectLogItem, type CleaningChecklistData,
 } from '../../api/machines';
 import EventsModal from './EventsModal';
 import { openTicketField, closeTicket } from '../../api/maintenance';
@@ -123,6 +124,9 @@ const I18N = {
     activeProduction: 'Active production', ongoing: 'ongoing',
     justification: 'Stop justification', justificationHint: 'Share of stop time with a reason',
     cloneLayout: 'Clone to…', cloneTitle: 'Copy this layout to machines', cloneApply: 'Apply', cloneDone: 'Layout copied to {n} machine(s)',
+    cleaningTitle: 'Cleaning checklist', cleaningHint: 'Tick each task as you complete it.',
+    cleaningDone: 'DONE', cleaningRequired: 'Required',
+    cleaningProgress: '{done}/{total} tasks done',
   },
   fr: {
     running: 'EN MARCHE', stopped: 'ARRÊTÉE', maintenance: 'MAINTENANCE',
@@ -188,6 +192,9 @@ const I18N = {
     activeProduction: 'En production', ongoing: 'en cours',
     justification: 'Justification arrêts', justificationHint: 'Part du temps d\'arrêt avec un motif',
     cloneLayout: 'Cloner vers…', cloneTitle: 'Copier cette disposition vers', cloneApply: 'Appliquer', cloneDone: 'Disposition copiée sur {n} machine(s)',
+    cleaningTitle: 'Checklist de nettoyage', cleaningHint: 'Cochez chaque tâche une fois complétée.',
+    cleaningDone: 'TERMINÉ', cleaningRequired: 'Obligatoire',
+    cleaningProgress: '{done}/{total} tâches faites',
   },
   es: {
     running: 'EN MARCHA', stopped: 'DETENIDA', maintenance: 'MANTENIMIENTO',
@@ -253,6 +260,9 @@ const I18N = {
     activeProduction: 'En producción', ongoing: 'en curso',
     justification: 'Justificación paradas', justificationHint: 'Parte del tiempo de parada con motivo',
     cloneLayout: 'Clonar a…', cloneTitle: 'Copiar esta disposición a máquinas', cloneApply: 'Aplicar', cloneDone: 'Disposición copiada a {n} máquina(s)',
+    cleaningTitle: 'Lista de limpieza', cleaningHint: 'Marque cada tarea al completarla.',
+    cleaningDone: 'LISTO', cleaningRequired: 'Obligatoria',
+    cleaningProgress: '{done}/{total} tareas hechas',
   },
 } as const;
 export type Lang = keyof typeof I18N;
@@ -869,6 +879,13 @@ export default function MachinePage() {
   const [modalBusy, setModalBusy]           = useState(false);
   const [stopTime, setStopTime]             = useState<string>('');
 
+  // Cleaning checklist — operator task list tied to one stop category (e.g.
+  // "Nettoyage"). Opens right after a stop with that category is declared (or a
+  // detected stop is justified with it); every tick is saved against the stop.
+  const [cleaningData, setCleaningData]       = useState<CleaningChecklistData | null>(null);
+  const [cleaningStopId, setCleaningStopId]   = useState<string | null>(null);
+  const [cleaningChecked, setCleaningChecked] = useState<Record<string, boolean>>({});
+
   // Reclassify-stop modal — click a stop on the timeline to change its cause.
   // A stop never becomes "running" here (anti-cheat). Closed stops only relabel;
   // reclassifying the OPEN stop to a maintenance cause also calls maintenance
@@ -967,6 +984,7 @@ export default function MachinePage() {
 
   const doReclassify = async (catId: string | null, subId?: string | null) => {
     // Single stop (timeline / cause cell) or a bulk selection from the events table.
+    const singleTarget = reclassTarget;
     const targets = reclassTarget ? [reclassTarget] : (bulkStops || []);
     if (!slug || targets.length === 0) return;
     setReclassBusy(true);
@@ -978,6 +996,10 @@ export default function MachinePage() {
       }
       setReclassTarget(null);
       setReclassCat(null);
+      // Stop justified as the cleaning category → same checklist flow as a new stop.
+      if (singleTarget && catId && catId === cleaningCatId && cleaningItems.length > 0) {
+        openCleaningChecklist(singleTarget.id);
+      }
       if (bulkStops) { setBulkStops(null); setSelResetKey((k) => k + 1); }
       if (winStartISO && winEndISO) {
         fetchTodayStops(slug, { start: winStartISO, end: winEndISO }).then(setTimelineStops).catch(() => {});
@@ -1054,7 +1076,8 @@ export default function MachinePage() {
       fetchMESData(slug),
       fetchMachineStopCategories(slug),
       fetchMachineRejectCategories(slug),
-    ]).then(([mp, ms, md, cats, rcats]) => {
+      fetchCleaningChecklist(slug),
+    ]).then(([mp, ms, md, cats, rcats, cleaning]) => {
       if (mp.status === 'fulfilled') {
         setMachine(mp.value);
         setJobInput(mp.value.current_job_number ?? '');
@@ -1065,6 +1088,7 @@ export default function MachinePage() {
       if (md.status === 'fulfilled') setMes(md.value);
       if (cats.status === 'fulfilled') setCats(cats.value);
       if (rcats.status === 'fulfilled') setRejectCats(rcats.value);
+      if (cleaning.status === 'fulfilled') setCleaningData(cleaning.value);
       setLoading(false);
     });
     if (slug) {
@@ -1105,6 +1129,38 @@ export default function MachinePage() {
     setSelectedCat(null); setSelectedSub(null); setStopComment('');
     setModalStep('categories');
     setShowModal(true);
+  };
+
+  // ── Cleaning checklist ──
+  const cleaningCatId = cleaningData?.checklist?.stop_category_id ?? null;
+  const cleaningItems = cleaningData?.items ?? [];
+  // Open stop declared with the cleaning category → offer to (re)open its checklist.
+  // Union of today's stops and the displayed window (like the auto-prompt): a long
+  // stop justified as cleaning may predate today and only live in timelineStops.
+  const openCleaningStop = (cleaningCatId && cleaningItems.length > 0)
+    ? [...stops, ...timelineStops].find((s) => !s.ended_at && s.category?.id === cleaningCatId) ?? null
+    : null;
+
+  const openCleaningChecklist = async (stopId: string) => {
+    const checked: Record<string, boolean> = {};
+    try {
+      const saved = await fetchStopCleaningResponses(slug!, stopId);
+      for (const r of saved.responses) if (r.item_id) checked[r.item_id] = r.checked;
+    } catch { /* start with nothing ticked */ }
+    setCleaningChecked(checked);
+    setCleaningStopId(stopId);
+  };
+
+  const toggleCleaningItem = (itemId: string) => {
+    if (!slug || !cleaningStopId) return;
+    const next = { ...cleaningChecked, [itemId]: !cleaningChecked[itemId] };
+    setCleaningChecked(next);
+    // Persist the whole list on every tick — nothing is lost if the kiosk
+    // reloads or the operator never presses "done".
+    saveStopCleaningResponses(slug, cleaningStopId, {
+      responses: cleaningItems.map((it) => ({ item_id: it.id, item_text: it.text, checked: !!next[it.id] })),
+      checked_by: machine?.current_operator || undefined,
+    }).catch(() => {});
   };
 
   const handleCategorySelect = async (cat: StopCategoryOut) => {
@@ -1150,6 +1206,10 @@ export default function MachinePage() {
         try { await callMaintenance(machine.id, stopComment || undefined); } catch { /* non-blocking */ }
       }
       setShowModal(false);
+      // Stop declared with the cleaning category → show the operator's task list.
+      if (cleaningCatId && selectedCat?.id === cleaningCatId && cleaningItems.length > 0) {
+        openCleaningChecklist(res.id);
+      }
       load();
     } finally {
       setModalBusy(false);
@@ -1162,8 +1222,10 @@ export default function MachinePage() {
       await closeMachineStop(slug, currentStopId);
       setCurrentStopId(null);
     } else {
-      // Find open stop
-      const openStop = stops.find((s) => !s.ended_at);
+      // Find open stop — include the displayed window: an open stop that started
+      // before today (e.g. justified days later) is absent from today's list, and
+      // restarting without closing it left it accumulating downtime forever.
+      const openStop = [...stops, ...timelineStops].find((s) => !s.ended_at);
       if (openStop) {
         await closeMachineStop(slug, openStop.id);
       } else {
@@ -1495,6 +1557,14 @@ export default function MachinePage() {
               <span className="text-sm font-black tracking-wider">{t.restart}</span>
             </button>
           )}
+          {openCleaningStop && (
+            <button
+              onClick={() => openCleaningChecklist(openCleaningStop.id)}
+              className="flex items-center gap-2 px-4 py-2 rounded-full border border-cyan-500/40 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 text-sm font-bold transition-all active:scale-95"
+            >
+              🧹 {t.cleaningTitle}
+            </button>
+          )}
           </div>
         </div>
 
@@ -1630,7 +1700,7 @@ export default function MachinePage() {
         {/* Panel — Stop justification rate */}
         <div key="justification" className="h-full relative">
           {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.justification}</div>}
-          <div className="h-full overflow-hidden bg-[#0d1421] rounded-2xl border border-white/[0.06] p-[5cqmin] flex flex-col justify-center [container-type:size]">
+          <div className="h-full overflow-hidden bg-[#0d1421] rounded-2xl border border-white/[0.06] p-[5cqmin] flex flex-col items-center justify-center text-center [container-type:size]">
             <p className="text-[clamp(0.6rem,4cqmin,0.85rem)] text-gray-400 uppercase tracking-widest mb-1 font-semibold">{t.justification}</p>
             <p className="text-[clamp(2rem,26cqmin,5rem)] font-black leading-none" style={{ color: justificationPct >= 90 ? '#22c55e' : justificationPct >= 70 ? '#eab308' : '#ef4444' }}>
               {justificationPct}%
@@ -2079,6 +2149,65 @@ export default function MachinePage() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Cleaning checklist — operator ticks off tasks during the cleaning stop.
+          Every tick is saved against the stop; closing never blocks the restart. ── */}
+      {cleaningStopId && (
+        <div className="fixed inset-0 z-50 bg-black/90 flex flex-col">
+          <div className="flex items-center justify-between px-8 py-6 border-b border-white/[0.06]">
+            <div>
+              <h2 className="text-2xl font-black text-white">🧹 {t.cleaningTitle}</h2>
+              <p className="text-gray-400 text-base mt-1">{t.cleaningHint}</p>
+            </div>
+            <button onClick={() => setCleaningStopId(null)}>
+              <X size={28} className="text-gray-600 hover:text-gray-300" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-8 py-8">
+            <div className="max-w-2xl mx-auto space-y-3">
+              {cleaningItems.map((item, idx) => {
+                const done = !!cleaningChecked[item.id];
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => toggleCleaningItem(item.id)}
+                    className={`w-full flex items-center gap-4 p-5 rounded-2xl border-2 text-left transition-all active:scale-[0.99] ${
+                      done ? 'border-green-500/60 bg-green-500/10' : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06]'
+                    }`}
+                  >
+                    <span className={`w-9 h-9 flex-shrink-0 rounded-full border-2 flex items-center justify-center text-lg font-black ${
+                      done ? 'border-green-500 bg-green-500 text-black' : 'border-gray-600 text-gray-600'
+                    }`}>
+                      {done ? '✓' : idx + 1}
+                    </span>
+                    <span className={`flex-1 text-lg font-semibold ${done ? 'text-green-300' : 'text-white'}`}>{item.text}</span>
+                    {item.is_required && !done && (
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full flex-shrink-0">
+                        {t.cleaningRequired}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="px-8 py-6 border-t border-white/[0.06] flex items-center justify-between gap-4">
+            <span className="text-gray-400 text-base font-semibold">
+              {t.cleaningProgress
+                .replace('{done}', String(cleaningItems.filter((i) => cleaningChecked[i.id]).length))
+                .replace('{total}', String(cleaningItems.length))}
+            </span>
+            <button
+              onClick={() => setCleaningStopId(null)}
+              className="px-10 py-4 rounded-2xl font-black text-lg text-white bg-green-600 hover:bg-green-500 transition-all active:scale-95"
+            >
+              {t.cleaningDone}
+            </button>
           </div>
         </div>
       )}

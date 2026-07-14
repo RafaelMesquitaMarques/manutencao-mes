@@ -2,11 +2,12 @@ import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
 import { usePlantStore } from './store/plantStore';
-import { fetchMyPermissions, fetchMyPlants } from './api/auth';
+import { fetchMyPermissions, fetchMyPlants, getMe } from './api/auth';
 import ProtectedRoute from './pages/ProtectedRoute';
 import RequireView from './pages/RequireView';
 import Layout from './components/Layout/Layout';
 import Login from './pages/Login';
+import HomePage from './pages/Home/HomePage';
 import Dashboard from './pages/Dashboard';
 import WorkOrderList from './pages/WorkOrders/WorkOrderList';
 import WorkOrderDetail from './pages/WorkOrders/WorkOrderDetail';
@@ -17,6 +18,8 @@ import TechnicianDetail from './pages/Technicians/TechnicianDetail';
 import KPIDashboard from './pages/KPIs/KPIDashboard';
 import MachineReport from './pages/KPIs/MachineReport';
 import CostsDashboard from './pages/Costs/CostsDashboard';
+import JobOrderList from './pages/JobOrders/JobOrderList';
+import JobOrderDetail from './pages/JobOrders/JobOrderDetail';
 import GestionBT from './pages/GestionBT/GestionBT';
 import IntelligenceDashboard from './pages/Intelligence/IntelligenceDashboard';
 import EquipmentList from './pages/Equipment/EquipmentList';
@@ -50,6 +53,8 @@ import UsersSetup from './pages/Settings/UsersSetup';
 import EscalationSettingsPage from './pages/Settings/EscalationSettings';
 import FactoryCalendarPage from './pages/Settings/FactoryCalendar';
 import DeviceSettingsPage from './pages/Settings/DeviceSettings';
+import LineObjectivesPage from './pages/Settings/LineObjectives';
+import DepartmentSettings from './pages/Settings/Departments';
 import ShiftSettings from './pages/Settings/ShiftSettings';
 import UserDetail from './pages/Settings/UserDetail';
 import MyProfile from './pages/Settings/MyProfile';
@@ -84,6 +89,14 @@ const App = () => {
         usePlantStore.getState().setMemberships(plants, default_plant_id))
       .catch(() => {});
   }, [isAuthenticated]);
+  // Refresh the profile too: admin-side edits (nickname, name, role…) reach the
+  // persisted store without forcing a re-login.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    getMe()
+      .then((me) => useAuthStore.getState().patchUser(me))
+      .catch(() => {});
+  }, [isAuthenticated]);
 
   return (
   <BrowserRouter>
@@ -112,9 +125,10 @@ const App = () => {
           </ProtectedRoute>
         }
       >
-        {/* KPIs is the landing page; users lacking `kpis` view are bounced to
-            /dashboard (WO Reports) by RequireView, which everyone can see. */}
-        <Route index element={<Navigate to="/kpis" replace />} />
+        {/* Home is the post-login landing — a personalized welcome page every
+            authenticated user can see (no permission gate). */}
+        <Route index element={<Navigate to="/home" replace />} />
+        <Route path="home"                  element={<HomePage />} />
         <Route path="dashboard"             element={<Dashboard />} />
         <Route path="work-orders"           element={<RequireView resource="work_orders"><WorkOrderList /></RequireView>} />
         <Route path="work-orders/new"       element={<NewWorkOrder />} />
@@ -125,6 +139,8 @@ const App = () => {
         <Route path="kpis"                  element={<RequireView resource="kpis"><KPIDashboard /></RequireView>} />
         <Route path="kpis/machines"         element={<RequireView resource="machine_reports"><MachineReport /></RequireView>} />
         <Route path="costs"                 element={<RequireView resource="costs"><CostsDashboard /></RequireView>} />
+        <Route path="job-orders"            element={<RequireView resource="job_orders"><JobOrderList /></RequireView>} />
+        <Route path="job-orders/:id"        element={<RequireView resource="job_orders"><JobOrderDetail /></RequireView>} />
         <Route path="intelligence"          element={<RequireView resource="intelligence"><IntelligenceDashboard /></RequireView>} />
         <Route path="equipment"             element={<RequireView resource="equipment"><EquipmentList /></RequireView>} />
         <Route path="equipment/new"         element={<NewEquipment />} />
@@ -166,6 +182,8 @@ const App = () => {
         <Route path="settings/escalation"         element={<RequireView resource="settings_escalation"><EscalationSettingsPage /></RequireView>} />
         <Route path="settings/calendar"           element={<RequireView resource="calendar"><FactoryCalendarPage /></RequireView>} />
         <Route path="settings/devices"            element={<RequireView resource="settings_devices"><DeviceSettingsPage /></RequireView>} />
+        <Route path="settings/line-objectives"    element={<RequireView resource="settings_machines"><LineObjectivesPage /></RequireView>} />
+        <Route path="settings/departments"        element={<RequireView resource="settings_departments"><DepartmentSettings /></RequireView>} />
         <Route path="settings/shifts"             element={<RequireView resource="technicians"><ShiftSettings /></RequireView>} />
         <Route path="settings/users"              element={<UsersSetup />} />
         <Route path="settings/users/:id"          element={<UserDetail />} />
@@ -173,7 +191,7 @@ const App = () => {
         <Route path="settings/change-password"    element={<ChangePassword />} />
         <Route path="settings/intervention-types" element={<Navigate to="/equipment" replace />} />
       </Route>
-      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      <Route path="*" element={<Navigate to="/home" replace />} />
     </Routes>
   </BrowserRouter>
   );

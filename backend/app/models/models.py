@@ -193,8 +193,10 @@ class JobOrderStatus(str, enum.Enum):
     cancelled   = "cancelled"
 
 class JobOrderSource(str, enum.Enum):
-    manual = "manual"
-    erp    = "erp"
+    manual      = "manual"
+    erp         = "erp"
+    cortex      = "cortex"        # scanned via the Cortex label→cobot-program system
+    smart_label = "smart_label"   # born when the cutting dept prints the smart label
 
 
 class PmFrequency(str, enum.Enum):
@@ -245,11 +247,37 @@ class Plant(Base):
     # QC plants = CAD, Las Vegas = USD.
     currency   = Column(String(3), nullable=False, default="CAD")
     floor_plan_url = Column(String(500))   # uploaded top-down plant layout image (factory map)
+    # Geo location (used for the outdoor weather badge on the factory-map overview).
+    latitude   = Column(Float, nullable=True)
+    longitude  = Column(Float, nullable=True)
+    # Cached current weather (refreshed by the _weather_loop from Open-Meteo). temp
+    # stored in Celsius; weather_code is the WMO code the UI maps to an icon.
+    weather_temp_c     = Column(Float, nullable=True)
+    weather_code       = Column(Integer, nullable=True)
+    weather_updated_at = Column(DateTime(timezone=True), nullable=True)
     active     = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     equipment = relationship("Equipment", back_populates="plant")
     users     = relationship("UserPlant", back_populates="plant")
+
+
+class Department(Base):
+    """Managed registry of a plant's departments (production areas / org groupings).
+    The `department` STRING on Equipment/Machine/JobOrder is chosen from this list —
+    it stays a string (no FK migration), this table is the source of truth for the
+    pickers + the settings page. Seeded once per plant from the existing distinct
+    values; curated by the user afterwards."""
+    __tablename__ = "departments"
+    __table_args__ = (UniqueConstraint("plant_id", "name", name="uq_departments_plant_name"),)
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id   = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False, index=True)
+    name       = Column(String(200), nullable=False)
+    is_active  = Column(Boolean, default=True)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
 # ─── User ──────────────────────────────────────────────────────────────────────
@@ -259,9 +287,11 @@ class User(Base):
 
     id                   = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name                 = Column(String(200), nullable=False)
+    nickname             = Column(String(100))   # preferred greeting name; NULL → greet by first name
     email                = Column(String(200), unique=True, nullable=False)
     password_hash        = Column(String(500), nullable=False)
     language             = Column(String(10), default="en")
+    temp_unit            = Column(String(1), default="C")   # display unit for temperatures: 'C' | 'F'
     active               = Column(Boolean, default=True)
     role                 = Column(SAEnum(UserRole, native_enum=False), default=UserRole.operator)
     avatar_url           = Column(String(500))
@@ -943,6 +973,27 @@ class TechnicianUnavailability(Base):
     technician = relationship("Technician", back_populates="unavailability")
 
 
+class TechnicianBreak(Base):
+    """A break a technician ANNOUNCES in real time from "My Work" — ground truth
+    for presence, distinct from the SCHEDULED breaks in ``shift_breaks``.
+
+    An open row (``ended_at`` IS NULL) means the technician is *actually* on break
+    right now, so the roster/scheduler can tell a real pause apart from one that
+    was postponed to finish a job. This drives the live availability status ONLY;
+    it never alters labor cost, effective time, machine downtime, or MTTR
+    (scheduled ``shift_breaks`` handle payroll). A row left open longer than the
+    service's abandon window is treated as forgotten (the technician never clocked
+    back in) and no longer counts as on break."""
+    __tablename__ = "technician_breaks"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    technician_id = Column(UUID(as_uuid=True), ForeignKey("technicians.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind          = Column(SAEnum(ShiftBreakKind, native_enum=False, values_callable=lambda e: [m.value for m in e]), nullable=False, default=ShiftBreakKind.short_break)
+    started_at    = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    ended_at      = Column(DateTime(timezone=True), nullable=True)
+    created_at    = Column(DateTime(timezone=True), server_default=func.now())
+
+
 # ─── WO Parts ──────────────────────────────────────────────────────────────────
 
 class WOPart(Base):
@@ -1071,7 +1122,15 @@ class Machine(Base):
     hourly_rate_currency     = Column(SAEnum(HourlyRateCurrency, native_enum=False), default=HourlyRateCurrency.CAD)
     target_count_per_shift   = Column(Integer, nullable=True)
     target_count_per_hour    = Column(Integer, nullable=True)   # master production goal; per-shift & daily are derived from it
-    shifts_config            = Column(JSON, nullable=True)
+    shifts_config            = Column(JSON, nullable=True)   # DERIVED: only the ENABLED shift windows ({key:{start,end}}) — what the whole system reads
+    # Full shift grid the UI edits ({key:{start,end,enabled}}, keys morning/afternoon/
+    # night) — the source of truth for line shifts. shifts_config above is derived from
+    # the enabled ones so every existing consumer keeps seeing only active windows.
+    shift_schedule           = Column(JSON, nullable=True)
+    # Scheduled pauses inside the work window ([{start:"HH:MM", end:"HH:MM"}, …]) —
+    # the assembly-line evolving objective (TV Standard) discounts them, mirroring
+    # the Cortex "horloges" config (cadence + window + pauses per line).
+    work_pauses              = Column(JSON, nullable=True)
     kiosk_layout             = Column(JSON, nullable=True)   # per-machine resizable panel layout (react-grid-layout)
     signal_ingest_token      = Column(String(120), nullable=True)   # ADAM-6050 production-signal ingest (per machine)
     # ── Factory map / digital-twin layout ──
@@ -1106,6 +1165,7 @@ class AdamModel(str, enum.Enum):
 class AdamSignalSource(str, enum.Enum):
     di      = "di"        # software edge-count on a discrete-input channel
     counter = "counter"   # ADAM 32-bit hardware counter register (no missed pulses)
+    state   = "state"     # DI LEVEL = running/stopped (conveyor motor contact) — no part counting
 
 class AdamActiveLevel(str, enum.Enum):
     low  = "low"          # idle=1, pulse pulls the line to 0 (bench button on DI0)
@@ -1154,6 +1214,110 @@ class AdamDevice(Base):
     machine          = relationship("Machine")
 
 
+class CortexStation(Base):
+    """A Cortex barcode-reading station at the END of an assembly line. KAIZO PULLS
+    new scans from the Cortex API (app.workers.cortex_poller) — each row maps one
+    Cortex station to the KAIZO machine (the line) whose finished units it reads;
+    every scan lands on that machine's /of-unit-scan endpoint (+1 unit on the
+    labelled OF + shift/hourly production). `station_key` identifies the station in
+    the Cortex API; `last_cursor` is the poller's high-water mark (last scan already
+    ingested), persisted so a restart never double-counts. Health fields (status /
+    last_seen_at / last_error — same lifecycle as AdamDevice) are written by the
+    poller. Config edits in /settings/devices are picked up on the next reload."""
+    __tablename__ = "cortex_stations"
+
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name            = Column(String(200), nullable=False)
+    station_key     = Column(String(200), nullable=False)   # station id in the Cortex API
+    machine_id      = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
+    plant_id        = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from machine
+    enabled         = Column(Boolean, default=True)
+    poll_interval_s = Column(Integer, default=5)
+    last_cursor     = Column(String(200), nullable=True)
+    # Health (written by the poller)
+    status          = Column(SAEnum(AdamDeviceStatus, native_enum=False), default=AdamDeviceStatus.unknown)
+    last_seen_at    = Column(DateTime(timezone=True), nullable=True)
+    last_error      = Column(String(500), nullable=True)
+    created_at      = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at      = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    machine         = relationship("Machine")
+
+
+class TemperatureSource(str, enum.Enum):
+    simulated   = "simulated"    # value generated by the _temperature_loop (no hardware yet)
+    adam_analog = "adam_analog"  # future: ADAM analog-input module read over Modbus/TCP
+    http        = "http"         # future: sensor/PLC POSTs readings to an ingest endpoint
+
+
+class TemperatureSensor(Base):
+    """A temperature probe placed freely on the factory map (its own pixel-space
+    position, like a MapProp). Rendered in the 3D twin as a little thermometer and
+    drives the map's temperature badge — the sensor nearest the camera shows its
+    indoor reading; away from any sensor the badge falls back to outdoor weather.
+
+    Reading source is pluggable via `source`: today every sensor is `simulated`
+    (the in-process _temperature_loop writes last_value_c), and the real Modbus/HTTP
+    paths slot in later behind the same row. Value is stored in Celsius; the UI
+    converts to the viewer's preferred unit. Config lives in /settings/devices and
+    writes are gated by the `settings_devices` resource guard (same as adam_devices)."""
+    __tablename__ = "temperature_sensors"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id     = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False, index=True)
+    name         = Column(String(200), nullable=False)
+    # Binds the sensor to a plant department (registry name). The map badge shows a
+    # department's own sensor — a sensor anchors its department, so machineless
+    # departments (no machines to anchor them) still resolve correctly.
+    department   = Column(String(200), nullable=True)
+    enabled      = Column(Boolean, default=True)
+    # Free position on the map (same pixel space as equipment/props → converted to 3D).
+    pos_x        = Column(Float, default=0)
+    pos_y        = Column(Float, default=0)
+    height_3d    = Column(Float, nullable=True)   # optional mount height of the 3D thermometer
+    source       = Column(SAEnum(TemperatureSource, native_enum=False), default=TemperatureSource.simulated)
+    # Simulation params (source=simulated): value oscillates around baseline ± amplitude.
+    sim_baseline_c = Column(Float, default=21.0)
+    sim_amplitude_c = Column(Float, default=2.0)
+    # Hardware config for the future real paths (nullable; ignored while simulated).
+    ip_address   = Column(String(64), nullable=True)
+    port         = Column(Integer, nullable=True)
+    register     = Column(Integer, nullable=True)   # Modbus input-register address
+    scale        = Column(Float, nullable=True)     # raw → °C linear scale
+    offset       = Column(Float, nullable=True)     # raw → °C linear offset
+    # Latest reading + health (written by the reading loop).
+    last_value_c    = Column(Float, nullable=True)
+    last_reading_at = Column(DateTime(timezone=True), nullable=True)
+    status          = Column(SAEnum(AdamDeviceStatus, native_enum=False), default=AdamDeviceStatus.unknown)
+    last_error      = Column(String(500), nullable=True)
+    created_at      = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at      = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    plant           = relationship("Plant")
+
+
+class LineTvSettings(Base):
+    """Per-plant config for the assembly-line TVs, edited on
+    /settings/line-objectives (the clocks config page):
+    - efficiency-colour thresholds (green ≥ green_from, amber ≥ amber_from, red
+      below) — every line TV's efficiency cell + the global TV's header bar;
+    - the GLOBAL clock's OWN objective (cadence/window/pauses) — like the Cortex
+      "QS - Global" clock, INDEPENDENT of the per-line objectives. The global
+      Réel stays the measured Σ of the lines; only its Standard comes from here
+      (falls back to Σ of the line standards while unconfigured)."""
+    __tablename__ = "line_tv_settings"
+
+    id                      = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id                = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False, unique=True, index=True)
+    green_from              = Column(Float, default=95.0)
+    amber_from              = Column(Float, default=80.0)
+    global_cadence_per_hour = Column(Integer, nullable=True)
+    global_work_start       = Column(String(10), nullable=True)   # "HH:MM"
+    global_work_end         = Column(String(10), nullable=True)
+    global_pauses           = Column(JSON, nullable=True)         # [{start, end}, …]
+    updated_at              = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class FactoryZone(Base):
     """A labelled rectangular area on the factory map (e.g. Parallèle, Assemblage)."""
     __tablename__ = "factory_zones"
@@ -1178,6 +1342,10 @@ class MapProp(Base):
     id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     plant_id     = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False, index=True)
     equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True, index=True)  # optional live link
+    # A conveyor can be tied to a kiosk machine as its IN/OUT feed: clicking it on the
+    # map opens that machine's OFs (Ordres de fabrication). role = input | output.
+    machine_id   = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True, index=True)
+    role         = Column(String(10), nullable=True)   # input | output (conveyor feed direction)
     kind         = Column(String(40), nullable=False, default="box")   # catalog key: conveyor, lift_table, …
     label        = Column(String(200), nullable=True)
     model_url    = Column(String(500), nullable=True)   # uploaded .glb override (else procedural placeholder)
@@ -1191,6 +1359,46 @@ class MapProp(Base):
     scale_z      = Column(Float, nullable=True)
     height_3d    = Column(Float, nullable=True)
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FactoryView(Base):
+    """A user-saved 3D camera viewpoint on the factory map (e.g. "Edge line",
+    "Overview") — the operator orbits/zooms to a spot and saves it by name; a
+    click flies the camera back to it.
+
+    Stored center-independently so a saved view doesn't drift when machines are
+    added/moved (which shifts the scene centroid): the look-at point is kept in
+    MAP PIXEL space (same convention as equipment pos_x/pos_y), and the camera is
+    kept as an OFFSET vector (camera − target) in world units. On apply the target
+    pixel is re-projected with the current centroid and the camera = target + offset."""
+    __tablename__ = "factory_views"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id    = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False, index=True)
+    name        = Column(String(120), nullable=False, default="View")
+    # When set, this view is a department's custom camera pose (overrides that
+    # department's auto bounding-box frame). NULL → a free, user-named view.
+    department  = Column(String(120), nullable=True, index=True)
+    target_px_x = Column(Float, nullable=False, default=0)   # look-at point, map pixel X
+    target_px_y = Column(Float, nullable=False, default=0)   # look-at point, map pixel Y
+    target_y    = Column(Float, nullable=False, default=0)   # look-at height, world units (usually ~0, floor)
+    offset_x    = Column(Float, nullable=False, default=40)  # camera − target, world units
+    offset_y    = Column(Float, nullable=False, default=45)
+    offset_z    = Column(Float, nullable=False, default=55)
+    sort_order  = Column(Integer, default=0)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class HomeMapFavorite(Base):
+    """Which saved 3D view each user wants as the landing shot in the Home-page
+    factory overview, per plant (absent → automatic top-down). Kept in its own
+    table — not on user_plants — so corporate admins (who hold no membership row)
+    can set a favourite too. Cascade-deleted with the view it points at."""
+    __tablename__ = "home_map_favorites"
+
+    user_id  = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    plant_id = Column(UUID(as_uuid=True), ForeignKey("plants.id", ondelete="CASCADE"), primary_key=True)
+    view_id  = Column(UUID(as_uuid=True), ForeignKey("factory_views.id", ondelete="CASCADE"), nullable=False)
 
 
 # ── Robot cells (FANUC CRX cobots) — telemetry from connected cells ──────────────
@@ -1418,6 +1626,7 @@ class MachineProductionHourly(Base):
     hour         = Column(DateTime(timezone=True), nullable=False, index=True)
     count        = Column(Integer, default=0)
     reject_count = Column(Integer, default=0)
+    job_number   = Column(String(100), nullable=True)   # OF loaded when these parts were logged (best-effort)
 
 
 class MaintenanceAlert(Base):
@@ -1658,20 +1867,60 @@ class RejectLog(Base):
 # ─── Job Orders ────────────────────────────────────────────────────────────────
 
 class JobOrder(Base):
+    """Ordre de fabrication (OF) — a manufacturing order tracked through the plant.
+    The label/OF number is scanned at each machine kiosk; every scan opens a
+    JobOrderRun (a "passagem") so we can compute time + cost per OF and locate WIP.
+    `machine_id`/`department` reflect the CURRENT (last-scanned) location; the full
+    path lives in the runs."""
     __tablename__ = "job_orders"
 
     id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    machine_id      = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
+    machine_id      = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)  # current/last machine
     plant_id        = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from machine
-    job_number      = Column(String(100), unique=True, nullable=False)
+    # OF numbers are unique PER PLANT, not globally: Mirabel supplies St-Jérôme &
+    # Las Vegas, so the same number can legitimately exist in different plants.
+    job_number      = Column(String(100), nullable=False)
     product_name    = Column(String(300), nullable=True)
     target_quantity = Column(Integer, nullable=True)
+    # Equivalent-unit factor per product unit (1 EU = 100 s of assembly-line time),
+    # the productivity currency on the Pit Stop TV. Will come from SAP with the OF;
+    # the simulator seeds it. NULL → treated as 1.0 (1 unit = 1 EU).
+    eu_per_unit     = Column(Float, nullable=True)
     scheduled_date  = Column(Date, nullable=True)
+    department      = Column(String(200), nullable=True)   # current/last department (denormalized from the machine)
     status          = Column(SAEnum(JobOrderStatus, native_enum=False), default=JobOrderStatus.pending)
     source          = Column(SAEnum(JobOrderSource, native_enum=False), default=JobOrderSource.manual)
     erp_reference   = Column(String(200), nullable=True)
+    started_at      = Column(DateTime(timezone=True), nullable=True)   # first scan (pending → in_progress)
+    completed_at    = Column(DateTime(timezone=True), nullable=True)
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
     updated_at      = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("plant_id", "job_number", name="uq_job_orders_plant_number"),
+    )
+
+
+class JobOrderRun(Base):
+    """One "passagem" of an OF through a machine: from the moment its number is
+    scanned there until a different OF is scanned (or the run is closed). This is
+    the keystone for BOTH cost (Σ duration × machine.hourly_rate) and WIP (an open
+    run = the OF's current location). One row per scan — low volume, kept ≥10 years."""
+    __tablename__ = "job_order_runs"
+
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_order_id     = Column(UUID(as_uuid=True), ForeignKey("job_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    machine_id       = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=False, index=True)
+    plant_id         = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # backfilled from machine
+    department       = Column(String(200), nullable=True)   # snapshot of the machine's department at scan time
+    operator_id      = Column(UUID(as_uuid=True), ForeignKey("machine_operators.id"), nullable=True)
+    started_at       = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    ended_at         = Column(DateTime(timezone=True), nullable=True)   # NULL = the OF is currently on this machine
+    duration_minutes = Column(Integer, nullable=True)                   # filled when the run closes
+    pieces           = Column(Integer, default=0)   # parts produced during this run (attributed from the ADAM feed)
+    rejects          = Column(Integer, default=0)
+    source           = Column(SAEnum(JobOrderSource, native_enum=False), default=JobOrderSource.manual)
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
 
 
 # ─── Purchase Orders ───────────────────────────────────────────────────────────
@@ -1882,6 +2131,40 @@ class InterventionChecklistResponse(Base):
     checked           = Column(Boolean, default=False)
     checked_at        = Column(DateTime(timezone=True), nullable=True)
     checked_by_id     = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+
+class CleaningChecklist(Base):
+    """Operator cleaning task list, shown on the kiosk when a stop is declared
+    with the linked stop category (e.g. "Nettoyage"). One per equipment."""
+    __tablename__ = "cleaning_checklists"
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id         = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    equipment_id     = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True)
+    stop_category_id = Column(UUID(as_uuid=True), ForeignKey("stop_categories.id"), nullable=True)
+    name             = Column(String(200), default="Cleaning checklist")
+    is_active        = Column(Boolean, default=True)
+
+
+class CleaningChecklistItem(Base):
+    __tablename__ = "cleaning_checklist_items"
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    checklist_id = Column(UUID(as_uuid=True), ForeignKey("cleaning_checklists.id"), nullable=True)
+    text         = Column(Text, nullable=False)
+    sort_order   = Column(Integer, default=0)
+    is_required  = Column(Boolean, default=True)
+
+
+class StopCleaningResponse(Base):
+    """Which cleaning tasks the operator ticked during a given machine stop.
+    item_text denormalized so history survives checklist edits."""
+    __tablename__ = "stop_cleaning_responses"
+    id                = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    stop_id           = Column(UUID(as_uuid=True), ForeignKey("machine_stops.id"), nullable=False)
+    checklist_item_id = Column(UUID(as_uuid=True), ForeignKey("cleaning_checklist_items.id"), nullable=True)
+    item_text         = Column(Text, nullable=False)
+    checked           = Column(Boolean, default=False)
+    checked_at        = Column(DateTime(timezone=True), nullable=True)
+    checked_by        = Column(String(200), nullable=True)   # operator name (kiosk is unauthenticated)
 
 
 class InterventionPart(Base):
@@ -2183,3 +2466,111 @@ class SapCostLine(Base):
     comment          = Column(Text)
     currency         = Column(String(3), nullable=False, default="CAD")
     imported_at      = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ─── Pit Stop (buffer fabrication → assemblage) ────────────────────────────────
+# The physical zone itself is an Equipment row with block_kind='pit_stop' (map
+# placement/editing for free); its lane geometry + late threshold + ingest token
+# live in equipment.specifications JSON. The tables below carry the OF-level data:
+# what each OF needs (BOM), every in/out movement (the scan ledger, SAP-fed later,
+# simulator-fed today) and the small manual state (priority/hold/release).
+
+class PitStopSource(str, enum.Enum):
+    simulated = "simulated"   # written by scripts/simulate_pit_stop.py — removable
+    sap       = "sap"         # the future SAP feed (docs/pit-stop-sap-contract.md)
+
+
+class PitStopDirection(str, enum.Enum):
+    inbound  = "in"    # components arriving from fabrication (scanned into the buffer)
+    outbound = "out"   # components leaving toward an assembly line (SAP movement)
+
+
+class PitStopHoldKind(str, enum.Enum):
+    hold    = "hold"      # generic managerial hold
+    quality = "quality"   # quality issue
+    rework  = "rework"    # sent back for rework
+
+
+class JobOrderComponent(Base):
+    """One BOM line of an OF, for Pit Stop completeness: which component and how
+    many are required before the OF is 'in full'. Source of truth will be SAP;
+    the simulator seeds it today. Completeness compares CUMULATIVE received
+    (Σ inbound movements) against required_qty — once received, a component stays
+    satisfied even after it exits to the line."""
+    __tablename__ = "job_order_components"
+    __table_args__ = (
+        UniqueConstraint("job_order_id", "component_code", name="uq_job_order_components_of_code"),
+    )
+
+    id             = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_order_id   = Column(UUID(as_uuid=True), ForeignKey("job_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    component_code = Column(String(100), nullable=False)
+    label          = Column(String(300), nullable=True)
+    category       = Column(String(100), nullable=True)   # PitStopCategory.name (colour on the 3D stack)
+    required_qty   = Column(Integer, nullable=False, default=0)
+    source         = Column(SAEnum(PitStopSource, native_enum=False), default=PitStopSource.sap)
+    created_at     = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at     = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class PitStopMovement(Base):
+    """One scanned movement in the Pit Stop ledger (immutable, append-only):
+    `count` units of a component of an OF entering (in) or leaving (out) the
+    buffer. On-hand per (OF, component) = Σ in − Σ out. Anomalies (duplicate scan,
+    component not in the BOM, negative balance…) are FLAGGED, never rejected —
+    the physical world already happened."""
+    __tablename__ = "pit_stop_movements"
+
+    id                     = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id               = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False, index=True)
+    job_order_id           = Column(UUID(as_uuid=True), ForeignKey("job_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    component_code         = Column(String(100), nullable=False)
+    direction              = Column(SAEnum(PitStopDirection, native_enum=False), nullable=False)
+    quantity               = Column(Integer, nullable=False, default=1)
+    # SAP/HANA storage address as free text — the real format is TBD with the SAP
+    # team; the assumed simulator format is "L{lane:02d}-P{slot:02d}".
+    position_code          = Column(String(100), nullable=True)
+    destination_machine_id = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)  # on out: which line it left for
+    occurred_at            = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    source                 = Column(SAEnum(PitStopSource, native_enum=False), default=PitStopSource.sap)
+    anomaly                = Column(String(50), nullable=True)   # duplicate | unknown_of | unknown_component | negative_balance
+    raw                    = Column(JSON, nullable=True)         # original payload, for SAP-side debugging
+    created_at             = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class PitStopOfState(Base):
+    """The small NON-derivable state of an OF in the buffer: manual priority,
+    hold, release, and the presence timestamps maintained by the ingest. All the
+    rest (on-hand, completeness, late…) is computed from movements + BOM at read
+    time — never stored."""
+    __tablename__ = "pit_stop_of_states"
+
+    id                     = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_order_id           = Column(UUID(as_uuid=True), ForeignKey("job_orders.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    plant_id               = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False, index=True)
+    priority               = Column(Integer, nullable=True)      # manual for now (lower = release first)
+    hold_kind              = Column(SAEnum(PitStopHoldKind, native_enum=False), nullable=True)
+    hold_reason            = Column(String(300), nullable=True)
+    released_at            = Column(DateTime(timezone=True), nullable=True)
+    released_by_id         = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    destination_machine_id = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)  # target assembly line (SAP later, simulator/manual now)
+    first_in_at            = Column(DateTime(timezone=True), nullable=True)   # first inbound (buffer age runs from here)
+    last_movement_at       = Column(DateTime(timezone=True), nullable=True)
+    left_at                = Column(DateTime(timezone=True), nullable=True)   # total on-hand hit 0 (cleared if goods come back)
+    created_at             = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at             = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class PitStopCategory(Base):
+    """Per-plant registry of component categories shown on the Pit Stop 3D stacks
+    (name + colour). User-curated (the real category list comes later); the seed
+    creates sensible defaults. JobOrderComponent.category references the name."""
+    __tablename__ = "pit_stop_categories"
+    __table_args__ = (UniqueConstraint("plant_id", "name", name="uq_pit_stop_categories_plant_name"),)
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id   = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False, index=True)
+    name       = Column(String(100), nullable=False)
+    color      = Column(String(20), nullable=False, default="#8b5cf6")
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

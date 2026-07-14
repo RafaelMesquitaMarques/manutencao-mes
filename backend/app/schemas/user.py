@@ -24,6 +24,7 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     user_id: str
     name: str
+    nickname: Optional[str] = None
     language: str
     role: UserRole = UserRole.operator
     must_change_password: bool = False
@@ -44,13 +45,16 @@ class UserCreate(BaseModel):
 
 class UserMeUpdate(BaseModel):
     name: Optional[str] = None
+    nickname: Optional[str] = None   # "" clears it (route normalizes to NULL)
     language: Optional[str] = None
+    temp_unit: Optional[str] = None   # 'C' | 'F'
     avatar_url: Optional[str] = None
     phone: Optional[str] = None
 
 
 class UserAdminUpdate(BaseModel):
     name: Optional[str] = None
+    nickname: Optional[str] = None   # "" clears it (route normalizes to NULL)
     email: Optional[EmailStr] = None
     language: Optional[str] = None
     active: Optional[bool] = None
@@ -93,8 +97,10 @@ class UserOut(BaseModel):
 
     id: UUID
     name: str
+    nickname: Optional[str] = None
     email: str
     language: str
+    temp_unit: str = "C"
     active: bool
     role: UserRole = UserRole.operator
     avatar_url: Optional[str] = None

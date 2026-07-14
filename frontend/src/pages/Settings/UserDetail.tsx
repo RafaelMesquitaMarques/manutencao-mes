@@ -27,17 +27,21 @@ const RESOURCES = [
   'alerts', 'tickets', 'maintenance', 'supervisor_view', 'factory_map',
   'dashboards', 'wo_approval', 'schedule', 'pm_calendar', 'maintenance_plans',
   'inventory', 'suppliers', 'purchase_orders', 'machines', 'kpis',
-  'costs', 'machine_reports', 'intelligence', 'settings_machines', 'settings_escalation',
-  'settings_users', 'settings_devices', 'calendar',
+  'costs', 'job_orders', 'machine_reports', 'intelligence', 'settings_machines', 'settings_escalation',
+  'settings_users', 'settings_devices', 'settings_departments', 'calendar', 'pit_stop',
 ];
 
 const ACTIONS = ['view', 'create', 'update', 'delete'];
 
 // ─── Profile Tab ──────────────────────────────────────────────────────────────
 
+/** What the greeting falls back to when no nickname is set (shown as placeholder). */
+const firstNameOf = (fullName: string) => fullName.trim().split(/\s+/)[0] ?? '';
+
 function ProfileTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserType) => void }) {
   const { t } = useTranslation();
   const [name, setName] = useState(user.name);
+  const [nickname, setNickname] = useState(user.nickname ?? '');
   const [email, setEmail] = useState(user.email);
   const [jobTitle, setJobTitle] = useState(user.job_title ?? '');
   const [phone, setPhone] = useState(user.phone ?? '');
@@ -54,7 +58,7 @@ function ProfileTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserTy
     setLoading(true);
     try {
       const updated = await updateUser(user.id, {
-        name, email: email.trim(), job_title: jobTitle, phone, role, must_change_password: mustChange,
+        name, nickname: nickname.trim(), email: email.trim(), job_title: jobTitle, phone, role, must_change_password: mustChange,
       });
       setSuccess(true);
       onUpdated(updated);
@@ -89,6 +93,19 @@ function ProfileTab({ user, onUpdated }: { user: UserType; onUpdated: (u: UserTy
         <div>
           <label className="label">{t('users.emailLogin')}</label>
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="input-field" required disabled={loading} />
+        </div>
+        <div>
+          <label className="label">{t('users.nickname')}</label>
+          <input
+            type="text"
+            value={nickname}
+            onChange={(e) => setNickname(e.target.value)}
+            placeholder={firstNameOf(name)}
+            maxLength={100}
+            className="input-field"
+            disabled={loading}
+          />
+          <p className="text-[11px] text-gray-600 mt-1">{t('users.nicknameHint')}</p>
         </div>
         <div>
           <label className="label">{t('users.jobTitle')}</label>

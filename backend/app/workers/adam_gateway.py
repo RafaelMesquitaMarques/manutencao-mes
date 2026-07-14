@@ -9,7 +9,12 @@ gateway service reads every enabled `adam_devices` row and, per device:
     counter (source=counter) — one pulse = one produced part;
   • POSTs parts to  /api/machines/{ref}/production-count  (adds to OEE, marks running);
   • after `idle_timeout_s` with no pulse, POSTs running=False to
-    /api/machines/{ref}/production-signal  → KAIZO flips the machine to a detected stop.
+    /api/machines/{ref}/production-signal  → KAIZO flips the machine to a detected stop;
+  • OR, for source=state (assembly-line conveyors), treats the DI LEVEL as
+    running/stopped: running=True the instant the level goes active, running=False
+    after `idle_timeout_s` of continuous inactivity (belts index between stations,
+    so short pauses must not flap the status). No part counting in this mode —
+    quantities come from the end-of-line label scans.
 
 Auth reuses each machine's per-machine signal_ingest_token (X-Signal-Token), so
 the ingest path is identical to the bench poller — all shift/date/OEE logic stays
@@ -105,6 +110,10 @@ class Runtime:
         self.next_poll = 0.0
         self.reported_status: str | None = None
         self.last_health_write = 0.0
+        # state mode (DI level = belt running): last instant the level was active +
+        # the last running value pushed to the API (None = nothing pushed yet).
+        self.last_active = time.monotonic()
+        self.state_reported: bool | None = None
         self.apply(dev)
 
     def apply(self, dev: AdamDevice) -> None:
@@ -125,10 +134,16 @@ class Runtime:
         m = dev.machine
         self.machine_ref = (m.page_slug or str(m.id)) if m else None
         self.token = m.signal_ingest_token if m else None
+        prev_source = getattr(self, "_applied_source", None)
+        self._applied_source = self.source
         if prev_endpoint is not None and prev_endpoint != endpoint:
             self.close()
             self.prev_di = None
             self.prev_counter = None
+        if prev_source is not None and prev_source != self.source:
+            # Mode switched in the UI → restart the state tracking from scratch.
+            self.last_active = time.monotonic()
+            self.state_reported = None
 
     def close(self) -> None:
         if self.client is not None:
@@ -156,6 +171,33 @@ def _tick(rt: Runtime, now_mono: float) -> dict | None:
         if not rt.client.connect():
             rt.client = None
             return {"status": AdamDeviceStatus.offline, "error": f"cannot connect to {rt.ip}:{rt.port}"}
+
+    # State mode: DI LEVEL = belt running (conveyor motor contact). No part
+    # counting — only /production-signal on transitions. An assembly-line belt
+    # indexes (stops briefly at every station), so "stopped" is only reported
+    # after idle_timeout_s of CONTINUOUS inactive level; "running" is immediate.
+    if rt.source == AdamSignalSource.state:
+        cur = _read_di(rt.client, rt.channel)
+        if cur is None:
+            rt.close()
+            return {"status": AdamDeviceStatus.error, "error": "DI read failed"}
+        if cur == rt.active_bit:
+            rt.last_active = now_mono
+            if rt.state_reported is not True:
+                ok, err = _post(f"/api/machines/{rt.machine_ref}/production-signal",
+                                rt.token, {"running": True})
+                if not ok:
+                    return {"status": AdamDeviceStatus.error, "error": err}
+                rt.state_reported = True
+                log.info("%s: level active → running=True", rt.name)
+        elif rt.state_reported is not False and now_mono - rt.last_active > rt.idle_timeout:
+            ok, err = _post(f"/api/machines/{rt.machine_ref}/production-signal",
+                            rt.token, {"running": False})
+            if not ok:
+                return {"status": AdamDeviceStatus.error, "error": err}
+            rt.state_reported = False
+            log.info("%s: level inactive %.0fs → running=False", rt.name, rt.idle_timeout)
+        return {"status": AdamDeviceStatus.online, "error": None}
 
     # Read the pulse source.
     pulses = 0

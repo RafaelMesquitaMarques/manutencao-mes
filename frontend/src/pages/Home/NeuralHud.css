@@ -1,0 +1,192 @@
+/* Jarvis-style neural HUD (Home quick access). All motion is CSS-driven so the
+   React tree never re-renders per frame; packet/spark particles run on rAF. */
+
+@keyframes nhud-spin { to { transform: rotate(360deg); } }
+@keyframes nhud-spin-rev { to { transform: rotate(-360deg); } }
+@keyframes nhud-pulse {
+  0%, 100% { opacity: 0.86; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.02); }
+}
+@keyframes nhud-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
+@keyframes nhud-dash { to { stroke-dashoffset: -40; } }
+@keyframes nhud-dash-rev { to { stroke-dashoffset: 40; } }
+
+.nhud-a1, .nhud-a2, .nhud-a3, .nhud-a4, .nhud-a5, .nhud-a6, .nhud-a7, .nhud-a8 {
+  transform-origin: 240px 240px;
+}
+.nhud-a1 { animation: nhud-spin 60s linear infinite; }
+.nhud-a2 { animation: nhud-spin-rev 42s linear infinite; }
+.nhud-a3 { animation: nhud-spin 9s linear infinite; }
+.nhud-a4 { animation: nhud-spin-rev 14s linear infinite; }
+.nhud-a5 { animation: nhud-spin 120s linear infinite; }
+.nhud-a6 { animation: nhud-spin-rev 80s linear infinite; }
+.nhud-a7 { animation: nhud-spin 7s linear infinite; }
+.nhud-a8 { animation: nhud-spin-rev 26s linear infinite; }
+
+.nhud-core {
+  animation: nhud-pulse 3s ease-in-out infinite;
+  transform-origin: 240px 250px;
+  mix-blend-mode: screen;
+}
+.nhud-p1 { animation: nhud-dash 2.2s linear infinite; }
+.nhud-p2 { animation: nhud-dash-rev 3.2s linear infinite; }
+.nhud-p3 { animation: nhud-dash 4.5s linear infinite; }
+.nhud-reticle { animation: nhud-blink 1.1s ease-in-out infinite; }
+
+.nhud-ln {
+  stroke: #22d3ee;
+  stroke-opacity: 0.3;
+  stroke-width: 1;
+  stroke-dasharray: 3 7;
+  animation: nhud-dash 1.5s linear infinite;
+}
+.nhud-rg { fill: none; stroke: #22d3ee; stroke-opacity: 0.5; stroke-width: 1; }
+.nhud-dot {
+  fill: #67e8f9;
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 0.2s;
+}
+.nhud-node { cursor: pointer; }
+.nhud-node.on .nhud-dot { transform: scale(1.9); }
+.nhud-node.on .nhud-ln { stroke-opacity: 1; stroke: #7dd3fc; }
+.nhud-node.on .nhud-rg { stroke-opacity: 1; }
+
+.nhud-lb {
+  position: absolute;
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1.3;
+  user-select: none;
+  text-decoration: none;
+  display: block;
+}
+.nhud-lb .nhud-lb-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: #7dd3fc;
+  transition: color 0.15s;
+}
+.nhud-lb .nhud-lb-value {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: rgba(103, 232, 249, 0.8);
+  transition: color 0.15s;
+}
+.nhud-lb.lb-left,
+.nhud-lb.lb-right {
+  white-space: normal;
+  max-width: 124px;
+}
+.nhud-lb.lb-center .nhud-lb-name { justify-content: center; }
+.nhud-lb.lb-right .nhud-lb-name { justify-content: flex-end; }
+.nhud-lb.on .nhud-lb-name {
+  color: #e0f2fe;
+  text-shadow: 0 0 8px rgba(34, 211, 238, 0.8);
+}
+.nhud-lb.on .nhud-lb-value { color: #67e8f9; }
+
+/* Idle hologram drift — replaces mouse tilt so click targets never move away
+   from the cursor, and hit-testing stays exact while the HUD floats. */
+@keyframes nhud-float {
+  0%, 100% { transform: translateY(7px) rotateX(2deg); }
+  50% { transform: translateY(-7px) rotateX(-2deg); }
+}
+.nhud-float {
+  animation: nhud-float 7s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* The HUD overflows its card: only nodes and labels may capture the mouse so
+   the decorative rings never block clicks on content underneath. */
+.nhud-root { pointer-events: none; }
+.nhud-root svg { pointer-events: none; }
+.nhud-node { pointer-events: all; }
+.nhud-lb { pointer-events: auto; }
+.nhud-core-hit {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 32.5%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.nhud-core-hit:focus-visible {
+  outline: 2px solid rgba(34, 211, 238, 0.7);
+  outline-offset: 4px;
+}
+
+.nhud-core.on image { filter: brightness(1.18); }
+.nhud-corering.on { stroke: rgba(34, 211, 238, 0.75); }
+
+.nhud-bubble {
+  position: absolute;
+  left: 50%;
+  top: 33%;
+  transform: translate(-50%, calc(-100% - 8px)) scale(0.92);
+  opacity: 0;
+  transition: opacity 0.18s ease-out, transform 0.18s ease-out;
+  pointer-events: none;
+  background: rgba(8, 20, 35, 0.92);
+  border: 1px solid rgba(34, 211, 238, 0.5);
+  border-radius: 10px;
+  padding: 7px 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  color: #a5f3fc;
+  white-space: nowrap;
+  z-index: 30;
+  box-shadow: 0 0 16px rgba(34, 211, 238, 0.25);
+}
+.nhud-bubble.show {
+  opacity: 1;
+  transform: translate(-50%, calc(-100% - 14px)) scale(1);
+}
+.nhud-bubble::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  width: 8px;
+  height: 8px;
+  transform: translateX(-50%) rotate(45deg);
+  background: rgba(8, 20, 35, 0.92);
+  border-right: 1px solid rgba(34, 211, 238, 0.5);
+  border-bottom: 1px solid rgba(34, 211, 238, 0.5);
+}
+
+.nhud-status {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #22d3ee;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+}
+.nhud-readout {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: rgba(103, 232, 249, 0.45);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nhud-a1, .nhud-a2, .nhud-a3, .nhud-a4, .nhud-a5, .nhud-a6, .nhud-a7, .nhud-a8,
+  .nhud-core, .nhud-p1, .nhud-p2, .nhud-p3, .nhud-reticle, .nhud-ln, .nhud-float {
+    animation: none;
+  }
+}

@@ -1,20 +1,44 @@
-import { useMemo, useRef, useEffect, useState, forwardRef, Suspense } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { useMemo, useRef, useEffect, useState, forwardRef, Suspense, createContext, useContext } from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Grid, Html, Edges, useTexture, useGLTF, useAnimations, TransformControls, Billboard } from '@react-three/drei';
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { useTranslation } from 'react-i18next';
 import { STATUS_HEX as STATUS_COLORS, STATUS_LABEL as STATUS_LABELS } from '../../utils/statusColors';
 import { initials } from '../../utils/initials';
-import type { MapTechnician } from '../../api/factoryMap';
-const SCALE = 0.05;
+import { formatTemp, tempColor, type TempUnit } from '../../utils/temperature';
+import type { LineStats, MapTechnician, PipelineOf, QueuedOf } from '../../api/factoryMap';
+import type { PitStopOf, PitStopState } from '../../api/pitStop';
+import { OF_CATEGORY_FALLBACK, isDueToday, ofPlateColor } from '../../utils/pitStopColors';
+export const SCALE = 0.05;
 const FLOOR_W = 1600;
+
+// A temperature probe placed on the map (point geometry — no width/height).
+export interface S3D {
+  id: string;
+  name: string;
+  department?: string | null;    // binds the sensor to a department (badge scoping)
+  pos_x: number;
+  pos_y: number;
+  height_3d?: number | null;
+  last_value_c: number | null;   // canonical Celsius; converted to the viewer's unit
+}
+export type SensorCommit = (id: string, patch: { pos_x: number; pos_y: number }) => void;
+
+// A placed machine's centre (map-pixel space) + its department — used to resolve
+// which department a point belongs to (nearest machine), keeping a sensor's badge
+// scoped to its own department so it never leaks into a neighbour.
+export type MachinePoint = { x: number; y: number; dept: string };
 
 export interface M3D {
   id: string;
   name: string;
   status: string;
   technicians?: MapTechnician[] | null;   // techs on the clock when status === 'intervention'
+  stop_reason?: string | null;            // open stop's justification — assembly-line balloon
+  line_stats?: LineStats | null;          // end-of-line TV stats — assembly lines only
+  pipeline_ofs?: PipelineOf[] | null;     // planned pending OFs behind the machine (cutting pipeline)
+  pipeline_total?: number;
   open_ticket_number?: string | null;
   pos_x: number;
   pos_y: number;
@@ -329,7 +353,7 @@ export const PROP_CATALOG: { kind: string; label: string; w: number; h: number; 
 // not a decorative block you drop on the map.
 const propHeight = (kind: string): number => PROP_CATALOG.find((c) => c.kind === kind)?.height ?? 2;
 // block_kinds that render as a procedural mesh (the rest fall back to box/photo)
-const PROCEDURAL_KINDS = new Set(['cobot', 'conveyor', 'lift_table', 'work_table', 'rack', 'dust_collector', 'beam_saw']);
+const PROCEDURAL_KINDS = new Set(['cobot', 'conveyor', 'lift_table', 'work_table', 'rack', 'dust_collector', 'beam_saw', 'assembly_line', 'pit_stop']);
 
 // Wood panels riding the belt — translate along +X and wrap, simulating flow.
 function ConveyorFlow({ w, d, y, animate }: { w: number; d: number; y: number; animate: boolean }) {
@@ -391,6 +415,844 @@ function ConveyorMesh({ w, d, h, color, id, name, onSelect, animate }: BoxProps 
       ))}
       <ConveyorFlow w={w} d={d} y={beltY + h * 0.18} animate={animate ?? true} />
       <Label y={h + 0.6} text={name} />
+    </group>
+  );
+}
+
+// ── Assembly line (block_kind='assembly_line') — the assemblage-lines scene ──
+// A long industrial belt built from LEVEL modules on metal scissor lifts
+// (the height-adjust mechanism shows, but every module sits at the same
+// ergonomic height). Furniture in progressive stages of assembly (panel stack
+// → carcass → cubby → 3-drawer units) rides the belt and FREEZES when the
+// line stops. Five ninja-style line workers (blue suits, one ponytail, one
+// with glasses) visibly drive screws into the pieces while the line runs;
+// their hard hats AND the belt's whole frame take the line's live status
+// colour — a GREEN belt while the ADAM says it turns, RED on a stop. When the
+// line is stopped, a glossy speech balloon — same 3D-icon style as the
+// mechanics' initials bubble — floats over it with the stop's justification
+// from the kiosk timeline.
+
+// Plant-wide efficiency-colour thresholds for the line TVs (configured on
+// /settings/line-objectives, delivered with the map payload). Provided INSIDE
+// the <Canvas> (React context does not cross the R3F reconciler boundary).
+export type TvThresholds = { green_from: number; amber_from: number };
+const TV_THRESHOLDS_DEFAULT: TvThresholds = { green_from: 95, amber_from: 80 };
+const TvThresholdsCtx = createContext<TvThresholds>(TV_THRESHOLDS_DEFAULT);
+
+/** Efficiency → colour per the configured thresholds (null eff → null = grey). */
+const effColor = (eff: number | null | undefined, th: TvThresholds): string | null =>
+  eff == null ? null : eff >= th.green_from ? '#16a34a' : eff >= th.amber_from ? '#d97706' : '#dc2626';
+
+const LINE_MODULES = 5;            // one work station per module
+// Deck height in WORLD units, not tied to the block's h: the workers are fixed
+// human size (~1.9 tall), so the belt sits waist-high on them — the pieces land
+// right under their hands and the crew reads as one integrated scene.
+const LINE_DECK_H = 0.8;
+const LINE_STOPPED = new Set(['stopped', 'unjustified', 'maintenance', 'planned_stop']);
+
+/** Materials shared by everything in ONE line (structure, furniture, the five
+ * workers, the balloon) — a handful of instances instead of one per mesh.
+ * `status` carries the LIVE status colour (helmet domes); its colour is
+ * mutated in place on status change so nothing re-mounts. */
+function useLineMats(statusColor: string) {
+  const mats = useMemo(() => ({
+    belt:       new THREE.MeshStandardMaterial({ color: '#242c38', roughness: 0.9 }),
+    metal:      new THREE.MeshStandardMaterial({ color: '#9aa3ad', metalness: 0.75, roughness: 0.3 }),
+    base:       new THREE.MeshStandardMaterial({ color: '#1f2937', roughness: 0.7 }),
+    wood:       new THREE.MeshStandardMaterial({ color: '#b98a4e', roughness: 0.75 }),
+    woodLight:  new THREE.MeshStandardMaterial({ color: '#ead9b8', roughness: 0.7 }),
+    woodDark:   new THREE.MeshStandardMaterial({ color: '#8a5f33', roughness: 0.8 }),
+    suit:       new THREE.MeshStandardMaterial({ color: '#2456b8', roughness: 0.65 }),
+    suitShadow: new THREE.MeshStandardMaterial({ color: '#152647', roughness: 0.7 }),
+    accent:     new THREE.MeshStandardMaterial({ color: '#f97316', roughness: 0.5 }),
+    trim:       new THREE.MeshStandardMaterial({ color: '#1e2740', roughness: 0.5 }),
+    skin:       new THREE.MeshStandardMaterial({ color: '#f2c197', roughness: 0.55 }),
+    glove:      new THREE.MeshStandardMaterial({ color: '#10151f', roughness: 0.6 }),
+    eyeWhite:   new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.3 }),
+    status:     new THREE.MeshStandardMaterial({ color: statusColor, roughness: 0.35 }),
+    bubble:     new THREE.MeshPhysicalMaterial({ color: '#ffffff', roughness: 0.18, clearcoat: 1, clearcoatRoughness: 0.25, emissive: '#ffffff', emissiveIntensity: 0.12 }),
+  }), []);  // eslint-disable-line react-hooks/exhaustive-deps -- statusColor updates below without re-creating
+  useEffect(() => { mats.status.color.set(statusColor); }, [mats, statusColor]);
+  useEffect(() => () => { Object.values(mats).forEach((m) => m.dispose()); }, [mats]);
+  return mats;
+}
+type LineMats = ReturnType<typeof useLineMats>;
+
+/** One height-adjustable belt module: base skid, metal scissor-cross pair with
+ * a centre pin, blue deck frame with a dark belt surface and blue side skirts. */
+function ScissorModule({ x, mw, db, deckH, mats }: { x: number; mw: number; db: number; deckH: number; mats: LineMats }) {
+  const beltT = 0.14;
+  const rise = Math.max(0.25, deckH - beltT);
+  const span = mw * 0.42;
+  const len = Math.hypot(rise, span * 2) * 0.98;
+  const ang = Math.atan2(rise, span * 2);
+  return (
+    <group position={[x, 0, 0]}>
+      <mesh material={mats.base} position={[0, 0.05, 0]} castShadow>
+        <boxGeometry args={[mw * 0.72, 0.1, db * 0.8]} />
+      </mesh>
+      {/* scissor mechanism, front + back */}
+      {[-1, 1].map((s) => (
+        <group key={s} position={[0, 0, s * db * 0.32]}>
+          <mesh material={mats.metal} position={[0, 0.08 + rise / 2, 0]} rotation={[0, 0, ang]} castShadow>
+            <boxGeometry args={[len, 0.06, 0.06]} />
+          </mesh>
+          <mesh material={mats.metal} position={[0, 0.08 + rise / 2, 0]} rotation={[0, 0, -ang]} castShadow>
+            <boxGeometry args={[len, 0.06, 0.06]} />
+          </mesh>
+          <mesh material={mats.trim} position={[0, 0.08 + rise / 2, 0]} rotation={[Math.PI / 2, 0, 0]}>
+            <cylinderGeometry args={[0.05, 0.05, 0.09, 8]} />
+          </mesh>
+        </group>
+      ))}
+      {/* deck: the WHOLE frame (not just the skirts) takes the LIVE status
+          colour — green belt while running, red on a stop, like the helmets.
+          Only the belt surface, scissors and base stay neutral. */}
+      <mesh material={mats.status} position={[0, deckH - beltT / 2, 0]} castShadow receiveShadow>
+        <boxGeometry args={[mw * 1.001, beltT, db]} />
+      </mesh>
+      <mesh material={mats.belt} position={[0, deckH + 0.026, 0]}>
+        <boxGeometry args={[mw * 1.001, 0.052, db * 0.76]} />
+      </mesh>
+      {[-1, 1].map((s) => (
+        <mesh key={`sk${s}`} material={mats.status} position={[0, deckH - 0.02, s * (db / 2) * 0.94]}>
+          <boxGeometry args={[mw * 1.001, 0.2, 0.06]} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+/** One furniture piece at assembly stage `stage` (0→5, progressively more
+ * complete): panel stack → carcass → cubby/niche → drawer unit (light drawer
+ * fronts) → small cabinet with a door → tall shelf with dividers. Sits on y=0. */
+function FurniturePiece({ stage, mats }: { stage: number; mats: LineMats }) {
+  switch (stage) {
+    case 0: return (
+      <group>
+        {[0, 1, 2].map((i) => (
+          <mesh key={i} material={mats.wood} position={[0, 0.04 + i * 0.06, 0]} rotation={[0, i * 0.08 - 0.08, 0]} castShadow>
+            <boxGeometry args={[0.95, 0.05, 0.62]} />
+          </mesh>
+        ))}
+      </group>
+    );
+    case 1: return (
+      <group>
+        <mesh material={mats.wood} position={[0, 0.035, 0]} castShadow><boxGeometry args={[0.85, 0.06, 0.6]} /></mesh>
+        {[-1, 1].map((k) => (
+          <mesh key={k} material={mats.wood} position={[0.4 * k, 0.38, 0]} castShadow><boxGeometry args={[0.05, 0.72, 0.6]} /></mesh>
+        ))}
+        <mesh material={mats.woodDark} position={[0, 0.38, -0.28]}><boxGeometry args={[0.85, 0.72, 0.04]} /></mesh>
+      </group>
+    );
+    case 2: return (
+      <group>
+        {[0.035, 0.73].map((y, i) => (
+          <mesh key={i} material={mats.wood} position={[0, y, 0]} castShadow><boxGeometry args={[0.85, 0.06, 0.6]} /></mesh>
+        ))}
+        {[-1, 1].map((k) => (
+          <mesh key={`s${k}`} material={mats.wood} position={[0.4 * k, 0.38, 0]} castShadow><boxGeometry args={[0.05, 0.76, 0.6]} /></mesh>
+        ))}
+        <mesh material={mats.woodDark} position={[0, 0.38, -0.28]}><boxGeometry args={[0.85, 0.76, 0.04]} /></mesh>
+        {[-1, 1].map((k) => (
+          <mesh key={`d${k}`} material={mats.wood} position={[0.14 * k, 0.38, 0.02]}><boxGeometry args={[0.04, 0.66, 0.52]} /></mesh>
+        ))}
+      </group>
+    );
+    // stages 3+ — the finished product: the 3-drawer unit (light drawer fronts)
+    default: return (
+      <group>
+        <mesh material={mats.wood} position={[0, 0.45, 0]} castShadow><boxGeometry args={[0.8, 0.9, 0.6]} /></mesh>
+        {[0.18, 0.45, 0.72].map((y, i) => (
+          <mesh key={i} material={mats.woodLight} position={[0, y, 0.31]}><boxGeometry args={[0.68, 0.2, 0.04]} /></mesh>
+        ))}
+        {[0.18, 0.45, 0.72].map((y, i) => (
+          <mesh key={`k${i}`} material={mats.trim} position={[0, y, 0.34]}><boxGeometry args={[0.2, 0.03, 0.02]} /></mesh>
+        ))}
+      </group>
+    );
+  }
+}
+
+/** The furniture riding the belt: five pieces in progressive stages (the last
+ * two are finished 3-drawer units), spread along the line at deck height.
+ * Their progress accumulates only while the line runs — on a stop everything
+ * freezes IN PLACE. */
+function FurnitureFlow({ w, db, deckH, animate, mats }: { w: number; db: number; deckH: number; animate: boolean; mats: LineMats }) {
+  const count = 5;
+  const refs = useRef<(THREE.Group | null)[]>([]);
+  const prog = useRef(0);
+  useFrame((_, delta) => {
+    if (animate) prog.current = (prog.current + delta * 0.03) % 1;
+    for (let i = 0; i < count; i++) {
+      const g = refs.current[i];
+      if (!g) continue;
+      const xf = (prog.current + i / count) % 1;
+      g.position.set(-w / 2 + xf * w, deckH + 0.05, 0);
+    }
+  });
+  const s = Math.min(1.15, db * 0.55);
+  return (
+    <>
+      {Array.from({ length: count }).map((_, i) => (
+        <group key={i} ref={(el) => { refs.current[i] = el; }} scale={s}>
+          <FurniturePiece stage={i} mats={mats} />
+        </group>
+      ))}
+    </>
+  );
+}
+
+/** A line worker in the ninja-mechanic style: blue industrial suit with chest
+ * straps and a tool belt, safety boots, balaclava + friendly eyes, an electric
+ * screwdriver, and a hard hat in the LINE's live status colour (green while
+ * the belt runs, red on a stop). `ponytail`/`glasses` differentiate the crew.
+ * Leans over the belt driving screws while the line runs; goes still (but
+ * keeps breathing) when it stops. Built at the origin facing +z. */
+function LineWorkerFigure3D({ mats, phase = 0, ponytail = false, glasses = false, animate }: {
+  mats: LineMats; phase?: number; ponytail?: boolean; glasses?: boolean; animate: boolean;
+}) {
+  const breatheRef = useRef<THREE.Group>(null);
+  const armRef = useRef<THREE.Group>(null);
+  const headRef = useRef<THREE.Group>(null);
+  useFrame((st) => {
+    const tm = st.clock.elapsedTime + phase;
+    // Visible SCREWDRIVING while the line runs: the tool arm presses down onto
+    // the piece in slow drive cycles with a fast vibration riding on top, the
+    // torso rocks into each drive, the head follows the work point. On a stop
+    // everything settles to the lean-in pose (still breathing).
+    const drive = Math.sin(tm * 2.6);
+    if (breatheRef.current) {
+      breatheRef.current.rotation.x = 0.16 + (animate ? Math.max(0, drive) * 0.09 : 0);
+      breatheRef.current.position.y = Math.sin(tm * 1.5) * 0.012;
+    }
+    if (armRef.current) {
+      armRef.current.rotation.x = animate
+        ? 1.0 + Math.max(0, drive) * 0.28 + Math.sin(tm * 32) * 0.04
+        : 0.95;
+      armRef.current.rotation.z = animate ? Math.sin(tm * 2.6 + 1.1) * 0.1 : 0;
+    }
+    if (headRef.current) {
+      headRef.current.rotation.x = 0.24 + (animate ? Math.max(0, drive) * 0.06 : 0);
+      headRef.current.rotation.y = Math.sin(tm * 0.6) * 0.1;
+    }
+  });
+  return (
+    <group>
+      {/* boots + legs */}
+      {[-1, 1].map((k) => (
+        <group key={`bt${k}`}>
+          <mesh material={mats.glove} position={[0.14 * k, 0.11, 0.04]} castShadow>
+            <boxGeometry args={[0.2, 0.14, 0.34]} />
+          </mesh>
+          <mesh material={mats.accent} position={[0.14 * k, 0.03, 0.04]}>
+            <boxGeometry args={[0.22, 0.05, 0.38]} />
+          </mesh>
+          <mesh material={mats.suit} position={[0.14 * k, 0.43, 0]} castShadow>
+            <cylinderGeometry args={[0.1, 0.12, 0.42, 10]} />
+          </mesh>
+        </group>
+      ))}
+      {/* hips + tool belt: buckle + side pouches */}
+      <mesh material={mats.suit} position={[0, 0.7, 0]} castShadow>
+        <cylinderGeometry args={[0.25, 0.23, 0.2, 14]} />
+      </mesh>
+      <mesh material={mats.suitShadow} position={[0, 0.82, 0]}>
+        <cylinderGeometry args={[0.265, 0.265, 0.07, 14]} />
+      </mesh>
+      <mesh material={mats.accent} position={[0, 0.82, 0.25]}>
+        <boxGeometry args={[0.11, 0.075, 0.05]} />
+      </mesh>
+      {[-1, 1].map((k) => (
+        <mesh key={`p${k}`} material={mats.suitShadow} position={[0.24 * k, 0.73, 0.1]}>
+          <boxGeometry args={[0.1, 0.13, 0.08]} />
+        </mesh>
+      ))}
+      {/* upper body — leans over the piece, breathing */}
+      <group ref={breatheRef}>
+        <mesh material={mats.suit} position={[0, 1.06, 0]} castShadow>
+          <capsuleGeometry args={[0.26, 0.34, 6, 14]} />
+        </mesh>
+        {[-1, 1].map((k) => (
+          <mesh key={`st${k}`} material={mats.suitShadow} position={[0, 1.1, 0.265]} rotation={[0, 0, 0.55 * k]}>
+            <boxGeometry args={[0.07, 0.55, 0.02]} />
+          </mesh>
+        ))}
+        {[-1, 1].map((k) => (
+          <mesh key={`sh${k}`} material={mats.suitShadow} position={[0.265 * k, 1.33, 0]} castShadow>
+            <sphereGeometry args={[0.1, 12, 12]} />
+          </mesh>
+        ))}
+        {/* left arm — steadies the piece */}
+        <group position={[-0.3, 1.22, 0]} rotation={[0.9, 0, -0.15]}>
+          <mesh material={mats.suit} position={[0, 0.12, 0]} castShadow>
+            <capsuleGeometry args={[0.07, 0.2, 6, 10]} />
+          </mesh>
+          <mesh material={mats.suit} position={[0, 0.3, 0.02]} rotation={[0.2, 0, 0]}>
+            <capsuleGeometry args={[0.058, 0.15, 6, 10]} />
+          </mesh>
+          <mesh material={mats.glove} position={[0, 0.42, 0.04]}>
+            <sphereGeometry args={[0.085, 12, 12]} />
+          </mesh>
+        </group>
+        {/* right arm — drives the screwdriver (re-posed every frame) */}
+        <group ref={armRef} position={[0.3, 1.26, 0]}>
+          <mesh material={mats.suit} position={[0.03, 0.1, 0.01]} rotation={[0, 0, -0.5]} castShadow>
+            <capsuleGeometry args={[0.07, 0.2, 6, 10]} />
+          </mesh>
+          <mesh material={mats.suitShadow} position={[0.08, 0.22, 0.02]}>
+            <sphereGeometry args={[0.065, 10, 10]} />
+          </mesh>
+          <mesh material={mats.suit} position={[0.1, 0.33, 0.03]}>
+            <capsuleGeometry args={[0.058, 0.15, 6, 10]} />
+          </mesh>
+          <mesh material={mats.glove} position={[0.1, 0.44, 0.04]}>
+            <sphereGeometry args={[0.088, 12, 12]} />
+          </mesh>
+          {/* electric screwdriver: dark grip, orange body, metal chuck + bit */}
+          <mesh material={mats.glove} position={[0.1, 0.52, 0.05]}>
+            <cylinderGeometry args={[0.03, 0.035, 0.1, 8]} />
+          </mesh>
+          <mesh material={mats.accent} position={[0.1, 0.6, 0.09]} rotation={[0.5, 0, 0]} castShadow>
+            <boxGeometry args={[0.08, 0.09, 0.2]} />
+          </mesh>
+          <mesh material={mats.metal} position={[0.1, 0.66, 0.19]} rotation={[1.1, 0, 0]}>
+            <cylinderGeometry args={[0.022, 0.028, 0.1, 8]} />
+          </mesh>
+          <mesh material={mats.metal} position={[0.1, 0.7, 0.26]} rotation={[1.1, 0, 0]}>
+            <cylinderGeometry args={[0.008, 0.008, 0.09, 6]} />
+          </mesh>
+        </group>
+        {/* head: balaclava + face; hard hat dome takes the live status colour */}
+        <group ref={headRef} position={[0, 1.47, 0]}>
+          <mesh material={mats.suitShadow} position={[0, 0.02, 0]} castShadow>
+            <sphereGeometry args={[0.28, 18, 18]} />
+          </mesh>
+          <mesh material={mats.skin} position={[0, 0.055, 0.2]} scale={[1, 0.8, 0.5]}>
+            <sphereGeometry args={[0.195, 16, 16]} />
+          </mesh>
+          {[-1, 1].map((k) => (
+            <group key={`eye${k}`}>
+              <mesh material={mats.eyeWhite} position={[0.082 * k, 0.07, 0.275]} scale={[1, 1.2, 0.55]}>
+                <sphereGeometry args={[0.045, 12, 12]} />
+              </mesh>
+              <mesh material={mats.glove} position={[0.077 * k, 0.065, 0.295]}>
+                <sphereGeometry args={[0.019, 8, 8]} />
+              </mesh>
+              {glasses && (
+                <mesh material={mats.trim} position={[0.082 * k, 0.07, 0.3]}>
+                  <torusGeometry args={[0.075, 0.012, 8, 14]} />
+                </mesh>
+              )}
+            </group>
+          ))}
+          {glasses && (
+            <mesh material={mats.trim} position={[0, 0.088, 0.3]}>
+              <boxGeometry args={[0.05, 0.016, 0.015]} />
+            </mesh>
+          )}
+          {ponytail && (
+            <mesh material={mats.trim} position={[0, -0.04, -0.27]} rotation={[0.75, 0, 0]} castShadow>
+              <capsuleGeometry args={[0.055, 0.22, 6, 10]} />
+            </mesh>
+          )}
+          <mesh material={mats.status} position={[0, 0.19, 0]} scale={[1, 0.68, 1]} castShadow>
+            <sphereGeometry args={[0.3, 18, 18]} />
+          </mesh>
+          <mesh material={mats.trim} position={[0, 0.145, 0]}>
+            <cylinderGeometry args={[0.32, 0.32, 0.045, 18]} />
+          </mesh>
+        </group>
+      </group>
+    </group>
+  );
+}
+
+/** Glossy speech balloon over a stopped line — same 3D-icon style as the
+ * mechanics' initials bubble, sized for a sentence: the stop's justification
+ * (or the localized status while nobody has justified it yet). Canvas-drawn
+ * text (system fonts) because troika font loading fails offline in this app. */
+function StopBalloon({ text, y, mats }: { text: string; y: number; mats: LineMats }) {
+  const ref = useRef<THREE.Group>(null);
+  useFrame((st) => { if (ref.current) ref.current.position.y = y + Math.sin(st.clock.elapsedTime * 1.6) * 0.06; });
+  const tex = useMemo(() => {
+    const cvs = document.createElement('canvas');
+    cvs.width = 1024; cvs.height = 512;
+    const ctx = cvs.getContext('2d')!;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#141c2b';
+    // wrap into ≤3 lines, shrinking the font until it fits
+    const words = text.split(/\s+/);
+    let size = 150;
+    let lines: string[] = [];
+    for (; size >= 60; size -= 10) {
+      ctx.font = `800 ${size}px system-ui, sans-serif`;
+      lines = [];
+      let cur = '';
+      for (const wd of words) {
+        const tryLine = cur ? `${cur} ${wd}` : wd;
+        if (ctx.measureText(tryLine).width > 900 && cur) { lines.push(cur); cur = wd; }
+        else cur = tryLine;
+      }
+      if (cur) lines.push(cur);
+      if (lines.length <= 3 && lines.every((l) => ctx.measureText(l).width <= 900)) break;
+    }
+    ctx.font = `800 ${size}px system-ui, sans-serif`;
+    const lh = size * 1.15;
+    const y0 = 256 - ((lines.length - 1) * lh) / 2;
+    lines.forEach((l, i) => ctx.fillText(l, 512, y0 + i * lh, 940));
+    const t = new THREE.CanvasTexture(cvs);
+    t.anisotropy = 8;
+    return t;
+  }, [text]);
+  useEffect(() => () => tex.dispose(), [tex]);
+  return (
+    <group ref={ref} position={[0, y, 0]}>
+      <Billboard>
+        <mesh material={mats.bubble} scale={[1.75, 1.08, 0.85]}>
+          <sphereGeometry args={[0.85, 24, 18]} />
+        </mesh>
+        <mesh material={mats.bubble} position={[-0.35, -0.8, 0]} rotation={[0, 0, 2.95]} scale={[1, 1, 0.6]}>
+          <coneGeometry args={[0.2, 0.7, 12]} />
+        </mesh>
+        {/* text plane comfortably inside the ellipsoid so the message reads centred */}
+        <mesh position={[0, 0, 0.74]}>
+          <planeGeometry args={[2.35, 1.175]} />
+          <meshBasicMaterial map={tex} transparent toneMapped={false} depthWrite={false} />
+        </mesh>
+      </Billboard>
+    </group>
+  );
+}
+
+/** End-of-line TV (Cortex-style scoreboard) on a pole at the line's tip, facing
+ * back down the line: header = line name on the live status colour; quadrants =
+ * Efficiency % (colour-coded), Actual (shift UE count), Trend (▲/▼ + live rate
+ * from the last minutes) and the EVOLVING Standard (target/h × hours elapsed in
+ * the shift). Values arrive with the map's 4s WS push; the screen is a canvas
+ * texture (system fonts — troika font loading fails offline in this app). */
+function LineTV({ x, name, statusColor, stats, mats, lift = 0 }: {
+  x: number; name: string; statusColor: string; stats?: LineStats | null; mats: LineMats;
+  lift?: number;   // extra pole height — the global TV towers over the line TVs
+}) {
+  const { t } = useTranslation();
+  const th = useContext(TvThresholdsCtx);
+  const lEff = t('factoryMap.tvEfficiency'), lActual = t('factoryMap.tvActual');
+  const lTrend = t('factoryMap.tvTrend'), lStandard = t('factoryMap.tvStandard');
+  const tex = useMemo(() => {
+    const W = 1024, H = 680, HEAD = 108, PAD = 12;
+    const cvs = document.createElement('canvas');
+    cvs.width = W; cvs.height = H;
+    const ctx = cvs.getContext('2d')!;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#0b1120';
+    ctx.fillRect(0, 0, W, H);
+    // header — line name on the live status colour
+    ctx.fillStyle = statusColor;
+    ctx.fillRect(0, 0, W, HEAD);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '700 52px system-ui, sans-serif';
+    ctx.fillText(name, W / 2, HEAD / 2 + 2, W - 40);
+    const cw = (W - 3 * PAD) / 2, chh = (H - HEAD - 3 * PAD) / 2;
+    const cell = (cx: number, cy: number, label: string, value: string,
+                  opts: { bg?: string; valueColor?: string; valueSize?: number } = {}) => {
+      ctx.fillStyle = opts.bg ?? '#111a2c';
+      ctx.fillRect(cx, cy, cw, chh);
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '600 38px system-ui, sans-serif';
+      ctx.fillText(label, cx + cw / 2, cy + 44, cw - 28);
+      ctx.fillStyle = opts.valueColor ?? '#ffffff';
+      ctx.font = `800 ${opts.valueSize ?? 108}px system-ui, sans-serif`;
+      ctx.fillText(value, cx + cw / 2, cy + 44 + (chh - 52) / 2, cw - 32);
+    };
+    const x0 = PAD, x1 = PAD * 2 + cw, y0 = HEAD + PAD, y1 = HEAD + PAD * 2 + chh;
+    const eff = stats?.efficiency_pct ?? null;
+    const effBg = effColor(eff, th) ?? '#374151';
+    cell(x0, y0, lEff, eff == null ? '—' : `${Math.round(eff)} %`, { bg: effBg });
+    cell(x1, y0, lActual, String(stats?.actual ?? 0));
+    const trend = stats?.trend ?? 'flat';
+    const arrow = trend === 'up' ? '▲' : trend === 'down' ? '▼' : '▬';
+    const arrowColor = trend === 'up' ? '#22c55e' : trend === 'down' ? '#ef4444' : '#9ca3af';
+    cell(x0, y1, lTrend, `${arrow} ${Math.round(stats?.rate_per_h ?? 0)}/h`,
+         { valueColor: arrowColor, valueSize: 92 });
+    const tgt = stats?.target_per_hour ?? 0;
+    cell(x1, y1, tgt > 0 ? `${lStandard} (${tgt}/h)` : lStandard,
+         tgt > 0 ? String(stats?.evolving_target ?? 0) : '—');
+    const texture = new THREE.CanvasTexture(cvs);
+    texture.anisotropy = 8;
+    return texture;
+  }, [name, statusColor, lEff, lActual, lTrend, lStandard, th.green_from, th.amber_from,
+      stats?.actual, stats?.rate_per_h, stats?.trend,
+      stats?.target_per_hour, stats?.evolving_target, stats?.efficiency_pct]);
+  useEffect(() => () => tex.dispose(), [tex]);
+  return (
+    <group position={[x, 0, 0]} rotation={[0, -Math.PI / 2, 0]}>
+      <mesh material={mats.base} position={[0, 0.06, 0]}>
+        <cylinderGeometry args={[0.5, 0.6, 0.12, 12]} />
+      </mesh>
+      <mesh material={mats.metal} position={[0, 0.05 + (2.9 + lift) / 2, 0]} castShadow>
+        <cylinderGeometry args={[0.09, 0.09, 2.9 + lift, 10]} />
+      </mesh>
+      <mesh material={mats.trim} position={[0, 4.0 + lift, 0]} castShadow>
+        <boxGeometry args={[6.0, 4.1, 0.16]} />
+      </mesh>
+      <mesh position={[0, 4.0 + lift, 0.085]}>
+        <planeGeometry args={[5.7, 3.78]} />
+        <meshBasicMaterial map={tex} toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
+
+/** Central GLOBAL scoreboard for the assembly lines (the Cortex "QS - Global"
+ * clock): one oversized TV showing the backend's global clock — the MEASURED
+ * Σ Réel/rate of the lines against the plant's OWN global objective (cadence/
+ * window/pauses configured on /settings/line-objectives, INDEPENDENT of the
+ * per-line objectives). It stands PAST the end of the lines, centred across
+ * them and a few metres BEHIND the row of per-line TVs, facing the same way
+ * they do — the lines' true end direction is derived from each block's
+ * rotation, so any map layout works. Renders nothing without lines/stats. */
+function GlobalLineTV({ machines, cx, cy, stats }: { machines: M3D[]; cx: number; cy: number; stats?: LineStats | null }) {
+  const { t } = useTranslation();
+  const th = useContext(TvThresholdsCtx);
+  // The lines only give the TV its PLACE — the numbers come from the payload.
+  const lines = useMemo(
+    () => machines.filter((m) => m.block_kind === 'assembly_line'),
+    [machines],
+  );
+  // The GLOBAL header takes the aggregated efficiency's colour (configurable
+  // thresholds) — grey while no objective produces a standard yet.
+  const headerColor = effColor(stats?.efficiency_pct, th) ?? '#374151';
+  const mats = useLineMats(headerColor);
+  if (!stats || !lines.length) return null;
+  // Average of the lines' TV points (each line's end, where its own TV stands)
+  // and of their end directions (local +x rotated by the block's yaw).
+  let ex = 0, ez = 0, dx = 0, dz = 0;
+  for (const m of lines) {
+    const yaw = -((m.rotation_deg ?? 0) * Math.PI) / 180;
+    const w = Math.max(m.pos_w, 40) * SCALE;
+    const mx = ((m.pos_x + m.pos_w / 2) - cx) * SCALE;
+    const mz = ((m.pos_y + m.pos_h / 2) - cy) * SCALE;
+    const dirX = Math.cos(yaw), dirZ = -Math.sin(yaw);
+    ex += mx + dirX * (w / 2 + 1.3);
+    ez += mz + dirZ * (w / 2 + 1.3);
+    dx += dirX; dz += dirZ;
+  }
+  ex /= lines.length; ez /= lines.length;
+  const dLen = Math.hypot(dx, dz) || 1;
+  dx /= dLen; dz /= dLen;
+  const BEHIND = 8;                                  // metres past the per-line TV row
+  const yawAvg = Math.atan2(-dz, dx);
+  return (
+    // Same construction as a line TV (the wrapper yaw plays the line group's
+    // role, LineTV's internal -90° then faces it back down the lines). The
+    // lift raises it well above the per-line TV row.
+    <group position={[ex + dx * BEHIND, 0, ez + dz * BEHIND]} rotation={[0, yawAvg, 0]} scale={1.6}>
+      <LineTV x={0} name={t('factoryMap.tvGlobal')} statusColor={headerColor} stats={stats} mats={mats} lift={2.4} />
+    </group>
+  );
+}
+
+function AssemblyLineMesh({ w, d, h, color, id, name, onSelect, animate, status, stopReason, lineStats }: BoxProps & { animate?: boolean; status?: string; stopReason?: string | null; lineStats?: LineStats | null }) {
+  const { i18n } = useTranslation();
+  const lang = (i18n.language || 'en').slice(0, 2) as 'en' | 'fr' | 'es';
+  const mats = useLineMats(color);
+  const N = LINE_MODULES;
+  const mw = w / N;
+  const db = Math.min(d * 0.55, 2.6);                              // belt depth — the rest is worker floor
+  const deckH = LINE_DECK_H;                                       // one LEVEL waist-high deck
+  const maxH = deckH;
+  const run = animate ?? false;
+  const stopped = LINE_STOPPED.has(status ?? '');
+  const balloonText = (stopReason || (status ? STATUS_LABELS[status]?.[lang] ?? status : '')).trim();
+  const workerZ = db / 2 + 0.5;
+  return (
+    <group {...boxHandlers(id, onSelect)}>
+      {/* invisible pick volume covering the whole line */}
+      <mesh position={[0, maxH / 2 + 0.2, 0]}>
+        <boxGeometry args={[w, maxH + 0.4, d]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+      {Array.from({ length: N }).map((_, i) => (
+        <ScissorModule key={i} x={-w / 2 + (i + 0.5) * mw} mw={mw} db={db} deckH={deckH} mats={mats} />
+      ))}
+      <FurnitureFlow w={w} db={db} deckH={deckH} animate={run} mats={mats} />
+      {/* five workers, one per module; the ponytailed one works the back
+          side, the third wears glasses */}
+      {Array.from({ length: N }).map((_, i) => {
+        const back = i === 1;
+        return (
+          <group key={`wk${i}`}
+            position={[-w / 2 + (i + 0.5) * mw, 0, back ? -workerZ : workerZ]}
+            rotation={[0, back ? 0 : Math.PI, 0]}>
+            <LineWorkerFigure3D mats={mats} phase={i * 1.3} ponytail={i === 1} glasses={i === 2} animate={run} />
+          </group>
+        );
+      })}
+      {/* end-of-line TV — the units come off the belt right under it */}
+      <LineTV x={w / 2 + 1.3} name={name} statusColor={color} stats={lineStats} mats={mats} />
+      {stopped && balloonText && <StopBalloon text={balloonText} y={maxH + 2.1} mats={mats} />}
+      <Label y={maxH + 3.6} text={name} />
+    </group>
+  );
+}
+
+// ── Upholstery cell (block_kind='assembly_line' whose name reads "rembourrage") ──
+// Same ninja-worker style as the assembly lines, but the belt is replaced by a
+// STATIONED upholstery cell: several workbenches where the crew staples fabric
+// over foam, works sofa frames (springs + webbing), inspects quilted backrests
+// and finishes armchairs — around them a fabric-roll rack, foam stacks, a tool
+// cart, a compartmented parts bin, a cushion cart and a "Cellule de Rembourrage"
+// sign. Helmets still take the live status colour; the same stop balloon and
+// end-of-line TV as the assembly lines are reused.
+function isUpholstery(name: string): boolean {
+  return /rembourr|upholster|estofa/i.test(name);
+}
+
+function UpholsteryCellMesh({ w, d, color, id, name, onSelect, animate, status, stopReason, lineStats }: Omit<BoxProps, 'h'> & { animate?: boolean; status?: string; stopReason?: string | null; lineStats?: LineStats | null }) {
+  const { i18n } = useTranslation();
+  const lang = (i18n.language || 'en').slice(0, 2) as 'en' | 'fr' | 'es';
+  const mats = useLineMats(color);
+  const run = animate ?? false;
+  const stopped = LINE_STOPPED.has(status ?? '');
+  const balloonText = (stopReason || (status ? STATUS_LABELS[status]?.[lang] ?? status : '')).trim();
+
+  // Upholstery-specific materials (foam, fabrics, blue carts) — disposed on unmount.
+  const xm = useMemo(() => ({
+    foam:        new THREE.MeshStandardMaterial({ color: '#ece5d2', roughness: 0.97 }),
+    fabricBlue:  new THREE.MeshStandardMaterial({ color: '#4f6f9e', roughness: 0.85 }),
+    fabricGrey:  new THREE.MeshStandardMaterial({ color: '#b9bec7', roughness: 0.85 }),
+    fabricBeige: new THREE.MeshStandardMaterial({ color: '#cdbb98', roughness: 0.85 }),
+    cart:        new THREE.MeshStandardMaterial({ color: '#2563b0', roughness: 0.5, metalness: 0.2 }),
+    webbing:     new THREE.MeshStandardMaterial({ color: '#c9a86a', roughness: 0.8 }),
+    yellow:      new THREE.MeshStandardMaterial({ color: '#d8b400', roughness: 0.6 }),
+    rubber:      new THREE.MeshStandardMaterial({ color: '#15181d', roughness: 0.8 }),
+  }), []);
+  useEffect(() => () => Object.values(xm).forEach((m) => m.dispose()), [xm]);
+
+  // "Cellule de Rembourrage" sign face (canvas texture — troika fonts fail offline).
+  // In-world French shop signage, kept verbatim (not app UI → not translated).
+  const signTex = useMemo(() => {
+    const cvs = document.createElement('canvas'); cvs.width = 640; cvs.height = 256;
+    const ctx = cvs.getContext('2d')!;
+    ctx.fillStyle = '#0b1120'; ctx.fillRect(0, 0, 640, 256);
+    ctx.fillStyle = '#1e2740'; ctx.fillRect(0, 0, 640, 70);
+    ctx.fillStyle = '#ffffff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '700 44px system-ui, sans-serif';
+    ctx.fillText('Cellule de Rembourrage', 320, 38, 600);
+    ctx.fillStyle = '#93b4e6'; ctx.font = '600 30px system-ui, sans-serif';
+    ctx.fillText('Confort · Qualité · Savoir-Faire', 320, 150, 560);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillRect(288, 188, 64, 34); ctx.fillRect(288, 165, 12, 57); ctx.fillRect(340, 178, 12, 44);
+    const tex = new THREE.CanvasTexture(cvs); tex.anisotropy = 8;
+    return tex;
+  }, []);
+  useEffect(() => () => signTex.dispose(), [signTex]);
+
+  const benchTop = 0.85;
+  // Bench (wood top on dark legs + a lower shelf).
+  const bench = (bw: number, bd: number) => (
+    <group>
+      <mesh material={mats.wood} position={[0, benchTop, 0]} castShadow receiveShadow><boxGeometry args={[bw, 0.08, bd]} /></mesh>
+      {([[-1, -1], [1, -1], [-1, 1], [1, 1]] as const).map(([sx, sz], i) => (
+        <mesh key={i} material={mats.base} position={[sx * bw / 2 * 0.86, benchTop / 2, sz * bd / 2 * 0.82]}><boxGeometry args={[0.06, benchTop, 0.06]} /></mesh>
+      ))}
+      <mesh material={mats.base} position={[0, benchTop * 0.4, 0]}><boxGeometry args={[bw * 0.9, 0.04, bd * 0.78]} /></mesh>
+    </group>
+  );
+
+  // The workpiece sitting on a bench, per station kind (rests just above the top).
+  const piece = (kind: string) => {
+    const y = benchTop + 0.02;
+    switch (kind) {
+      case 'frame': return (   // open sofa/chair frame: rails + steel springs + beige webbing
+        <group position={[0, y, 0]}>
+          {[-1, 1].map((s) => <mesh key={`rx${s}`} material={mats.wood} position={[0, 0.05, s * 0.28]}><boxGeometry args={[1.0, 0.06, 0.06]} /></mesh>)}
+          {[-1, 1].map((s) => <mesh key={`rz${s}`} material={mats.wood} position={[s * 0.48, 0.05, 0]}><boxGeometry args={[0.06, 0.06, 0.56]} /></mesh>)}
+          {[-0.25, 0, 0.25].map((zz, i) => <mesh key={`wb${i}`} material={xm.webbing} position={[0, 0.09, zz]}><boxGeometry args={[0.94, 0.015, 0.05]} /></mesh>)}
+          {[-0.3, 0.1].map((xx, i) => <mesh key={`sp${i}`} material={mats.metal} position={[xx, 0.14, 0]}><cylinderGeometry args={[0.05, 0.05, 0.14, 8]} /></mesh>)}
+          {[-1, 1].map((s) => <mesh key={`up${s}`} material={mats.wood} position={[s * 0.48, 0.3, -0.28]} castShadow><boxGeometry args={[0.06, 0.5, 0.06]} /></mesh>)}
+        </group>
+      );
+      case 'foamfab': return (  // foam slab with blue-grey fabric being stretched over it
+        <group position={[0, y, 0]}>
+          <mesh material={xm.foam} position={[0, 0.08, 0]}><boxGeometry args={[0.9, 0.16, 0.6]} /></mesh>
+          <mesh material={xm.fabricBlue} position={[0.03, 0.17, 0.02]} rotation={[0, 0, 0.02]}><boxGeometry args={[1.02, 0.04, 0.7]} /></mesh>
+        </group>
+      );
+      case 'foam': return (     // loose foam blocks
+        <group position={[0, y, 0]}>
+          {([[-0.25, 0.09, 0], [0.2, 0.09, 0.05], [0.0, 0.28, -0.02]] as const).map((p, i) => (
+            <mesh key={i} material={xm.foam} position={p} castShadow><boxGeometry args={[0.4, 0.16, 0.5]} /></mesh>
+          ))}
+        </group>
+      );
+      case 'backrest': return ( // beige quilted backrest with vertical channels
+        <group position={[0, y, 0]}>
+          <mesh material={xm.fabricBeige} position={[0, 0.4, 0]} castShadow><boxGeometry args={[0.9, 0.8, 0.14]} /></mesh>
+          {[-0.3, -0.1, 0.1, 0.3].map((xx, i) => <mesh key={i} material={mats.trim} position={[xx, 0.4, 0.08]}><boxGeometry args={[0.02, 0.76, 0.02]} /></mesh>)}
+        </group>
+      );
+      default: return (         // curved chair frame, partly covered
+        <group position={[0, y, 0]}>
+          <mesh material={mats.wood} position={[0, 0.12, 0]} castShadow><boxGeometry args={[0.7, 0.18, 0.6]} /></mesh>
+          <mesh material={mats.wood} position={[0, 0.45, -0.26]} rotation={[-0.25, 0, 0]} castShadow><boxGeometry args={[0.68, 0.5, 0.1]} /></mesh>
+          <mesh material={xm.fabricGrey} position={[0, 0.22, 0.05]}><boxGeometry args={[0.72, 0.05, 0.5]} /></mesh>
+        </group>
+      );
+    }
+  };
+
+  // A finished 2-seat sofa (base + backrest + arms + loose seat/back cushions on
+  // small feet) — staged at the end of the line as completed goods. Faces +Z.
+  const sofa = (mat: THREE.Material) => (
+    <group>
+      <mesh material={mat} position={[0, 0.32, 0]} castShadow><boxGeometry args={[2.0, 0.34, 0.95]} /></mesh>
+      <mesh material={mat} position={[0, 0.64, -0.36]} castShadow><boxGeometry args={[2.0, 0.62, 0.22]} /></mesh>
+      {[-1, 1].map((s) => <mesh key={`arm${s}`} material={mat} position={[s * 0.92, 0.5, 0.02]} castShadow><boxGeometry args={[0.18, 0.5, 0.92]} /></mesh>)}
+      {[-0.5, 0.5].map((x, i) => <mesh key={`sc${i}`} material={mat} position={[x, 0.53, 0.06]}><boxGeometry args={[0.86, 0.16, 0.8]} /></mesh>)}
+      {[-0.5, 0.5].map((x, i) => <mesh key={`bc${i}`} material={mat} position={[x, 0.74, -0.28]}><boxGeometry args={[0.86, 0.5, 0.14]} /></mesh>)}
+      {([[-1, -1], [1, -1], [-1, 1], [1, 1]] as const).map(([sx, sz], i) => (
+        <mesh key={`ft${i}`} material={mats.trim} position={[sx * 0.9, 0.08, sz * 0.38]}><boxGeometry args={[0.08, 0.16, 0.08]} /></mesh>
+      ))}
+    </group>
+  );
+
+  // Five stations: bench + workpiece + a worker leaning in on one side.
+  const stations = [
+    { fx: -0.30, fz: 0.20, side: -1, kind: 'frame',    ponytail: false, glasses: false },
+    { fx: -0.02, fz: 0.24, side: 1,  kind: 'foamfab',  ponytail: false, glasses: false },
+    { fx: -0.28, fz: -0.16, side: -1, kind: 'foam',    ponytail: false, glasses: false },
+    { fx: 0.12,  fz: -0.12, side: 1,  kind: 'backrest', ponytail: false, glasses: true },
+    { fx: 0.32,  fz: 0.16, side: -1, kind: 'chair',    ponytail: true,  glasses: false },
+  ] as const;
+
+  // Three more workers stationed at the props (inspecting the finished armchair,
+  // pushing the cushion cart, handling fabric at the rack). With the two at the
+  // fabric table below, this brings the crew to ten. `dz`/`side` place & face each.
+  const extraWorkers = [
+    { fx: 0.37,  fz: 0.36,  dz: 0.95, side: 1,  phase: 6.0, ponytail: false, glasses: true },
+    { fx: 0.22,  fz: -0.26, dz: 0.75, side: -1, phase: 7.2, ponytail: false, glasses: false },
+    { fx: -0.30, fz: -0.40, dz: 0.95, side: 1,  phase: 8.4, ponytail: true,  glasses: false },
+  ] as const;
+
+  return (
+    <group {...boxHandlers(id, onSelect)}>
+      {/* invisible pick volume covering the whole cell */}
+      <mesh position={[0, 1.2, 0]}><boxGeometry args={[w, 2.4, d]} /><meshBasicMaterial transparent opacity={0} depthWrite={false} /></mesh>
+
+      {/* yellow floor boundary marking the cell */}
+      {[-1, 1].map((s) => <mesh key={`fx${s}`} material={xm.yellow} position={[0, 0.02, s * d * 0.46]}><boxGeometry args={[w * 0.94, 0.02, 0.06]} /></mesh>)}
+      {[-1, 1].map((s) => <mesh key={`fz${s}`} material={xm.yellow} position={[s * w * 0.46, 0.02, 0]}><boxGeometry args={[0.06, 0.02, d * 0.92]} /></mesh>)}
+
+      {/* work stations */}
+      {stations.map((s, i) => {
+        const bx = s.fx * w, bz = s.fz * d;
+        const wz = bz + s.side * 0.78;
+        return (
+          <group key={`stn${i}`}>
+            <group position={[bx, 0, bz]}>{bench(1.5, 0.85)}{piece(s.kind)}</group>
+            <group position={[bx, 0, wz]} rotation={[0, s.side > 0 ? Math.PI : 0, 0]}>
+              <LineWorkerFigure3D mats={mats} phase={i * 1.4} ponytail={s.ponytail} glasses={s.glasses} animate={run} />
+            </group>
+          </group>
+        );
+      })}
+
+      {/* long fabric table — two workers stretch a big blue sheet over it */}
+      <group position={[-0.05 * w, 0, -0.32 * d]}>
+        {bench(3.2, 1.1)}
+        <mesh material={xm.fabricBlue} position={[0, benchTop + 0.07, 0]} rotation={[0, 0, 0.01]} castShadow><boxGeometry args={[3.0, 0.04, 0.95]} /></mesh>
+        {([1, -1] as const).map((sd, i) => (
+          <group key={`ft${i}`} position={[sd * 0.9, 0, sd * (0.55 + 0.72)]} rotation={[0, sd > 0 ? Math.PI : 0, 0]}>
+            <LineWorkerFigure3D mats={mats} phase={9 + i * 1.6} ponytail={i === 1} glasses={false} animate={run} />
+          </group>
+        ))}
+      </group>
+
+      {/* three more workers stationed at the props (→ ten in total) */}
+      {extraWorkers.map((e, i) => (
+        <group key={`xw${i}`} position={[e.fx * w, 0, e.fz * d + e.side * e.dz]} rotation={[0, e.side > 0 ? Math.PI : 0, 0]}>
+          <LineWorkerFigure3D mats={mats} phase={e.phase} ponytail={e.ponytail} glasses={e.glasses} animate={run} />
+        </group>
+      ))}
+
+      {/* fabric-roll rack (back-left) */}
+      <group position={[-0.30 * w, 0, -0.40 * d]}>
+        {[-1, 1].map((s) => <mesh key={s} material={mats.metal} position={[s * 0.9, 1.0, 0]} castShadow><boxGeometry args={[0.08, 2.0, 0.08]} /></mesh>)}
+        {[0.5, 1.1, 1.7].map((yy, i) => <mesh key={i} material={mats.metal} position={[0, yy, 0]}><boxGeometry args={[1.9, 0.05, 0.5]} /></mesh>)}
+        {([[0.5, xm.fabricGrey], [1.1, xm.fabricBeige], [1.7, xm.fabricBlue]] as const).flatMap(([yy, mat], i) => (
+          [-0.45, 0.45].map((xx, j) => (
+            <mesh key={`${i}-${j}`} material={mat} position={[xx, yy + 0.15, 0]} rotation={[0, 0, Math.PI / 2]} castShadow>
+              <cylinderGeometry args={[0.12, 0.12, 0.8, 12]} />
+            </mesh>
+          ))
+        ))}
+      </group>
+
+      {/* foam stack (left) */}
+      <group position={[-0.42 * w, 0, 0.02 * d]}>
+        {[0.12, 0.32, 0.52].map((yy, i) => <mesh key={i} material={xm.foam} position={[i * 0.04, yy, 0]} castShadow><boxGeometry args={[0.7, 0.18, 0.9]} /></mesh>)}
+      </group>
+
+      {/* finished armchair (front-right, for inspection) */}
+      <group position={[0.37 * w, 0, 0.36 * d]} rotation={[0, Math.PI * 0.15, 0]}>
+        <mesh material={xm.fabricGrey} position={[0, 0.35, 0]} castShadow><boxGeometry args={[0.9, 0.3, 0.85]} /></mesh>
+        <mesh material={xm.fabricGrey} position={[0, 0.6, 0.03]}><boxGeometry args={[0.78, 0.18, 0.72]} /></mesh>
+        <mesh material={xm.fabricGrey} position={[0, 0.78, -0.36]} castShadow><boxGeometry args={[0.9, 0.7, 0.18]} /></mesh>
+        {[-1, 1].map((s) => <mesh key={s} material={xm.fabricGrey} position={[s * 0.46, 0.62, 0.05]}><boxGeometry args={[0.16, 0.45, 0.82]} /></mesh>)}
+      </group>
+
+      {/* finished sofas staged at the END of the line (+X, by the outfeed TV) */}
+      {([[-0.28, xm.fabricGrey], [-0.06, xm.fabricBeige], [0.16, xm.fabricBlue]] as const).map(([fz, mat], i) => (
+        <group key={`sofa${i}`} position={[0.43 * w, 0, fz * d]} rotation={[0, -Math.PI * 0.12, 0]}>
+          {sofa(mat)}
+        </group>
+      ))}
+
+      {/* tool cart (front-left, "Outils et Agrafes") */}
+      <group position={[-0.42 * w, 0, 0.34 * d]}>
+        <mesh material={xm.cart} position={[0, 0.45, 0]} castShadow><boxGeometry args={[0.7, 0.9, 0.5]} /></mesh>
+        {[0.25, 0.5, 0.75].map((yy, i) => <mesh key={i} material={mats.trim} position={[0, yy, 0.26]}><boxGeometry args={[0.6, 0.02, 0.02]} /></mesh>)}
+        <mesh material={mats.wood} position={[0, 0.93, 0]}><boxGeometry args={[0.78, 0.05, 0.56]} /></mesh>
+        <mesh material={mats.accent} position={[0.12, 1.0, 0]} rotation={[0, 0.3, 0]} castShadow><boxGeometry args={[0.1, 0.1, 0.22]} /></mesh>
+      </group>
+
+      {/* parts bin (front-centre, "Agrafes, Vis, Accessoires") */}
+      <group position={[0.02 * w, 0, 0.43 * d]}>
+        <mesh material={xm.cart} position={[0, 0.2, 0]} castShadow><boxGeometry args={[1.0, 0.4, 0.6]} /></mesh>
+        {[-0.33, 0, 0.33].map((xx, i) => <mesh key={`dx${i}`} material={mats.trim} position={[xx, 0.42, 0]}><boxGeometry args={[0.02, 0.06, 0.56]} /></mesh>)}
+        {[-0.33, 0, 0.33].map((xx, i) => <mesh key={`pb${i}`} material={mats.metal} position={[xx, 0.44, 0]}><boxGeometry args={[0.22, 0.04, 0.42]} /></mesh>)}
+      </group>
+
+      {/* cushion cart (right) */}
+      <group position={[0.22 * w, 0, -0.26 * d]}>
+        <mesh material={xm.cart} position={[0, 0.35, 0]}><boxGeometry args={[0.7, 0.1, 1.0]} /></mesh>
+        {([[-1, -1], [1, -1], [-1, 1], [1, 1]] as const).map(([sx, sz], i) => (
+          <mesh key={`ps${i}`} material={mats.metal} position={[sx * 0.3, 0.5, sz * 0.45]}><boxGeometry args={[0.04, 0.4, 0.04]} /></mesh>
+        ))}
+        {([[0.44, xm.fabricGrey], [0.57, xm.fabricBeige], [0.70, xm.fabricGrey]] as const).map(([yy, mat], i) => (
+          <mesh key={`cu${i}`} material={mat} position={[0, yy, 0]} castShadow><boxGeometry args={[0.6, 0.12, 0.9]} /></mesh>
+        ))}
+        {([[-1, -1], [1, -1], [-1, 1], [1, 1]] as const).map(([sx, sz], i) => (
+          <mesh key={`wh${i}`} material={xm.rubber} position={[sx * 0.3, 0.05, sz * 0.45]} rotation={[Math.PI / 2, 0, 0]}><cylinderGeometry args={[0.07, 0.07, 0.05, 10]} /></mesh>
+        ))}
+      </group>
+
+      {/* "Cellule de Rembourrage" sign on a post (back-right) */}
+      <group position={[0.30 * w, 0, -0.42 * d]}>
+        <mesh material={mats.metal} position={[0, 1.2, 0]} castShadow><cylinderGeometry args={[0.06, 0.06, 2.4, 8]} /></mesh>
+        <mesh material={mats.trim} position={[0, 2.5, 0]} castShadow><boxGeometry args={[2.2, 0.9, 0.1]} /></mesh>
+        <mesh position={[0, 2.5, 0.055]}><planeGeometry args={[2.1, 0.8]} /><meshBasicMaterial map={signTex} toneMapped={false} /></mesh>
+      </group>
+
+      {/* end-of-line TV + stop balloon + name tag (same as the assembly lines) */}
+      <LineTV x={w / 2 + 1.3} name={name} statusColor={color} stats={lineStats} mats={mats} />
+      {stopped && balloonText && <StopBalloon text={balloonText} y={3.0} mats={mats} />}
+      <Label y={3.4} text={name} />
     </group>
   );
 }
@@ -581,15 +1443,442 @@ function BeamSawMesh({ w, d, h, color, id, name, onSelect }: BoxProps) {
   );
 }
 
+// ── Pit Stop (block_kind='pit_stop') — the buffer between fabrication and the
+// assembly lines: 41 roller conveyors of 44 ft (config-driven via the zone's
+// specifications, delivered with the polled state). The static structure is
+// fully INSTANCED (rollers / rails / legs = 3 draw calls); the OFs present in
+// the buffer stand on the lanes as stacks of slabs — one slab per component,
+// coloured by its CATEGORY (configurable registry), the slab pile growing with
+// the on-hand quantity — over a base plate coloured by the OF's derived STATE
+// (own palette, deliberately distinct from machine status). Hover shows the OF
+// chip; click opens the OF side panel. Data arrives via PitStopCtx (the map
+// page polls /api/pit-stop/{plant}/state ~15 s); without data (Home preview,
+// other plants) only the empty structure renders.
+
+export type PitStopCtxValue = {
+  state: PitStopState | null;
+  onSelectOf?: (jobOrderId: string) => void;
+  selectedOfId?: string | null;
+};
+const PitStopCtx = createContext<PitStopCtxValue>({ state: null });
+
+const PIT_DEFAULTS = { lanes: 41, slots_per_lane: 8 };
+
+/** lane/slot (1-based) → local x/z inside the zone footprint. */
+function pitSlotXZ(w: number, d: number, lanes: number, slots: number, lane: number, slot: number): [number, number] {
+  const pitch = d / lanes;
+  const slotW = w / slots;
+  const z = -d / 2 + (Math.min(Math.max(lane, 1), lanes) - 0.5) * pitch;
+  const x = -w / 2 + (Math.min(Math.max(slot, 1), slots) - 0.5) * slotW;
+  return [x, z];
+}
+
+/** The static conveyor field — one InstancedMesh each for rollers, rails and
+ * legs, matrices set once per geometry change. No pointer handlers → R3F never
+ * raycasts these ~1700 instances. */
+function PitStopStructure({ w, d, lanes, mats }: { w: number; d: number; lanes: number; mats: PitMats }) {
+  const pitch = d / lanes;
+  const laneW = Math.min(pitch * 0.78, 1.15);
+  const rollerR = Math.max(0.03, Math.min(pitch * 0.16, 0.07));
+  const legH = 0.5;
+  const deckY = legH + rollerR;                       // roller axis height
+  const perLane = Math.max(6, Math.min(36, Math.round(w / 0.55)));
+  const legPairs = Math.max(2, Math.min(9, Math.round(w / 2.4)));
+
+  const rollers = useRef<THREE.InstancedMesh>(null);
+  const rails = useRef<THREE.InstancedMesh>(null);
+  const legs = useRef<THREE.InstancedMesh>(null);
+
+  useEffect(() => {
+    const o = new THREE.Object3D();
+    const laneZ = (i: number) => -d / 2 + (i + 0.5) * pitch;
+    let r = 0, ra = 0, lg = 0;
+    for (let i = 0; i < lanes; i++) {
+      const z = laneZ(i);
+      for (let j = 0; j < perLane; j++) {
+        o.position.set(-w / 2 + (j + 0.5) * (w / perLane), deckY, z);
+        o.rotation.set(Math.PI / 2, 0, 0);            // cylinder lies across the lane
+        o.scale.set(1, 1, 1);
+        o.updateMatrix();
+        rollers.current?.setMatrixAt(r++, o.matrix);
+      }
+      for (const s of [-1, 1]) {
+        o.position.set(0, deckY + rollerR * 0.6, z + s * laneW / 2);
+        o.rotation.set(0, 0, 0);
+        o.scale.set(1, 1, 1);
+        o.updateMatrix();
+        rails.current?.setMatrixAt(ra++, o.matrix);
+      }
+      for (let p = 0; p < legPairs; p++) {
+        const x = -w / 2 + (p + 0.5) * (w / legPairs);
+        for (const s of [-1, 1]) {
+          o.position.set(x, legH / 2, z + s * laneW * 0.42);
+          o.rotation.set(0, 0, 0);
+          o.scale.set(1, 1, 1);
+          o.updateMatrix();
+          legs.current?.setMatrixAt(lg++, o.matrix);
+        }
+      }
+    }
+    for (const m of [rollers.current, rails.current, legs.current]) {
+      if (m) m.instanceMatrix.needsUpdate = true;
+    }
+  }, [w, d, lanes, pitch, laneW, rollerR, deckY, perLane, legPairs]);
+
+  return (
+    <>
+      <instancedMesh ref={rollers} args={[undefined, undefined, lanes * perLane]} material={mats.roller} frustumCulled={false}>
+        <cylinderGeometry args={[rollerR, rollerR, laneW, 8]} />
+      </instancedMesh>
+      <instancedMesh ref={rails} args={[undefined, undefined, lanes * 2]} material={mats.rail} frustumCulled={false}>
+        <boxGeometry args={[w, rollerR * 1.7, 0.05]} />
+      </instancedMesh>
+      <instancedMesh ref={legs} args={[undefined, undefined, lanes * legPairs * 2]} material={mats.leg} frustumCulled={false}>
+        <boxGeometry args={[0.07, legH, 0.07]} />
+      </instancedMesh>
+    </>
+  );
+}
+
+/** Striped traffic cone (orange body, two white bands, square base) standing on
+ * a stack that needs attention: the OF is LATE or its ETD is today. Bobs gently
+ * so it catches the eye without the alarm-pulse of the machine beacons. */
+function TrafficCone({ y }: { y: number }) {
+  const ref = useRef<THREE.Group>(null);
+  useFrame((state) => {
+    if (ref.current) ref.current.position.y = y + Math.sin(state.clock.elapsedTime * 2.2) * 0.07;
+  });
+  const mats = useMemo(() => ({
+    orange: new THREE.MeshStandardMaterial({ color: '#f97316', roughness: 0.5, emissive: '#f97316', emissiveIntensity: 0.28 }),
+    white:  new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.45 }),
+  }), []);
+  useEffect(() => () => { mats.orange.dispose(); mats.white.dispose(); }, [mats]);
+  const H = 0.8, R = 0.3;                       // cone body height / base radius
+  // A white band = a slightly wider frustum matching the cone's slope at [h0, h1].
+  const band = (h0: number, h1: number) => {
+    const r = (h: number) => R * (1 - h / H) * 1.07;
+    return (
+      <mesh key={h0} material={mats.white} position={[0, 0.06 + (h0 + h1) / 2, 0]}>
+        <cylinderGeometry args={[r(h1), r(h0), h1 - h0, 18]} />
+      </mesh>
+    );
+  };
+  return (
+    <group ref={ref} position={[0, y, 0]}>
+      <mesh material={mats.orange} position={[0, 0.03, 0]} castShadow>
+        <boxGeometry args={[0.56, 0.06, 0.56]} />
+      </mesh>
+      <mesh material={mats.orange} position={[0, 0.06 + H / 2, 0]} castShadow>
+        <coneGeometry args={[R, H, 20]} />
+      </mesh>
+      {band(0.24, 0.38)}
+      {band(0.5, 0.6)}
+    </group>
+  );
+}
+
+/** One OF standing in the buffer: base plate in the OF-state colour, one slab
+ * per component (category colour, height ∝ on-hand), invisible hit volume for
+ * hover/click, chip on hover, traffic cone when late / due today. Deck-top anchored. */
+function PitStopStack({ of, x, z, deckY, slotW, laneW, categoryMat, mats, onSelectOf, selected }: {
+  of: PitStopOf; x: number; z: number; deckY: number; slotW: number; laneW: number;
+  categoryMat: (category: string | null) => THREE.Material;
+  mats: PitMats; onSelectOf?: (id: string) => void; selected: boolean;
+}) {
+  const { t } = useTranslation();
+  const [hover, setHover] = useState(false);
+  // deterministic small yaw per slab (stable from job number) → hand-stacked look
+  const jitter = useMemo(() => {
+    let h = 0;
+    for (let i = 0; i < of.job_number.length; i++) h = (h * 31 + of.job_number.charCodeAt(i)) >>> 0;
+    return ((h % 100) / 100 - 0.5) * 0.12;
+  }, [of.job_number]);
+
+  const fw = Math.min(slotW * 0.72, 1.9);             // slab footprint
+  const fd = Math.min(laneW * 1.05, 1.3);
+  const layers = of.components.filter((c) => c.on_hand > 0);
+  const rawH = layers.map((c) => 0.14 + Math.min(c.on_hand, 60) * 0.012);
+  const total = rawH.reduce((a, b) => a + b, 0);
+  const k = total > 2.2 ? 2.2 / total : 1;            // cap the pile height
+  // Base plate = completeness semaphore (green 100 % / amber ≥90 % / red below).
+  const plateColor = ofPlateColor(of.state, of.completeness_pct, of.in_full);
+  const cancelled = of.state === 'cancelled';
+
+  let y = deckY + 0.05;
+  const slabs = layers.map((c, i) => {
+    const hh = rawH[i] * k;
+    const slab = (
+      <mesh key={c.code} material={cancelled ? mats.cancelled : categoryMat(c.category)}
+        position={[0, y + hh / 2, 0]} rotation={[0, jitter * (i % 2 ? 1 : -1), 0]} castShadow>
+        <boxGeometry args={[fw * (1 - i * 0.03), hh * 0.94, fd * (1 - i * 0.03)]} />
+      </mesh>
+    );
+    y += hh;
+    return slab;
+  });
+  const top = y;
+
+  return (
+    <group position={[x, 0, z]}>
+      {/* base plate — the OF's derived state colour */}
+      <mesh position={[0, deckY + 0.02, 0]}>
+        <boxGeometry args={[fw * 1.14, 0.07, fd * 1.14]} />
+        <meshStandardMaterial color={plateColor} emissive={plateColor} emissiveIntensity={0.25}
+          transparent={cancelled} opacity={cancelled ? 0.6 : 1} />
+        {selected && <Edges color="#ffffff" />}
+      </mesh>
+      {slabs}
+      {/* single hover/click volume over the whole stack */}
+      <mesh
+        position={[0, deckY + (top - deckY) / 2 + 0.05, 0]}
+        onClick={(e) => { e.stopPropagation(); onSelectOf?.(of.job_order_id); }}
+        onPointerOver={(e) => { e.stopPropagation(); setHover(true); document.body.style.cursor = 'pointer'; }}
+        onPointerOut={() => { setHover(false); document.body.style.cursor = 'default'; }}
+      >
+        <boxGeometry args={[fw * 1.2, Math.max(top - deckY, 0.3) + 0.15, fd * 1.2]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+      {(of.late || isDueToday(of.scheduled_date)) && <TrafficCone y={top + 0.06} />}
+      {(hover || selected) && (
+        <Html position={[0, top + (of.late || isDueToday(of.scheduled_date) ? 1.5 : 0.7), 0]} center zIndexRange={[35, 0]} style={{ pointerEvents: 'none' }}>
+          <div style={{
+            background: 'rgba(13,20,33,0.94)', border: `1.5px solid ${plateColor}`, color: '#e5e7eb',
+            borderRadius: 8, padding: '3px 9px', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap',
+            fontFamily: 'system-ui, sans-serif', textAlign: 'center',
+          }}>
+            {of.job_number}
+            <span style={{ marginLeft: 6, color: '#94a3b8', fontWeight: 600 }}>
+              {of.completeness_pct != null ? `${Math.round(of.completeness_pct)} %` : t('pitStop.noBom')}
+            </span>
+          </div>
+        </Html>
+      )}
+    </group>
+  );
+}
+
+/** Scoreboard at the zone's exit corner (same construction language as the
+ * line TVs): compact KPI row (OFs · in full · ≥90 % · oldest) + the OTIF PIT
+ * availability table mirroring the client's report — per band (100 % / 90 %+
+ * cumulative): EU available CG / SG, OTIF %, CG OF count. Canvas texture —
+ * troika fonts fail offline in this app. */
+const OTIF_ZERO = { cg_eu: 0, sg_eu: 0, otif_pct: null, cg_ofs: 0 } as const;
+
+function PitStopBoard({ x, kpis, mats }: { x: number; kpis: PitStopState['kpis']; mats: PitMats }) {
+  const { t } = useTranslation();
+  const title = t('pitStop.board.title');
+  const lOfs = t('pitStop.board.ofs'), lFull = t('pitStop.board.inFull');
+  const lAlmost = t('pitStop.board.almost'), lOldest = t('pitStop.board.oldest');
+  const lDispo = t('pitStop.board.dispoHeader'), lCg = t('pitStop.board.cg'), lSg = t('pitStop.board.sg');
+  const lOtif = t('pitStop.board.otif'), lOfCg = t('pitStop.board.ofCg');
+  const lEuFull = t('pitStop.board.euFull'), lEuGe90 = t('pitStop.board.euGe90');
+  const oldest = kpis.oldest_age_minutes != null
+    ? (kpis.oldest_age_minutes >= 60 ? `${Math.floor(kpis.oldest_age_minutes / 60)} h` : `${kpis.oldest_age_minutes} m`)
+    : '—';
+  // tolerate a state served by an older backend (no otif block yet)
+  const bFull = kpis.otif?.full ?? OTIF_ZERO;
+  const bGe90 = kpis.otif?.ge90 ?? OTIF_ZERO;
+  const tex = useMemo(() => {
+    const W = 1024, H = 680, HEAD = 88, PAD = 12;
+    const cvs = document.createElement('canvas');
+    cvs.width = W; cvs.height = H;
+    const ctx = cvs.getContext('2d')!;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#0b1120';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#1e2740';
+    ctx.fillRect(0, 0, W, HEAD);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '700 46px system-ui, sans-serif';
+    ctx.fillText(title, W / 2, HEAD / 2 + 2, W - 40);
+
+    // ── compact KPI row (4 cells) ───────────────────────────────────────────
+    const kw = (W - 5 * PAD) / 4, kh = 140, ky = HEAD + PAD;
+    const cell = (cx: number, label: string, value: string, valueColor = '#ffffff') => {
+      ctx.fillStyle = '#111a2c';
+      ctx.fillRect(cx, ky, kw, kh);
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '600 27px system-ui, sans-serif';
+      ctx.fillText(label, cx + kw / 2, ky + 32, kw - 20);
+      ctx.fillStyle = valueColor;
+      ctx.font = '800 66px system-ui, sans-serif';
+      ctx.fillText(value, cx + kw / 2, ky + 32 + (kh - 44) / 2, kw - 24);
+    };
+    cell(PAD, lOfs, String(kpis.total));
+    cell(PAD * 2 + kw, lFull, String(kpis.in_full), '#16a34a');
+    cell(PAD * 3 + kw * 2, lAlmost, String(kpis.almost), '#eab308');
+    cell(PAD * 4 + kw * 3, lOldest, oldest, kpis.late > 0 ? '#fb923c' : '#ffffff');
+
+    // ── OTIF PIT availability table (client's report layout) ───────────────
+    // columns: band label | CG | SG | OTIF | OF CG
+    const colX = [PAD, 392, 550, 708, 866, W - PAD];
+    const colC = (i: number) => (colX[i] + colX[i + 1]) / 2;
+    const headY = ky + kh + 18, headH = 54;
+    ctx.fillStyle = '#1e2740';
+    ctx.fillRect(PAD, headY, W - 2 * PAD, headH);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '700 32px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(lDispo, colX[0] + 16, headY + headH / 2 + 2, colX[1] - colX[0] - 28);
+    ctx.textAlign = 'center';
+    [lCg, lSg, lOtif, lOfCg].forEach((h, i) => ctx.fillText(h, colC(i + 1), headY + headH / 2 + 2, colX[i + 2] - colX[i + 1] - 16));
+    const otifColor = (pct: number | null) =>
+      pct == null ? '#64748b' : pct >= 90 ? '#16a34a' : pct >= 70 ? '#eab308' : '#fb923c';
+    const row = (ry: number, rh: number, label: string, b: typeof bFull) => {
+      ctx.fillStyle = '#111a2c';
+      ctx.fillRect(PAD, ry, W - 2 * PAD, rh);
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '600 31px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(label, colX[0] + 16, ry + rh / 2 + 2, colX[1] - colX[0] - 28);
+      ctx.textAlign = 'center';
+      ctx.font = '800 58px system-ui, sans-serif';
+      const vals: [string, string][] = [
+        [String(Math.round(b.cg_eu)), '#ffffff'],
+        [String(Math.round(b.sg_eu)), '#ffffff'],
+        [b.otif_pct != null ? `${b.otif_pct} %` : '—', otifColor(b.otif_pct)],
+        [String(b.cg_ofs), '#ffffff'],
+      ];
+      vals.forEach(([v, c], i) => {
+        ctx.fillStyle = c;
+        ctx.fillText(v, colC(i + 1), ry + rh / 2 + 3, colX[i + 2] - colX[i + 1] - 16);
+      });
+    };
+    const rh = (H - (headY + headH) - PAD * 3) / 2;
+    row(headY + headH + PAD, rh, lEuFull, bFull);
+    row(headY + headH + PAD * 2 + rh, rh, lEuGe90, bGe90);
+    const texture = new THREE.CanvasTexture(cvs);
+    texture.anisotropy = 8;
+    return texture;
+  }, [title, lOfs, lFull, lAlmost, lOldest, lDispo, lCg, lSg, lOtif, lOfCg, lEuFull, lEuGe90,
+      kpis.total, kpis.in_full, kpis.almost, kpis.late, oldest,
+      bFull.cg_eu, bFull.sg_eu, bFull.otif_pct, bFull.cg_ofs,
+      bGe90.cg_eu, bGe90.sg_eu, bGe90.otif_pct, bGe90.cg_ofs]);
+  useEffect(() => () => tex.dispose(), [tex]);
+  return (
+    <group position={[x, 0, 0]} rotation={[0, -Math.PI / 2, 0]}>
+      <mesh material={mats.leg} position={[0, 0.06, 0]}>
+        <cylinderGeometry args={[0.5, 0.6, 0.12, 12]} />
+      </mesh>
+      <mesh material={mats.roller} position={[0, 0.05 + 2.0, 0]} castShadow>
+        <cylinderGeometry args={[0.09, 0.09, 4.0, 10]} />
+      </mesh>
+      <mesh material={mats.rail} position={[0, 5.1, 0]} castShadow>
+        <boxGeometry args={[6.0, 4.1, 0.16]} />
+      </mesh>
+      <mesh position={[0, 5.1, 0.085]}>
+        <planeGeometry args={[5.7, 3.78]} />
+        <meshBasicMaterial map={tex} toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
+
+/** Structure-wide shared materials (a handful of instances, disposed on unmount). */
+function usePitMats() {
+  const mats = useMemo(() => ({
+    slab:      new THREE.MeshStandardMaterial({ color: '#141b29', roughness: 0.92 }),
+    roller:    new THREE.MeshStandardMaterial({ color: '#9aa3ad', metalness: 0.6, roughness: 0.4 }),
+    rail:      new THREE.MeshStandardMaterial({ color: '#2b3648', roughness: 0.7 }),
+    leg:       new THREE.MeshStandardMaterial({ color: '#1f2937', roughness: 0.75 }),
+    cancelled: new THREE.MeshStandardMaterial({ color: '#3a4354', roughness: 0.9, transparent: true, opacity: 0.65 }),
+  }), []);
+  useEffect(() => () => { Object.values(mats).forEach((m) => m.dispose()); }, [mats]);
+  return mats;
+}
+type PitMats = ReturnType<typeof usePitMats>;
+
+function PitStopMesh({ w, d, id, name, onSelect }: Omit<BoxProps, 'h' | 'color'>) {
+  const { state, onSelectOf, selectedOfId } = useContext(PitStopCtx);
+  const mats = usePitMats();
+  const lanes = state?.config.lanes ?? PIT_DEFAULTS.lanes;
+  const slots = state?.config.slots_per_lane ?? PIT_DEFAULTS.slots_per_lane;
+  const pitch = d / lanes;
+  const laneW = Math.min(pitch * 0.78, 1.15);
+  const rollerR = Math.max(0.03, Math.min(pitch * 0.16, 0.07));
+  const deckY = 0.5 + rollerR * 2;                    // stack resting height (top of rollers)
+  const slotW = w / slots;
+
+  // Category name → shared material (from the plant's registry colours).
+  const categoryMats = useMemo(() => {
+    const map = new Map<string, THREE.MeshStandardMaterial>();
+    for (const c of state?.categories ?? []) {
+      map.set(c.name, new THREE.MeshStandardMaterial({ color: c.color, roughness: 0.8 }));
+    }
+    map.set('', new THREE.MeshStandardMaterial({ color: OF_CATEGORY_FALLBACK, roughness: 0.8 }));
+    return map;
+  }, [state?.categories]);
+  useEffect(() => () => { categoryMats.forEach((m) => m.dispose()); }, [categoryMats]);
+  const categoryMat = (category: string | null) => categoryMats.get(category ?? '') ?? categoryMats.get('')!;
+
+  // Place each OF at its primary (most recent) parsed position; unknown/absent
+  // codes fall back to a strip along the entry edge. OFs sharing a cell (two
+  // pallets in one bin — real in SAP data) split the slot into side-by-side
+  // berths, each stack shrinking to its berth, so stacks never interpenetrate.
+  const placed = useMemo(() => {
+    const out: { of: PitStopOf; x: number; z: number; berthW: number }[] = [];
+    const cells = new Map<string, PitStopOf[]>();
+    const strip: PitStopOf[] = [];
+    for (const of of state?.ofs ?? []) {
+      const primary = of.positions.find((p) => p.lane != null && p.slot != null);
+      if (primary) {
+        // group by the CLAMPED cell — out-of-range codes land on the same spot
+        const lane = Math.min(Math.max(primary.lane!, 1), lanes);
+        const slot = Math.min(Math.max(primary.slot!, 1), slots);
+        const key = `${lane}-${slot}`;
+        const g = cells.get(key);
+        if (g) g.push(of); else cells.set(key, [of]);
+      } else {
+        strip.push(of);
+      }
+    }
+    for (const [key, group] of cells) {
+      const [lane, slot] = key.split('-').map(Number);
+      const [cx, z] = pitSlotXZ(w, d, lanes, slots, lane, slot);
+      if (group.length > 1) group.sort((a, b) => a.job_number.localeCompare(b.job_number));
+      const berthW = slotW / group.length;
+      group.forEach((of, i) => {
+        out.push({ of, x: cx - slotW / 2 + (i + 0.5) * berthW, z, berthW });
+      });
+    }
+    strip.forEach((of, i) => {
+      out.push({ of, x: -w / 2 - 1.3, z: -d / 2 + 1.0 + i * 1.7, berthW: slotW });
+    });
+    return out;
+  }, [state?.ofs, w, d, lanes, slots, slotW]);
+
+  return (
+    <group {...boxHandlers(id, onSelect)}>
+      {/* ground slab marking the zone (the click target for the zone itself) */}
+      <mesh material={mats.slab} position={[0, 0.03, 0]} receiveShadow>
+        <boxGeometry args={[w + 0.8, 0.06, d + 0.8]} />
+      </mesh>
+      <PitStopStructure w={w} d={d} lanes={lanes} mats={mats} />
+      {placed.map(({ of, x, z, berthW }) => (
+        <PitStopStack key={of.job_order_id} of={of} x={x} z={z} deckY={deckY}
+          slotW={berthW} laneW={laneW} categoryMat={categoryMat} mats={mats}
+          onSelectOf={onSelectOf} selected={selectedOfId === of.job_order_id} />
+      ))}
+      {state && <PitStopBoard x={w / 2 + 1.6} kpis={state.kpis} mats={mats} />}
+      <Label y={3.2} text={name} />
+    </group>
+  );
+}
+
 /** Renders the placeholder shape for a block `kind` (used until a .glb is uploaded). */
-function ProceduralShape({ kind, w, d, h, color, id, name, onSelect, animate }: BoxProps & { kind: string; animate?: boolean }) {
+function ProceduralShape({ kind, w, d, h, color, id, name, onSelect, animate, status, stopReason, lineStats }: BoxProps & { kind: string; animate?: boolean; status?: string; stopReason?: string | null; lineStats?: LineStats | null }) {
   switch (kind) {
     case 'conveyor': return <ConveyorMesh w={w} d={d} h={h} color={color} id={id} name={name} onSelect={onSelect} animate={animate} />;
+    case 'assembly_line': return isUpholstery(name)
+      ? <UpholsteryCellMesh w={w} d={d} color={color} id={id} name={name} onSelect={onSelect} animate={animate} status={status} stopReason={stopReason} lineStats={lineStats} />
+      : <AssemblyLineMesh w={w} d={d} h={h} color={color} id={id} name={name} onSelect={onSelect} animate={animate} status={status} stopReason={stopReason} lineStats={lineStats} />;
     case 'lift_table': return <LiftTableMesh w={w} d={d} h={h} color={color} id={id} name={name} onSelect={onSelect} />;
     case 'work_table': return <WorkTableMesh w={w} d={d} h={h} color={color} id={id} name={name} onSelect={onSelect} />;
     case 'rack': return <RackMesh w={w} d={d} h={h} color={color} id={id} name={name} onSelect={onSelect} />;
     case 'dust_collector': return <DustCollectorMesh w={w} d={d} h={h} color={color} id={id} name={name} onSelect={onSelect} />;
     case 'beam_saw': return <BeamSawMesh w={w} d={d} h={h} color={color} id={id} name={name} onSelect={onSelect} />;
+    case 'pit_stop': return <PitStopMesh w={w} d={d} id={id} name={name} onSelect={onSelect} />;
     case 'cobot': return <CobotMesh w={w} d={d} h={h} color={color} id={id} name={name} onSelect={onSelect} animate={animate} />;
     default: return <PlainMesh w={w} d={d} h={h} color={color} id={id} name={name} onSelect={onSelect} />;
   }
@@ -611,9 +1900,80 @@ export interface P3D {
   scale_z: number | null;
   height_3d: number | null;
   status?: string | null;     // live status of the linked equipment, if any
+  role?: string | null;       // conveyor tied to a machine: 'input' | 'output'
+  job_number?: string | null; // OF currently loaded on that machine (live via WS)
+  queued_ofs?: QueuedOf[] | null;  // OFs parked at that machine's output (oldest first)
+  queued_total?: number;           // true parked count (items are capped)
 }
 
 export type PropCommit = (id: string, patch: { pos_x: number; pos_y: number; model_scale: number; scale_y: number; scale_z: number; rotation_deg: number }) => void;
+
+/** Compact "3 h 05" / "42 min" for a parked OF's dwell (— when unknown). */
+const fmtQueueAge = (m: number | null): string =>
+  m == null ? '—' : m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}` : `${m} min`;
+
+/** Floating chip over a machine-tied conveyor: the OF loaded at that machine
+ * right now (Entrée/Sortie prefix from the conveyor's role) plus a +N badge for
+ * the OFs PARKED at its output — worked there but not yet scanned at the next
+ * step (Perçage after Edge, the buffer after Coupe…). Hovering the chip lists
+ * them with how long they've been sitting. Rides the WS status push. */
+function ConveyorOfChip({ y, role, jobNumber, queued = [], queuedTotal = 0 }: {
+  y: number; role: string | null; jobNumber: string | null;
+  queued?: QueuedOf[]; queuedTotal?: number;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const purple = '#a855f7', amber = '#f59e0b';
+  return (
+    <Html position={[0, y, 0]} center distanceFactor={16} zIndexRange={[25, 0]}
+      style={{ pointerEvents: queuedTotal > 0 ? 'auto' : 'none' }}>
+      <div
+        onMouseEnter={queuedTotal > 0 ? () => setOpen(true) : undefined}
+        onMouseLeave={queuedTotal > 0 ? () => setOpen(false) : undefined}
+        style={{ position: 'relative', fontFamily: 'system-ui, sans-serif', cursor: queuedTotal > 0 ? 'default' : undefined }}
+      >
+        <div style={{
+          background: 'rgba(13,20,33,0.92)', border: `1px solid ${purple}`, color: '#e5e7eb',
+          borderRadius: 9999, padding: '2px 9px', fontSize: 11, fontWeight: 700,
+          whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 5,
+        }}>
+          {role === 'input' || role === 'output' ? (
+            <span style={{ color: '#94a3b8', fontWeight: 600 }}>{t(`factoryMap.role_${role}`)}</span>
+          ) : null}
+          {jobNumber
+            ? <span style={{ fontFamily: 'ui-monospace, monospace', color: '#d8b4fe' }}>OF {jobNumber}</span>
+            : <span style={{ color: '#64748b' }}>—</span>}
+          {queuedTotal > 0 && (
+            <span title={t('factoryMap.queuedOfs')} style={{
+              background: `${amber}26`, color: amber, border: `1px solid ${amber}55`,
+              borderRadius: 9999, padding: '0 6px', fontSize: 10, fontWeight: 800,
+            }}>+{queuedTotal}</span>
+          )}
+        </div>
+        {open && queued.length > 0 && (
+          <div style={{
+            position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', marginTop: 4,
+            background: 'rgba(13,20,33,0.96)', border: `1px solid ${amber}66`, borderRadius: 8,
+            padding: '6px 9px', minWidth: 175, zIndex: 5,
+          }}>
+            <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5, color: '#94a3b8', marginBottom: 4, whiteSpace: 'nowrap' }}>
+              {t('factoryMap.queuedOfs')}
+            </div>
+            {queued.map((q) => (
+              <div key={q.job_number} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 11, lineHeight: 1.6, whiteSpace: 'nowrap' }}>
+                <span style={{ fontFamily: 'ui-monospace, monospace', color: '#e5e7eb' }}>{q.job_number}</span>
+                <span style={{ color: amber, fontWeight: 700 }}>{fmtQueueAge(q.age_minutes)}</span>
+              </div>
+            ))}
+            {queuedTotal > queued.length && (
+              <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>+{queuedTotal - queued.length}…</div>
+            )}
+          </div>
+        )}
+      </div>
+    </Html>
+  );
+}
 
 const PropBlock = forwardRef<THREE.Group, { p: P3D; cx: number; cy: number; onSelect: (id: string) => void; editMode?: boolean }>(
   function PropBlock({ p, cx, cy, onSelect, editMode = false }, ref) {
@@ -642,6 +2002,11 @@ const PropBlock = forwardRef<THREE.Group, { p: P3D; cx: number; cy: number; onSe
           </Suspense>
         ) : fallback}
         {alert && <AlertBeacon y={h + 1.0 / psy} color={color} parentScale={[psx, psy, psz]} />}
+        {/* machine-tied conveyor → the OF loaded there now + parked-OFs badge */}
+        {(p.job_number || (p.queued_total ?? 0) > 0) && (
+          <ConveyorOfChip y={h + 1.35 / psy} role={p.role ?? null} jobNumber={p.job_number ?? null}
+            queued={p.queued_ofs ?? []} queuedTotal={p.queued_total ?? 0} />
+        )}
       </group>
     );
   },
@@ -1118,6 +2483,93 @@ function TechCrew({
   );
 }
 
+/** The PLANNED pipeline stacked BEHIND a machine: OFs production planning has
+ * queued for it (pending, not yet scanned). A pallet of raw wood panels whose
+ * height grows with the queue depth — the cutting saws (Coupe) have no input
+ * conveyor, this stack IS their inbox. The top panel (next OF to cut) is tinted;
+ * an indigo "Pipeline · N" card names the next OF and hover lists the plan with
+ * scheduled dates (late red, due-today amber). Counter-scales the machine's
+ * scale so panels + card keep a constant real size. */
+function MachinePipeline({ ofs, total, d, parentScale = [1, 1, 1] }: {
+  ofs: PipelineOf[]; total: number; d: number; parentScale?: [number, number, number];
+}) {
+  const { t } = useTranslation();
+  const [sx, sy, sz] = parentScale;
+  const [open, setOpen] = useState(false);
+  const indigo = '#818cf8', amber = '#f59e0b', red = '#f87171';
+  const mats = useMemo(() => ({
+    pallet: new THREE.MeshStandardMaterial({ color: '#4a3b28', roughness: 0.85 }),
+    wood:   new THREE.MeshStandardMaterial({ color: '#c8a46a', roughness: 0.8 }),
+    woodDk: new THREE.MeshStandardMaterial({ color: '#a9854e', roughness: 0.82 }),
+    next:   new THREE.MeshStandardMaterial({ color: '#efd9a6', roughness: 0.65, emissive: '#e7c98a', emissiveIntensity: 0.18 }),
+  }), []);
+  useEffect(() => () => Object.values(mats).forEach((m) => m.dispose()), [mats]);
+
+  const next = ofs[0];
+  const N = Math.max(1, Math.min(total, 12));      // panels drawn (cap keeps it tidy)
+  const pw = 1.6, pd = 1.0, slab = 0.085, gap = 0.03;
+  const palletH = 0.14;
+  const jit = (i: number) => (((i * 71) % 13) / 13 - 0.5) * 0.06;   // stable per-index wobble
+  const panels = Array.from({ length: N });
+  const topY = palletH + N * (slab + gap);
+
+  return (
+    <group position={[0, 0, -(d / 2 + pd / 2 + 0.5)]}
+      scale={[1 / (sx || 1), 1 / (sy || 1), 1 / (sz || 1)]}>
+      {/* pallet */}
+      <mesh material={mats.pallet} position={[0, palletH / 2, 0]} castShadow receiveShadow>
+        <boxGeometry args={[pw + 0.15, palletH, pd + 0.15]} />
+      </mesh>
+      {/* stacked raw panels — top one (next OF) tinted */}
+      {panels.map((_, i) => (
+        <mesh key={i} material={i === N - 1 ? mats.next : (i % 2 ? mats.woodDk : mats.wood)}
+          position={[jit(i), palletH + slab / 2 + i * (slab + gap), jit(i + 3)]}
+          rotation={[0, jit(i) * 0.5, 0]} castShadow>
+          <boxGeometry args={[pw, slab, pd]} />
+        </mesh>
+      ))}
+      {/* indigo planning card — count + next OF; hover → the ordered plan */}
+      <Html position={[0, topY + 0.55, 0]} center distanceFactor={16} zIndexRange={[24, 0]}
+        style={{ pointerEvents: 'auto' }}>
+        <div onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}
+          style={{ position: 'relative', fontFamily: 'system-ui, sans-serif' }}>
+          <div style={{
+            background: 'rgba(13,20,33,0.92)', border: `1px solid ${indigo}`, color: '#e5e7eb',
+            borderRadius: 7, padding: '2px 9px', fontSize: 11, fontWeight: 700,
+            whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 5,
+          }}>
+            <span style={{ color: '#a5b4fc', fontWeight: 700 }}>{t('factoryMap.pipeline')}</span>
+            <span style={{ background: `${indigo}26`, color: '#c7d2fe', border: `1px solid ${indigo}55`, borderRadius: 9999, padding: '0 6px', fontSize: 10, fontWeight: 800 }}>{total}</span>
+            {next && <span style={{ fontFamily: 'ui-monospace, monospace', color: '#cbd5e1' }}>▶ {next.job_number}</span>}
+          </div>
+          {open && ofs.length > 0 && (
+            <div style={{
+              position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)', marginBottom: 4,
+              background: 'rgba(13,20,33,0.96)', border: `1px solid ${indigo}66`, borderRadius: 8,
+              padding: '6px 9px', minWidth: 200, zIndex: 5,
+            }}>
+              <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5, color: '#94a3b8', marginBottom: 4, whiteSpace: 'nowrap' }}>
+                {t('factoryMap.pipelineNext')}
+              </div>
+              {ofs.map((q, i) => (
+                <div key={q.job_number} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 11, lineHeight: 1.6, whiteSpace: 'nowrap' }}>
+                  <span style={{ fontFamily: 'ui-monospace, monospace', color: i === 0 ? '#e7c98a' : '#e5e7eb' }}>
+                    {i === 0 ? '▶ ' : ''}{q.job_number}
+                  </span>
+                  <span style={{ color: q.late ? red : q.due_today ? amber : '#94a3b8', fontWeight: q.late || q.due_today ? 700 : 400 }}>
+                    {q.scheduled_date ?? '—'}
+                  </span>
+                </div>
+              ))}
+              {total > ofs.length && <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>+{total - ofs.length}…</div>}
+            </div>
+          )}
+        </div>
+      </Html>
+    </group>
+  );
+}
+
 const MachineBox = forwardRef<THREE.Group, { m: M3D; cx: number; cy: number; onSelect: (id: string) => void; editMode?: boolean }>(
   function MachineBox({ m, cx, cy, onSelect, editMode = false }, ref) {
     const w = Math.max(m.pos_w, 40) * SCALE;
@@ -1141,19 +2593,26 @@ const MachineBox = forwardRef<THREE.Group, { m: M3D; cx: number; cy: number; onS
             <GltfModel url={m.model_url} w={w} d={d} h={h} color={color} id={m.id} name={m.name} onSelect={onSelect} animate={animate} />
           </Suspense>
         ) : PROCEDURAL_KINDS.has(kind) ? (
-          <ProceduralShape kind={kind} w={w} d={d} h={h} color={color} id={m.id} name={m.name} onSelect={onSelect} animate={animate} />
+          <ProceduralShape kind={kind} w={w} d={d} h={h} color={color} id={m.id} name={m.name} onSelect={onSelect} animate={animate} status={m.status} stopReason={m.stop_reason} lineStats={m.line_stats} />
         ) : kind === 'box' ? fallback
         : m.icon_url ? (
           <Suspense fallback={fallback}>
             <PhotoMesh url={m.icon_url} w={w} d={d} h={h} color={color} id={m.id} name={m.name} onSelect={onSelect} />
           </Suspense>
         ) : fallback}
-        {(m.status === 'stopped' || m.status === 'maintenance' || m.status === 'planned_stop' || m.status === 'intervention' || m.status === 'unjustified') && (
+        {/* the assembly-line scene speaks for itself on a stop (red skirts +
+            helmets + justification balloon) — no beacon cone over it */}
+        {kind !== 'assembly_line' && (m.status === 'stopped' || m.status === 'maintenance' || m.status === 'planned_stop' || m.status === 'intervention' || m.status === 'unjustified') && (
           <AlertBeacon y={h + 1.2 / sy} color={color} parentScale={[sx, sy, sz]} />
         )}
         {m.status === 'intervention' && m.technicians && m.technicians.length > 0 && (
           <TechCrew techs={m.technicians} ticket={m.open_ticket_number}
             w={w} d={d} parentScale={[sx, sy, sz]} />
+        )}
+        {/* planned pipeline of pending OFs stacked behind the machine (cutting saws) */}
+        {kind !== 'assembly_line' && kind !== 'pit_stop' && (m.pipeline_total ?? 0) > 0 && (
+          <MachinePipeline ofs={m.pipeline_ofs ?? []} total={m.pipeline_total ?? 0}
+            d={d} parentScale={[sx, sy, sz]} />
         )}
       </group>
     );
@@ -1249,6 +2708,115 @@ function KpiBillboard({ m, cx, cy, kpi }: { m: M3D; cx: number; cy: number; kpi:
   );
 }
 
+// What the camera should fly to. `nonce` bumps on every click so re-selecting
+// the same view re-triggers the fly-to. Two flavours:
+//  • 'box'  — frame the map-pixel bounding box of a set of machines (department
+//             auto-views / overview); keeps the current orbit direction.
+//  • 'pose' — restore an EXACT saved camera pose (custom saved views): look-at
+//             point in map-pixel space + camera offset vector (world units).
+export type FocusTarget =
+  | { kind: 'box'; minX: number; minY: number; maxX: number; maxY: number; nonce: number }
+  | { kind: 'pose'; targetPxX: number; targetPxY: number; targetY: number; offsetX: number; offsetY: number; offsetZ: number; nonce: number };
+
+// Current camera pose captured for saving — mirrors the 'pose' focus shape.
+export interface CameraPose { targetPxX: number; targetPxY: number; targetY: number; offsetX: number; offsetY: number; offsetZ: number }
+
+/** Exposes a reader for the live camera pose to the parent (outside the Canvas).
+ * The parent stows the reader in a ref and calls it when the user hits "Save
+ * view", capturing exactly where they orbited to — center-independently (look-at
+ * in map pixels, camera as an offset vector). */
+function PoseReporter({ cx, cy, onPoseReader }: { cx: number; cy: number; onPoseReader?: (reader: (() => CameraPose) | null) => void }) {
+  const { camera, controls } = useThree();
+  useEffect(() => {
+    if (!onPoseReader) return;
+    const reader = (): CameraPose => {
+      const ctrl = controls as unknown as { target: THREE.Vector3 } | null;
+      const tgt = ctrl?.target ?? new THREE.Vector3();
+      return {
+        targetPxX: tgt.x / SCALE + cx,
+        targetPxY: tgt.z / SCALE + cy,
+        targetY: tgt.y,
+        offsetX: camera.position.x - tgt.x,
+        offsetY: camera.position.y - tgt.y,
+        offsetZ: camera.position.z - tgt.z,
+      };
+    };
+    onPoseReader(reader);
+    return () => onPoseReader(null);
+  }, [camera, controls, cx, cy, onPoseReader]);
+  return null;
+}
+
+/** Smoothly flies the camera + OrbitControls target to frame a FocusTarget.
+ * Keeps the CURRENT viewing direction (so it reads as a natural zoom-in/out
+ * from wherever you're orbiting) and pulls the distance back just enough to fit
+ * the box for the live viewport aspect. Lives inside the Canvas so it can read
+ * the same frozen scene centre (cx/cy) the machines are positioned against. */
+function CameraRig({ cx, cy, focus }: { cx: number; cy: number; focus: FocusTarget | null }) {
+  const { camera, controls, size } = useThree();
+  const anim = useRef<{
+    fromPos: THREE.Vector3; toPos: THREE.Vector3;
+    fromTgt: THREE.Vector3; toTgt: THREE.Vector3; start: number; dur: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const ctrl = controls as unknown as { target: THREE.Vector3 } | null;
+    if (!focus || !ctrl) return;
+    let target: THREE.Vector3;
+    let toPos: THREE.Vector3;
+    if (focus.kind === 'pose') {
+      // Restore the exact saved pose: re-project the look-at pixel with the current
+      // centroid, put the camera at target + saved offset.
+      target = new THREE.Vector3(
+        (focus.targetPxX - cx) * SCALE, focus.targetY, (focus.targetPxY - cy) * SCALE,
+      );
+      toPos = target.clone().add(new THREE.Vector3(focus.offsetX, focus.offsetY, focus.offsetZ));
+    } else {
+      target = new THREE.Vector3(
+        ((focus.minX + focus.maxX) / 2 - cx) * SCALE, 0,
+        ((focus.minY + focus.maxY) / 2 - cy) * SCALE,
+      );
+      // radius that must fit on screen (half the box diagonal, floored so a single
+      // machine still gets a sensible close-up)
+      const halfW = ((focus.maxX - focus.minX) / 2) * SCALE;
+      const halfD = ((focus.maxY - focus.minY) / 2) * SCALE;
+      const radius = Math.max(Math.hypot(halfW, halfD), 3);
+      const cam = camera as THREE.PerspectiveCamera;
+      const vFov = (cam.fov * Math.PI) / 180;
+      const aspect = size.width / Math.max(size.height, 1);
+      const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+      const dist = Math.max(radius / Math.tan(vFov / 2), radius / Math.tan(hFov / 2)) * 1.25 + 4;
+      // keep the current orbit direction; fall back to a pleasant iso angle if the
+      // camera happens to sit on the target
+      let dir = camera.position.clone().sub(ctrl.target);
+      if (dir.lengthSq() < 1e-4) dir = new THREE.Vector3(0.6, 0.75, 0.9);
+      dir.normalize();
+      toPos = target.clone().add(dir.multiplyScalar(dist));
+    }
+    anim.current = {
+      fromPos: camera.position.clone(), toPos,
+      fromTgt: ctrl.target.clone(), toTgt: target, start: performance.now(), dur: 850,
+    };
+    // Re-run on `focus` (fresh object+nonce per selection) and when camera/controls
+    // first become available — so a focus set on mount (before OrbitControls finished
+    // registering) still applies. `size` is deliberately excluded: it changes on every
+    // resize/fullscreen and must NOT re-fly the camera.
+  }, [focus, camera, controls]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  useFrame(() => {
+    const a = anim.current;
+    const ctrl = controls as unknown as { target: THREE.Vector3; update: () => void } | null;
+    if (!a || !ctrl) return;
+    const k = Math.min(1, (performance.now() - a.start) / a.dur);
+    const e = k * k * (3 - 2 * k);                    // smoothstep ease
+    camera.position.lerpVectors(a.fromPos, a.toPos, e);
+    ctrl.target.lerpVectors(a.fromTgt, a.toTgt, e);
+    ctrl.update();
+    if (k >= 1) anim.current = null;
+  });
+  return null;
+}
+
 function FloorPlane({ url, cx, cy }: { url: string; cx: number; cy: number }) {
   const tex = useTexture(url);
   const img = tex.image as { width?: number; height?: number } | undefined;
@@ -1265,11 +2833,143 @@ function FloorPlane({ url, cx, cy }: { url: string; cx: number; cy: number }) {
   );
 }
 
+// A temperature sensor shows as just a floating label (the reading in the viewer's
+// unit, ring coloured blue→red by temperature) at its map position — deliberately
+// NO 3D thermometer geometry, so it won't be confused with the machines' own
+// temperature probes later. The empty group carries the position for the gizmo.
+const Thermometer3D = forwardRef<THREE.Group, {
+  s: S3D; cx: number; cy: number; unit: TempUnit; onSelect?: (id: string) => void; editMode?: boolean;
+}>(function Thermometer3D({ s, cx, cy, unit, onSelect, editMode = false }, ref) {
+  const x = (s.pos_x - cx) * SCALE;
+  const z = (s.pos_y - cy) * SCALE;
+  const baseY = s.height_3d ?? 3;
+  const color = tempColor(s.last_value_c);
+  return (
+    <group ref={ref} position={[x, baseY, z]}>
+      <Html center distanceFactor={16} zIndexRange={[30, 0]} style={{ pointerEvents: editMode ? 'auto' : 'none' }}>
+        <div onClick={editMode ? (e) => { e.stopPropagation(); onSelect?.(s.id); } : undefined}
+          style={{
+            background: 'rgba(13,20,33,0.92)', border: `1px solid ${color}`, color: '#e5e7eb',
+            borderRadius: 9999, padding: '2px 9px', fontSize: 13, fontWeight: 700,
+            whiteSpace: 'nowrap', fontFamily: 'system-ui, sans-serif',
+            cursor: editMode ? 'pointer' : 'default',
+          }}>{formatTemp(s.last_value_c, unit)}</div>
+      </Html>
+    </group>
+  );
+});
+
+function SelectedSensor({ s, cx, cy, unit, onCommit }: { s: S3D; cx: number; cy: number; unit: TempUnit; onCommit: SensorCommit }) {
+  const [grp, setGrp] = useState<THREE.Group | null>(null);
+  const commit = () => {
+    if (!grp) return;
+    onCommit(s.id, {
+      pos_x: Math.round(grp.position.x / SCALE + cx),
+      pos_y: Math.round(grp.position.z / SCALE + cy),
+    });
+  };
+  return (
+    <>
+      <Thermometer3D ref={setGrp} s={s} cx={cx} cy={cy} unit={unit} />
+      {grp && (
+        <TransformControls object={grp} mode="translate" showX showZ showY={false} onMouseUp={commit} />
+      )}
+    </>
+  );
+}
+
+// Tracks which sensor you're looking at (throttled) so the DOM badge can switch
+// between that sensor's indoor reading and the outdoor weather. Keys off the point
+// on the floor the camera looks at (screen-centre ray ∩ ground), so it follows the
+// area you navigate to regardless of camera height. Zoomed right out (overview) or
+// looking away from every sensor → null → the badge shows weather.
+function NearestSensorTracker({ sensors, machinePoints = [], cx, cy, onChange }: {
+  sensors: S3D[]; machinePoints?: MachinePoint[]; cx: number; cy: number; onChange?: (id: string | null) => void;
+}) {
+  const last = useRef<string | null>(null);
+  const acc = useRef(0);
+  const dir = useRef(new THREE.Vector3());
+  // The badge is DEPARTMENT-aware: a sensor is bound to a department and only ever
+  // shows for THAT department, so it never leaks its label into a neighbour. The
+  // department of a point = the department of the nearest ANCHOR, where anchors are
+  // the machines AND the department-bound sensors themselves — so a machineless
+  // department (no machines to anchor it) is anchored by its own sensor and still
+  // resolves correctly. A department with no sensor → weather. OVERVIEW_*
+  // (camera-to-look-at) forces weather when zoomed right out. Unbound sensors (and
+  // plants with no department data at all) fall back to a tight look-at radius.
+  const OVERVIEW_IN = 70, OVERVIEW_OUT = 80;
+  const RADIUS_IN = 10, RADIUS_OUT = 16;   // fallback for unbound sensors / no department data
+  const anchoredSensors = sensors.filter((s) => s.department);
+  const hasDeptData = machinePoints.length > 0 || anchoredSensors.length > 0;
+  const deptOf = (px: number, py: number): string | null => {
+    let best: string | null = null, bestD = Infinity;
+    for (const m of machinePoints) {
+      const d = (m.x - px) * (m.x - px) + (m.y - py) * (m.y - py);
+      if (d < bestD) { bestD = d; best = m.dept; }
+    }
+    for (const s of anchoredSensors) {
+      const d = (s.pos_x - px) * (s.pos_x - px) + (s.pos_y - py) * (s.pos_y - py);
+      if (d < bestD) { bestD = d; best = s.department ?? null; }
+    }
+    return best;
+  };
+  useFrame((state, delta) => {
+    if (!onChange) return;
+    acc.current += delta;
+    if (acc.current < 0.25) return;    // ~4 Hz is plenty for a badge
+    acc.current = 0;
+    const cam = state.camera;
+    // Ground point the camera looks at (fall back to straight below when level).
+    cam.getWorldDirection(dir.current);
+    let gx = cam.position.x, gz = cam.position.z;
+    if (Math.abs(dir.current.y) > 1e-4) {
+      const tt = -cam.position.y / dir.current.y;
+      if (tt > 0) { gx = cam.position.x + dir.current.x * tt; gz = cam.position.z + dir.current.z * tt; }
+    }
+    const camToGround = Math.hypot(cam.position.x - gx, cam.position.y, cam.position.z - gz);
+    const showing = last.current !== null;
+
+    const radius = showing ? RADIUS_OUT : RADIUS_IN;
+    // Nearest sensor to the look-at among a set, returning null past `maxD` (Infinity = no limit).
+    const nearestSensor = (pool: S3D[], maxD: number): string | null => {
+      let id: string | null = null, bestD = Infinity;
+      for (const s of pool) {
+        const sx = (s.pos_x - cx) * SCALE, sz = (s.pos_y - cy) * SCALE;
+        const d = Math.hypot(sx - gx, sz - gz);
+        if (d < bestD) { bestD = d; id = s.id; }
+      }
+      return id !== null && bestD < maxD ? id : null;
+    };
+
+    let best: string | null = null;
+    if (hasDeptData) {
+      // Department the camera is looking at → its bound sensor (no limit within a department).
+      const lookDept = deptOf(gx / SCALE + cx, gz / SCALE + cy);
+      if (lookDept) best = nearestSensor(sensors.filter((s) => s.department === lookDept), Infinity);
+      // Unbound sensors still read, but only when you're right on them (tight radius).
+      if (best === null) best = nearestSensor(sensors.filter((s) => !s.department), radius);
+    } else {
+      // No department data at all → nearest sensor within a tight look-at radius.
+      best = nearestSensor(sensors, radius);
+    }
+
+    const overviewGate = showing ? OVERVIEW_OUT : OVERVIEW_IN;
+    const result = (camToGround < overviewGate && best !== null) ? best : null;
+    if (result !== last.current) { last.current = result; onChange(result); }
+  });
+  return null;
+}
+
 export default function Factory3D({ machines, floorPlanUrl, onSelect, editMode = false, selectedId = null, mode = 'translate', onCommit,
-  props = [], onSelectProp, selectedPropId = null, onPropCommit, infoId = null, infoKpi = null }: {
+  props = [], onSelectProp, selectedPropId = null, onPropCommit, infoId = null, infoKpi = null, cameraPosition = [40, 45, 55], focus = null, onPoseReader,
+  tvThresholds, globalLineStats = null,
+  sensors = [], tempUnit = 'C', selectedSensorId = null, onSelectSensor, onSensorCommit, onNearestSensorChange,
+  machinePoints = [], pitStop = null, onSelectPitStopOf, selectedPitStopOfId = null }: {
   machines: M3D[];
   floorPlanUrl: string | null;
   onSelect: (id: string) => void;
+  tvThresholds?: TvThresholds;   // efficiency-colour thresholds for the line TVs
+  globalLineStats?: LineStats | null;   // the plant's global clock (own objective)
   editMode?: boolean;
   selectedId?: string | null;
   mode?: TMode;
@@ -1280,6 +2980,19 @@ export default function Factory3D({ machines, floorPlanUrl, onSelect, editMode =
   onPropCommit?: PropCommit;
   infoId?: string | null;
   infoKpi?: KpiInfo | null;
+  cameraPosition?: [number, number, number];
+  focus?: FocusTarget | null;
+  onPoseReader?: (reader: (() => CameraPose) | null) => void;
+  sensors?: S3D[];
+  tempUnit?: TempUnit;
+  selectedSensorId?: string | null;
+  onSelectSensor?: (id: string) => void;
+  onSensorCommit?: SensorCommit;
+  onNearestSensorChange?: (id: string | null) => void;
+  machinePoints?: MachinePoint[];
+  pitStop?: PitStopState | null;                    // polled buffer state (null = none/no data yet)
+  onSelectPitStopOf?: (jobOrderId: string) => void; // click on an OF stack
+  selectedPitStopOfId?: string | null;
 }) {
   // Freeze the scene centre once (per mount / plant) so moving a machine doesn't drift everything.
   // Centre on machines (props don't shift it); fall back to props when a plant has only props.
@@ -1297,10 +3010,13 @@ export default function Factory3D({ machines, floorPlanUrl, onSelect, editMode =
   }
   const [cx, cy] = centerRef.current ?? [0, 0];
 
-  const clearSelection = () => { onSelect(''); onSelectProp?.(''); };
+  const clearSelection = () => { onSelect(''); onSelectProp?.(''); onSelectSensor?.(''); };
 
   return (
-    <Canvas dpr={[1, 1.5]} camera={{ position: [40, 45, 55], fov: 45 }} style={{ background: '#0a0f1a' }} onPointerMissed={clearSelection}>
+    <Canvas dpr={[1, 1.5]} camera={{ position: cameraPosition, fov: 45 }} style={{ background: '#0a0f1a' }} onPointerMissed={clearSelection}>
+      {/* re-provide inside the Canvas — context does not cross the R3F renderer */}
+      <TvThresholdsCtx.Provider value={tvThresholds ?? TV_THRESHOLDS_DEFAULT}>
+      <PitStopCtx.Provider value={{ state: pitStop, onSelectOf: onSelectPitStopOf, selectedOfId: selectedPitStopOfId }}>
       <ambientLight intensity={0.4} />
       <SunLight />
       {floorPlanUrl ? (
@@ -1317,9 +3033,15 @@ export default function Factory3D({ machines, floorPlanUrl, onSelect, editMode =
       {machines.map((m) => (editMode && selectedId === m.id && onCommit)
         ? <SelectedMachine key={m.id} m={m} cx={cx} cy={cy} mode={mode} onCommit={onCommit} />
         : <MachineBox key={m.id} m={m} cx={cx} cy={cy} onSelect={onSelect} editMode={editMode} />)}
+      <GlobalLineTV machines={machines} cx={cx} cy={cy} stats={globalLineStats} />
       {props.map((p) => (editMode && selectedPropId === p.id && onPropCommit)
         ? <SelectedProp key={p.id} p={p} cx={cx} cy={cy} mode={mode} onCommit={onPropCommit} />
         : <PropBlock key={p.id} p={p} cx={cx} cy={cy} onSelect={onSelectProp ?? (() => {})} editMode={editMode} />)}
+      {/* Temperature sensors — little thermometers; drag to reposition in edit mode */}
+      {sensors.map((s) => (editMode && selectedSensorId === s.id && onSensorCommit)
+        ? <SelectedSensor key={s.id} s={s} cx={cx} cy={cy} unit={tempUnit} onCommit={onSensorCommit} />
+        : <Thermometer3D key={s.id} s={s} cx={cx} cy={cy} unit={tempUnit} onSelect={onSelectSensor} editMode={editMode} />)}
+      {!editMode && <NearestSensorTracker sensors={sensors} machinePoints={machinePoints} cx={cx} cy={cy} onChange={onNearestSensorChange} />}
       {/* Orbit areas — drop a cobot/conveyor inside a machine's orbit to auto-link it */}
       {editMode && machines.filter((m) => (m.asset_type ?? 'production') === 'production').map((m) => {
         const rx = m.orbit_x ?? (m.pos_x - ORBIT_MARGIN);
@@ -1340,6 +3062,8 @@ export default function Factory3D({ machines, floorPlanUrl, onSelect, editMode =
         const sel = infoId ? machines.find((m) => m.id === infoId) : null;
         return sel ? <KpiBillboard m={sel} cx={cx} cy={cy} kpi={infoKpi} /> : null;
       })()}
+      <CameraRig cx={cx} cy={cy} focus={focus} />
+      <PoseReporter cx={cx} cy={cy} onPoseReader={onPoseReader} />
       <OrbitControls
         makeDefault
         target={[0, 0, 0]}
@@ -1348,9 +3072,11 @@ export default function Factory3D({ machines, floorPlanUrl, onSelect, editMode =
         zoomSpeed={2.2}
         panSpeed={1.4}
         rotateSpeed={0.95}
-        minDistance={4}
+        minDistance={0.5}
         maxDistance={260}
       />
+      </PitStopCtx.Provider>
+      </TvThresholdsCtx.Provider>
     </Canvas>
   );
 }

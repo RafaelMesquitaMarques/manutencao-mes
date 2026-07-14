@@ -125,6 +125,30 @@ services:
       - backend
       - db
 
+  # ─── Poller Cortex (puxa os scans de fim de linha da API do Cortex) ───────────
+  # As linhas de montagem (assemblage) tiram as QUANTIDADES da etiqueta escaneada
+  # em cada móvel pronto na saída da linha. Este serviço PUXA os scans novos da
+  # API do Cortex (tabela cortex_stations: estação → linha, tela /settings/devices)
+  # e envia cada um para /api/machines/{ref}/of-unit-scan (+1 no OF + produção).
+  # CORTEX_API_BASE/CORTEX_API_KEY vêm do .env — sem eles as estações aparecem em
+  # erro na tela de devices até a integração ser configurada.
+  cortex_poller:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mes_cortex_poller
+    restart: unless-stopped
+    command: python -m app.workers.cortex_poller
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-mesadmin}:${DB_PASSWORD:-changeme}@db:5432/${DB_NAME:-manutencao}
+      KAIZO_API_BASE: http://backend:8000
+      CORTEX_API_BASE: ${CORTEX_API_BASE:-}
+      CORTEX_API_KEY: ${CORTEX_API_KEY:-}
+      CORTEX_RELOAD_SEC: ${CORTEX_RELOAD_SEC:-10}
+    depends_on:
+      - backend
+      - db
+
   # ─── LLM local (Ollama) — fallback offline do organizador de notas ────────────
   # Caminho primário é a API da Anthropic (ANTHROPIC_API_KEY no backend); este
   # serviço só atende quando a API falha/está sem internet. Modelo roda on-prem,

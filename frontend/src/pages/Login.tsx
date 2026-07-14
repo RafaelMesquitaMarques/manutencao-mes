@@ -28,7 +28,7 @@ const Login = () => {
   const currentLang = LANGUAGES.find((l) => i18n.language?.startsWith(l.code)) ?? LANGUAGES[0];
 
   useEffect(() => {
-    if (isAuthenticated) navigate('/dashboard', { replace: true });
+    if (isAuthenticated) navigate('/home', { replace: true });
   }, [isAuthenticated, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -41,6 +41,7 @@ const Login = () => {
         id: String(result.user_id),
         email,
         name: result.name,
+        nickname: result.nickname ?? null,
         active: true,
         role: result.role,
         language: result.language,
@@ -48,7 +49,7 @@ const Login = () => {
       };
       usePlantStore.getState().setMemberships(result.plants ?? [], result.default_plant_id ?? null);
       setAuth(user, result.access_token);
-      navigate(result.must_change_password ? '/force-change-password' : '/dashboard', { replace: true });
+      navigate(result.must_change_password ? '/force-change-password' : '/home', { replace: true });
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status;
       setError(status === 401 ? t('auth.invalidCredentials') : t('auth.loginError'));
@@ -62,6 +63,15 @@ const Login = () => {
       {/* Background decoration */}
       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-blue-600/5 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute bottom-0 right-0 w-[400px] h-[300px] bg-blue-900/10 rounded-full blur-3xl pointer-events-none" />
+
+      {/* Ninja core backdrop */}
+      <img
+        src="/ninja-core.png"
+        alt=""
+        aria-hidden="true"
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-[104vh] w-auto max-w-none
+                   opacity-[0.33] pointer-events-none select-none"
+      />
 
       {/* Language switcher */}
       <div className="w-full max-w-sm flex justify-end mb-5 relative z-10">
@@ -99,7 +109,7 @@ const Login = () => {
 
       {/* Card */}
       <div className="w-full max-w-sm relative z-10">
-        <div className="bg-[#0d1421]/90 backdrop-blur-sm border border-white/[0.08] rounded-2xl p-8 shadow-2xl">
+        <div className="bg-[#0d1421]/60 backdrop-blur-sm border border-white/[0.08] rounded-2xl p-8 shadow-2xl">
           {/* Brand */}
           <div className="flex items-center gap-3.5 mb-8">
             <img src="/mirai-icon.png" alt="" className="w-12 h-12 object-contain flex-shrink-0" />

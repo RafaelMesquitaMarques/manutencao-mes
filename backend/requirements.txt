@@ -33,6 +33,9 @@ twilio==9.3.7
 # IA (Maintenance Intelligence — chat tool-use agent)
 anthropic==0.69.0
 
+# Modbus/TCP (gateway ADAM — app.workers.adam_gateway)
+pymodbus==3.13.0
+
 # Utilitários
 httpx==0.27.0
 python-dateutil==2.9.0

@@ -78,6 +78,7 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
         access_token=token,
         user_id=str(user.id),
         name=user.name,
+        nickname=user.nickname,
         language=user.language or "en",
         role=user.role,
         must_change_password=user.must_change_password,
@@ -144,7 +145,12 @@ async def update_me(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    for field, value in data.model_dump(exclude_none=True).items():
+    updates = data.model_dump(exclude_none=True)
+    # Nickname is clearable: "" comes from the UI to remove it, stored as NULL so
+    # the greeting falls back to the first name.
+    if "nickname" in updates:
+        updates["nickname"] = updates["nickname"].strip() or None
+    for field, value in updates.items():
         setattr(current_user, field, value)
     await db.commit()
     await db.refresh(current_user)

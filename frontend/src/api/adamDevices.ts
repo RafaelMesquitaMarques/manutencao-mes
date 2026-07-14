@@ -1,7 +1,7 @@
 import api from './axios';
 
 export type AdamModel = '6050' | '6051';
-export type AdamSignalSource = 'di' | 'counter';
+export type AdamSignalSource = 'di' | 'counter' | 'state';
 export type AdamActiveLevel = 'low' | 'high';
 export type AdamDeviceStatus = 'unknown' | 'online' | 'offline' | 'error';
 

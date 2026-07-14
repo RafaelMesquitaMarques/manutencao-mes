@@ -77,6 +77,11 @@ async def update_user(
 
     updates = data.model_dump(exclude_none=True)
 
+    # Nickname is clearable: the UI sends "" to remove it, stored as NULL so the
+    # greeting falls back to the first name.
+    if "nickname" in updates:
+        updates["nickname"] = updates["nickname"].strip() or None
+
     # Email is unique — reject if another user already owns it
     new_email = updates.get("email")
     if new_email and new_email != user.email:

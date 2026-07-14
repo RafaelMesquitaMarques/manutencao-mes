@@ -2,7 +2,7 @@ import re
 import secrets
 from datetime import datetime, timezone, date, timedelta
 from uuid import UUID
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel
@@ -11,13 +11,15 @@ from sqlalchemy import select, func
 
 from app.db.session import get_db
 from app.models.models import (
-    Machine, Equipment, MaintenanceTicket, TicketStatus, WorkOrder, WorkOrderType,
+    LineTvSettings,
+    Machine, Equipment, Department, MaintenanceTicket, TicketStatus, WorkOrder, WorkOrderType,
     User, MachineStatus, AlertPriority,
     MachineStop, MachineOperator, StopCategory, StopSubcategory,
     RejectCategory, RejectSubcategory, RejectLog,
     AlertShift, JobOrder, JobOrderSource, MachineProductionLog, MachineProductionHourly,
     MachineHistory, Technician, MachineIntervention,
     MaintenanceAlert, AlertStatus, AlertProblemType,
+    CleaningChecklist, CleaningChecklistItem, StopCleaningResponse,
 )
 from app.schemas.maintenance import (
     MachineOut, MachineListResponse, MachinePageData, TicketForMachine,
@@ -35,11 +37,17 @@ from app.schemas.maintenance import (
     JobOrderOut, JobOrderCreate,
 )
 from app.core.security import get_current_user
+from app.core.permissions import require_permission
 from app.core.plant_context import PlantContext, get_plant_context
 from app.core.plant_scope import ensure_same_plant, plant_condition, plant_scoped
 from app.services.ticket_service import TicketService, _next_ticket_number, _next_alert_number
 from app.services.mes_service import MesService, shift_windows
 from app.services.intervention_sync import apply_production_signal
+from app.services.job_order_service import (
+    scan_job_order_at_machine, attribute_production, complete_unit_at_machine,
+)
+from app.services import production_pulse
+from app.services.equipment_machine_sync import ensure_machine_for_equipment
 
 router = APIRouter()
 
@@ -143,6 +151,387 @@ async def list_machines(
     r = await db.execute(stmt)
     items = r.scalars().all()
     return MachineListResponse(total=len(items), items=items)
+
+
+# ── Assembly-line objectives (Cortex "horloges" model) ─────────────────────────
+# Per line: cadence (units/h), work window and scheduled pauses — everything the
+# evolving Standard on the line TVs needs. REGISTERED BEFORE the /{ref} routes so
+# the literal path wins. Edited in /settings/line-objectives (settings_machines).
+
+class PauseIn(BaseModel):
+    start: str          # "HH:MM"
+    end: str
+
+
+class ShiftIn(BaseModel):
+    enabled: bool = False
+    start: Optional[str] = None    # "HH:MM"
+    end: Optional[str] = None
+
+
+class LineObjectiveIn(BaseModel):
+    cadence_per_hour: int = 0
+    work_start: Optional[str] = None    # "HH:MM" — the GLOBAL clock's single window
+    work_end: Optional[str] = None
+    # Per-line shift grid (assembly lines): keys morning/afternoon/night, each a
+    # ShiftIn. When present it OVERRIDES work_start/work_end for that line.
+    shifts: Optional[Dict[str, ShiftIn]] = None
+    pauses: List[PauseIn] = []
+
+
+# The three canonical shifts a line can run, aligned with AlertShift and the
+# platform's default buckets (morning 04-12 / afternoon 12-20 / night 20-04), so
+# production/OEE keep bucketing by the same names. Defaults: only the day shift on.
+SHIFT_KEYS = ("morning", "afternoon", "night")
+_DEFAULT_SHIFT_TIMES = {
+    "morning":   ("07:00", "15:30"),
+    "afternoon": ("15:30", "23:30"),
+    "night":     ("23:30", "07:00"),
+}
+
+
+def _default_shift_schedule() -> dict:
+    """A fresh line: the day shift enabled (07:00–15:30), evening/night pre-filled
+    but off — ready to switch on for a future capacity increase."""
+    return {
+        k: {"start": s, "end": e, "enabled": (k == "morning")}
+        for k, (s, e) in _DEFAULT_SHIFT_TIMES.items()
+    }
+
+
+def _schedule_from_config(shifts_config) -> dict:
+    """Build a full 3-shift grid from a legacy shifts_config (lines that predate
+    shift_schedule): each configured window enables the bucket its start falls in;
+    the rest fall back to the pre-filled defaults, disabled."""
+    sched = _default_shift_schedule()
+    for cfg in (shifts_config or {}).values():
+        if not isinstance(cfg, dict) or not cfg.get("start"):
+            continue
+        try:
+            sh = int(str(cfg["start"]).split(":")[0])
+        except (ValueError, TypeError):
+            continue
+        key = _shift_bucket(sh).value    # morning / afternoon / night
+        sched[key] = {"start": cfg.get("start"), "end": cfg.get("end"), "enabled": True}
+    return sched
+
+
+def _config_from_schedule(schedule: dict) -> dict:
+    """The derived shifts_config: only the ENABLED windows, as {key:{start,end}} —
+    exactly the shape every existing consumer already reads."""
+    out = {}
+    for key in SHIFT_KEYS:
+        s = schedule.get(key) or {}
+        if s.get("enabled") and s.get("start") and s.get("end"):
+            out[key] = {"start": s["start"], "end": s["end"]}
+    return out
+
+
+def _line_objective_out(m: Machine) -> dict:
+    schedule = m.shift_schedule or _schedule_from_config(m.shifts_config)
+    win = next((c for c in (m.shifts_config or {}).values() if isinstance(c, dict)), {})
+    return {
+        "machine_id": str(m.id),
+        "name": m.display_name or m.name,
+        "code": m.code,
+        "cadence_per_hour": m.target_count_per_hour or 0,
+        "work_start": win.get("start"),
+        "work_end": win.get("end"),
+        "shifts": schedule,
+        "pauses": m.work_pauses or [],
+    }
+
+
+async def _assembly_line_machines(db: AsyncSession, ctx: PlantContext) -> List[Machine]:
+    rows = (await db.execute(
+        plant_scoped(
+            select(Machine)
+            .join(Equipment, Equipment.id == Machine.equipment_id)
+            .where(Equipment.block_kind == "assembly_line", Machine.is_active == True)  # noqa: E712
+            .order_by(Machine.name),
+            Machine, ctx,
+        )
+    )).scalars().all()
+    return list(rows)
+
+
+class TvSettingsIn(BaseModel):
+    green_from: float = 95.0    # efficiency ≥ this → green
+    amber_from: float = 80.0    # efficiency ≥ this → amber; below → red
+
+
+@router.get("/assembly-lines/tv-settings")
+async def get_tv_settings(
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    _perm: User = Depends(require_permission("settings_machines", "view")),
+):
+    """The plant's TV efficiency-colour thresholds (defaults 95/80)."""
+    row = (await db.execute(
+        select(LineTvSettings).where(LineTvSettings.plant_id == ctx.plant_id)
+    )).scalar_one_or_none()
+    return {"green_from": row.green_from if row else 95.0,
+            "amber_from": row.amber_from if row else 80.0}
+
+
+@router.put("/assembly-lines/tv-settings")
+async def set_tv_settings(
+    data: TvSettingsIn,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    _perm: User = Depends(require_permission("settings_machines", "update")),
+):
+    """Upsert the plant's TV efficiency-colour thresholds (green ≥ / amber ≥)."""
+    if not (0 <= data.amber_from <= data.green_from <= 200):
+        raise HTTPException(status_code=422, detail="invalid_thresholds")
+    row = (await db.execute(
+        select(LineTvSettings).where(LineTvSettings.plant_id == ctx.plant_id)
+    )).scalar_one_or_none()
+    if row is None:
+        row = LineTvSettings(plant_id=ctx.plant_id)
+        db.add(row)
+    row.green_from = data.green_from
+    row.amber_from = data.amber_from
+    await db.commit()
+    return {"green_from": row.green_from, "amber_from": row.amber_from}
+
+
+@router.get("/assembly-lines/global-objective")
+async def get_global_objective(
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    _perm: User = Depends(require_permission("settings_machines", "view")),
+):
+    """The plant's GLOBAL clock objective (independent of the per-line ones)."""
+    row = (await db.execute(
+        select(LineTvSettings).where(LineTvSettings.plant_id == ctx.plant_id)
+    )).scalar_one_or_none()
+    return {
+        "cadence_per_hour": (row.global_cadence_per_hour if row else 0) or 0,
+        "work_start": row.global_work_start if row else None,
+        "work_end": row.global_work_end if row else None,
+        "pauses": (row.global_pauses if row else None) or [],
+    }
+
+
+@router.put("/assembly-lines/global-objective")
+async def set_global_objective(
+    data: LineObjectiveIn,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    _perm: User = Depends(require_permission("settings_machines", "update")),
+):
+    """Set the GLOBAL clock's own cadence/window/pauses (Cortex "QS - Global"):
+    drives the global TV's Standard; the global Réel stays the measured Σ of
+    the lines. Cadence 0 → the global Standard falls back to Σ of the lines'."""
+    hhmm = re.compile(r"^\d{1,2}:\d{2}$")
+    for v in [data.work_start, data.work_end, *(x for p in data.pauses for x in (p.start, p.end))]:
+        if v is not None and not hhmm.match(v):
+            raise HTTPException(status_code=422, detail="invalid_time_format")
+    row = (await db.execute(
+        select(LineTvSettings).where(LineTvSettings.plant_id == ctx.plant_id)
+    )).scalar_one_or_none()
+    if row is None:
+        row = LineTvSettings(plant_id=ctx.plant_id)
+        db.add(row)
+    row.global_cadence_per_hour = max(0, data.cadence_per_hour)
+    row.global_work_start = data.work_start
+    row.global_work_end = data.work_end
+    row.global_pauses = [p.model_dump() for p in data.pauses]
+    await db.commit()
+    return {
+        "cadence_per_hour": row.global_cadence_per_hour or 0,
+        "work_start": row.global_work_start,
+        "work_end": row.global_work_end,
+        "pauses": row.global_pauses or [],
+    }
+
+
+@router.get("/assembly-lines")
+async def list_assembly_lines(
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    _perm: User = Depends(require_permission("settings_machines", "view")),
+):
+    """The plant's assembly lines with their production objectives (cadence,
+    work window, pauses) — the /settings/line-objectives page."""
+    return [_line_objective_out(m) for m in await _assembly_line_machines(db, ctx)]
+
+
+@router.put("/assembly-lines/{machine_id}/objective")
+async def set_assembly_line_objective(
+    machine_id: UUID,
+    data: LineObjectiveIn,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    _perm: User = Depends(require_permission("settings_machines", "update")),
+):
+    """Set one line's objective: cadence → target_count_per_hour (drives the TV
+    Standard + derived per-shift/day targets); the 3-shift grid (`shifts`, keys
+    morning/afternoon/night, each start/end/enabled) → shift_schedule, from which
+    shifts_config (the ENABLED windows only) is derived so every existing consumer
+    keeps working; pauses → work_pauses (discounted from the evolving Standard).
+    At least one shift must be enabled. Legacy single-window (work_start/work_end)
+    is still accepted when `shifts` is omitted."""
+    machine = ensure_same_plant(await db.get(Machine, machine_id), ctx, detail="Machine not found")
+    hhmm = re.compile(r"^\d{1,2}:\d{2}$")
+
+    if data.shifts is not None:
+        # Normalise to the three canonical keys; ignore any unknown key.
+        schedule = _default_shift_schedule()
+        for key in SHIFT_KEYS:
+            incoming = data.shifts.get(key)
+            if incoming is None:
+                schedule[key]["enabled"] = False
+                continue
+            for v in (incoming.start, incoming.end):
+                if v is not None and not hhmm.match(v):
+                    raise HTTPException(status_code=422, detail="invalid_time_format")
+            schedule[key] = {
+                "start": incoming.start or schedule[key]["start"],
+                "end": incoming.end or schedule[key]["end"],
+                "enabled": bool(incoming.enabled),
+            }
+        shifts_config = _config_from_schedule(schedule)
+        if not shifts_config:
+            raise HTTPException(status_code=422, detail="at_least_one_shift")
+        machine.shift_schedule = schedule
+        machine.shifts_config = shifts_config
+    else:  # legacy single-window path (kept for callers not sending the grid)
+        for v in [data.work_start, data.work_end]:
+            if v is not None and not hhmm.match(v):
+                raise HTTPException(status_code=422, detail="invalid_time_format")
+        if data.work_start and data.work_end:
+            machine.shifts_config = {"day": {"start": data.work_start, "end": data.work_end}}
+            machine.shift_schedule = _schedule_from_config(machine.shifts_config)
+
+    for p in data.pauses:
+        for v in (p.start, p.end):
+            if v is not None and not hhmm.match(v):
+                raise HTTPException(status_code=422, detail="invalid_time_format")
+
+    machine.target_count_per_hour = max(0, data.cadence_per_hour)
+    # Keep per-shift/day targets consistent with the cadence and the now-active hours.
+    per_shift, daily = _derive_targets_from_hourly(
+        machine.target_count_per_hour, machine.shifts_config)
+    machine.target_count_per_shift = per_shift
+    machine.target_count = daily
+    machine.work_pauses = [p.model_dump() for p in data.pauses]
+    await db.commit()
+    await db.refresh(machine)
+    return _line_objective_out(machine)
+
+
+class AssemblyLineCreate(BaseModel):
+    name: str
+    code: str
+    cadence_per_hour: int = 0
+
+
+async def _assemblage_department(db: AsyncSession, plant_id) -> str:
+    """The plant's registered 'Assemblage' department name (created if absent),
+    so the new line lines up with the department picker and OF filters — same
+    rule the seed_assembly_lines script uses."""
+    dept = (await db.execute(
+        select(Department).where(
+            Department.plant_id == plant_id,
+            func.lower(Department.name) == "assemblage",
+        )
+    )).scalars().first()
+    if dept is None:
+        dept = Department(plant_id=plant_id, name="Assemblage")
+        db.add(dept)
+        await db.flush()
+    return dept.name
+
+
+@router.post("/assembly-lines", status_code=201)
+async def create_assembly_line(
+    data: AssemblyLineCreate,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    _perm: User = Depends(require_permission("settings_machines", "update")),
+):
+    """Add an assembly line to the active plant. Creates the Equipment
+    (block_kind='assembly_line', department Assemblage) whose kiosk/Machine is
+    auto-provisioned by ensure_machine_for_equipment, then applies the cadence.
+    The signal token + ADAM/Cortex device and the map placement are wired
+    afterwards in /settings/devices — exactly like a seeded line. Lets each plant
+    (e.g. Las Vegas, fewer lines) carry only the lines it actually has."""
+    name = (data.name or "").strip()
+    code = (data.code or "").strip()
+    if not name or not code:
+        raise HTTPException(status_code=422, detail="name_and_code_required")
+
+    # The code must be free among the plant's equipment and across kiosk machines
+    # (Machine.code is globally unique) so the line can actually carry it.
+    dup_eq = (await db.execute(plant_scoped(
+        select(Equipment.id).where(func.lower(Equipment.code) == code.lower()),
+        Equipment, ctx,
+    ))).first()
+    dup_m = (await db.execute(
+        select(Machine.id).where(func.lower(Machine.code) == code.lower())
+    )).first()
+    if dup_eq or dup_m:
+        raise HTTPException(status_code=409, detail="code_taken")
+
+    department = await _assemblage_department(db, ctx.plant_id)
+    eq = Equipment(
+        plant_id=ctx.plant_id,
+        code=code,
+        name=name,
+        department=department,
+        asset_type="production",
+        block_kind="assembly_line",
+        function_label="Ligne d'assemblage de meubles [furniture assembly line]",
+    )
+    db.add(eq)
+    await db.flush()
+
+    # Same kiosk/Machine auto-provisioning the equipment create endpoint uses.
+    await ensure_machine_for_equipment(db, eq)
+    await db.flush()
+
+    machine = (await db.execute(
+        select(Machine).where(Machine.equipment_id == eq.id)
+    )).scalars().first()
+    if machine is None:
+        raise HTTPException(status_code=500, detail="line_kiosk_not_created")
+    # Start on the default single day shift (07:00–15:30), evening/night pre-filled
+    # but off — the operator switches them on later to add capacity.
+    machine.shift_schedule = _default_shift_schedule()
+    machine.shifts_config = _config_from_schedule(machine.shift_schedule)
+    if data.cadence_per_hour:
+        machine.target_count_per_hour = max(0, data.cadence_per_hour)
+        per_shift, daily = _derive_targets_from_hourly(
+            machine.target_count_per_hour, machine.shifts_config)
+        machine.target_count_per_shift = per_shift
+        machine.target_count = daily
+
+    await db.commit()
+    await db.refresh(machine)
+    return _line_objective_out(machine)
+
+
+@router.delete("/assembly-lines/{machine_id}")
+async def delete_assembly_line(
+    machine_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    _perm: User = Depends(require_permission("settings_machines", "update")),
+):
+    """Remove an assembly line from the plant (soft): deactivates the Equipment
+    and its kiosk/Machine so it drops from the line list, the TV stats and the
+    factory map. History (stops, OFs, production) is preserved."""
+    machine = ensure_same_plant(await db.get(Machine, machine_id), ctx, detail="Machine not found")
+    eq = await db.get(Equipment, machine.equipment_id) if machine.equipment_id else None
+    if eq is not None:
+        eq.active = False
+        await ensure_machine_for_equipment(db, eq)  # turns the kiosk off
+    else:
+        machine.is_active = False
+    await db.commit()
+    return {"ok": True}
 
 
 @router.post("/", response_model=MachineOut, status_code=201)
@@ -288,9 +677,14 @@ async def update_job_number(
     db: AsyncSession = Depends(get_db),
 ):
     machine = await _get_machine(ref, db)
-    machine.current_job_number = data.job_number
+    # Scanning the OF here opens a JobOrderRun ("passagem") so its time/cost on this
+    # machine is tracked and the OF is located for WIP. An empty value clears it.
+    jo, _run = await scan_job_order_at_machine(
+        db, machine, data.job_number, source=JobOrderSource.manual,
+    )
     await db.commit()
-    return {"status": "ok", "job_number": machine.current_job_number}
+    return {"status": "ok", "job_number": machine.current_job_number,
+            "job_order_id": str(jo.id) if jo else None}
 
 
 # ── Operator selection ────────────────────────────────────────────────────────
@@ -627,6 +1021,138 @@ async def close_stop(
     return {"status": "ok", "duration_minutes": stop.duration_minutes}
 
 
+# ── Cleaning checklist (kiosk) ────────────────────────────────────────────────
+# Operator task list shown when a stop is declared with the linked category
+# (e.g. "Nettoyage"). Same trust level as the stop endpoints — no auth.
+
+async def _cleaning_checklist_for_machine(machine: Machine, db: AsyncSession) -> Optional[CleaningChecklist]:
+    eq_id = machine.equipment_id
+    if not eq_id:
+        eq = await db.get(Equipment, machine.id)
+        if not eq and machine.code:
+            r = await db.execute(select(Equipment).where(Equipment.code == machine.code))
+            eq = r.scalar_one_or_none()
+        eq_id = eq.id if eq else None
+    if not eq_id:
+        return None
+    r = await db.execute(
+        select(CleaningChecklist).where(
+            CleaningChecklist.equipment_id == eq_id,
+            CleaningChecklist.is_active == True,  # noqa: E712
+        ).limit(1)
+    )
+    return r.scalar_one_or_none()
+
+
+@router.get("/{ref}/cleaning-checklist")
+async def get_cleaning_checklist(ref: str, db: AsyncSession = Depends(get_db)):
+    machine = await _get_machine(ref, db)
+    checklist = await _cleaning_checklist_for_machine(machine, db)
+    if not checklist:
+        return {"checklist": None, "items": []}
+    items = (await db.execute(
+        select(CleaningChecklistItem)
+        .where(CleaningChecklistItem.checklist_id == checklist.id)
+        .order_by(CleaningChecklistItem.sort_order)
+    )).scalars().all()
+    return {
+        "checklist": {
+            "id": str(checklist.id),
+            "name": checklist.name,
+            "stop_category_id": str(checklist.stop_category_id) if checklist.stop_category_id else None,
+        },
+        "items": [
+            {"id": str(i.id), "text": i.text, "sort_order": i.sort_order, "is_required": i.is_required}
+            for i in items
+        ],
+    }
+
+
+@router.get("/{ref}/stops/{stop_id}/cleaning-checklist")
+async def get_stop_cleaning_responses(ref: str, stop_id: UUID, db: AsyncSession = Depends(get_db)):
+    machine = await _get_machine(ref, db)
+    stop = await db.get(MachineStop, stop_id)
+    if not stop or stop.machine_id != machine.id:
+        raise HTTPException(404, "Stop not found")
+    rows = (await db.execute(
+        select(StopCleaningResponse).where(StopCleaningResponse.stop_id == stop_id)
+    )).scalars().all()
+    return {
+        "responses": [
+            {
+                "item_id": str(r.checklist_item_id) if r.checklist_item_id else None,
+                "item_text": r.item_text,
+                "checked": r.checked,
+                "checked_at": r.checked_at.isoformat() if r.checked_at else None,
+                "checked_by": r.checked_by,
+            }
+            for r in rows
+        ]
+    }
+
+
+class CleaningResponseIn(BaseModel):
+    item_id: Optional[str] = None
+    item_text: str = ""
+    checked: bool = False
+
+
+class CleaningResponsesBody(BaseModel):
+    responses: List[CleaningResponseIn]
+    checked_by: Optional[str] = None
+
+
+@router.post("/{ref}/stops/{stop_id}/cleaning-checklist")
+async def save_stop_cleaning_responses(
+    ref: str,
+    stop_id: UUID,
+    body: CleaningResponsesBody,
+    db: AsyncSession = Depends(get_db),
+):
+    """Upsert the stop's cleaning-task ticks. The kiosk sends the whole list on
+    every toggle, so a lost request never leaves half-saved state; the first
+    check keeps its original checked_at."""
+    machine = await _get_machine(ref, db)
+    stop = await db.get(MachineStop, stop_id)
+    if not stop or stop.machine_id != machine.id:
+        raise HTTPException(404, "Stop not found")
+
+    existing_rows = (await db.execute(
+        select(StopCleaningResponse).where(StopCleaningResponse.stop_id == stop_id)
+    )).scalars().all()
+    existing = {r.checklist_item_id: r for r in existing_rows}
+
+    now = datetime.now(timezone.utc)
+    for resp in body.responses:
+        item_id = None
+        if resp.item_id:
+            try:
+                item_id = UUID(resp.item_id)
+            except ValueError:
+                continue
+        row = existing.get(item_id)
+        if row:
+            if resp.checked and not row.checked:
+                row.checked_at = now
+                row.checked_by = body.checked_by or row.checked_by
+            elif not resp.checked:
+                row.checked_at = None
+            row.checked = resp.checked
+            if resp.item_text:
+                row.item_text = resp.item_text
+        else:
+            db.add(StopCleaningResponse(
+                stop_id=stop_id,
+                checklist_item_id=item_id,
+                item_text=resp.item_text,
+                checked=resp.checked,
+                checked_at=now if resp.checked else None,
+                checked_by=body.checked_by if resp.checked else None,
+            ))
+    await db.commit()
+    return {"status": "ok"}
+
+
 class ProductionSignalIn(BaseModel):
     running: bool
     ts: Optional[datetime] = None   # reserved: reading timestamp from the gateway
@@ -790,10 +1316,14 @@ async def ingest_production_count(
 
     wall = _wall_clock(payload.ts)
     shift_enum, log_date = _shift_and_date_for(machine, wall)
+    # Attribute the parts to the OF currently loaded here (its open JobOrderRun) — the
+    # authoritative per-OF count — and get its number to stamp on the OEE/hourly rows.
+    job_number = await attribute_production(db, machine.id, payload.count, payload.reject)
     svc = MesService(db)
     totals = await svc.add_production(
         machine.id, payload.count, payload.reject, shift_enum,
         default_target=machine.target_count_per_shift or 480, log_date=log_date,
+        job_number=job_number,
     )
     # Record the REAL hour each part was produced (UTC-truncated) so the pieces/hour
     # chart shows the true curve, not a synthetic spread of the shift total.
@@ -801,12 +1331,145 @@ async def ingest_production_count(
     if ts_aware.tzinfo is None:
         ts_aware = ts_aware.replace(tzinfo=timezone.utc)
     hour_utc = ts_aware.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    await svc.add_hourly_count(machine.id, hour_utc, payload.count, payload.reject)
+    await svc.add_hourly_count(machine.id, hour_utc, payload.count, payload.reject, job_number=job_number)
     # Parts flowing ⇒ the machine is producing: keep the live status green.
     await apply_production_signal(db, machine, True)
     await db.commit()
+    production_pulse.record_units(machine.id, payload.count)   # live rate/trend (line TVs)
     return {"machine_id": str(machine.id), "shift": shift_enum.value,
             "date": log_date.isoformat(), **totals}
+
+
+# ── OF (Ordre de fabrication) external ingest — Cortex + smart-label ───────────
+# SKELETONS for the pilot: both events happen at a physical station, so they mirror
+# the ADAM /production-signal auth (PROVISIONAL per-machine X-Signal-Token). The real
+# transport/contract (Cortex API, label-printer webhook) is wired with the integrator;
+# no external system is connected yet. Both funnel through scan_job_order_at_machine so
+# an OF scanned via Cortex/smart-label tracks time/cost/WIP exactly like a kiosk scan.
+
+def _require_signal_token(machine, token: Optional[str]) -> None:
+    if not machine.signal_ingest_token:
+        raise HTTPException(status_code=401, detail="Signal ingest not provisioned for this machine")
+    if token != machine.signal_ingest_token:
+        raise HTTPException(status_code=401, detail="Invalid signal token")
+
+
+class OfScanIn(BaseModel):
+    job_number: str
+    product_name: Optional[str] = None      # from the label, enriches the OF
+    target_quantity: Optional[int] = None
+    program: Optional[str] = None           # Cortex: cobot program on the label (recorded, never executed)
+    ts: Optional[datetime] = None
+
+
+async def _ingest_of_scan(ref, payload, db, token, source):
+    machine = await _get_machine(ref, db)
+    _require_signal_token(machine, token)
+    jo, run = await scan_job_order_at_machine(
+        db, machine, payload.job_number, source=source,
+        product_name=payload.product_name, target_quantity=payload.target_quantity,
+        when=payload.ts,
+    )
+    await db.commit()
+    return {
+        "machine_id": str(machine.id),
+        "job_number": machine.current_job_number,
+        "job_order_id": str(jo.id) if jo else None,
+        "run_id": str(run.id) if run else None,
+    }
+
+
+@router.post("/{ref}/cortex-scan")
+async def cortex_scan(
+    ref: str,
+    payload: OfScanIn,
+    db: AsyncSession = Depends(get_db),
+    x_signal_token: Optional[str] = Header(None, alias="X-Signal-Token"),
+):
+    """Cortex label scan at this machine → OF passage (source=cortex). `program` (the
+    cobot program read from the label) is recorded/echoed, never executed. Skeleton."""
+    return await _ingest_of_scan(ref, payload, db, x_signal_token, JobOrderSource.cortex)
+
+
+class OfUnitScanIn(BaseModel):
+    job_number: str                          # OF number on the finished unit's label
+    count: int = 1                           # units this scan represents (normally 1)
+    reject: int = 0
+    product_name: Optional[str] = None       # from the label, enriches the OF
+    target_quantity: Optional[int] = None
+    ts: Optional[datetime] = None            # when the unit was scanned (local, with offset)
+
+
+@router.post("/{ref}/of-unit-scan")
+async def of_unit_scan(
+    ref: str,
+    payload: OfUnitScanIn,
+    db: AsyncSession = Depends(get_db),
+    x_signal_token: Optional[str] = Header(None, alias="X-Signal-Token"),
+):
+    """End-of-line unit scan (assembly lines, fed by the Cortex poller): each scan =
+    `count` FINISHED unit(s) of the labelled OF leaving this line. Ensures the OF's
+    run is open here and credits the units to it (per-OF quantity), AND adds them to
+    the line's shift/hourly production (OEE) stamped with that OF — the end-of-line
+    twin of /production-count, where the scan itself names the OF instead of
+    whatever is loaded. Same provisional per-machine X-Signal-Token auth.
+
+    QUANTITIES ONLY — unlike /production-count this never touches the live status:
+    on the lines the belt's ADAM (source=state) is the sole status authority, and
+    Cortex scans are PULLED so one can arrive after the belt stopped; painting the
+    line green here would stick (the ADAM only reports transitions)."""
+    machine = await _get_machine(ref, db)
+    _require_signal_token(machine, x_signal_token)
+    number = (payload.job_number or "").strip()
+    if not number:
+        raise HTTPException(status_code=422, detail="job_number_required")
+
+    jo, run = await complete_unit_at_machine(
+        db, machine, number, count=payload.count, rejects=payload.reject,
+        source=JobOrderSource.cortex, when=payload.ts,
+        product_name=payload.product_name, target_quantity=payload.target_quantity,
+    )
+
+    # Shift/hourly production + OEE — mirrors /production-count.
+    wall = _wall_clock(payload.ts)
+    shift_enum, log_date = _shift_and_date_for(machine, wall)
+    svc = MesService(db)
+    totals = await svc.add_production(
+        machine.id, payload.count, payload.reject, shift_enum,
+        default_target=machine.target_count_per_shift or 480, log_date=log_date,
+        job_number=jo.job_number if jo else None,
+    )
+    ts_aware = payload.ts or datetime.now(timezone.utc)
+    if ts_aware.tzinfo is None:
+        ts_aware = ts_aware.replace(tzinfo=timezone.utc)
+    hour_utc = ts_aware.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    await svc.add_hourly_count(machine.id, hour_utc, payload.count, payload.reject,
+                               job_number=jo.job_number if jo else None)
+    await db.commit()
+    production_pulse.record_units(machine.id, payload.count)   # live rate/trend (line TVs)
+    return {
+        "machine_id": str(machine.id),
+        "job_number": jo.job_number if jo else None,
+        "job_order_id": str(jo.id) if jo else None,
+        "run_id": str(run.id) if run else None,
+        "run_pieces": run.pieces if run else None,
+        "shift": shift_enum.value,
+        "date": log_date.isoformat(),
+        **totals,
+    }
+
+
+@router.post("/{ref}/smart-label")
+async def smart_label_scan(
+    ref: str,
+    payload: OfScanIn,
+    db: AsyncSession = Depends(get_db),
+    x_signal_token: Optional[str] = Header(None, alias="X-Signal-Token"),
+):
+    """Smart-label print at the cutting station → the OF is registered (source=smart_label,
+    enriched with product/target from the label) and its first passage opens on this
+    machine. Skeleton."""
+    return await _ingest_of_scan(ref, payload, db, x_signal_token, JobOrderSource.smart_label)
 
 
 @router.patch("/{ref}/stops/{stop_id}/reclassify")

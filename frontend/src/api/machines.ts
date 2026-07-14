@@ -120,6 +120,34 @@ export const reclassifyStop = async (
   return data;
 };
 
+// ── Cleaning checklist (kiosk) ────────────────────────────────────────────────
+
+export interface CleaningChecklistData {
+  checklist: { id: string; name: string; stop_category_id: string | null } | null;
+  items: { id: string; text: string; sort_order: number; is_required: boolean }[];
+}
+
+export const fetchCleaningChecklist = async (ref: string): Promise<CleaningChecklistData> => {
+  const { data } = await axios.get<CleaningChecklistData>(`/api/machines/${ref}/cleaning-checklist`);
+  return data;
+};
+
+export const fetchStopCleaningResponses = async (
+  ref: string,
+  stopId: string,
+): Promise<{ responses: { item_id: string | null; item_text: string; checked: boolean }[] }> => {
+  const { data } = await axios.get(`/api/machines/${ref}/stops/${stopId}/cleaning-checklist`);
+  return data;
+};
+
+export const saveStopCleaningResponses = async (
+  ref: string,
+  stopId: string,
+  body: { responses: { item_id: string; item_text: string; checked: boolean }[]; checked_by?: string },
+): Promise<void> => {
+  await axios.post(`/api/machines/${ref}/stops/${stopId}/cleaning-checklist`, body);
+};
+
 export const cloneKioskLayout = async (
   layout: unknown[],
   targetIds: string[],

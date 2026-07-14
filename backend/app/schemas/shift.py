@@ -108,3 +108,16 @@ class AvailabilityOut(BaseModel):
     should_warn: bool
     detail: Optional[str] = None
     has_schedule: bool = False
+    announced: bool = False             # break confirmed live by the technician (not inferred)
+    since: Optional[datetime] = None    # when the announced break started
+
+
+# ── Announced (live) technician break ────────────────────────────────────────
+
+class BreakOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    technician_id: UUID
+    kind: ShiftBreakKind
+    started_at: datetime
+    ended_at: Optional[datetime] = None
