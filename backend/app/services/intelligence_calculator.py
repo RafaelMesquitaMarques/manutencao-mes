@@ -17,6 +17,7 @@ All monetary / time values in their natural units:
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -24,6 +25,20 @@ from sqlalchemy import func, select, and_, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+
+def _as_uuid(plant_id) -> Optional[uuid.UUID]:
+    """Coerce the plant_id (string, from build_findings) to a UUID for filtering,
+    or None (→ no plant restriction) when absent/malformed. build_findings is
+    called PER PLANT by the insights cron, so every sub-query must be scoped to
+    the plant the finding is stored under — otherwise a plant's AI insight is
+    computed from, and names, every other plant's machines/tickets/technicians."""
+    if isinstance(plant_id, uuid.UUID):
+        return plant_id
+    try:
+        return uuid.UUID(plant_id) if plant_id else None
+    except (ValueError, TypeError, AttributeError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -56,12 +71,13 @@ async def build_findings(
     )
 
     warnings: list[str] = []
+    pid = _as_uuid(plant_id)   # scope every sub-query to this plant's data
 
     # ── Run all analyses in parallel-friendly awaits ──────────────────────
-    tickets_current  = await _fetch_tickets(db, period_start, period_end)
-    tickets_previous = await _fetch_tickets(db, prev_start, prev_end)
-    alerts_current   = await _fetch_alerts(db, period_start, period_end)
-    all_machines     = await _fetch_machines(db)
+    tickets_current  = await _fetch_tickets(db, period_start, period_end, pid)
+    tickets_previous = await _fetch_tickets(db, prev_start, prev_end, pid)
+    alerts_current   = await _fetch_alerts(db, period_start, period_end, pid)
+    all_machines     = await _fetch_machines(db, pid)
     all_parts        = await _fetch_parts_consumption(db, period_days)
 
     # ── Summary counts ────────────────────────────────────────────────────
@@ -78,7 +94,7 @@ async def build_findings(
     )
 
     # ── MTBF (from ticket intervals) ──────────────────────────────────────
-    mtbf_result = await _calc_mtbf_from_tickets(db, period_days, warnings)
+    mtbf_result = await _calc_mtbf_from_tickets(db, period_days, warnings, pid)
 
     # ── Machine risk scores ───────────────────────────────────────────────
     machine_risks = await _calc_machine_risks(
@@ -97,7 +113,7 @@ async def build_findings(
     spare_risks, parts_below_min = _calc_spare_parts_risk(all_parts, warnings)
 
     # ── Technician workload ───────────────────────────────────────────────
-    tech_workload = await _calc_technician_workload(db, tickets_current, warnings)
+    tech_workload = await _calc_technician_workload(db, tickets_current, warnings, pid)
     concentration_risk = _detect_concentration_risk(tech_workload)
 
     return {
@@ -136,13 +152,17 @@ async def _fetch_tickets(
     db: AsyncSession,
     start: datetime,
     end: datetime,
+    plant_id: Optional[uuid.UUID] = None,
 ) -> list[dict]:
     """
-    Fetch maintenance tickets in the given period.
+    Fetch maintenance tickets in the given period (scoped to `plant_id` when set).
     Returns list of plain dicts to avoid ORM lazy-load issues.
     """
     from app.models.models import MaintenanceTicket, Machine
 
+    conds = [MaintenanceTicket.opened_at >= start, MaintenanceTicket.opened_at < end]
+    if plant_id is not None:
+        conds.append(MaintenanceTicket.plant_id == plant_id)
     result = await db.execute(
         select(
             MaintenanceTicket.id,
@@ -160,12 +180,7 @@ async def _fetch_tickets(
             Machine.department,
         )
         .join(Machine, MaintenanceTicket.machine_id == Machine.id, isouter=True)
-        .where(
-            and_(
-                MaintenanceTicket.opened_at >= start,
-                MaintenanceTicket.opened_at < end,
-            )
-        )
+        .where(and_(*conds))
         .order_by(MaintenanceTicket.opened_at)
     )
     rows = result.all()
@@ -176,10 +191,14 @@ async def _fetch_alerts(
     db: AsyncSession,
     start: datetime,
     end: datetime,
+    plant_id: Optional[uuid.UUID] = None,
 ) -> list[dict]:
-    """Fetch maintenance alerts in the given period."""
+    """Fetch maintenance alerts in the given period (scoped to `plant_id` when set)."""
     from app.models.models import MaintenanceAlert
 
+    conds = [MaintenanceAlert.created_at >= start, MaintenanceAlert.created_at < end]
+    if plant_id is not None:
+        conds.append(MaintenanceAlert.plant_id == plant_id)
     result = await db.execute(
         select(
             MaintenanceAlert.id,
@@ -190,21 +209,19 @@ async def _fetch_alerts(
             MaintenanceAlert.is_overdue,
             MaintenanceAlert.created_at,
         )
-        .where(
-            and_(
-                MaintenanceAlert.created_at >= start,
-                MaintenanceAlert.created_at < end,
-            )
-        )
+        .where(and_(*conds))
     )
     rows = result.all()
     return [row._asdict() for row in rows]
 
 
-async def _fetch_machines(db: AsyncSession) -> list[dict]:
-    """Fetch all active machines with their linked equipment criticality."""
+async def _fetch_machines(db: AsyncSession, plant_id: Optional[uuid.UUID] = None) -> list[dict]:
+    """Fetch active machines (scoped to `plant_id` when set)."""
     from app.models.models import Machine
 
+    conds = [Machine.is_active == True]  # noqa: E712
+    if plant_id is not None:
+        conds.append(Machine.plant_id == plant_id)
     result = await db.execute(
         select(
             Machine.id,
@@ -213,7 +230,7 @@ async def _fetch_machines(db: AsyncSession) -> list[dict]:
             Machine.location,
             Machine.is_active,
         )
-        .where(Machine.is_active == True)  # noqa: E712
+        .where(and_(*conds))
     )
     rows = result.all()
     return [row._asdict() for row in rows]
@@ -354,6 +371,7 @@ async def _calc_mtbf_from_tickets(
     db: AsyncSession,
     period_days: int,
     warnings: list[str],
+    plant_id: Optional[uuid.UUID] = None,
 ) -> dict:
     """
     Calculates MTBF per machine using the time between consecutive ticket
@@ -373,12 +391,15 @@ async def _calc_mtbf_from_tickets(
     lookback = max(period_days * 3, 90)
     start = now - timedelta(days=lookback)
 
+    conds = [MaintenanceTicket.opened_at >= start]
+    if plant_id is not None:
+        conds.append(MaintenanceTicket.plant_id == plant_id)
     result = await db.execute(
         select(
             MaintenanceTicket.machine_id,
             MaintenanceTicket.opened_at,
         )
-        .where(MaintenanceTicket.opened_at >= start)
+        .where(and_(*conds))
         .order_by(MaintenanceTicket.machine_id, MaintenanceTicket.opened_at)
     )
     rows = result.all()
@@ -1006,12 +1027,14 @@ async def _calc_technician_workload(
     db: AsyncSession,
     tickets: list[dict],
     warnings: list[str],
+    plant_id: Optional[uuid.UUID] = None,
 ) -> list[dict]:
     """
-    Analyses workload distribution across technicians.
+    Analyses workload distribution across technicians (scoped to `plant_id` when
+    set — a technician belongs to the plants their user holds membership in).
     Uses labor_records for hours, tickets for count.
     """
-    from app.models.models import LaborRecord, Technician, User
+    from app.models.models import LaborRecord, Technician, User, UserPlant
     from collections import defaultdict
 
     now   = datetime.now(timezone.utc)
@@ -1041,8 +1064,8 @@ async def _calc_technician_workload(
         if t.get("assigned_to_id"):
             ticket_by_tech[str(t["assigned_to_id"])] += 1
 
-    # Technician profiles
-    tech_result = await db.execute(
+    # Technician profiles (scoped to the plant's team when plant_id is set)
+    tech_stmt = (
         select(
             Technician.id,
             Technician.specialty,
@@ -1052,6 +1075,11 @@ async def _calc_technician_workload(
         .join(User, Technician.user_id == User.id)
         .where(Technician.active == True)  # noqa: E712
     )
+    if plant_id is not None:
+        tech_stmt = tech_stmt.join(
+            UserPlant, UserPlant.user_id == Technician.user_id
+        ).where(UserPlant.plant_id == plant_id)
+    tech_result = await db.execute(tech_stmt)
     technicians = tech_result.all()
 
     if not technicians:
