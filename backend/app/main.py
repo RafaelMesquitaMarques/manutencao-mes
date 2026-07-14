@@ -1041,38 +1041,6 @@ async def _run_migrations() -> None:
         "UPDATE plan_occurrences t SET plant_id = p.plant_id FROM maintenance_plans p WHERE t.plan_id = p.id AND t.plant_id IS NULL AND p.plant_id IS NOT NULL",
         "UPDATE intervention_types t SET plant_id = e.plant_id FROM equipment e WHERE t.equipment_id = e.id AND t.plant_id IS NULL",
         "UPDATE safety_checklists t SET plant_id = e.plant_id FROM equipment e WHERE t.equipment_id = e.id AND t.plant_id IS NULL",
-        # ── Media ownership backfill (phase 2): attribute existing /api/media files
-        # to a plant from the record that references them, so the authenticated media
-        # endpoint can scope legacy files. Best-effort + exception-safe: an
-        # un-attributed file stays NULL (served to any authed user, never public).
-        """
-        DO $$ BEGIN
-          INSERT INTO media_assets (id, filename, plant_id, media_type)
-          SELECT gen_random_uuid(), fn, pid, 'model' FROM (
-            SELECT DISTINCT split_part(model_url,'/api/media/',2) AS fn, plant_id AS pid
-            FROM equipment WHERE model_url LIKE '%/api/media/%' AND plant_id IS NOT NULL
-            UNION
-            SELECT DISTINCT split_part(model_url,'/api/media/',2), plant_id
-            FROM map_props WHERE model_url LIKE '%/api/media/%' AND plant_id IS NOT NULL
-          ) s ON CONFLICT (filename) DO NOTHING;
-
-          INSERT INTO media_assets (id, filename, plant_id, media_type)
-          SELECT gen_random_uuid(), fn, pid, 'image' FROM (
-            SELECT DISTINCT split_part(icon_url,'/api/media/',2) AS fn, plant_id AS pid
-            FROM equipment WHERE icon_url LIKE '%/api/media/%' AND plant_id IS NOT NULL
-            UNION
-            SELECT DISTINCT split_part(icon_url,'/api/media/',2), plant_id
-            FROM machines WHERE icon_url LIKE '%/api/media/%' AND plant_id IS NOT NULL
-            UNION
-            SELECT DISTINCT split_part(floor_plan_url,'/api/media/',2), id
-            FROM plants WHERE floor_plan_url LIKE '%/api/media/%'
-            UNION
-            SELECT DISTINCT split_part(w.proof_photo_url,'/api/media/',2), o.plant_id
-            FROM wo_actions w JOIN work_orders o ON w.work_order_id = o.id
-            WHERE w.proof_photo_url LIKE '%/api/media/%' AND o.plant_id IS NOT NULL
-          ) s ON CONFLICT (filename) DO NOTHING;
-        EXCEPTION WHEN others THEN NULL; END $$
-        """,
         # ── One-time: cost site rule. Encodes the EXISTING runtime rule from
         # costs.py::_site_of() ("mirabel" in the cost-center name → Mirabel, else
         # Saint-Jérôme) into data — the very rule the Costs page already applies.

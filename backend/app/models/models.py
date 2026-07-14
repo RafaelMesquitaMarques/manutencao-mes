@@ -2349,23 +2349,6 @@ class Dashboard(Base):
     updated_at    = Column(DateTime(timezone=True), onupdate=func.now())
 
 
-class MediaAsset(Base):
-    """Ownership record for an uploaded media file served at /api/media.
-    Written at upload; the serving endpoint 404s a file whose plant the caller
-    cannot access. A legacy file with no row (or plant_id NULL) is served to any
-    authenticated user — fail-open, since phase 1 already closed public access."""
-    __tablename__ = "media_assets"
-
-    id             = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    filename       = Column(String(255), unique=True, nullable=False, index=True)
-    plant_id       = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
-    uploaded_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
-    media_type     = Column(String(20), nullable=True)     # image | video | model
-    content_type   = Column(String(120), nullable=True)
-    size           = Column(Integer, nullable=True)
-    created_at     = Column(DateTime(timezone=True), server_default=func.now())
-
-
 class MaintenanceBudget(Base):
     """Monthly maintenance budget, tracked against actual costs on the Costs page.
     One row per (year, month); amount in the plant currency (CAD by default)."""

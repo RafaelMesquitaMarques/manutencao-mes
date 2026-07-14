@@ -5,19 +5,14 @@ authenticated, at /api/media/<file>.
 """
 import os
 import uuid
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
 from fastapi.responses import FileResponse
 from jose import JWTError, jwt
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.security import get_current_user
-from app.core.plant_context import PlantContext, get_plant_context
-from app.db.session import get_db
-from app.models.models import MediaAsset, User, UserPlant
+from app.models.models import User
 
 router = APIRouter(prefix="/api/uploads", tags=["Uploads"])
 
@@ -39,8 +34,8 @@ _MIME = {
 }
 
 
-def _auth_claims(request: Request) -> Optional[dict]:
-    """The JWT claims for a media request, or None. `<img>`/`<video>`/3D-loader
+def _is_authenticated(request: Request) -> bool:
+    """Media is served to authenticated sessions only. `<img>`/`<video>`/3D-loader
     requests can't send an Authorization header, so a same-origin httpOnly cookie
     (`media_auth`, set at login) carries the token; direct API/download callers may
     use the Authorization header instead."""
@@ -50,18 +45,16 @@ def _auth_claims(request: Request) -> Optional[dict]:
         if auth[:7].lower() == "bearer ":
             token = auth[7:]
     if not token:
-        return None
+        return False
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        return payload if payload.get("sub") else None
+        return bool(jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]).get("sub"))
     except JWTError:
-        return None
+        return False
 
 
 @media_router.get("/{filename}")
-async def serve_media(filename: str, request: Request, db: AsyncSession = Depends(get_db)):
-    claims = _auth_claims(request)
-    if claims is None:
+async def serve_media(filename: str, request: Request):
+    if not _is_authenticated(request):
         raise HTTPException(status_code=401, detail="Authentication required")
     # Path-traversal guard: only a bare filename inside UPLOAD_DIR is servable.
     safe = os.path.basename(filename)
@@ -70,33 +63,13 @@ async def serve_media(filename: str, request: Request, db: AsyncSession = Depend
     path = os.path.join(settings.UPLOAD_DIR, safe)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Not found")
-
-    # Per-file plant scope: a file with a known owner is served only to that plant's
-    # members (admin passes). Legacy/un-owned files (no row or plant_id NULL) fall
-    # through to any authenticated user — phase 1 already closed public access.
-    asset = (await db.execute(
-        select(MediaAsset).where(MediaAsset.filename == safe)
-    )).scalar_one_or_none()
-    if asset is not None and asset.plant_id is not None and claims.get("role") != "admin":
-        try:
-            uid = uuid.UUID(str(claims["sub"]))
-        except (ValueError, TypeError, KeyError):
-            raise HTTPException(status_code=404, detail="Not found")
-        member = (await db.execute(
-            select(UserPlant.id).where(UserPlant.user_id == uid, UserPlant.plant_id == asset.plant_id)
-        )).first()
-        if member is None:
-            raise HTTPException(status_code=404, detail="Not found")
-
     ext = os.path.splitext(safe)[1].lower()
-    return FileResponse(path, media_type=(asset.content_type if asset and asset.content_type else _MIME.get(ext)))
+    return FileResponse(path, media_type=_MIME.get(ext))
 
 
 @router.post("")
 async def upload_file(
     file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db),
-    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
     ext = os.path.splitext(file.filename or "")[1].lower()
@@ -132,13 +105,6 @@ async def upload_file(
         raise
     finally:
         await file.close()
-
-    # Record ownership so the serving endpoint can scope this file to its plant.
-    db.add(MediaAsset(
-        filename=fname, plant_id=ctx.plant_id, uploaded_by_id=current_user.id,
-        media_type=media_type, content_type=ctype or None, size=size,
-    ))
-    await db.commit()
 
     return {
         "url": f"/api/media/{fname}",
