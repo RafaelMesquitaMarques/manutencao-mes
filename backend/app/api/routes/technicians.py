@@ -38,6 +38,21 @@ async def _my_technician(db: AsyncSession, current_user: User) -> Technician:
     return tech
 
 
+async def _scoped_technician(technician_id: UUID, db: AsyncSession, ctx: PlantContext) -> Technician:
+    """Load a technician visible to the caller: the tech's USER must hold a
+    membership in a plant the caller can access (SJ+Mirabel share the team).
+    404 — never 403 — otherwise, so a plant can't confirm a foreign technician id
+    (protects the profile incl. hourly_rate and the unavailability sub-resource)."""
+    t = await db.get(Technician, technician_id)
+    if t is not None:
+        member = (await db.execute(
+            select(UserPlant.plant_id).where(UserPlant.user_id == t.user_id)
+        )).scalars().all()
+        if any(ctx.can_access(pid) for pid in member):
+            return t
+    raise HTTPException(status_code=404, detail="Technician not found")
+
+
 class TechnicianUpdate(BaseModel):
     employee_number: Optional[str] = None
     specialty: Optional[TechnicianSpecialty] = None
@@ -146,11 +161,19 @@ async def list_all_unavailability(
     date_from: Optional[date] = Query(default=None),
     date_to: Optional[date] = Query(default=None),
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
     """Calendar feed across technicians. Optional filters: technician + a date
-    range (overlap). Enriched with technician_name for the calendar UI."""
-    conds = []
+    range (overlap). Enriched with technician_name for the calendar UI.
+    Scoped to technicians on the active plant — never another plant's roster."""
+    # Only unavailability of technicians whose user is a member of the active plant.
+    visible_techs = (
+        select(Technician.id)
+        .join(UserPlant, UserPlant.user_id == Technician.user_id)
+        .where(UserPlant.plant_id == ctx.plant_id)
+    )
+    conds = [TechnicianUnavailability.technician_id.in_(visible_techs)]
     if technician_id is not None:
         conds.append(TechnicianUnavailability.technician_id == technician_id)
     if date_to is not None:
@@ -179,8 +202,10 @@ async def list_all_unavailability(
 async def list_technician_unavailability(
     technician_id: UUID,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
+    await _scoped_technician(technician_id, db, ctx)      # 404 across the plant boundary
     rows = (await db.execute(
         select(TechnicianUnavailability)
         .where(TechnicianUnavailability.technician_id == technician_id)
@@ -194,11 +219,10 @@ async def add_technician_unavailability(
     technician_id: UUID,
     data: UnavailabilityCreate,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    tech = await db.get(Technician, technician_id)
-    if not tech:
-        raise HTTPException(status_code=404, detail="Technician not found")
+    await _scoped_technician(technician_id, db, ctx)      # 404 across the plant boundary
     if data.end_date < data.start_date:
         raise HTTPException(status_code=400, detail="end_date_before_start_date")
     rec = TechnicianUnavailability(
@@ -217,8 +241,10 @@ async def delete_technician_unavailability(
     technician_id: UUID,
     unavailability_id: UUID,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
+    await _scoped_technician(technician_id, db, ctx)      # 404 across the plant boundary
     rec = await db.get(TechnicianUnavailability, unavailability_id)
     if not rec or rec.technician_id != technician_id:
         raise HTTPException(status_code=404, detail="Unavailability not found")
@@ -230,11 +256,10 @@ async def delete_technician_unavailability(
 async def get_technician(
     technician_id: UUID,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    t = await db.get(Technician, technician_id)
-    if not t:
-        raise HTTPException(status_code=404, detail="Technician not found")
+    t = await _scoped_technician(technician_id, db, ctx)
     out = TechnicianOut.model_validate(t)
     user = await db.get(User, t.user_id)
     if user:
@@ -248,10 +273,17 @@ async def get_technician(
 async def create_technician(
     data: TechnicianCreate,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
     user = await db.get(User, data.user_id)
     if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    # Never promote a user who belongs only to other plants into this plant's roster.
+    member = (await db.execute(
+        select(UserPlant.plant_id).where(UserPlant.user_id == data.user_id)
+    )).scalars().all()
+    if member and not any(ctx.can_access(pid) for pid in member):
         raise HTTPException(status_code=404, detail="User not found")
 
     existing = await db.execute(select(Technician).where(Technician.user_id == data.user_id))
@@ -281,10 +313,11 @@ async def update_technician(
     technician_id: UUID,
     data: TechnicianUpdate,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    t = await db.get(Technician, technician_id)
-    if not t or not t.active:
+    t = await _scoped_technician(technician_id, db, ctx)
+    if not t.active:
         raise HTTPException(status_code=404, detail="Technician not found")
     for field, value in data.model_dump(exclude_none=True).items():
         setattr(t, field, value)
@@ -302,10 +335,9 @@ async def update_technician(
 async def delete_technician(
     technician_id: UUID,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    t = await db.get(Technician, technician_id)
-    if not t:
-        raise HTTPException(status_code=404, detail="Technician not found")
+    t = await _scoped_technician(technician_id, db, ctx)
     t.active = False
     await db.commit()

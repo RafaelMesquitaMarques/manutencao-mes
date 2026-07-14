@@ -35,7 +35,7 @@ from app.api.routes.live import router as live_router
 from app.core.permissions import resource_guard, role_write_guard
 from app.core.kiosk_guard import kiosk_ref_guard
 from app.core.plant_scope import path_plant_guard
-from app.models.models import MachineIntervention, MaintenancePlan, PlanOccurrence, PmTemplate, UserRole, WorkOrder
+from app.models.models import Equipment, MachineIntervention, MaintenancePlan, PlanOccurrence, PmTemplate, UserRole, WorkOrder
 from app.services import event_bus
 
 logger = logging.getLogger(__name__)
@@ -1655,8 +1655,10 @@ app.include_router(suppliers_module.supplier_router, prefix="/api/suppliers",   
 app.include_router(suppliers_module.po_router,       prefix="/api/supplier-orders", tags=["Purchase Orders"])
 app.include_router(machine_operator_router, dependencies=[Depends(kiosk_ref_guard("machine_id"))])
 app.include_router(intervention_types_router)
-app.include_router(safety_checklist_router)
-app.include_router(cleaning_checklist_router)
+# Checklist config is keyed on /{equipment_id}; guard that the equipment is on a
+# plant the caller can access so machine checklists never cross the plant boundary.
+app.include_router(safety_checklist_router, dependencies=[Depends(path_plant_guard(Equipment, "equipment_id", detail="Equipment not found"))])
+app.include_router(cleaning_checklist_router, dependencies=[Depends(path_plant_guard(Equipment, "equipment_id", detail="Equipment not found"))])
 app.include_router(
     wo_approval_router,
     dependencies=[

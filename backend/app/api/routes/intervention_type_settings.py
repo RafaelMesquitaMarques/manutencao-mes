@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.models.models import Equipment, InterventionType, User
 from app.core.security import get_current_user
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import ensure_same_plant, plant_scoped
 
 router = APIRouter(prefix="/api/settings/intervention-types", tags=["Intervention Type Settings"])
 
@@ -46,9 +48,10 @@ def _to_dict(t: InterventionType) -> dict:
 async def list_types(
     equipment_id: Optional[UUID] = None,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    q = select(InterventionType)
+    q = plant_scoped(select(InterventionType), InterventionType, ctx)
     if equipment_id:
         q = q.where(InterventionType.equipment_id == equipment_id)
     q = q.order_by(InterventionType.sort_order)
@@ -60,12 +63,10 @@ async def list_types(
 async def create_type(
     data: TypeCreate,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    from app.models.models import Equipment
-    equip = await db.get(Equipment, data.equipment_id)
-    if not equip:
-        raise HTTPException(404, "Equipment not found")
+    equip = ensure_same_plant(await db.get(Equipment, data.equipment_id), ctx, detail="Equipment not found")
 
     itype = InterventionType(
         equipment_id=data.equipment_id,
@@ -87,11 +88,10 @@ async def update_type(
     type_id: UUID,
     data: TypeUpdate,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    itype = await db.get(InterventionType, type_id)
-    if not itype:
-        raise HTTPException(404, "Intervention type not found")
+    itype = ensure_same_plant(await db.get(InterventionType, type_id), ctx, detail="Intervention type not found")
     for field, value in data.model_dump(exclude_none=True).items():
         setattr(itype, field, value)
     await db.commit()
@@ -108,11 +108,14 @@ class CloneRequest(BaseModel):
 async def clone_types(
     data: CloneRequest,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
     """Copy all active intervention types from a source equipment to targets.
     Existing active types on each target are deactivated first (soft-delete, so
     completed interventions that reference them keep their link)."""
+    # Source and targets must all be visible to the caller — no cross-plant clone.
+    ensure_same_plant(await db.get(Equipment, data.source_equipment_id), ctx, detail="Equipment not found")
     src = (await db.execute(
         select(InterventionType)
         .where(InterventionType.equipment_id == data.source_equipment_id,
@@ -125,8 +128,8 @@ async def clone_types(
         if target_id == data.source_equipment_id:
             continue
         equip = await db.get(Equipment, target_id)
-        if not equip:
-            continue
+        if not equip or not ctx.can_access(equip.plant_id):
+            continue      # silently skip equipment outside the caller's plant
         existing = (await db.execute(
             select(InterventionType).where(
                 InterventionType.equipment_id == target_id,
@@ -151,11 +154,10 @@ async def clone_types(
 async def delete_type(
     type_id: UUID,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    itype = await db.get(InterventionType, type_id)
-    if not itype:
-        raise HTTPException(404, "Intervention type not found")
+    itype = ensure_same_plant(await db.get(InterventionType, type_id), ctx, detail="Intervention type not found")
     itype.is_active = False
     await db.commit()
     return {"status": "deleted"}
