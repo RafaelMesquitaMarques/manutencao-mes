@@ -5,14 +5,16 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
 from app.core.permissions import require_role
+from app.core.plant_context import PlantContext, get_plant_context
 from app.db.session import get_db
 from app.models.models import (
-    EscalationContact, NotificationLog, User, UserRole,
+    EscalationContact, MaintenanceAlert, MaintenanceTicket, NotificationLog,
+    User, UserPlant, UserRole,
 )
 from app.services.notification_service import (
     NotificationService, get_escalation_settings, twilio_configured,
@@ -79,10 +81,41 @@ def _contact_out(c: EscalationContact, u: User) -> dict:
     }
 
 
-async def _all_contacts(db: AsyncSession) -> list[dict]:
+def _contact_visible(plant_id):
+    """Contacts relevant to a plant — the SAME rule the sender uses in
+    notification_service._level_recipients: an explicit per-plant contact, or a
+    shared (plant_id NULL) contact whose user holds a membership in that plant."""
+    return or_(
+        EscalationContact.plant_id == plant_id,
+        and_(
+            EscalationContact.plant_id.is_(None),
+            exists(select(UserPlant.id).where(
+                UserPlant.user_id == EscalationContact.user_id,
+                UserPlant.plant_id == plant_id,
+            )),
+        ),
+    )
+
+
+async def _load_visible_contact(contact_id, db: AsyncSession, ctx: PlantContext) -> EscalationContact:
+    """A contact the caller may edit: visible for the active plant, else 404."""
+    contact = await db.get(EscalationContact, contact_id)
+    if contact is not None:
+        seen = (await db.execute(
+            select(EscalationContact.id).where(
+                EscalationContact.id == contact_id, _contact_visible(ctx.plant_id)
+            )
+        )).first()
+        if seen is not None:
+            return contact
+    raise HTTPException(404, "Contact not found")
+
+
+async def _all_contacts(db: AsyncSession, ctx: PlantContext) -> list[dict]:
     rows = (await db.execute(
         select(EscalationContact, User)
         .join(User, EscalationContact.user_id == User.id)
+        .where(_contact_visible(ctx.plant_id))
         .order_by(EscalationContact.level, User.name)
     )).all()
     return [_contact_out(c, u) for c, u in rows]
@@ -91,17 +124,21 @@ async def _all_contacts(db: AsyncSession) -> list[dict]:
 @router.get("/settings")
 async def get_settings(
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    row = await get_escalation_settings(db)
+    # Per-plant settings (QS+QM share the legacy NULL row; NL owns its own), and
+    # only the contacts relevant to the active plant.
+    row = await get_escalation_settings(db, ctx.plant_id)
     await db.commit()
-    return {"settings": _settings_out(row), "contacts": await _all_contacts(db)}
+    return {"settings": _settings_out(row), "contacts": await _all_contacts(db, ctx)}
 
 
 @router.patch("/settings")
 async def update_settings(
     body: dict,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(require_supervisor),
 ):
     if body.get("ticket_group_min_priority") is not None \
@@ -110,7 +147,7 @@ async def update_settings(
     for f in ("sms_templates", "channel_matrix"):
         if body.get(f) is not None and not isinstance(body[f], dict):
             raise HTTPException(422, f"{f} must be an object")
-    row = await get_escalation_settings(db)
+    row = await get_escalation_settings(db, ctx.plant_id)
     for f in SETTINGS_FIELDS:
         if f in body and body[f] is not None:
             setattr(row, f, body[f])
@@ -129,6 +166,7 @@ class ContactCreate(BaseModel):
 async def add_contact(
     data: ContactCreate,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(require_supervisor),
 ):
     # Level 0 = ticket open/close notification group; 1..5 = escalation levels
@@ -136,6 +174,13 @@ async def add_contact(
         raise HTTPException(422, "level must be between 0 and 5")
     user = await db.get(User, data.user_id)
     if not user:
+        raise HTTPException(404, "User not found")
+    # Only add contacts for users who belong to the active plant (a QS supervisor
+    # can't wire an NL user into notifications).
+    member = (await db.execute(
+        select(UserPlant.id).where(UserPlant.user_id == data.user_id, UserPlant.plant_id == ctx.plant_id)
+    )).first()
+    if member is None:
         raise HTTPException(404, "User not found")
     existing = (await db.execute(
         select(EscalationContact).where(
@@ -176,11 +221,10 @@ async def update_contact(
     contact_id: UUID,
     data: ContactPatch,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(require_supervisor),
 ):
-    contact = await db.get(EscalationContact, contact_id)
-    if not contact:
-        raise HTTPException(404, "Contact not found")
+    contact = await _load_visible_contact(contact_id, db, ctx)
     # exclude_unset (not exclude_none): an explicit null clears scope/schedule
     changes = data.model_dump(exclude_unset=True)
     for f in ("notify_start", "notify_end"):
@@ -202,11 +246,10 @@ async def update_contact(
 async def delete_contact(
     contact_id: UUID,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(require_supervisor),
 ):
-    contact = await db.get(EscalationContact, contact_id)
-    if not contact:
-        raise HTTPException(404, "Contact not found")
+    contact = await _load_visible_contact(contact_id, db, ctx)
     await db.delete(contact)
     await db.commit()
 
@@ -232,9 +275,19 @@ async def list_notifications(
     status: Optional[str] = Query(None),
     q: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    conds = []
+    # Scope to the active plant via the notification's linked alert/ticket.
+    # (Plant-less system messages — test SMS, shift reports — are not shown here.)
+    conds = [or_(
+        NotificationLog.alert_id.in_(
+            select(MaintenanceAlert.id).where(MaintenanceAlert.plant_id == ctx.plant_id)
+        ),
+        NotificationLog.ticket_id.in_(
+            select(MaintenanceTicket.id).where(MaintenanceTicket.plant_id == ctx.plant_id)
+        ),
+    )]
     if type:
         conds.append(NotificationLog.notification_type == type)
     if status:
@@ -265,11 +318,20 @@ RESEND_SUFFIX_RE = re.compile(r"\s*\[(?:twilio|error):[^\]]*\]\s*$")
 async def resend_notification(
     notification_id: UUID,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(require_supervisor),
 ):
     """Re-send an SMS from the log (typically a failed one) to the same number."""
     n = await db.get(NotificationLog, notification_id)
     if not n:
+        raise HTTPException(404, "Notification not found")
+    # Never resend across the plant boundary: the linked alert/ticket must be visible.
+    linked_plant = None
+    if n.alert_id and (a := await db.get(MaintenanceAlert, n.alert_id)) is not None:
+        linked_plant = a.plant_id
+    elif n.ticket_id and (t := await db.get(MaintenanceTicket, n.ticket_id)) is not None:
+        linked_plant = t.plant_id
+    if linked_plant is None or not ctx.can_access(linked_plant):
         raise HTTPException(404, "Notification not found")
     if n.notification_type != "sms":
         raise HTTPException(422, "only_sms_can_be_resent")

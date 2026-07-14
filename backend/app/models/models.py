@@ -2353,7 +2353,8 @@ class MaintenanceBudget(Base):
     """Monthly maintenance budget, tracked against actual costs on the Costs page.
     One row per (year, month); amount in the plant currency (CAD by default)."""
     __tablename__ = "maintenance_budgets"
-    __table_args__ = (UniqueConstraint("year", "month", name="uq_maintenance_budget_year_month"),)
+    # One budget per (plant, year, month); the shared/combined row has plant_id NULL.
+    __table_args__ = (UniqueConstraint("plant_id", "year", "month", name="uq_maintenance_budget_plant_ym"),)
 
     id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     plant_id   = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)  # NULL = legacy/ambiguous — see backfill report

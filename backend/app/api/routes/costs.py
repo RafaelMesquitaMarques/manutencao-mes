@@ -179,65 +179,99 @@ class BudgetSave(BaseModel):
     items: List[BudgetItem]
 
 
-async def _monthly_actuals(db: AsyncSession, year: int) -> dict[int, float]:
-    """Actual maintenance cost per month of `year`: WO cost transactions plus
-    WO parts plus approved intervention parts."""
+async def _monthly_actuals(db: AsyncSession, year: int, site: Optional[str] = None) -> dict[int, float]:
+    """Actual maintenance cost per month of `year`: WO cost transactions plus WO
+    parts plus approved intervention parts. Scoped to `site` with the SAME
+    repartition basis as _cc_actuals (attribute by the row's plant_id; fall back
+    to the cost-center name rule; a row outside QS/QM never counts)."""
+    site_ids = await _site_ids(db)
+    mapping = await _dept_map(db)
     totals: dict[int, float] = {m: 0.0 for m in range(1, 13)}
 
+    def add(cc, dept, m: int, amount: float, plant_id) -> None:
+        if _row_site_ok(plant_id, _resolve_cc_explicit(cc, dept, mapping), site, site_ids):
+            totals[m] += amount
+
     rows = (await db.execute(
-        select(extract("month", WOCost.date).label("m"), func.sum(WOCost.amount))
+        select(WorkOrder.cost_center, Equipment.department, WorkOrder.plant_id,
+               extract("month", WOCost.date).label("m"), func.sum(WOCost.amount))
+        .select_from(WOCost)
+        .join(WorkOrder, WOCost.work_order_id == WorkOrder.id)
+        .join(Equipment, WorkOrder.equipment_id == Equipment.id, isouter=True)
         .where(extract("year", WOCost.date) == year)
-        .group_by("m")
+        .group_by(WorkOrder.cost_center, Equipment.department, WorkOrder.plant_id, extract("month", WOCost.date))
     )).all()
-    for m, total in rows:
-        totals[int(m)] += float(total or 0)
+    for cc, dept, plant_id, m, total in rows:
+        add(cc, dept, int(m), float(total or 0), plant_id)
 
     rows = (await db.execute(
-        select(extract("month", WOPart.created_at).label("m"), func.sum(WOPart.total_cost))
-        .where(
-            extract("year", WOPart.created_at) == year,
-            WOPart.total_cost.isnot(None),
-        )
-        .group_by("m")
+        select(WorkOrder.cost_center, Equipment.department, WorkOrder.plant_id,
+               extract("month", WOPart.created_at).label("m"), func.sum(WOPart.total_cost))
+        .select_from(WOPart)
+        .join(WorkOrder, WOPart.work_order_id == WorkOrder.id)
+        .join(Equipment, WorkOrder.equipment_id == Equipment.id, isouter=True)
+        .where(extract("year", WOPart.created_at) == year, WOPart.total_cost.isnot(None))
+        .group_by(WorkOrder.cost_center, Equipment.department, WorkOrder.plant_id, extract("month", WOPart.created_at))
     )).all()
-    for m, total in rows:
-        totals[int(m)] += float(total or 0)
+    for cc, dept, plant_id, m, total in rows:
+        add(cc, dept, int(m), float(total or 0), plant_id)
 
     rows = (await db.execute(
-        select(extract("month", InterventionPart.added_at).label("m"), func.sum(InterventionPart.total_cost))
-        .where(
-            extract("year", InterventionPart.added_at) == year,
-            InterventionPart.approval_status == "approved",
-            InterventionPart.total_cost.isnot(None),
-        )
-        .group_by("m")
+        select(MachineIntervention.cost_center, Equipment.department, MachineIntervention.plant_id,
+               extract("month", InterventionPart.added_at).label("m"), func.sum(InterventionPart.total_cost))
+        .select_from(InterventionPart)
+        .join(MachineIntervention, InterventionPart.intervention_id == MachineIntervention.id)
+        .join(Equipment, MachineIntervention.equipment_id == Equipment.id, isouter=True)
+        .where(extract("year", InterventionPart.added_at) == year,
+               InterventionPart.approval_status == "approved",
+               InterventionPart.total_cost.isnot(None))
+        .group_by(MachineIntervention.cost_center, Equipment.department, MachineIntervention.plant_id,
+                  extract("month", InterventionPart.added_at))
     )).all()
-    for m, total in rows:
-        totals[int(m)] += float(total or 0)
+    for cc, dept, plant_id, m, total in rows:
+        add(cc, dept, int(m), float(total or 0), plant_id)
 
     return totals
 
 
-async def _budgets_for(db: AsyncSession, year: int) -> dict[int, float]:
+def _site_plant_id(site: Optional[str], site_ids: dict):
+    """The plant a budget is stored under: a single site → that plant; the
+    combined QS+QM view (site None) → the shared row (plant_id NULL)."""
+    return site_ids.get(site) if site else None
+
+
+async def _budgets_for(db: AsyncSession, year: int, plant_id=None) -> dict[int, float]:
+    """Budget for a plant (or the shared NULL row when plant_id is None). A
+    single-site view with no plant-specific budget falls back to the shared row."""
+    cond = MaintenanceBudget.plant_id.is_(None) if plant_id is None else MaintenanceBudget.plant_id == plant_id
     rows = (await db.execute(
-        select(MaintenanceBudget).where(MaintenanceBudget.year == year)
+        select(MaintenanceBudget).where(MaintenanceBudget.year == year, cond)
     )).scalars().all()
+    if not rows and plant_id is not None:
+        rows = (await db.execute(
+            select(MaintenanceBudget).where(MaintenanceBudget.year == year, MaintenanceBudget.plant_id.is_(None))
+        )).scalars().all()
     return {b.month: float(b.amount or 0) for b in rows}
 
 
 @router.get("/summary")
 async def cost_summary(
     year: int = Query(default=None, ge=2000, le=2100),
+    site: Optional[str] = Query(default=None),
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
     """Budget vs actual for one year, month by month. `ytd_*` stop at the current
-    month for the current year (full year otherwise)."""
+    month for the current year (full year otherwise). Scoped to the caller's
+    plant/site — a plant outside the QS/QM cost universe (e.g. NL) is refused."""
+    site = await _resolve_site(db, ctx, site)
     today = date.today()
     if year is None:
         year = today.year
-    actuals = await _monthly_actuals(db, year)
-    budgets = await _budgets_for(db, year)
+    site_ids = await _site_ids(db)
+    actuals = await _monthly_actuals(db, year, site)
+    budgets = await _budgets_for(db, year, _site_plant_id(site, site_ids))
 
     last_month = today.month if year == today.year else (12 if year < today.year else 0)
     months = [
@@ -258,23 +292,34 @@ async def cost_summary(
 @router.get("/budgets")
 async def get_budgets(
     year: int = Query(..., ge=2000, le=2100),
+    site: Optional[str] = Query(default=None),
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    budgets = await _budgets_for(db, year)
+    site = await _resolve_site(db, ctx, site)
+    site_ids = await _site_ids(db)
+    budgets = await _budgets_for(db, year, _site_plant_id(site, site_ids))
     return [{"month": m, "amount": budgets.get(m, 0.0)} for m in range(1, 13)]
 
 
 @router.put("/budgets")
 async def save_budgets(
     data: BudgetSave,
+    site: Optional[str] = Query(default=None),
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    """Upsert the monthly budget amounts for a year."""
+    """Upsert the monthly budget amounts for a year, under the caller's site
+    (single site → that plant; combined QS+QM view → the shared row)."""
+    site = await _resolve_site(db, ctx, site)
+    site_ids = await _site_ids(db)
+    plant_id = _site_plant_id(site, site_ids)
+    cond = MaintenanceBudget.plant_id.is_(None) if plant_id is None else MaintenanceBudget.plant_id == plant_id
     existing = {
         b.month: b for b in (await db.execute(
-            select(MaintenanceBudget).where(MaintenanceBudget.year == data.year)
+            select(MaintenanceBudget).where(MaintenanceBudget.year == data.year, cond)
         )).scalars().all()
     }
     for item in data.items:
@@ -282,7 +327,7 @@ async def save_budgets(
         if row:
             row.amount = item.amount
         else:
-            db.add(MaintenanceBudget(year=data.year, month=item.month, amount=item.amount))
+            db.add(MaintenanceBudget(year=data.year, month=item.month, amount=item.amount, plant_id=plant_id))
     await db.commit()
     budgets = await _budgets_for(db, data.year)
     return [{"month": m, "amount": budgets.get(m, 0.0)} for m in range(1, 13)]
