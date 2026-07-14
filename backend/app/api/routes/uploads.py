@@ -1,11 +1,14 @@
 """
 backend/app/api/routes/uploads.py
-Generic media upload (photos / videos) — saved under UPLOAD_DIR and served at /api/media/<file>.
+Generic media upload (photos / videos) — saved under UPLOAD_DIR and served,
+authenticated, at /api/media/<file>.
 """
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
+from fastapi.responses import FileResponse
+from jose import JWTError, jwt
 
 from app.core.config import settings
 from app.core.security import get_current_user
@@ -13,10 +16,55 @@ from app.models.models import User
 
 router = APIRouter(prefix="/api/uploads", tags=["Uploads"])
 
+# Served media lives behind auth (see media_router below) — the old open
+# StaticFiles mount let anyone with the URL fetch any file over the tunnel.
+media_router = APIRouter(prefix="/api/media", tags=["Media"])
+
 _IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic"}
 _VIDEO_EXT = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v", ".ogv"}
 _MODEL_EXT = {".glb", ".gltf"}
 _CHUNK = 1024 * 1024  # 1 MB
+
+_MIME = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp", ".heic": "image/heic",
+    ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+    ".avi": "video/x-msvideo", ".mkv": "video/x-matroska", ".m4v": "video/x-m4v", ".ogv": "video/ogg",
+    ".glb": "model/gltf-binary", ".gltf": "model/gltf+json",
+}
+
+
+def _is_authenticated(request: Request) -> bool:
+    """Media is served to authenticated sessions only. `<img>`/`<video>`/3D-loader
+    requests can't send an Authorization header, so a same-origin httpOnly cookie
+    (`media_auth`, set at login) carries the token; direct API/download callers may
+    use the Authorization header instead."""
+    token = request.cookies.get("media_auth")
+    if not token:
+        auth = request.headers.get("authorization", "")
+        if auth[:7].lower() == "bearer ":
+            token = auth[7:]
+    if not token:
+        return False
+    try:
+        return bool(jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]).get("sub"))
+    except JWTError:
+        return False
+
+
+@media_router.get("/{filename}")
+async def serve_media(filename: str, request: Request):
+    if not _is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    # Path-traversal guard: only a bare filename inside UPLOAD_DIR is servable.
+    safe = os.path.basename(filename)
+    if not safe or safe != filename or safe.startswith("."):
+        raise HTTPException(status_code=404, detail="Not found")
+    path = os.path.join(settings.UPLOAD_DIR, safe)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Not found")
+    ext = os.path.splitext(safe)[1].lower()
+    return FileResponse(path, media_type=_MIME.get(ext))
 
 
 @router.post("")

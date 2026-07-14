@@ -5,7 +5,6 @@ import re
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from sqlalchemy import text
 
@@ -28,7 +27,7 @@ from app.api.routes.cleaning_checklist_settings import router as cleaning_checkl
 from app.api.routes.wo_approval import router as wo_approval_router
 from app.api.routes.pm_template_settings import router as pm_template_settings_router
 from app.api.routes.intelligence import router as intelligence_router
-from app.api.routes.uploads import router as uploads_router
+from app.api.routes.uploads import router as uploads_router, media_router
 from app.api.routes.robot_cells import router as robot_cells_router
 from app.api.routes.dashboards import router as dashboards_router
 from app.api.routes.live import router as live_router
@@ -1690,9 +1689,11 @@ app.include_router(
 )
 app.include_router(live_router,       prefix="/api/live",       tags=["Live Updates"])
 
-# Serve uploaded media (photos/videos for SOP steps). Behind nginx /api/ → backend.
+# Serve uploaded media (photos/videos/3D models) — AUTHENTICATED (media_router),
+# replacing the old open StaticFiles mount that served any file to anyone with the
+# URL. Behind nginx /api/ → backend.
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-app.mount("/api/media", StaticFiles(directory=settings.UPLOAD_DIR), name="media")
+app.include_router(media_router)
 
 
 @app.get("/api/health", tags=["System"])

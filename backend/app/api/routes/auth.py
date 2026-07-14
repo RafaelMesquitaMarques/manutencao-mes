@@ -1,6 +1,6 @@
 import secrets
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -13,6 +13,7 @@ from app.schemas.user import (
     ForceChangePasswordRequest, PlantMembershipOut,
 )
 from app.core.security import verify_password, hash_password, create_access_token, get_current_user
+from app.core.config import settings
 from app.core.permissions import require_admin, effective_permissions
 from app.services.email_service import EmailService
 
@@ -57,7 +58,7 @@ async def _plant_memberships(db: AsyncSession, user: User) -> tuple[list[PlantMe
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(data: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(User).where(User.email == data.email, User.active == True)
     )
@@ -74,6 +75,13 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
 
     plants, default_plant_id = await _plant_memberships(db, user)
     token = create_access_token({"sub": str(user.id), "role": user.role.value})
+    # Same-origin, httpOnly cookie scoped to /api/media so <img>/<video>/3D-loader
+    # requests (which can't send an Authorization header) authenticate too. Set
+    # secure=True in production (HTTPS-only). Expires with the access token.
+    response.set_cookie(
+        key="media_auth", value=token, httponly=True, samesite="lax", secure=False,
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60, path="/api/media",
+    )
     return TokenResponse(
         access_token=token,
         user_id=str(user.id),
