@@ -198,24 +198,28 @@ async def list_suppliers(
 @supplier_router.get("/dashboard")
 async def supplier_dashboard(
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    total   = (await db.execute(select(func.count()).select_from(Supplier))).scalar_one()
-    active  = (await db.execute(select(func.count()).select_from(Supplier).where(Supplier.is_active == True))).scalar_one()
+    # Suppliers/stock pool across the QC group; purchase orders per active plant.
+    total   = (await db.execute(select(func.count()).select_from(Supplier).where(plant_condition(Supplier, ctx)))).scalar_one()
+    active  = (await db.execute(select(func.count()).select_from(Supplier).where(and_(Supplier.is_active == True, plant_condition(Supplier, ctx))))).scalar_one()
     open_pos = (await db.execute(
-        select(func.count()).select_from(PurchaseOrder).where(
-            PurchaseOrder.status.in_([PurchaseOrderStatus.draft, PurchaseOrderStatus.sent, PurchaseOrderStatus.confirmed])
-        )
+        select(func.count()).select_from(PurchaseOrder).where(and_(
+            PurchaseOrder.status.in_([PurchaseOrderStatus.draft, PurchaseOrderStatus.sent, PurchaseOrderStatus.confirmed]),
+            plant_condition(PurchaseOrder, ctx),
+        ))
     )).scalar_one()
     low_stock_with_supplier = (await db.execute(
         select(func.count()).select_from(
             select(StockItem).where(
-                and_(StockItem.supplier_id.isnot(None), or_(StockItem.quantity <= 0, and_(StockItem.min_quantity.isnot(None), StockItem.quantity <= StockItem.min_quantity)))
+                and_(StockItem.supplier_id.isnot(None), plant_condition(StockItem, ctx),
+                     or_(StockItem.quantity <= 0, and_(StockItem.min_quantity.isnot(None), StockItem.quantity <= StockItem.min_quantity)))
             ).subquery()
         )
     )).scalar_one()
     cats = (await db.execute(
-        select(Supplier.category, func.count()).where(Supplier.category.isnot(None)).group_by(Supplier.category).order_by(func.count().desc())
+        select(Supplier.category, func.count()).where(and_(Supplier.category.isnot(None), plant_condition(Supplier, ctx))).group_by(Supplier.category).order_by(func.count().desc())
     )).all()
     return {
         "total_suppliers": total,
@@ -226,15 +230,19 @@ async def supplier_dashboard(
     }
 
 
+async def _scoped_supplier(supplier_id, db: AsyncSession, ctx: PlantContext) -> Supplier:
+    """A supplier visible to the caller's group (QC pool), else 404."""
+    return ensure_same_plant(await db.get(Supplier, supplier_id), ctx, grouped=True, detail="Supplier not found")
+
+
 @supplier_router.get("/{supplier_id}")
 async def get_supplier(
     supplier_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    s = await db.get(Supplier, supplier_id)
-    if not s:
-        raise HTTPException(404, "Supplier not found")
+    s = await _scoped_supplier(supplier_id, db, ctx)
     ic = (await db.execute(select(func.count()).select_from(StockItem).where(StockItem.supplier_id == supplier_id))).scalar_one()
     oc = (await db.execute(select(func.count()).select_from(PurchaseOrder).where(PurchaseOrder.supplier_id == supplier_id))).scalar_one()
     ooc = (await db.execute(
@@ -250,11 +258,13 @@ async def get_supplier(
 async def create_supplier(
     body: dict,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
     if not body.get("name"):
         raise HTTPException(422, "name is required")
     s = Supplier(
+        plant_id=ctx.plant_id,   # owned by the creator's plant (visible across its QC group)
         code=body.get("code") or None,
         name=body["name"],
         contact_name=body.get("contact_name"),
@@ -284,11 +294,10 @@ async def update_supplier(
     supplier_id: uuid.UUID,
     body: dict,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    s = await db.get(Supplier, supplier_id)
-    if not s:
-        raise HTTPException(404, "Supplier not found")
+    s = await _scoped_supplier(supplier_id, db, ctx)
     updatable = [
         "code", "name", "contact_name", "email", "phone", "fax", "website",
         "address", "city", "country", "category", "payment_terms", "currency",
@@ -306,11 +315,10 @@ async def update_supplier(
 async def deactivate_supplier(
     supplier_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    s = await db.get(Supplier, supplier_id)
-    if not s:
-        raise HTTPException(404, "Supplier not found")
+    s = await _scoped_supplier(supplier_id, db, ctx)
     s.is_active = False
     await db.commit()
 
@@ -321,8 +329,10 @@ async def supplier_items(
     skip: int = 0,
     limit: int = Query(default=100, le=500),
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
+    await _scoped_supplier(supplier_id, db, ctx)      # 404 outside the caller's group
     q = select(StockItem).where(StockItem.supplier_id == supplier_id)
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
     rows  = (await db.execute(q.order_by(StockItem.code).offset(skip).limit(limit))).scalars().all()
@@ -346,8 +356,10 @@ async def supplier_orders(
     skip: int = 0,
     limit: int = Query(default=50, le=200),
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
+    await _scoped_supplier(supplier_id, db, ctx)      # 404 outside the caller's group
     q = (
         select(PurchaseOrder)
         .where(PurchaseOrder.supplier_id == supplier_id)
@@ -457,20 +469,25 @@ async def create_purchase_order(
     return _po_out(result, include_items=True)
 
 
-@po_router.get("/{order_id}")
-async def get_purchase_order(
-    order_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
+async def _scoped_po(order_id, db: AsyncSession, ctx: PlantContext) -> PurchaseOrder:
+    """A purchase order owned by the caller's active plant (POs are plant-scoped,
+    NOT group-scoped — each Quebec plant keeps its own orders), else 404."""
     po = await db.scalar(
         select(PurchaseOrder)
         .where(PurchaseOrder.id == order_id)
         .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items))
     )
-    if not po:
-        raise HTTPException(404, "Purchase order not found")
-    return _po_out(po, include_items=True)
+    return ensure_same_plant(po, ctx, detail="Purchase order not found")
+
+
+@po_router.get("/{order_id}")
+async def get_purchase_order(
+    order_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    current_user: User = Depends(get_current_user),
+):
+    return _po_out(await _scoped_po(order_id, db, ctx), include_items=True)
 
 
 @po_router.patch("/{order_id}")
@@ -478,15 +495,10 @@ async def update_purchase_order(
     order_id: uuid.UUID,
     body: dict,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    po = await db.scalar(
-        select(PurchaseOrder)
-        .where(PurchaseOrder.id == order_id)
-        .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items))
-    )
-    if not po:
-        raise HTTPException(404, "Purchase order not found")
+    po = await _scoped_po(order_id, db, ctx)
     if po.status == PurchaseOrderStatus.received:
         raise HTTPException(400, "Cannot edit a received order")
     if "status" in body:
@@ -516,11 +528,10 @@ async def add_po_item(
     order_id: uuid.UUID,
     body: dict,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    po = await db.get(PurchaseOrder, order_id)
-    if not po:
-        raise HTTPException(404, "Purchase order not found")
+    po = await _scoped_po(order_id, db, ctx)
     if po.status == PurchaseOrderStatus.received:
         raise HTTPException(400, "Cannot add items to a received order")
     qty  = float(body.get("quantity", 1))
@@ -550,15 +561,10 @@ async def receive_purchase_order(
     order_id: uuid.UUID,
     body: dict,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    po = await db.scalar(
-        select(PurchaseOrder)
-        .where(PurchaseOrder.id == order_id)
-        .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items))
-    )
-    if not po:
-        raise HTTPException(404, "Purchase order not found")
+    po = await _scoped_po(order_id, db, ctx)
     if po.status == PurchaseOrderStatus.cancelled:
         raise HTTPException(400, "Cannot receive a cancelled order")
     if po.status == PurchaseOrderStatus.received:
@@ -662,14 +668,16 @@ async def _covered_stock_ids(db: AsyncSession) -> set:
 @po_router.get("/replenishment/preview")
 async def replenishment_preview(
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
     """Low-stock items grouped by supplier, ready to turn into draft POs.
     Items already on an open PO are excluded; items without a supplier are
-    reported separately (they can't be ordered automatically)."""
+    reported separately (they can't be ordered automatically). Scoped to the
+    caller's QC stock pool."""
     covered = await _covered_stock_ids(db)
     items = (await db.execute(
-        select(StockItem).where(_low_stock_cond()).order_by(StockItem.code)
+        select(StockItem).where(and_(_low_stock_cond(), plant_condition(StockItem, ctx))).order_by(StockItem.code)
     )).scalars().all()
 
     sup_ids = {i.supplier_id for i in items if i.supplier_id}
@@ -761,7 +769,7 @@ async def replenishment_generate(
         raise HTTPException(422, "No valid items")
 
     stock_items = (await db.execute(
-        select(StockItem).where(StockItem.id.in_(list(qty_by_id.keys())))
+        select(StockItem).where(and_(StockItem.id.in_(list(qty_by_id.keys())), plant_condition(StockItem, ctx)))
     )).scalars().all()
 
     covered = await _covered_stock_ids(db)
