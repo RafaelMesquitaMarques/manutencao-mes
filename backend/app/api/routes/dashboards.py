@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.models.models import Dashboard, User
 from app.core.security import get_current_user
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import ensure_same_plant, plant_scoped
 
 router = APIRouter()
 
@@ -60,7 +62,7 @@ async def _unique_slug(db: AsyncSession, base: str) -> str:
     return slug
 
 
-async def _get(ref: str, db: AsyncSession) -> Dashboard:
+async def _get(ref: str, db: AsyncSession, ctx: PlantContext) -> Dashboard:
     d = None
     try:
         d = await db.get(Dashboard, UUID(ref))
@@ -68,27 +70,33 @@ async def _get(ref: str, db: AsyncSession) -> Dashboard:
         d = None
     if d is None:
         d = (await db.execute(select(Dashboard).where(Dashboard.slug == ref))).scalar_one_or_none()
-    if d is None:
-        raise HTTPException(status_code=404, detail="Dashboard not found")
-    return d
+    # 404 (never 403) for a missing dashboard or one owned by another plant.
+    return ensure_same_plant(d, ctx, detail="Dashboard not found")
 
 
 @router.get("/", response_model=List[DashboardOut])
-async def list_dashboards(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+async def list_dashboards(db: AsyncSession = Depends(get_db),
+                          ctx: PlantContext = Depends(get_plant_context),
+                          user: User = Depends(get_current_user)):
     rows = (await db.execute(
-        select(Dashboard)
-        .where(or_(Dashboard.is_shared == True, Dashboard.created_by_id == user.id))  # noqa: E712
-        .order_by(Dashboard.name)
+        plant_scoped(
+            select(Dashboard)
+            .where(or_(Dashboard.is_shared == True, Dashboard.created_by_id == user.id))  # noqa: E712
+            .order_by(Dashboard.name),
+            Dashboard, ctx,
+        )
     )).scalars().all()
     return rows
 
 
 @router.post("/", response_model=DashboardOut)
 async def create_dashboard(data: DashboardCreate, db: AsyncSession = Depends(get_db),
+                           ctx: PlantContext = Depends(get_plant_context),
                            user: User = Depends(get_current_user)):
     d = Dashboard(
         slug=await _unique_slug(db, _slugify(data.name)),
         name=data.name, is_shared=data.is_shared, created_by_id=user.id,
+        plant_id=ctx.plant_id,
         tiles=[t.model_dump(mode="json") for t in data.tiles],
     )
     db.add(d)
@@ -99,14 +107,16 @@ async def create_dashboard(data: DashboardCreate, db: AsyncSession = Depends(get
 
 @router.get("/{ref}", response_model=DashboardOut)
 async def get_dashboard(ref: str, db: AsyncSession = Depends(get_db),
+                        ctx: PlantContext = Depends(get_plant_context),
                         user: User = Depends(get_current_user)):
-    return await _get(ref, db)
+    return await _get(ref, db, ctx)
 
 
 @router.patch("/{ref}", response_model=DashboardOut)
 async def update_dashboard(ref: str, data: DashboardUpdate, db: AsyncSession = Depends(get_db),
+                           ctx: PlantContext = Depends(get_plant_context),
                            user: User = Depends(get_current_user)):
-    d = await _get(ref, db)
+    d = await _get(ref, db, ctx)
     if data.name is not None:
         d.name = data.name
     if data.is_shared is not None:
@@ -120,7 +130,8 @@ async def update_dashboard(ref: str, data: DashboardUpdate, db: AsyncSession = D
 
 @router.delete("/{ref}", status_code=204)
 async def delete_dashboard(ref: str, db: AsyncSession = Depends(get_db),
+                           ctx: PlantContext = Depends(get_plant_context),
                            user: User = Depends(get_current_user)):
-    d = await _get(ref, db)
+    d = await _get(ref, db, ctx)
     await db.delete(d)
     await db.commit()

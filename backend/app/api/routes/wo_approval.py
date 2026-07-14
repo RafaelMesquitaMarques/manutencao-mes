@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import plant_scoped
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.models import (
@@ -189,31 +191,42 @@ async def _view_from_work_order(db: AsyncSession, wo: WorkOrder) -> dict:
 @router.get("/pending")
 async def list_pending(
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    """Completed work awaiting sign-off, from both sources, newest first."""
+    """Completed work awaiting sign-off, from both sources, newest first.
+    Scoped to the active plant — the queue never surfaces another plant's work."""
     # Floor interventions
     r = await db.execute(
-        select(MachineIntervention).where(
-            MachineIntervention.status == "completed",
-            MachineIntervention.approval_status == "pending",
+        plant_scoped(
+            select(MachineIntervention).where(
+                MachineIntervention.status == "completed",
+                MachineIntervention.approval_status == "pending",
+            ),
+            MachineIntervention, ctx,
         )
     )
     interventions = list(r.scalars().all())
 
     # Tickets already represented by an intervention — used to drop the office WO twin
     # (a machine-linked WO spawns an intervention via intervention_sync) so the same
-    # physical work is never listed twice.
+    # physical work is never listed twice. Scoped to the active plant, like the queues.
     r = await db.execute(
-        select(MachineIntervention.ticket_id).where(MachineIntervention.ticket_id.isnot(None))
+        plant_scoped(
+            select(MachineIntervention.ticket_id).where(MachineIntervention.ticket_id.isnot(None)),
+            MachineIntervention, ctx,
+        )
     )
     intervention_ticket_ids = {tid for (tid,) in r.all()}
 
     # Office work orders
     r = await db.execute(
-        select(WorkOrder).where(
-            WorkOrder.status == WorkOrderStatus.completed,
-            WorkOrder.approval_status == "pending",
+        plant_scoped(
+            select(WorkOrder).where(
+                WorkOrder.status == WorkOrderStatus.completed,
+                WorkOrder.approval_status == "pending",
+            ),
+            WorkOrder, ctx,
         )
     )
     work_orders = [wo for wo in r.scalars().all() if wo.ticket_id not in intervention_ticket_ids]

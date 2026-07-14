@@ -17,11 +17,14 @@ from app.api.routes import (
     maintenance_plans, inventory, alerts, iot, users, kpis, technicians,
     tickets, maintenance_dashboard, machines, stop_categories, job_orders,
     suppliers as suppliers_module, reports, escalation, factory_map, costs,
-    factory_calendar, adam_devices, shift_templates,
+    departments as departments_module,
+    factory_calendar, adam_devices, cortex_stations, shift_templates,
+    temperature_sensors, pit_stop,
 )
 from app.api.routes.machine_operator import router as machine_operator_router
 from app.api.routes.intervention_type_settings import router as intervention_types_router
 from app.api.routes.safety_checklist_settings import router as safety_checklist_router
+from app.api.routes.cleaning_checklist_settings import router as cleaning_checklist_router
 from app.api.routes.wo_approval import router as wo_approval_router
 from app.api.routes.pm_template_settings import router as pm_template_settings_router
 from app.api.routes.intelligence import router as intelligence_router
@@ -32,7 +35,7 @@ from app.api.routes.live import router as live_router
 from app.core.permissions import resource_guard, role_write_guard
 from app.core.kiosk_guard import kiosk_ref_guard
 from app.core.plant_scope import path_plant_guard
-from app.models.models import MaintenancePlan, PlanOccurrence, PmTemplate, UserRole, WorkOrder
+from app.models.models import MachineIntervention, MaintenancePlan, PlanOccurrence, PmTemplate, UserRole, WorkOrder
 from app.services import event_bus
 
 logger = logging.getLogger(__name__)
@@ -76,6 +79,72 @@ async def _shift_report_loop() -> None:
             print(f"[ShiftReport] {exc}")
 
 
+async def _weather_loop() -> None:
+    """Refresh each active plant's cached outdoor weather from Open-Meteo every
+    15 min (feeds the factory-map overview badge). Plants without coordinates are
+    skipped; one plant failing never stops the others."""
+    from sqlalchemy import select
+    from app.models.models import Plant
+    from app.services.weather_service import fetch_open_meteo
+    while True:
+        try:
+            async with AsyncSessionLocal() as db:
+                plants = (await db.execute(
+                    select(Plant).where(
+                        Plant.active == True,  # noqa: E712
+                        Plant.latitude.isnot(None), Plant.longitude.isnot(None))
+                )).scalars().all()
+                for p in plants:
+                    try:
+                        w = await fetch_open_meteo(p.latitude, p.longitude)
+                        if w.get("temp_c") is not None:
+                            p.weather_temp_c = w["temp_c"]
+                            p.weather_code = w.get("code")
+                            p.weather_updated_at = datetime.now(timezone.utc)
+                    except Exception as exc:  # noqa: BLE001 — skip this plant, keep the rest
+                        print(f"[Weather] {p.code}: {exc}")
+                await db.commit()
+        except Exception as exc:
+            print(f"[Weather] {exc}")
+        await asyncio.sleep(900)
+
+
+def _simulated_temp_c(sensor) -> float:
+    """Baseline ± amplitude on a slow ~10-min sine plus a little jitter — a
+    believable indoor curve until real hardware replaces the simulated source."""
+    import math, random, time
+    base = sensor.sim_baseline_c if sensor.sim_baseline_c is not None else 21.0
+    amp = sensor.sim_amplitude_c if sensor.sim_amplitude_c is not None else 2.0
+    phase = (time.time() / 600.0) * 2 * math.pi
+    return round(base + amp * math.sin(phase) + random.uniform(-0.3, 0.3), 1)
+
+
+async def _temperature_loop() -> None:
+    """Write a fresh reading for every enabled temperature sensor every 30s.
+    Today all sensors use the `simulated` source; the real Modbus/HTTP paths slot
+    in behind the same rows later (switch on `sensor.source`)."""
+    from sqlalchemy import select
+    from app.models.models import TemperatureSensor, TemperatureSource, AdamDeviceStatus
+    while True:
+        try:
+            async with AsyncSessionLocal() as db:
+                sensors = (await db.execute(
+                    select(TemperatureSensor).where(TemperatureSensor.enabled == True)  # noqa: E712
+                )).scalars().all()
+                now = datetime.now(timezone.utc)
+                for s in sensors:
+                    if s.source == TemperatureSource.simulated:
+                        s.last_value_c = _simulated_temp_c(s)
+                        s.last_reading_at = now
+                        s.status = AdamDeviceStatus.online
+                        s.last_error = None
+                    # adam_analog / http: real hardware paths handled elsewhere (future)
+                await db.commit()
+        except Exception as exc:
+            print(f"[TempSim] {exc}")
+        await asyncio.sleep(30)
+
+
 async def _backfill_ticket_alerts() -> None:
     """Create missing MaintenanceAlert records for tickets that have alert_id = NULL."""
     from app.services.ticket_service import backfill_missing_alerts
@@ -114,6 +183,11 @@ async def _run_migrations() -> None:
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS current_operator_id UUID REFERENCES users(id)",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS current_job_number VARCHAR(100)",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS kiosk_layout JSON",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS work_pauses JSON",
+        "ALTER TABLE line_tv_settings ADD COLUMN IF NOT EXISTS global_cadence_per_hour INTEGER",
+        "ALTER TABLE line_tv_settings ADD COLUMN IF NOT EXISTS global_work_start VARCHAR(10)",
+        "ALTER TABLE line_tv_settings ADD COLUMN IF NOT EXISTS global_work_end VARCHAR(10)",
+        "ALTER TABLE line_tv_settings ADD COLUMN IF NOT EXISTS global_pauses JSON",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS last_stop_at TIMESTAMPTZ",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS last_start_at TIMESTAMPTZ",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS page_language VARCHAR(10) NOT NULL DEFAULT 'fr'",
@@ -134,6 +208,7 @@ async def _run_migrations() -> None:
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS target_count_per_shift INT",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS target_count_per_hour INT",
         "ALTER TABLE machines ADD COLUMN IF NOT EXISTS shifts_config JSONB",
+        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS shift_schedule JSONB",
         "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS machine_id UUID REFERENCES machines(id) ON DELETE CASCADE",
         "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS name_en VARCHAR(200)",
         "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS name_fr VARCHAR(200)",
@@ -924,6 +999,21 @@ async def _run_migrations() -> None:
         "ALTER TABLE factory_calendar_settings ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
         "ALTER TABLE factory_holidays ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
         "ALTER TABLE shift_reports ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        # ── Phase: temperature sensors + outdoor weather badge (factory map)
+        "ALTER TABLE users  ADD COLUMN IF NOT EXISTS temp_unit VARCHAR(1) DEFAULT 'C'",
+        # ── Phase: preferred greeting name, set in User Management (NULL → first name)
+        "ALTER TABLE users  ADD COLUMN IF NOT EXISTS nickname VARCHAR(100)",
+        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION",
+        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION",
+        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS weather_temp_c DOUBLE PRECISION",
+        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS weather_code INTEGER",
+        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS weather_updated_at TIMESTAMPTZ",
+        # Seed coordinates for the known plants (only where unset, so admin edits in
+        # Settings → Plants are never clobbered). Open-Meteo reads these for the badge.
+        "UPDATE plants SET latitude = 45.7805, longitude = -74.0037 WHERE code IN ('PLT1','QS') AND latitude IS NULL",
+        "UPDATE plants SET latitude = 45.6501, longitude = -74.0848 WHERE code IN ('MIRA','QM') AND latitude IS NULL",
+        "UPDATE plants SET latitude = 36.1699, longitude = -115.1398 WHERE code = 'NL' AND latitude IS NULL",
+        "ALTER TABLE temperature_sensors ADD COLUMN IF NOT EXISTS department VARCHAR(200)",
         # ── Backfill: machine-derived (documented rule: row's plant = its machine's plant)
         "UPDATE maintenance_alerts t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
         "UPDATE maintenance_tickets t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
@@ -934,7 +1024,12 @@ async def _run_migrations() -> None:
         "UPDATE job_orders t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
         "UPDATE machine_history t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
         "UPDATE adam_devices t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
+        "UPDATE cortex_stations t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
         "UPDATE machine_interventions t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
+        # Dashboards carry no direct FK — derive the plant from the first machine
+        # their tiles bind to. Text-compare (never cast the tile value to uuid) so a
+        # malformed tile can never abort startup; an empty/machineless board stays NULL.
+        "UPDATE dashboards d SET plant_id = m.plant_id FROM machines m WHERE d.plant_id IS NULL AND d.tiles IS NOT NULL AND m.plant_id IS NOT NULL AND m.id::text = (SELECT t->>'machine_id' FROM jsonb_array_elements(d.tiles::jsonb) t WHERE (t->>'machine_id') IS NOT NULL LIMIT 1)",
         # ── Backfill: equipment-derived (row's plant = its equipment's plant)
         "UPDATE work_orders t SET plant_id = e.plant_id FROM equipment e WHERE t.equipment_id = e.id AND t.plant_id IS NULL",
         "UPDATE work_orders t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
@@ -1041,8 +1136,8 @@ async def _run_migrations() -> None:
             'plan_occurrences','intervention_types','safety_checklists','factory_zones','map_props',
             'cost_centers','cost_center_budgets','maintenance_budgets','sap_cost_lines',
             'escalation_settings','escalation_contacts','factory_calendar_settings',
-            'factory_holidays','shift_reports','adam_devices','shift_templates','dashboards',
-            'ai_insights'
+            'factory_holidays','shift_reports','adam_devices','cortex_stations','shift_templates',
+            'line_tv_settings','dashboards','ai_insights','temperature_sensors'
           ] LOOP
             IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name = t) THEN
               EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
@@ -1138,6 +1233,98 @@ async def _run_migrations() -> None:
         "CREATE INDEX IF NOT EXISTS idx_sensors_plant ON sensors (plant_id)",
         "CREATE INDEX IF NOT EXISTS idx_cost_centers_plant ON cost_centers (plant_id)",
         "CREATE INDEX IF NOT EXISTS idx_sap_lines_plant ON sap_cost_lines (plant_id)",
+        # Phase: Ordres de fabrication (OF) — reconcile job_orders with the model
+        # (the original CREATE TABLE used `description`; the model uses `product_name`
+        # + scheduled_date/erp_reference/department/started_at/completed_at). Idempotent
+        # ADD COLUMN IF NOT EXISTS guarantees every column exists regardless of how the
+        # table was first created (DDL vs create_all).
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS product_name VARCHAR(300)",
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS scheduled_date DATE",
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS department VARCHAR(200)",
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS erp_reference VARCHAR(200)",
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ",
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ",
+        # Pit Stop TV: equivalent-unit factor per product unit (1 EU = 100 s of
+        # assembly-line time). Will come from SAP with the OF; simulator seeds it.
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS eu_per_unit DOUBLE PRECISION",
+        # OF numbers are unique PER PLANT, not globally (Mirabel supplies St-Jérôme &
+        # Las Vegas — the same number can exist in different plants). Drop the old
+        # global unique constraint and scope uniqueness to (plant_id, job_number).
+        "ALTER TABLE job_orders DROP CONSTRAINT IF EXISTS job_orders_job_number_key",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_job_orders_plant_number ON job_orders (plant_id, job_number)",
+        # Carry the OF onto the raw per-hour production feed so pieces can be attributed.
+        "ALTER TABLE machine_production_hourly ADD COLUMN IF NOT EXISTS job_number VARCHAR(100)",
+        # Keystone: one "passagem" of an OF through a machine (scan → next scan).
+        """
+        CREATE TABLE IF NOT EXISTS job_order_runs (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            job_order_id UUID NOT NULL REFERENCES job_orders(id) ON DELETE CASCADE,
+            machine_id UUID NOT NULL REFERENCES machines(id),
+            plant_id UUID REFERENCES plants(id),
+            department VARCHAR(200),
+            operator_id UUID REFERENCES machine_operators(id) ON DELETE SET NULL,
+            started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            ended_at TIMESTAMPTZ,
+            duration_minutes INT,
+            pieces INT NOT NULL DEFAULT 0,
+            rejects INT NOT NULL DEFAULT 0,
+            source VARCHAR(20) NOT NULL DEFAULT 'manual',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_jobruns_job ON job_order_runs (job_order_id, started_at)",
+        "CREATE INDEX IF NOT EXISTS idx_jobruns_machine_started ON job_order_runs (machine_id, started_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_jobruns_plant_started ON job_order_runs (plant_id, started_at DESC)",
+        # One OPEN run per machine (the OF currently loaded there) — makes close/lookup O(1).
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_jobruns_open_per_machine ON job_order_runs (machine_id) WHERE ended_at IS NULL",
+        # The JobOrderSource enum grew (cortex, smart_label) but a native_enum=False
+        # column keeps its ORIGINAL VARCHAR length (job_orders.source was VARCHAR(6)
+        # from manual/erp) → 'smart_label' (11) would overflow. Widen both.
+        "ALTER TABLE job_orders ALTER COLUMN source TYPE VARCHAR(20)",
+        "ALTER TABLE job_order_runs ALTER COLUMN source TYPE VARCHAR(20)",
+        # A conveyor prop can be tied to a kiosk machine (in/out feed): clicking it on
+        # the map opens that machine's OFs.
+        "ALTER TABLE map_props ADD COLUMN IF NOT EXISTS machine_id UUID REFERENCES machines(id)",
+        "ALTER TABLE map_props ADD COLUMN IF NOT EXISTS role VARCHAR(10)",
+        # A saved 3D view can be pinned to a department (its machines) — a custom camera
+        # pose overriding that department's auto bounding-box frame. NULL = free view.
+        # (create_all only makes NEW tables, never adds a column to the existing one.)
+        "ALTER TABLE factory_views ADD COLUMN IF NOT EXISTS department VARCHAR(120)",
+        "CREATE INDEX IF NOT EXISTS idx_factory_views_dept ON factory_views (plant_id, department)",
+        # Phase: managed department registry (per plant). The department string on
+        # equipment/machine/OF is chosen from this list.
+        """
+        CREATE TABLE IF NOT EXISTS departments (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            plant_id UUID NOT NULL REFERENCES plants(id),
+            name VARCHAR(200) NOT NULL,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            sort_order INT NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ
+        )
+        """,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_departments_plant_name ON departments (plant_id, name)",
+        "CREATE INDEX IF NOT EXISTS idx_departments_plant ON departments (plant_id)",
+        # One-time seed per plant from the existing distinct equipment/machine departments.
+        # Guarded by NOT EXISTS(any dept for that plant) so user curation (incl. deletes)
+        # sticks — never re-seeds a plant that already has a managed list.
+        """
+        INSERT INTO departments (id, plant_id, name, is_active, sort_order)
+        SELECT gen_random_uuid(), src.plant_id, src.department, TRUE, 0 FROM (
+            SELECT DISTINCT plant_id, department FROM equipment
+              WHERE department IS NOT NULL AND department <> '' AND plant_id IS NOT NULL
+            UNION
+            SELECT DISTINCT plant_id, department FROM machines
+              WHERE department IS NOT NULL AND department <> '' AND plant_id IS NOT NULL
+        ) src
+        WHERE NOT EXISTS (SELECT 1 FROM departments d WHERE d.plant_id = src.plant_id)
+        ON CONFLICT DO NOTHING
+        """,
+        # create_all makes is_active/sort_order nullable (Python-side default) → the raw
+        # seed left them NULL. Coalesce so the list filter (is_active IS TRUE) shows them.
+        "UPDATE departments SET is_active = COALESCE(is_active, TRUE), sort_order = COALESCE(sort_order, 0)",
     ]
     async with engine.begin() as conn:
         for stmt in stmts:
@@ -1370,6 +1557,8 @@ async def lifespan(app: FastAPI):
     pm_task = asyncio.create_task(_pm_loop())
     intel_task = asyncio.create_task(_intelligence_cron())
     shift_report_task = asyncio.create_task(_shift_report_loop())
+    weather_task = asyncio.create_task(_weather_loop())
+    temperature_task = asyncio.create_task(_temperature_loop())
     # Preload the note-organizer fallback LLM (self-skips when the Anthropic
     # API is the primary path; cold Ollama load measured at ~90s on CPU).
     from app.services.note_organizer import warm_up as _warm_ollama
@@ -1379,6 +1568,8 @@ async def lifespan(app: FastAPI):
     pm_task.cancel()
     intel_task.cancel()
     shift_report_task.cancel()
+    weather_task.cancel()
+    temperature_task.cancel()
     ollama_warmup_task.cancel()
     await engine.dispose()
 
@@ -1447,6 +1638,8 @@ app.include_router(kpis.router,                   prefix="/api/kpis",          t
 app.include_router(costs.router,                  prefix="/api/costs",         tags=["Costs"],                dependencies=[Depends(resource_guard("costs"))])
 app.include_router(factory_calendar.router,       prefix="/api/calendar",      tags=["Factory Calendar"],     dependencies=[Depends(resource_guard("calendar"))])
 app.include_router(adam_devices.router,           prefix="/api/adam-devices",  tags=["ADAM Devices"],         dependencies=[Depends(resource_guard("settings_devices"))])
+app.include_router(cortex_stations.router,        prefix="/api/cortex-stations", tags=["Cortex Stations"],    dependencies=[Depends(resource_guard("settings_devices"))])
+app.include_router(temperature_sensors.router,    prefix="/api/temperature-sensors", tags=["Temperature Sensors"], dependencies=[Depends(resource_guard("settings_devices"))])
 app.include_router(reports.router,                prefix="/api/reports",       tags=["Reports"])
 app.include_router(escalation.router,             prefix="/api/escalation",    tags=["Escalation"])
 app.include_router(technicians.router,            prefix="/api/technicians",   tags=["Technicians"],          dependencies=[Depends(resource_guard("technicians"))])
@@ -1456,12 +1649,25 @@ app.include_router(factory_map.router,            prefix="/api/factory-map",   t
 app.include_router(robot_cells_router,            prefix="/api/robot-cells",   tags=["Robot Cells"])
 app.include_router(stop_categories.router,        prefix="/api/stop-categories", tags=["Stop Categories"])
 app.include_router(job_orders.router,             prefix="/api/job-orders",      tags=["Job Orders"])
+app.include_router(pit_stop.router,               prefix="/api/pit-stop",        tags=["Pit Stop"])
+app.include_router(departments_module.router,     prefix="/api/departments",     tags=["Departments"])
 app.include_router(suppliers_module.supplier_router, prefix="/api/suppliers",       tags=["Suppliers"])
 app.include_router(suppliers_module.po_router,       prefix="/api/supplier-orders", tags=["Purchase Orders"])
 app.include_router(machine_operator_router, dependencies=[Depends(kiosk_ref_guard("machine_id"))])
 app.include_router(intervention_types_router)
 app.include_router(safety_checklist_router)
-app.include_router(wo_approval_router)
+app.include_router(cleaning_checklist_router)
+app.include_router(
+    wo_approval_router,
+    dependencies=[
+        # Sign-off is a managerial action: reads pass with auth, but only a
+        # supervisor+ may approve/reject/edit (an operator or technician must not).
+        Depends(role_write_guard(UserRole.supervisor, UserRole.maintenance_director, UserRole.plant_manager, UserRole.director)),
+        # …and never across the plant boundary.
+        Depends(path_plant_guard(MachineIntervention, "intervention_id", detail="Work order not found")),
+        Depends(path_plant_guard(WorkOrder, "work_order_id", detail="Work order not found")),
+    ],
+)
 app.include_router(
     pm_template_settings_router,
     dependencies=[
@@ -1474,7 +1680,12 @@ app.include_router(
 )
 app.include_router(intelligence_router)
 app.include_router(uploads_router)
-app.include_router(dashboards_router, prefix="/api/dashboards", tags=["Dashboards"])
+app.include_router(
+    dashboards_router, prefix="/api/dashboards", tags=["Dashboards"],
+    # Reads stay open (TV displays), but building/editing/deleting a shared
+    # dashboard is a supervisor+ action — not something an operator may do.
+    dependencies=[Depends(role_write_guard(UserRole.supervisor, UserRole.maintenance_director, UserRole.plant_manager, UserRole.director))],
+)
 app.include_router(live_router,       prefix="/api/live",       tags=["Live Updates"])
 
 # Serve uploaded media (photos/videos for SOP steps). Behind nginx /api/ → backend.

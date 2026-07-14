@@ -15,6 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.plant_context import PlantContext, get_plant_context
+from app.core.plant_scope import ensure_same_plant, plant_scoped
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.models import (
@@ -51,11 +53,9 @@ def _device_out(d: AdamDevice) -> dict:
     }
 
 
-async def _load(device_id: UUID, db: AsyncSession) -> AdamDevice:
-    d = await db.get(AdamDevice, device_id)
-    if not d:
-        raise HTTPException(status_code=404, detail="device_not_found")
-    return d
+async def _load(device_id: UUID, db: AsyncSession, ctx: PlantContext) -> AdamDevice:
+    # 404 (never 403) for a device outside the caller's plant — no existence hint.
+    return ensure_same_plant(await db.get(AdamDevice, device_id), ctx, detail="device_not_found")
 
 
 class DeviceIn(BaseModel):
@@ -73,20 +73,30 @@ class DeviceIn(BaseModel):
     poll_interval_ms: int = Field(default=100, ge=20, le=60000)
 
 
-async def _validate_machine(machine_id: Optional[UUID], db: AsyncSession) -> None:
-    if machine_id is not None and not await db.get(Machine, machine_id):
-        raise HTTPException(status_code=400, detail="machine_not_found")
+async def _resolve_plant(machine_id: Optional[UUID], db: AsyncSession, ctx: PlantContext):
+    """A device belongs to its machine's plant; an unassigned device belongs to the
+    caller's active plant. A device may never point at another plant's machine."""
+    if machine_id is not None:
+        machine = await db.get(Machine, machine_id)
+        if machine is None:
+            raise HTTPException(status_code=400, detail="machine_not_found")
+        if machine.plant_id is not None and not ctx.can_access(machine.plant_id):
+            raise HTTPException(status_code=400, detail="machine_not_found")  # no foreign existence hint
+        return machine.plant_id or ctx.plant_id
+    return ctx.plant_id
 
 
 @router.get("")
 async def list_devices(
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
     rows = (await db.execute(
-        select(AdamDevice)
-        .options(selectinload(AdamDevice.machine))
-        .order_by(AdamDevice.name)
+        plant_scoped(
+            select(AdamDevice).options(selectinload(AdamDevice.machine)).order_by(AdamDevice.name),
+            AdamDevice, ctx,
+        )
     )).scalars().all()
     return [_device_out(d) for d in rows]
 
@@ -95,10 +105,11 @@ async def list_devices(
 async def create_device(
     data: DeviceIn,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    await _validate_machine(data.machine_id, db)
-    d = AdamDevice(**data.model_dump())
+    plant_id = await _resolve_plant(data.machine_id, db, ctx)
+    d = AdamDevice(**data.model_dump(), plant_id=plant_id)
     db.add(d)
     await db.commit()
     await db.refresh(d, ["machine"])
@@ -110,12 +121,14 @@ async def update_device(
     device_id: UUID,
     data: DeviceIn,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    await _validate_machine(data.machine_id, db)
-    d = await _load(device_id, db)
+    d = await _load(device_id, db, ctx)
+    plant_id = await _resolve_plant(data.machine_id, db, ctx)
     for k, v in data.model_dump().items():
         setattr(d, k, v)
+    d.plant_id = plant_id
     await db.commit()
     await db.refresh(d, ["machine"])
     return _device_out(d)
@@ -125,9 +138,10 @@ async def update_device(
 async def delete_device(
     device_id: UUID,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    d = await _load(device_id, db)
+    d = await _load(device_id, db, ctx)
     await db.delete(d)
     await db.commit()
     return {"ok": True}
