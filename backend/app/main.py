@@ -1122,6 +1122,13 @@ async def _run_migrations() -> None:
         # platform to the caller's plants. FORCE is required because the app
         # connects as the table owner (owners bypass plain RLS). NULL-plant
         # rows (shared/legacy config) stay visible by design.
+        # ALTER TABLE takes an ACCESS EXCLUSIVE lock even when it changes
+        # nothing, and this whole stmts list runs as ONE transaction that holds
+        # every lock until the final commit — re-running the ALTERs unguarded
+        # deadlocked startup against the always-on workers (cortex_poller had
+        # cortex_stations and wanted machines; this transaction held machines
+        # and wanted cortex_stations). Guard on pg_class so steady-state boots
+        # take no exclusive locks at all.
         """
         DO $$
         DECLARE
@@ -1143,8 +1150,14 @@ async def _run_migrations() -> None:
             'line_tv_settings','dashboards','ai_insights','temperature_sensors'
           ] LOOP
             IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name = t) THEN
-              EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
-              EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relname = t
+                  AND c.relrowsecurity AND c.relforcerowsecurity
+              ) THEN
+                EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+                EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+              END IF;
               IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename = t AND policyname = 'plant_isolation') THEN
                 EXECUTE format('CREATE POLICY plant_isolation ON %I FOR ALL USING (%s) WITH CHECK (%s)', t, expr, expr);
               END IF;
@@ -1203,6 +1216,9 @@ async def _run_migrations() -> None:
         "REVOKE ALL ON user_invitations FROM kaizo_ninja",
         # Group-scoped tables (shared QC warehouse/supplier base) match the UI's
         # group visibility: their policy reads the wider app.plant_ids_grouped GUC.
+        # DROP/CREATE POLICY also take ACCESS EXCLUSIVE locks — only swap the
+        # policy when it doesn't reference the grouped GUC yet (same deadlock
+        # risk as the RLS block above).
         """
         DO $$
         DECLARE
@@ -1213,8 +1229,13 @@ async def _run_migrations() -> None:
             OR plant_id::text = ANY (string_to_array(current_setting('app.plant_ids_grouped', true), ',')) $e$;
         BEGIN
           FOREACH t IN ARRAY ARRAY['stock_items', 'suppliers'] LOOP
-            EXECUTE format('DROP POLICY IF EXISTS plant_isolation ON %I', t);
-            EXECUTE format('CREATE POLICY plant_isolation ON %I FOR ALL USING (%s) WITH CHECK (%s)', t, gexpr, gexpr);
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = t
+                AND policyname = 'plant_isolation' AND qual LIKE '%plant_ids_grouped%'
+            ) THEN
+              EXECUTE format('DROP POLICY IF EXISTS plant_isolation ON %I', t);
+              EXECUTE format('CREATE POLICY plant_isolation ON %I FOR ALL USING (%s) WITH CHECK (%s)', t, gexpr, gexpr);
+            END IF;
           END LOOP;
         END $$
         """,
