@@ -36,6 +36,7 @@ PRIORITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 # SMS text per notification type. Overridable in Settings → Escalation
 # (escalation_settings.sms_templates); empty/missing key = this default.
 # Variables: {number} {machine} {priority} {description} {level}
+# ({technician} additionally on ticket_completed — who closed the work)
 TEMPLATE_DEFAULTS = {
     "escalation":          "[MES] N{level} {number} ({priority}) — {machine}: {description}",
     "escalation_reminder": "[MES] RAPPEL N{level} {number} ({priority}) — {machine}: {description}",
@@ -767,11 +768,15 @@ class NotificationService:
                                                   plant_id=getattr(ticket, "plant_id", None))
         if not recipients:
             return
+        # Who finished the work = the assigned technician (kiosk tickets may
+        # close unassigned → "—").
+        tech = await self.db.get(User, ticket.assigned_to_id) if ticket.assigned_to_id else None
         where = machine_name or "Machine"
         subject = f"[MES] Ticket {ticket.ticket_number} terminé — {where}"
         body = (
             f"Ticket: {ticket.ticket_number}\n"
             f"Machine: {where}\n"
+            f"Technicien: {tech.name if tech else '—'}\n"
             f"Diagnostic: {ticket.diagnosis or '—'}\n"
             f"Action: {ticket.corrective_action or '—'}"
         )
@@ -780,6 +785,7 @@ class NotificationService:
             number=ticket.ticket_number, machine=where,
             priority=_priority_str(ticket.priority),
             description=(ticket.description or "")[:90],
+            technician=tech.name if tech else "",
         )
         await self._dispatch(
             recipients, esc, subject, body, sms_text,

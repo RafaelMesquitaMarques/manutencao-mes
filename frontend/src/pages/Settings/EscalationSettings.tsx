@@ -555,7 +555,7 @@ export default function EscalationSettingsPage() {
           </h3>
           <p className="text-xs text-gray-600 mb-4">
             {t('escalation.templatesHint', 'Empty = default text. Variables:')}{' '}
-            <code className="text-[11px] text-purple-300">{'{number} {machine} {priority} {description} {level}'}</code>
+            <code className="text-[11px] text-purple-300">{'{number} {machine} {priority} {description} {level} {technician}'}</code>
           </p>
           <div className="space-y-3">
             {TEMPLATE_KEYS.map(key => {
