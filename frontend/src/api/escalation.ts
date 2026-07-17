@@ -19,9 +19,11 @@ export interface EscalationSettings {
   reminder_minutes: number;
   pause_during_planned_stop: boolean;
   sms_templates: Record<string, string>;
-  channel_matrix: Record<string, { sms?: boolean; email?: boolean }>;
+  channel_matrix: Record<string, { sms?: boolean; email?: boolean; teams?: boolean }>;
   sms_template_defaults: Record<string, string>;
   twilio_configured: boolean;
+  teams_enabled: boolean;
+  teams_webhook_url: string | null;
 }
 
 export interface EscalationContact {
@@ -111,6 +113,11 @@ export async function resendNotification(id: string): Promise<{ status: string }
 
 export async function sendTestSms(phone?: string): Promise<{ status: string; twilio_configured: boolean; phone: string }> {
   const { data } = await api.post('/api/escalation/test-sms', { phone: phone || undefined });
+  return data;
+}
+
+export async function sendTestTeams(webhookUrl?: string): Promise<{ status: string }> {
+  const { data } = await api.post('/api/escalation/test-teams', { webhook_url: webhookUrl || undefined });
   return data;
 }
 

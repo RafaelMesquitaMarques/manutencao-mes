@@ -1,17 +1,23 @@
 """
 Notification service — SMS via Twilio (simulation mode when credentials are
-unset), email/Teams still mocked. Every send is recorded in notification_logs.
+unset), Microsoft Teams via a channel webhook (Adaptive Card per event), email
+still mocked. Every send is recorded in notification_logs.
 
 Escalation recipients come from the escalation_contacts table (configured in
 Settings → Escalation); when a level has no contacts, falls back to active
-users with the matching role.
+users with the matching role. Teams is a GROUP channel: one post per event,
+gated by teams_enabled + webhook URL + channel_matrix — contact scoping and
+quiet hours don't apply to it.
 """
 import asyncio
 import logging
+import re
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
 from zoneinfo import ZoneInfo
+
+import httpx
 
 from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,6 +71,99 @@ def channel_enabled(esc, trigger: str, channel: str) -> bool:
     row = (getattr(esc, "channel_matrix", None) or {}).get(trigger) or {}
     value = row.get(channel)
     return True if value is None else bool(value)
+
+
+def teams_channel_on(esc, trigger: Optional[str] = None) -> str:
+    """The webhook URL when the Teams channel should fire for this trigger,
+    else empty string."""
+    url = (getattr(esc, "teams_webhook_url", None) or "").strip()
+    if not (getattr(esc, "teams_enabled", False) and url):
+        return ""
+    if trigger is not None and not channel_enabled(esc, trigger, "teams"):
+        return ""
+    return url
+
+
+# A report/body line "Key: Value" becomes an Adaptive Card fact — but only when
+# the key looks like a label (starts with a letter), so times like "07:00-15:00"
+# stay plain text.
+_FACT_KEY_RE = re.compile(r"^[^\W\d_][\w \-/()'’.À-ÿ]{0,23}$")
+
+# Trigger → title color of the Teams card (Adaptive Card semantic colors)
+TEAMS_ACCENTS = {
+    "critical_alert": "attention",
+    "escalation": "attention",
+    "condition_alert": "warning",
+    "ticket_completed": "good",
+}
+
+
+def build_teams_payload(
+    title: str,
+    lines: list[str],
+    link_url: Optional[str] = None,
+    accent: str = "default",
+    mono: bool = False,
+) -> dict:
+    """Adaptive Card inside the `message` envelope a Teams Workflows webhook
+    expects ("When a Teams webhook request is received" → post to a channel).
+    The legacy Office 365 connector format (MessageCard) is retired, so this is
+    the only shape worth emitting. `mono` keeps pre-formatted text (shift
+    report) aligned instead of folding lines into a fact table."""
+    body: list[dict] = [{
+        "type": "TextBlock", "size": "Medium", "weight": "Bolder",
+        "text": title, "wrap": True,
+        **({"color": accent} if accent != "default" else {}),
+    }]
+    if mono:
+        body += [
+            {"type": "TextBlock", "text": ln or " ", "wrap": True,
+             "spacing": "None", "fontType": "Monospace"}
+            for ln in lines
+        ]
+    else:
+        facts, free = [], []
+        for ln in lines:
+            key, sep, value = ln.partition(":")
+            if sep and value.strip() and _FACT_KEY_RE.match(key.strip()):
+                facts.append({"title": f"{key.strip()}:", "value": value.strip()})
+            elif ln.strip():
+                free.append(ln.strip())
+        if facts:
+            body.append({"type": "FactSet", "facts": facts})
+        body += [
+            {"type": "TextBlock", "text": txt, "wrap": True, "isSubtle": True}
+            for txt in free
+        ]
+    card: dict = {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "msteams": {"width": "Full"},
+        "body": body,
+    }
+    if link_url:
+        card["actions"] = [{"type": "Action.OpenUrl", "title": "Ouvrir dans KAIZO", "url": link_url}]
+    return {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": card,
+        }],
+    }
+
+
+def teams_link(ticket_id=None, alert_id=None) -> Optional[str]:
+    """Deep link for the card's open button; None (no button) without a
+    PUBLIC_BASE_URL — localhost links would be dead inside Teams."""
+    base = (app_settings.PUBLIC_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        return None
+    if ticket_id:
+        return f"{base}/tickets/{ticket_id}"
+    if alert_id:
+        return f"{base}/alerts/{alert_id}"
+    return base
 
 
 def _priority_str(p) -> str:
@@ -216,26 +315,50 @@ class NotificationService:
 
     async def send_teams(
         self,
-        recipient: str,
-        message: str,
+        webhook_url: str,
+        title: str,
+        lines: list[str],
+        link_url: Optional[str] = None,
+        accent: str = "default",
+        mono: bool = False,
         alert_id: Optional[UUID] = None,
         ticket_id: Optional[UUID] = None,
         recipient_role: Optional[str] = None,
-        recipient_name: Optional[str] = None,
-    ) -> None:
-        # Replace with Teams webhook POST call here
-        logger.info("[TEAMS MOCK] To: %s | %s", recipient, message[:80])
+    ) -> str:
+        """POST one Adaptive Card to a Teams channel webhook (Workflows URL).
+        Returns the resulting status (sent | simulated | failed); never raises.
+        The URL is a secret — logged nowhere, not even in notification_logs."""
+        payload = build_teams_payload(title, lines, link_url=link_url, accent=accent, mono=mono)
+        status, detail = "simulated", ""
+        if webhook_url:
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    resp = await client.post(webhook_url, json=payload)
+                if 200 <= resp.status_code < 300:
+                    status = "sent"
+                else:
+                    status = "failed"
+                    detail = f" [error: HTTP {resp.status_code} {resp.text[:200]}]"
+                    logger.error("[TEAMS] webhook answered HTTP %s", resp.status_code)
+            except Exception as exc:
+                status = "failed"
+                detail = f" [error: {str(exc)[:300]}]"
+                logger.error("[TEAMS] webhook post failed: %s", exc)
+        else:
+            logger.info("[TEAMS SIMULATED] %s", title)
+
         self.db.add(NotificationLog(
             alert_id=alert_id,
             ticket_id=ticket_id,
             notification_type="teams",
             recipient_role=recipient_role,
-            recipient_name=recipient_name,
-            recipient_contact=recipient,
-            message=message,
-            status="simulated",
+            recipient_name="Teams",
+            recipient_contact="channel",
+            message="\n".join([title, *lines]) + detail,
+            status=status,
         ))
         await self.db.flush()
+        return status
 
     # ── Recipient resolution ─────────────────────────────────────────────────
 
@@ -363,6 +486,18 @@ class NotificationService:
                     alert_id=alert_id, ticket_id=ticket_id,
                     recipient_role=role_label, recipient_name=user.name,
                 )
+        # Teams is a channel, not a person: one card per EVENT, outside the
+        # recipient loop (contact scope/quiet-hours don't apply).
+        teams_url = teams_channel_on(esc, trigger)
+        if teams_url:
+            await self.send_teams(
+                teams_url,
+                title=subject.removeprefix("[MES] "),
+                lines=body.splitlines(),
+                link_url=teams_link(ticket_id=ticket_id, alert_id=alert_id),
+                accent=TEAMS_ACCENTS.get(trigger or "", "default"),
+                alert_id=alert_id, ticket_id=ticket_id, recipient_role=role_label,
+            )
 
     # ── Event notifications ──────────────────────────────────────────────────
 
@@ -562,6 +697,15 @@ class NotificationService:
                     recipient=u.email, subject=subject, body=body, ticket_id=ticket.id,
                     recipient_role="claimable_tech", recipient_name=u.name,
                 )
+        teams_url = teams_channel_on(esc, "claimable_tech")
+        if teams_url:
+            await self.send_teams(
+                teams_url,
+                title=subject.removeprefix("[MES] "),
+                lines=body.splitlines(),
+                link_url=teams_link(ticket_id=ticket.id),
+                ticket_id=ticket.id, recipient_role="claimable_tech",
+            )
 
     async def notify_ticket_opened(self, ticket, machine_name: Optional[str]) -> None:
         """Every new ticket → SMS/email to the level-0 contact group, plus the
@@ -658,4 +802,14 @@ class NotificationService:
             await self.send_email(
                 recipient=user.email, subject=subject, body=body,
                 ticket_id=ticket.id, recipient_role="technician", recipient_name=user.name,
+            )
+        teams_url = teams_channel_on(esc, "ticket_assigned")
+        if teams_url:
+            await self.send_teams(
+                teams_url,
+                title=f"Ticket {ticket.ticket_number} assigné — {user.name}",
+                lines=[f"Machine: {machine_name}", f"Priorité: {_priority_str(ticket.priority)}",
+                       ticket.description or ""],
+                link_url=teams_link(ticket_id=ticket.id),
+                ticket_id=ticket.id, recipient_role="technician",
             )

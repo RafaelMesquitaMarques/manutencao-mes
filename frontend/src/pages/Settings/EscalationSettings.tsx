@@ -1,14 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  Bell, MessageSquare, Mail, Clock, Trash2, Plus, Send, CheckCircle,
+  Bell, MessageSquare, MessagesSquare, Mail, Clock, Trash2, Plus, Send, CheckCircle,
   AlertTriangle, RefreshCw, FileText, SlidersHorizontal, Search,
   Users, History, Factory,
 } from 'lucide-react';
 import {
   fetchEscalationSettings, updateEscalationSettings,
   addEscalationContact, updateEscalationContact, deleteEscalationContact,
-  fetchNotificationLog, resendNotification, sendTestSms, fetchShiftReportPreview,
+  fetchNotificationLog, resendNotification, sendTestSms, sendTestTeams, fetchShiftReportPreview,
   type EscalationSettings as Settings, type EscalationContact, type NotificationLogEntry,
 } from '../../api/escalation';
 import { fetchUsers } from '../../api/users';
@@ -24,6 +24,8 @@ const TRIGGERS = [
   'critical_alert', 'escalation', 'ticket_opened',
   'ticket_completed', 'ticket_assigned', 'claimable_tech',
 ] as const;
+const CHANNELS = ['sms', 'email', 'teams'] as const;
+type Channel = (typeof CHANNELS)[number];
 const TEMPLATE_KEYS = [
   'critical_alert', 'escalation', 'escalation_reminder', 'ticket_opened',
   'ticket_completed', 'ticket_assigned', 'claimable_tech',
@@ -64,6 +66,7 @@ export default function EscalationSettingsPage() {
   const [dirty, setDirty] = useState(false);
   const [testPhone, setTestPhone] = useState('');
   const [testResult, setTestResult] = useState('');
+  const [teamsTestResult, setTeamsTestResult] = useState('');
   const [reportPreview, setReportPreview] = useState('');
 
   const load = useCallback(async () => {
@@ -169,21 +172,31 @@ export default function EscalationSettingsPage() {
     }
   };
 
-  const matrixOn = (trigger: string, ch: 'sms' | 'email'): boolean => {
+  const matrixOn = (trigger: string, ch: Channel): boolean => {
     const v = settings?.channel_matrix?.[trigger]?.[ch];
     return v === undefined || v === null ? true : !!v;
   };
 
-  const toggleMatrix = (trigger: string, ch: 'sms' | 'email') => {
+  const toggleMatrix = (trigger: string, ch: Channel) => {
     patch({
       channel_matrix: {
         ...(settings?.channel_matrix || {}),
-        [trigger]: {
-          sms: ch === 'sms' ? !matrixOn(trigger, 'sms') : matrixOn(trigger, 'sms'),
-          email: ch === 'email' ? !matrixOn(trigger, 'email') : matrixOn(trigger, 'email'),
-        },
+        [trigger]: Object.fromEntries(CHANNELS.map(c => [
+          c, c === ch ? !matrixOn(trigger, c) : matrixOn(trigger, c),
+        ])),
       },
     });
+  };
+
+  const handleTestTeams = async () => {
+    setTeamsTestResult('…');
+    try {
+      const r = await sendTestTeams(settings?.teams_webhook_url || undefined);
+      setTeamsTestResult(r.status);
+      await refreshLog();
+    } catch {
+      setTeamsTestResult(t('escalation.teamsTestFailed', 'failed — check the webhook URL'));
+    }
   };
 
   const setTemplate = (key: string, text: string) => {
@@ -306,6 +319,9 @@ export default function EscalationSettingsPage() {
               <Toggle icon={<Mail size={14} className="text-blue-400" />}
                 label={t('escalation.emailEnabled', 'Email notifications')}
                 checked={settings.email_enabled} onChange={v => patch({ email_enabled: v })} />
+              <Toggle icon={<MessagesSquare size={14} className="text-purple-400" />}
+                label={t('escalation.teamsEnabled', 'Microsoft Teams — post each event to a channel')}
+                checked={settings.teams_enabled} onChange={v => patch({ teams_enabled: v })} />
               <Toggle icon={<AlertTriangle size={14} className="text-red-400" />}
                 label={t('escalation.onCritical', 'Immediate alert on new critical ticket/alert')}
                 checked={settings.notify_on_critical_alert} onChange={v => patch({ notify_on_critical_alert: v })} />
@@ -331,6 +347,40 @@ export default function EscalationSettingsPage() {
                 label={t('escalation.pausePlanned', 'Do not escalate while the machine is in a planned stop')}
                 checked={settings.pause_during_planned_stop ?? true} onChange={v => patch({ pause_during_planned_stop: v })} />
             </div>
+
+            {/* Teams channel webhook — shown only when the channel is on */}
+            {settings.teams_enabled && (
+              <div className="mt-3 bg-[#0a1628] border border-purple-500/20 rounded-lg p-3">
+                <label className="text-[11px] text-gray-500 block mb-1">
+                  {t('escalation.teamsUrlLabel', 'Teams channel webhook URL (Workflows)')}
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={settings.teams_webhook_url || ''}
+                    onChange={e => patch({ teams_webhook_url: e.target.value })}
+                    placeholder="https://…logic.azure.com/workflows/…"
+                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-gray-300 font-mono focus:outline-none focus:border-purple-500"
+                  />
+                  <button onClick={handleTestTeams}
+                    disabled={!(settings.teams_webhook_url || '').trim()}
+                    className="text-xs px-3 py-1.5 rounded-lg border border-purple-700/50 text-purple-300 hover:bg-purple-900/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap">
+                    {t('escalation.teamsTest', 'Send a test card')}
+                  </button>
+                  {teamsTestResult && <span className="text-[11px] text-gray-400">{teamsTestResult}</span>}
+                </div>
+                {(settings.teams_webhook_url || '').trim() !== '' &&
+                  !(settings.teams_webhook_url || '').trim().toLowerCase().startsWith('https://') && (
+                  <p className="text-[11px] text-red-400 mt-1">
+                    {t('escalation.teamsUrlInvalid', 'The URL must start with https://')}
+                  </p>
+                )}
+                <p className="text-[11px] text-gray-600 mt-2">
+                  {t('escalation.teamsUrlHint', 'In the Teams channel: ⋯ → Workflows → "Post to a channel when a webhook request is received" → copy the URL. Anyone holding this URL can post to the channel — treat it as a secret.')}
+                </p>
+              </div>
+            )}
+
             <div className="mt-3">
               <button onClick={handlePreviewReport}
                 className="text-xs px-3 py-1.5 rounded-lg border border-cyan-700/50 text-cyan-300 hover:bg-cyan-900/20 transition-colors">
@@ -354,13 +404,14 @@ export default function EscalationSettingsPage() {
                     <th className="text-left py-1 font-medium">{t('escalation.matrixEvent', 'Event')}</th>
                     <th className="w-16 text-center py-1 font-medium">SMS</th>
                     <th className="w-16 text-center py-1 font-medium">Email</th>
+                    <th className="w-16 text-center py-1 font-medium">Teams</th>
                   </tr>
                 </thead>
                 <tbody>
                   {TRIGGERS.map(trig => (
                     <tr key={trig} className="border-t border-white/[0.04]">
                       <td className="py-1.5 text-gray-300">{t(`escalation.trigger.${trig}`)}</td>
-                      {(['sms', 'email'] as const).map(ch => (
+                      {CHANNELS.map(ch => (
                         <td key={ch} className="text-center py-1.5">
                           <input
                             type="checkbox"

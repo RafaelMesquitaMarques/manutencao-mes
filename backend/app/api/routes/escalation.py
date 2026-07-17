@@ -36,6 +36,7 @@ SETTINGS_FIELDS = [
     "technician_self_assign", "shift_report_enabled", "ticket_group_min_priority",
     "reminder_minutes", "pause_during_planned_stop",
     "sms_templates", "channel_matrix",
+    "teams_enabled", "teams_webhook_url",
 ]
 
 VALID_PRIORITIES = {"low", "medium", "high", "critical"}
@@ -147,6 +148,11 @@ async def update_settings(
     for f in ("sms_templates", "channel_matrix"):
         if body.get(f) is not None and not isinstance(body[f], dict):
             raise HTTPException(422, f"{f} must be an object")
+    if body.get("teams_webhook_url"):
+        url = str(body["teams_webhook_url"]).strip()
+        if not url.lower().startswith("https://"):
+            raise HTTPException(422, "invalid_teams_webhook_url")
+        body["teams_webhook_url"] = url
     row = await get_escalation_settings(db, ctx.plant_id)
     for f in SETTINGS_FIELDS:
         if f in body and body[f] is not None:
@@ -399,6 +405,37 @@ async def send_test_shift_report(
     )
     await db.commit()
     return {"status": status, "twilio_configured": twilio_configured(), "text": text}
+
+
+class TestTeamsBody(BaseModel):
+    webhook_url: Optional[str] = None
+
+
+@router.post("/test-teams")
+async def test_teams(
+    body: TestTeamsBody,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    current_user: User = Depends(require_supervisor),
+):
+    """Post a test Adaptive Card to the Teams channel webhook — the one in the
+    body (not yet saved) or the plant's stored one."""
+    esc = await get_escalation_settings(db, ctx.plant_id)
+    url = (body.webhook_url or esc.teams_webhook_url or "").strip()
+    if not url:
+        raise HTTPException(422, "no_teams_webhook_url")
+    if not url.lower().startswith("https://"):
+        raise HTTPException(422, "invalid_teams_webhook_url")
+    notif = NotificationService(db)
+    status = await notif.send_teams(
+        url,
+        title="Test — KAIZO notifications",
+        lines=[f"Configured by: {current_user.name}",
+               "This channel will receive maintenance notifications."],
+        recipient_role="test",
+    )
+    await db.commit()
+    return {"status": status}
 
 
 class TestSmsBody(BaseModel):

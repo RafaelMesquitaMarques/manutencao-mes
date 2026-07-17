@@ -832,6 +832,9 @@ async def _run_migrations() -> None:
         # Phase: editable SMS templates + per-trigger channel matrix
         "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS sms_templates JSON",
         "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS channel_matrix JSON",
+        # Phase: Microsoft Teams channel notifications (Workflows webhook per plant)
+        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS teams_enabled BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS teams_webhook_url TEXT",
         # Phase: WO-level approval — supervisor/director approves completed work
         # (whole intervention OR whole formal work order), not just individual parts.
         # A marker table makes the historical "grandfather" backfill run exactly once,

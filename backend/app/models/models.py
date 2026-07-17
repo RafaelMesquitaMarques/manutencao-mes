@@ -1793,9 +1793,15 @@ class EscalationSettings(Base):
     # SMS text per notification type — {key: template}; missing/empty = default
     # (defaults live in notification_service.TEMPLATE_DEFAULTS)
     sms_templates              = Column(JSON, nullable=True)
-    # Channel per trigger — {trigger: {"sms": bool, "email": bool}}; missing = both on.
-    # Refines the global sms_enabled/email_enabled switches, does not override them.
+    # Channel per trigger — {trigger: {"sms": bool, "email": bool, "teams": bool}};
+    # missing = all on. Refines the global channel switches, does not override them.
     channel_matrix             = Column(JSON, nullable=True)
+    # Microsoft Teams: one Adaptive Card per event posted to a channel webhook
+    # (a Teams "Workflows" trigger URL — the legacy Office 365 connector webhooks
+    # are retired). Per-plant, like the rest of this row. The URL is a secret:
+    # anyone holding it can post to the channel.
+    teams_enabled              = Column(Boolean, default=False)
+    teams_webhook_url          = Column(Text, nullable=True)
     updated_at                = Column(DateTime(timezone=True), onupdate=func.now())
 
 

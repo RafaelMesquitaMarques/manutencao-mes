@@ -24,7 +24,9 @@ from app.models.models import (
     AlertShift, Machine, MachineProductionLog, MachineStop, MaintenanceTicket,
     Plant, ShiftReport, StopCategory, StopSubcategory, StopCategoryType, TicketStatus,
 )
-from app.services.notification_service import NotificationService, get_escalation_settings
+from app.services.notification_service import (
+    NotificationService, get_escalation_settings, teams_channel_on,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -351,13 +353,27 @@ async def check_and_send(db: AsyncSession) -> int:
                 recipient_role="shift_report", recipient_name=user.name,
             )
             sent += 1
+        # One card to the plant's Teams channel (language of the first level-1
+        # contact — a group channel has no per-user language).
+        teams_posted = 0
+        teams_url = teams_channel_on(esc)
+        if teams_url:
+            lang = ((recipients[0]["user"].language or "en")[:2]) if recipients else "en"
+            status = await notif.send_teams(
+                teams_url,
+                title=f"Rapport fin de quart — {key}",
+                lines=render_report(data, lang).splitlines(),
+                mono=True,
+                recipient_role="shift_report",
+            )
+            teams_posted = 1 if status == "sent" else 0
         db.add(ShiftReport(
             plant_id=plant_id,
             shift_key=key, window_start=ws, window_end=we,
             body=render_report(data, "en"),
             machines_included=len(data["machines"]),
             recipients_notified=sent,
-            status="sent" if sent else "no_recipients",
+            status="sent" if (sent or teams_posted) else "no_recipients",
         ))
         await db.commit()
         generated += 1
