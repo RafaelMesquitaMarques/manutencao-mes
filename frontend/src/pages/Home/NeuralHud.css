@@ -75,7 +75,7 @@
 .nhud-lb .nhud-lb-value {
   display: block;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 15px;
+  font-size: 18px;
   font-weight: 600;
   letter-spacing: 0.5px;
   text-transform: uppercase;
@@ -94,17 +94,6 @@
   text-shadow: 0 0 8px rgba(34, 211, 238, 0.8);
 }
 .nhud-lb.on .nhud-lb-value { color: #67e8f9; }
-
-/* Idle hologram drift — replaces mouse tilt so click targets never move away
-   from the cursor, and hit-testing stays exact while the HUD floats. */
-@keyframes nhud-float {
-  0%, 100% { transform: translateY(7px) rotateX(2deg); }
-  50% { transform: translateY(-7px) rotateX(-2deg); }
-}
-.nhud-float {
-  animation: nhud-float 7s ease-in-out infinite;
-  will-change: transform;
-}
 
 /* The HUD overflows its card: only nodes and labels may capture the mouse so
    the decorative rings never block clicks on content underneath. */
@@ -186,7 +175,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .nhud-a1, .nhud-a2, .nhud-a3, .nhud-a4, .nhud-a5, .nhud-a6, .nhud-a7, .nhud-a8,
-  .nhud-core, .nhud-p1, .nhud-p2, .nhud-p3, .nhud-reticle, .nhud-ln, .nhud-float {
+  .nhud-core, .nhud-p1, .nhud-p2, .nhud-p3, .nhud-reticle, .nhud-ln {
     animation: none;
   }
 }

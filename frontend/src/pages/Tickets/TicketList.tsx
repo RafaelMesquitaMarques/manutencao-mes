@@ -169,15 +169,15 @@ export default function TicketList() {
             <table className="w-full">
               <thead>
                 <tr>
-                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('tickets.ticketNumber')}</th>
-                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('alerts.machine')}</th>
-                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('common.priority')}</th>
-                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('common.status')}</th>
-                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] hidden md:table-cell">{t('tickets.assignedTo')}</th>
-                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] hidden lg:table-cell">{t('tickets.timeOpen')}</th>
-                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] hidden xl:table-cell">SLA</th>
-                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] hidden xl:table-cell">{t('alerts.escalation')}</th>
-                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06]">{t('common.actions')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] w-px whitespace-nowrap">{t('tickets.ticketNumber')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] whitespace-nowrap">{t('alerts.machine')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] w-px whitespace-nowrap">{t('common.priority')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] w-px whitespace-nowrap">{t('common.status')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] hidden md:table-cell whitespace-nowrap">{t('tickets.assignedTo')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] hidden lg:table-cell w-px whitespace-nowrap">{t('tickets.timeOpen')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] hidden xl:table-cell w-px whitespace-nowrap">SLA</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] hidden xl:table-cell w-px whitespace-nowrap">{t('alerts.escalation')}</th>
+                  <th className="table-header-cell sticky top-0 z-10 bg-gray-900 border-b border-white/[0.06] w-px whitespace-nowrap">{t('common.actions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -185,7 +185,7 @@ export default function TicketList() {
                   const sla = slaDisplay(ticket.priority, ticket.opened_at, ticket.status);
                   return (
                     <tr key={ticket.id} className="table-row">
-                      <td className="table-cell">
+                      <td className="table-cell whitespace-nowrap">
                         <div className="flex flex-col gap-1">
                           <span className="font-mono text-blue-400 text-xs">{ticket.ticket_number}</span>
                           {ticket.machine_page_source && (
@@ -198,12 +198,12 @@ export default function TicketList() {
                       <td className="table-cell font-medium text-gray-200">
                         {ticket.machine_name ?? '—'}
                       </td>
-                      <td className="table-cell">
+                      <td className="table-cell whitespace-nowrap">
                         <span className={`inline-flex items-center px-2 py-0.5 text-xs font-mono font-medium border rounded ${PRIORITY_BADGE[ticket.priority]}`}>
                           {t(`priority.${ticket.priority}`)}
                         </span>
                       </td>
-                      <td className="table-cell">
+                      <td className="table-cell whitespace-nowrap">
                         <span className={`inline-flex items-center px-2 py-0.5 text-xs font-mono font-medium border rounded ${STATUS_BADGE[ticket.status]}`}>
                           {t(`ticketStatus.${ticket.status}`, ticket.status)}
                         </span>
@@ -211,10 +211,10 @@ export default function TicketList() {
                       <td className="table-cell hidden md:table-cell text-gray-400 text-xs">
                         {ticket.assigned_to_name ?? '—'}
                       </td>
-                      <td className="table-cell hidden lg:table-cell font-mono text-xs text-gray-400">
+                      <td className="table-cell hidden lg:table-cell font-mono text-xs text-gray-400 whitespace-nowrap">
                         {timeOpen(ticket.opened_at)}
                       </td>
-                      <td className="table-cell hidden xl:table-cell">
+                      <td className="table-cell hidden xl:table-cell whitespace-nowrap">
                         {sla ? (
                           <span className={`text-xs font-mono ${sla.color}`}>{sla.label}</span>
                         ) : (
@@ -228,7 +228,7 @@ export default function TicketList() {
                           <span className="text-xs text-gray-700">—</span>
                         )}
                       </td>
-                      <td className="table-cell">
+                      <td className="table-cell whitespace-nowrap">
                         <div className="flex items-center gap-1">
                           {canUpdate && ticket.status === 'open' && (
                             <button

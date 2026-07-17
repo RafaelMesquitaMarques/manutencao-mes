@@ -184,7 +184,7 @@ const NeuralHud = ({ nodes, coreTo, coreHint }: NeuralHudProps) => {
         className="absolute top-0 left-1/2"
         style={{ width: STAGE_W, height: STAGE_H, transform: `translateX(-50%) scale(${scale})`, transformOrigin: 'top center' }}
       >
-        <div className="nhud-float relative mx-auto" style={{ width: HUD, height: HUD }}>
+        <div className="relative mx-auto" style={{ width: HUD, height: HUD }}>
           <svg viewBox={`0 0 ${VB} ${VB}`} className="block w-full h-full" aria-hidden="true">
             <defs>
               <filter id="nhud-glow" x="-60%" y="-60%" width="220%" height="220%">

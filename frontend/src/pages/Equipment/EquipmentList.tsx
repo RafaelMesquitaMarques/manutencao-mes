@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Search, Plus, Cpu, MapPin, Activity, Monitor, Pencil, Power, ArrowUp, ArrowDown, ChevronsUpDown, ChevronDown, Check, X } from 'lucide-react';
+import { Search, Plus, Cpu, MapPin, Activity, Monitor, Pencil, Power, ArrowUp, ArrowDown, ChevronsUpDown, ChevronDown, Check, X, Image as ImageIcon } from 'lucide-react';
 import { fetchEquipment } from '../../api/workOrders';
 import api from '../../api/axios';
 import { usePermission } from '../../hooks/usePermission';
@@ -143,7 +143,18 @@ export default function EquipmentList() {
   const [plants, setPlants] = useState<Plant[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [assetFilter, setAssetFilter] = useState<'all' | 'production' | 'auxiliary'>('all');
+  // Type tab lives in the URL so the detail page's back button can restore it.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const typeParam = searchParams.get('type');
+  const assetFilter: 'all' | 'production' | 'auxiliary' =
+    typeParam === 'production' || typeParam === 'auxiliary' ? typeParam : 'all';
+  const setAssetFilter = useCallback(
+    (v: 'all' | 'production' | 'auxiliary') =>
+      setSearchParams(v === 'all' ? {} : { type: v }, { replace: true }),
+    [setSearchParams],
+  );
+  const openDetail = (id: string) =>
+    navigate(`/equipment/${id}`, { state: { backTo: `/equipment${assetFilter === 'all' ? '' : `?type=${assetFilter}`}` } });
 
   // per-column filters (multi-select arrays; Location is free text)
   const [fPlant, setFPlant] = useState<string[]>([]);
@@ -427,7 +438,7 @@ export default function EquipmentList() {
             return (
               <div
                 key={eq.id}
-                onClick={() => navigate(`/equipment/${eq.id}`)}
+                onClick={() => openDetail(eq.id)}
                 className={`bg-[#0d1421] border rounded-xl p-3 hover:bg-[#0f1929] transition-all group cursor-pointer ${sel ? 'border-blue-500/60' : 'border-white/[0.06] hover:border-blue-500/30'}`}
               >
                 <div className="flex items-start gap-2">
@@ -465,7 +476,7 @@ export default function EquipmentList() {
                       <Monitor size={13} />
                     </button>
                     <button
-                      onClick={(e) => { e.stopPropagation(); navigate(`/equipment/${eq.id}`); }}
+                      onClick={(e) => { e.stopPropagation(); openDetail(eq.id); }}
                       title={t('common.edit')}
                       className="p-1.5 rounded-md border border-gray-700 text-gray-400 hover:bg-gray-800 transition-colors"
                     >
@@ -473,6 +484,22 @@ export default function EquipmentList() {
                     </button>
                   </div>
                 </div>
+                {/* Machine photo thumbnail (same image the factory-map block uses) */}
+                {eq.icon_url ? (
+                  <img
+                    src={eq.icon_url}
+                    alt={eq.name}
+                    loading="lazy"
+                    className="w-20 h-20 mt-2.5 rounded-lg object-cover border border-white/[0.06]"
+                  />
+                ) : (
+                  <div
+                    title={t('equipment.noPhoto')}
+                    className="w-20 h-20 mt-2.5 rounded-lg border border-dashed border-white/[0.08] bg-white/[0.015] flex items-center justify-center"
+                  >
+                    <ImageIcon size={16} className="text-gray-700" />
+                  </div>
+                )}
               </div>
             );
           })}
@@ -510,7 +537,7 @@ export default function EquipmentList() {
                 return (
                   <tr
                     key={eq.id}
-                    onClick={() => navigate(`/equipment/${eq.id}`)}
+                    onClick={() => openDetail(eq.id)}
                     className={`border-b border-white/[0.04] hover:bg-white/[0.02] cursor-pointer transition-colors ${sel ? 'bg-blue-500/5' : ''}`}
                   >
                     <td className="px-3 py-2.5 w-10" onClick={(e) => e.stopPropagation()}>
@@ -559,7 +586,7 @@ export default function EquipmentList() {
                           </button>
                         )}
                         <button
-                          onClick={() => navigate(`/equipment/${eq.id}`)}
+                          onClick={() => openDetail(eq.id)}
                           className="p-1.5 rounded-md border border-gray-700 text-gray-400 hover:bg-gray-800 transition-colors"
                           title="Edit"
                         >

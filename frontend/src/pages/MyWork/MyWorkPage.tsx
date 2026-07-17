@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import {
   Briefcase, Play, CheckCircle2, Clock, AlertTriangle,
-  ChevronRight, RefreshCw, PauseCircle, Hand, Inbox, Coffee,
+  ChevronRight, RefreshCw, PauseCircle, Hand, Inbox, Coffee, Search, X,
 } from 'lucide-react';
 import { fetchMyWorkOrders, startWorkOrder, holdWorkOrder, resumeWorkOrder, completeWorkOrderFull } from '../../api/workOrders';
 import { fetchAvailableTickets, claimTicket } from '../../api/maintenance';
@@ -56,6 +56,12 @@ export default function MyWorkPage() {
   const [form, setForm]         = useState<CompleteForm>(EMPTY_FORM);
   const [formErr, setFormErr]   = useState('');
   const [tick, setTick]         = useState(0);
+  // List filters — apply to both the claimable tickets and my work orders.
+  const [search, setSearch]                 = useState('');
+  const [machineFilter, setMachineFilter]   = useState('');
+  const [priorityFilter, setPriorityFilter] = useState<Priority | ''>('');
+  const [dateFrom, setDateFrom]             = useState('');
+  const [dateTo, setDateTo]                 = useState('');
   // Announced (live) break presence. `canBreak` is only known once /me/break
   // resolves — non-technician accounts 404 and the control stays hidden.
   const [activeBreak, setActiveBreak] = useState<TechnicianBreak | null>(null);
@@ -189,9 +195,55 @@ export default function MyWorkPage() {
     }
   };
 
-  const inProgress = wos.filter((w) => w.status === 'in_progress');
-  const openWOs    = wos.filter((w) => w.status === 'open');
-  const onHold     = wos.filter((w) => w.status === 'on_hold');
+  // Machine options come from what's actually on the page, not the full fleet.
+  const machines = useMemo(() => {
+    const names = new Set<string>();
+    wos.forEach((w) => { if (w.equipment_name) names.add(w.equipment_name); });
+    available.forEach((tk) => { if (tk.machine_name) names.add(tk.machine_name); });
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [wos, available]);
+
+  const q = search.trim().toLowerCase();
+  const fromTs = dateFrom ? new Date(`${dateFrom}T00:00:00`).getTime() : null;
+  const toTs   = dateTo ? new Date(`${dateTo}T23:59:59.999`).getTime() : null;
+  const filtersActive = !!(q || machineFilter || priorityFilter || dateFrom || dateTo);
+
+  const inRange = (openedAt?: string) => {
+    if (fromTs === null && toTs === null) return true;
+    if (!openedAt) return false;
+    const ts = new Date(openedAt).getTime();
+    return (fromTs === null || ts >= fromTs) && (toTs === null || ts <= toTs);
+  };
+
+  const filteredWOs = wos.filter((w) => {
+    if (machineFilter && w.equipment_name !== machineFilter) return false;
+    if (priorityFilter && w.priority !== priorityFilter) return false;
+    if (!inRange(w.opened_at)) return false;
+    if (!q) return true;
+    return [w.wo_number, w.title, w.equipment_name, w.ticket_number, w.description]
+      .some((s) => (s ?? '').toLowerCase().includes(q));
+  });
+
+  const filteredAvailable = available.filter((tk) => {
+    if (machineFilter && tk.machine_name !== machineFilter) return false;
+    if (priorityFilter && tk.priority !== priorityFilter) return false;
+    if (!inRange(tk.opened_at)) return false;
+    if (!q) return true;
+    return [tk.ticket_number, tk.machine_name, tk.description]
+      .some((s) => (s ?? '').toLowerCase().includes(q));
+  });
+
+  const clearFilters = () => {
+    setSearch('');
+    setMachineFilter('');
+    setPriorityFilter('');
+    setDateFrom('');
+    setDateTo('');
+  };
+
+  const inProgress = filteredWOs.filter((w) => w.status === 'in_progress');
+  const openWOs    = filteredWOs.filter((w) => w.status === 'open');
+  const onHold     = filteredWOs.filter((w) => w.status === 'on_hold');
 
   return (
     <div className="p-4 sm:p-6 max-w-2xl mx-auto space-y-6 animate-fade-in">
@@ -259,6 +311,68 @@ export default function MyWorkPage() {
         </div>
       )}
 
+      {/* Filters — search + machine / priority / opened-date range, applied to
+          both the claimable tickets and my work orders. */}
+      <div className="glass-card p-3 space-y-2.5">
+        <div className="relative">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t('common.search')}
+            className="input-field w-full pl-8 py-1.5"
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={machineFilter}
+            onChange={(e) => setMachineFilter(e.target.value)}
+            className="select-field py-1.5 pr-8 text-xs flex-1 min-w-[130px]"
+          >
+            <option value="">{t('myWork.machineFallback')}: {t('common.all')}</option>
+            {machines.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+          <select
+            value={priorityFilter}
+            onChange={(e) => setPriorityFilter(e.target.value as Priority | '')}
+            className="select-field py-1.5 pr-8 text-xs flex-1 min-w-[120px]"
+          >
+            <option value="">{t('common.priority')}: {t('common.all')}</option>
+            {(['low', 'medium', 'high', 'critical'] as Priority[]).map((p) => (
+              <option key={p} value={p}>{t(`priority.${p}`)}</option>
+            ))}
+          </select>
+          <label className="flex items-center gap-1.5 text-xs text-gray-500">
+            {t('myWork.filterFrom')}
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="input-field py-1.5 text-xs w-[138px]"
+            />
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-gray-500">
+            {t('myWork.filterTo')}
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="input-field py-1.5 text-xs w-[138px]"
+            />
+          </label>
+          {filtersActive && (
+            <button
+              onClick={clearFilters}
+              className="btn-secondary py-1.5 px-2.5 text-xs flex items-center gap-1"
+            >
+              <X size={12} />
+              {t('myWork.clearFilters')}
+            </button>
+          )}
+        </div>
+      </div>
+
       {loading ? (
         <div className="flex items-center justify-center h-40"><Spinner size="lg" /></div>
       ) : (
@@ -270,14 +384,14 @@ export default function MyWorkPage() {
           )}
           {/* Unassigned tickets — claimable (shifts without a supervisor).
               Hidden when the supervisor turned self-assignment off. */}
-          {selfAssignOn && available.length > 0 && (
+          {selfAssignOn && filteredAvailable.length > 0 && (
             <section className="space-y-3">
               <h2 className="text-xs font-semibold uppercase tracking-widest text-amber-500 px-1 flex items-center gap-1.5">
                 <Inbox size={13} />
                 {t('myWork.availableTickets')}
               </h2>
               {claimErr && <p className="text-xs text-amber-400 px-1">{claimErr}</p>}
-              {available.map((ticket) => (
+              {filteredAvailable.map((ticket) => (
                 <div key={ticket.id} className="glass-card p-4 space-y-3 border-l-2 border-l-amber-500/60">
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">
@@ -319,6 +433,14 @@ export default function MyWorkPage() {
               <CheckCircle2 size={36} className="text-green-700" />
               <p className="text-gray-400 font-medium">{t('myWork.allCaughtUp')}</p>
               <p className="text-gray-600 text-sm">{t('myWork.noActiveWork')}</p>
+            </div>
+          ) : filteredWOs.length === 0 ? (
+            <div className="glass-card flex flex-col items-center justify-center h-40 gap-3">
+              <Search size={30} className="text-gray-700" />
+              <p className="text-gray-400 text-sm">{t('myWork.noFilterResults')}</p>
+              <button onClick={clearFilters} className="btn-secondary py-2 px-4 text-sm">
+                {t('myWork.clearFilters')}
+              </button>
             </div>
           ) : (
             <>
