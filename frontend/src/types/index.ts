@@ -83,6 +83,8 @@ export interface Equipment {
   asset_type?: 'production' | 'auxiliary';
   subtype?: string | null;
   function_label?: string | null;
+  /** Machine photo — same image the factory-map block uses */
+  icon_url?: string | null;
   model_url?: string | null;
   height_3d?: number | null;
   parent_equipment_id?: string | null;

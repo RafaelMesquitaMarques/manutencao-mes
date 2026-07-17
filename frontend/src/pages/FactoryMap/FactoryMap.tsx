@@ -7,8 +7,8 @@ import {
 import '@xyflow/react/dist/style.css';
 import {
   Map as MapIcon, Pencil, Eye, Upload, RefreshCw, Image as ImageIcon,
-  Camera, Wrench, RotateCw, RotateCcw, Trash2, X, Plus, ExternalLink, Box, Boxes, ArrowUpDown, Copy, Maximize2, Minimize2, Move,
-  Search, ChevronDown, ChevronUp,
+  Camera, Wrench, RotateCw, Trash2, X, Plus, ExternalLink, Box, Boxes, Maximize2, Minimize2, Move,
+  Search, ChevronDown, ChevronUp, Magnet, RotateCcw,
 } from 'lucide-react';
 import api from '../../api/axios';
 import { useTranslation } from 'react-i18next';
@@ -16,22 +16,31 @@ import { STATUS_HEX as STATUS_COLORS, STATUS_LABEL as STATUS_LABELS } from '../.
 import { initials } from '../../utils/initials';
 import { uploadFile } from '../../api/uploads';
 import {
-  fetchFactoryMap, saveMachineLayout, saveFloorPlan, createZone, saveZone, deleteZone,
-  createProp, saveProp, deleteProp, createView, updateView, deleteView,
-  saveSensorLayout, fetchPlantWeather, fetchMapSensors,
+  fetchFactoryMap, saveMachineLayout, saveFloorPlan, createView, updateView, deleteView,
+  fetchPlantWeather, fetchMapSensors,
   type MapMachine, type MapProp, type MapView, type MapSensor, type PlantWeather,
   type MachineLayout, type PropPatch,
 } from '../../api/factoryMap';
 import { fetchDepartments } from '../../api/departments';
 import { fetchKPISummary } from '../../api/workOrders';
 import { fetchJobOrders } from '../../api/jobOrders';
-import { fetchPitStopState, patchPitStopOf, type PitStopOf, type PitStopState } from '../../api/pitStop';
+import { fetchPitStopState, patchPitStopOf, type PitStopCategory, type PitStopOf, type PitStopState } from '../../api/pitStop';
+
+// Furniture-family accents — mirror CG_ACCENT / SG_ACCENT in Factory3D so the 2D
+// legend and the 3D areas read as the same case-goods (amber) / soft-goods (violet) split.
+const PIT_CG_ACCENT = '#f59e0b';
+const PIT_SG_ACCENT = '#8b5cf6';
 import { COMPLETENESS_HEX, OF_LATE_HEX, completenessColor, isDueToday, ofPlateColor, ofStateColor } from '../../utils/pitStopColors';
 import type { KPISummary, JobOrder } from '../../types';
-import Factory3D, { PROP_CATALOG, ORBIT_MARGIN, type M3D, type P3D, type S3D, type MachinePoint, type Commit, type PropCommit, type SensorCommit, type FocusTarget, type CameraPose } from './Factory3D';
+import Factory3D, { PROP_CATALOG, ORBIT_MARGIN, type M3D, type P3D, type S3D, type Z3D, type MachinePoint, type Commit, type PropCommit, type SensorCommit, type ZoneCommit3D, type FocusTarget, type CameraPose, type PlacementSpec, type MultiSelection } from './Factory3D';
 import { toUnit, tempColor, weatherIcon } from '../../utils/temperature';
 import { useAuthStore } from '../../store/authStore';
 import { usePlantStore } from '../../store/plantStore';
+import { useEditorStore } from './editorStore';
+import { useMapEditor, type GroupMove } from './useMapEditor';
+import MapEditorPanel, { type PanelSelection } from './MapEditorPanel';
+import SaveStatusPill from './SaveStatusPill';
+import { BLOCK_KINDS } from './catalog';
 
 interface Plant { id: string; code: string; name: string; }
 
@@ -113,17 +122,6 @@ function healOrbitLayout(machines: MapMachine[]): Array<{ id: string; patch: Mac
   return patches;
 }
 
-const BLOCK_KINDS: { key: string; label: string }[] = [
-  { key: 'auto', label: 'Auto' },
-  { key: 'cobot', label: 'Cobot (animated)' },
-  { key: 'conveyor', label: 'Conveyor' },
-  { key: 'assembly_line', label: 'Assembly line' },
-  { key: 'lift_table', label: 'Lift table' },
-  { key: 'beam_saw', label: 'Beam saw (Selco)' },
-  { key: 'pit_stop', label: 'Pit stop (buffer)' },
-  { key: 'box', label: 'Plain box' },
-];
-
 type ResizeParams = { x: number; y: number; width: number; height: number };
 type ZoneLite = { id: string; name: string; color: string };
 
@@ -164,8 +162,8 @@ function deptColor(name: string): string {
   return ZONE_PALETTE[h % ZONE_PALETTE.length];
 }
 
-type MachineNodeData = { machine: MapMachine; editMode?: boolean; onResize?: (p: ResizeParams) => void; onPickPhoto?: (id: string) => void; onRotate?: (id: string) => void; onPickModel?: (id: string) => void; onSetHeight?: (id: string, current: number | null) => void; onSetKind?: (id: string, kind: string) => void };
-type ZoneNodeData = { zone: ZoneLite; onResize?: (p: ResizeParams) => void; onDelete?: (id: string) => void; onRename?: (id: string, current: string) => void };
+type MachineNodeData = { machine: MapMachine; editMode?: boolean; onResize?: (p: ResizeParams) => void; onPickPhoto?: (id: string) => void; onRotate?: (id: string) => void; onPickModel?: (id: string) => void; onSetKind?: (id: string, kind: string) => void };
+type ZoneNodeData = { zone: ZoneLite; onResize?: (p: ResizeParams) => void; onDelete?: (id: string) => void };
 type FloorPlanData = { url: string };
 
 const iconBtn: React.CSSProperties = {
@@ -227,6 +225,9 @@ const PitStop2DCtx = createContext<PitStopState | null>(null);
 function PitStopMiniGrid({ state }: { state: PitStopState | null }) {
   const lanes = state?.config.lanes ?? 41;
   const slots = state?.config.slots_per_lane ?? 8;
+  // CG/SG split: FIRST `sgLanes` rows = soft-goods area (top band), rest = case goods.
+  const sgLanes = Math.min(Math.max(state?.config.sg_lanes ?? 7, 0), lanes - 1);
+  const cgLanes = lanes - sgLanes;
   const cells = new Map<string, PitStopOf[]>();
   for (const of of state?.ofs ?? []) {
     const p = of.positions.find((q) => q.lane != null && q.slot != null);
@@ -241,6 +242,11 @@ function PitStopMiniGrid({ state }: { state: PitStopState | null }) {
   return (
     <svg viewBox={`0 0 ${slots * CW} ${lanes * CW}`} preserveAspectRatio="none"
       style={{ position: 'absolute', inset: 2, width: 'calc(100% - 4px)', height: 'calc(100% - 4px)' }}>
+      {/* family area bands: soft goods (top = first lanes) vs case goods (bottom) */}
+      {sgLanes > 0 && (
+        <rect x={0} y={0} width={slots * CW} height={sgLanes * CW} fill={`${PIT_SG_ACCENT}1f`} />
+      )}
+      <rect x={0} y={sgLanes * CW} width={slots * CW} height={cgLanes * CW} fill={`${PIT_CG_ACCENT}12`} />
       {Array.from({ length: lanes + 1 }, (_, i) => (
         <line key={`l${i}`} x1={0} x2={slots * CW} y1={i * CW} y2={i * CW}
           stroke="rgba(129,140,248,0.16)" strokeWidth={0.5} />
@@ -249,6 +255,10 @@ function PitStopMiniGrid({ state }: { state: PitStopState | null }) {
         <line key={`s${i}`} x1={i * CW} x2={i * CW} y1={0} y2={lanes * CW}
           stroke="rgba(129,140,248,0.09)" strokeWidth={0.5} />
       ))}
+      {sgLanes > 0 && (
+        <line x1={0} x2={slots * CW} y1={sgLanes * CW} y2={sgLanes * CW}
+          stroke={PIT_SG_ACCENT} strokeWidth={1.4} strokeDasharray="3 2" />
+      )}
       {[...cells.entries()].map(([key, group]) => {
         const [lane, slot] = key.split('-').map(Number);
         const gw = CW / group.length;                   // berth split, like the 3D
@@ -377,10 +387,9 @@ function MachineNode({ data, selected, width, height }: NodeProps) {
               onClick={(e) => e.stopPropagation()}
               style={{ ...iconBtn, width: 'auto', padding: '0 4px', fontSize: 11 }}
             >
-              {BLOCK_KINDS.map((k) => <option key={k.key} value={k.key}>{t(`factoryMap.block_${k.key}`)}</option>)}
+              {BLOCK_KINDS.map((k) => <option key={k} value={k}>{t(`factoryMap.block_${k}`)}</option>)}
             </select>
             <button title={t('factoryMap.rotate15')} onClick={(e) => { e.stopPropagation(); d.onRotate?.(m.id); }} style={iconBtn}><RotateCw size={13} /></button>
-            <button title={t('factoryMap.height3d')} onClick={(e) => { e.stopPropagation(); d.onSetHeight?.(m.id, m.height_3d ?? null); }} style={iconBtn}><ArrowUpDown size={13} /></button>
             <button title={t('factoryMap.model3d')} onClick={(e) => { e.stopPropagation(); d.onPickModel?.(m.id); }} style={iconBtn}><Box size={13} /></button>
             <button title={t('factoryMap.setPhoto')} onClick={(e) => { e.stopPropagation(); d.onPickPhoto?.(m.id); }} style={iconBtn}><Camera size={13} /></button>
           </div>
@@ -399,7 +408,6 @@ function ZoneNode({ data, selected }: NodeProps) {
       <NodeResizer isVisible={!!selected} minWidth={80} minHeight={60} onResizeEnd={(_, p) => d.onResize?.(p)}
         lineStyle={{ borderColor: z.color }} handleStyle={{ width: 8, height: 8, background: z.color, borderRadius: 2 }} />
       <div
-        onDoubleClick={() => d.onRename?.(z.id, z.name)}
         style={{ width: '100%', height: '100%', boxSizing: 'border-box', border: `1.5px dashed ${z.color}`, borderRadius: 10, background: `${z.color}14`, position: 'relative' }}
       >
         <span style={{ position: 'absolute', top: 6, left: 8, fontSize: 12, fontWeight: 600, color: z.color, background: 'rgba(13,20,33,0.7)', padding: '1px 6px', borderRadius: 4 }}>{z.name}</span>
@@ -481,6 +489,13 @@ export default function FactoryMap() {
   const [legendOpen, setLegendOpen] = useState(false);
   const [transformMode, setTransformMode] = useState<'translate' | 'rotate' | 'scale'>('translate');
   const [unplacedSearch, setUnplacedSearch] = useState('');
+  // Zone selected in the 3D editor (zones are React Flow nodes in 2D, floor areas in 3D).
+  const [selZone3d, setSelZone3d] = useState<string | null>(null);
+  // Click-to-place: the item riding the 3D ghost cursor (block from the palette
+  // or an unplaced machine). Esc cancels; blocks stay armed for rapid stamping.
+  const [placement, setPlacement] = useState<{ type: 'prop'; kind: string } | { type: 'machine'; m: MapMachine } | null>(null);
+  const snap = useEditorStore((s) => s.snap);
+  const setSnap = useEditorStore((s) => s.setSnap);
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<MapMachine | null>(null);
   const [kpi, setKpi] = useState<KPISummary | null>(null);
@@ -509,6 +524,8 @@ export default function FactoryMap() {
   useEffect(() => { sensorsRef.current = sensors; }, [sensors]);
   const propsRef = useRef<MapProp[]>([]);
   useEffect(() => { propsRef.current = props; }, [props]);
+  const unplacedRef = useRef<MapMachine[]>([]);
+  useEffect(() => { unplacedRef.current = unplaced; }, [unplaced]);
   // a drag can carry a group along (a machine + its orbit, a zone + the machines it contains,
   // or a whole Shift-selection): capture every carried node's start position on drag start
   const dragRef = useRef<GroupDrag | null>(null);
@@ -521,17 +538,25 @@ export default function FactoryMap() {
     }));
   }, [editMode, setNodes]);
 
+  // ── editor plumbing ──
+  // Per-node callbacks fire before `editor` exists (node factories capture them),
+  // so they reach it through a ref.
+  const editorRef = useRef<ReturnType<typeof useMapEditor> | null>(null);
+
   // ── per-node action callbacks (stable) ──
   const pickPhoto = useCallback((id: string) => { photoTargetRef.current = id; photoInputRef.current?.click(); }, []);
 
   const onPhotoSelected = useCallback(async (file: File) => {
     const id = photoTargetRef.current;
     if (!id) return;
-    const up = await uploadFile(file);
-    await saveMachineLayout(id, { icon_url: up.url });
-    setNodes((nds) => nds.map((n) => n.id === id
-      ? { ...n, data: { ...n.data, machine: { ...(n.data as MachineNodeData).machine, icon_url: up.url } } } : n));
-  }, [setNodes]);
+    try {
+      const up = await uploadFile(file);
+      editorRef.current?.patchMachine(id, { icon_url: up.url }, { label: 'photo' });
+    } catch (e) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      window.alert(`${t('factoryMap.modelUploadFailed')}: ${msg ?? 'error'}`);
+    }
+  }, [t]);
 
   const pickModel = useCallback((id: string) => { propModelTargetRef.current = null; modelTargetRef.current = id; modelInputRef.current?.click(); }, []);
   const pickPropModel = useCallback((id: string) => { modelTargetRef.current = null; propModelTargetRef.current = id; modelInputRef.current?.click(); }, []);
@@ -543,110 +568,109 @@ export default function FactoryMap() {
     try {
       const up = await uploadFile(file);
       if (propId) {                                     // .glb for a decorative prop
-        await saveProp(propId, { model_url: up.url });
-        setProps((ps) => ps.map((p) => (p.id === propId ? { ...p, model_url: up.url } : p)));
+        editorRef.current?.patchProp(propId, { model_url: up.url }, { label: 'model' });
         propModelTargetRef.current = null;
         return;
       }
-      await saveMachineLayout(id!, { model_url: up.url });
-      setNodes((nds) => nds.map((n) => n.id === id
-        ? { ...n, data: { ...n.data, machine: { ...(n.data as MachineNodeData).machine, model_url: up.url } } } : n));
+      editorRef.current?.patchMachine(id!, { model_url: up.url }, { label: 'model' });
     } catch (e) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       window.alert(`${t('factoryMap.modelUploadFailed')}: ${msg ?? 'error'}`);
     }
-  }, [setNodes]);
-
-  const setHeight = useCallback((id: string, current: number | null) => {
-    const v = window.prompt(t('factoryMap.height3dPrompt'), current != null ? String(current) : '');
-    if (v == null) return;
-    const h = parseFloat(v.replace(',', '.'));
-    if (!Number.isFinite(h) || h <= 0) return;
-    saveMachineLayout(id, { height_3d: h }).catch(() => {});
-    setNodes((nds) => nds.map((n) => n.id === id
-      ? { ...n, data: { ...n.data, machine: { ...(n.data as MachineNodeData).machine, height_3d: h } } } : n));
-  }, [setNodes]);
+  }, [t]);
 
   const setKind = useCallback((id: string, kind: string) => {
-    const value = kind === 'auto' ? null : kind;
-    saveMachineLayout(id, { block_kind: value }).catch(() => {});
-    setNodes((nds) => nds.map((n) => n.id === id
-      ? { ...n, data: { ...n.data, machine: { ...(n.data as MachineNodeData).machine, block_kind: value } } } : n));
-  }, [setNodes]);
+    editorRef.current?.patchMachine(id, { block_kind: kind === 'auto' ? null : kind }, { label: 'shape' });
+  }, []);
 
   const rotateMachine = useCallback((id: string) => {
-    setNodes((nds) => nds.map((n) => {
-      if (n.id !== id) return n;
-      const cur = (n.data as MachineNodeData).machine;
-      const deg = ((cur.rotation_deg ?? 0) + 15) % 360;
-      saveMachineLayout(id, { rotation_deg: deg }).catch(() => {});
-      return { ...n, data: { ...n.data, machine: { ...cur, rotation_deg: deg } } };
-    }));
-  }, [setNodes]);
-
-  const renameZone = useCallback((zoneId: string, current: string) => {
-    if (!editModeRef.current) return;
-    const name = window.prompt(t('factoryMap.zoneNamePrompt'), current);
-    if (name == null) return;
-    saveZone(zoneId, { name }).catch(() => {});
-    setNodes((nds) => nds.map((n) => n.id === `zone-${zoneId}`
-      ? { ...n, data: { ...n.data, zone: { ...(n.data as ZoneNodeData).zone, name } } } : n));
-  }, [setNodes]);
+    const n = nodesRef.current.find((x) => x.id === id);
+    if (!n) return;
+    const deg = (((n.data as MachineNodeData).machine.rotation_deg ?? 0) + 15) % 360;
+    editorRef.current?.patchMachine(id, { rotation_deg: deg }, { label: 'rotate' });
+  }, []);
 
   const removeZone = useCallback((zoneId: string) => {
-    deleteZone(zoneId).catch(() => {});
-    setNodes((nds) => nds.filter((n) => n.id !== `zone-${zoneId}`));
-  }, [setNodes]);
+    setSelZone3d((z) => (z === zoneId ? null : z));
+    editorRef.current?.deleteZoneTracked(zoneId);
+  }, []);
+
+  // ── node factories (shared by initial load and place/undo flows) ──
+  const makeOrbitNode = useCallback((m: MapMachine): Node | null => {
+    if ((m.asset_type ?? 'production') !== 'production') return null;
+    const r = orbitRectFor(m);
+    return {
+      // An orbit belongs to its machine — never independently draggable (it would drift away).
+      // Reshape it with the resize handles; it follows the machine when the machine is moved.
+      id: `orbit-${m.id}`, type: 'orbit', position: { x: r.x, y: r.y }, width: r.w, height: r.h,
+      zIndex: 0, hidden: !editModeRef.current, deletable: false, draggable: false,
+      data: {
+        machineId: m.id, machineName: m.name,
+        onResize: (p: ResizeParams) => {
+          const patch = { orbit_x: Math.round(p.x), orbit_y: Math.round(p.y), orbit_w: Math.round(p.width), orbit_h: Math.round(p.height) };
+          editorRef.current?.patchMachine(m.id, patch, { label: 'orbit' });
+          // a redrawn orbit may now cover (or release) cobots — relink them
+          reconcileChildrenRef.current(m.id, { x: p.x, y: p.y, w: p.width, h: p.height });
+        },
+      },
+    };
+  }, []);
+
+  const makeMachineNode = useCallback((m: MapMachine): Node => ({
+    id: m.id, type: 'machine', position: { x: m.pos_x ?? 0, y: m.pos_y ?? 0 },
+    width: m.pos_w ?? 152, height: m.pos_h ?? 64, zIndex: 1,
+    data: {
+      machine: m, editMode: editModeRef.current, onPickPhoto: pickPhoto, onRotate: rotateMachine, onPickModel: pickModel, onSetKind: setKind,
+      onResize: (p: ResizeParams) => editorRef.current?.patchMachine(m.id, { pos_x: Math.round(p.x), pos_y: Math.round(p.y), pos_w: Math.round(p.width), pos_h: Math.round(p.height) }, { label: 'resize' }),
+    },
+  }), [pickPhoto, rotateMachine, pickModel, setKind]);
+
+  // ── the editor: every mutation funnels through here (optimistic + tracked + undoable) ──
+  // makeZoneNode is defined below (it needs removeZone) — reach it via ref.
+  const makeZoneNodeRef = useRef<(z: { id: string; name: string; color: string; pos_x: number; pos_y: number; pos_w: number; pos_h: number }) => Node>(() => { throw new Error('makeZoneNode not ready'); });
+  const editorIO = useMemo(() => ({
+    getNodes: () => nodesRef.current,
+    setNodes: (updater: (nds: Node[]) => Node[]) => setNodes(updater),
+    getProps: () => propsRef.current,
+    setProps: (updater: (ps: MapProp[]) => MapProp[]) => setProps(updater),
+    getSensors: () => sensorsRef.current,
+    setSensors: (updater: (ss: MapSensor[]) => MapSensor[]) => setSensors(updater),
+    getUnplaced: () => unplacedRef.current,
+    setUnplaced: (updater: (ms: MapMachine[]) => MapMachine[]) => setUnplaced(updater),
+    makeMachineNode, makeOrbitNode,
+    makeZoneNode: (z: { id: string; name: string; color: string; pos_x: number; pos_y: number; pos_w: number; pos_h: number }) => makeZoneNodeRef.current(z),
+    onPropGone: (id: string) => setSelProp((cur) => (cur === id ? null : cur)),
+    onMachineGone: (id: string) => { setSel3d((cur) => (cur === id ? null : cur)); setDetail((d) => (d?.id === id ? null : d)); },
+  }), [setNodes, makeMachineNode, makeOrbitNode]);
+
+  const editor = useMapEditor(editorIO, plantId);
+  useEffect(() => { editorRef.current = editor; }, [editor]);
+
+  const makeZoneNode = useCallback((z: { id: string; name: string; color: string; pos_x: number; pos_y: number; pos_w: number; pos_h: number }): Node => ({
+    id: `zone-${z.id}`, type: 'zone', position: { x: z.pos_x, y: z.pos_y },
+    width: z.pos_w, height: z.pos_h, zIndex: 0,
+    data: {
+      zone: { id: z.id, name: z.name, color: z.color },
+      onDelete: removeZone,
+      onResize: (p: ResizeParams) => editorRef.current?.patchZone(z.id, { pos_x: Math.round(p.x), pos_y: Math.round(p.y), pos_w: Math.round(p.width), pos_h: Math.round(p.height) }, { label: 'resize' }),
+    },
+  }), [removeZone]);
+  useEffect(() => { makeZoneNodeRef.current = makeZoneNode; }, [makeZoneNode]);
 
   const buildNodes = useCallback((data: Awaited<ReturnType<typeof fetchFactoryMap>>): Node[] => {
     const out: Node[] = [];
     if (data.floor_plan_url) {
       out.push({ id: 'floorplan', type: 'floorplan', position: { x: 0, y: 0 }, data: { url: data.floor_plan_url }, draggable: false, selectable: false, deletable: false, zIndex: -1 });
     }
-    for (const z of data.zones) {
-      out.push({
-        id: `zone-${z.id}`, type: 'zone', position: { x: z.pos_x, y: z.pos_y },
-        width: z.pos_w, height: z.pos_h, zIndex: 0,
-        data: {
-          zone: { id: z.id, name: z.name, color: z.color },
-          onDelete: removeZone, onRename: renameZone,
-          onResize: (p: ResizeParams) => saveZone(z.id, { pos_x: Math.round(p.x), pos_y: Math.round(p.y), pos_w: Math.round(p.width), pos_h: Math.round(p.height) }).catch(() => {}),
-        },
-      });
-    }
+    for (const z of data.zones) out.push(makeZoneNode(z));
     for (const m of data.machines) {
       if (m.pos_x == null || m.pos_y == null) continue;
-      // Resizable orbit rectangle for production machines (hidden outside edit mode)
-      if ((m.asset_type ?? 'production') === 'production') {
-        const r = orbitRectFor(m);
-        out.push({
-          // An orbit belongs to its machine — never independently draggable (it would drift away).
-          // Reshape it with the resize handles; it follows the machine when the machine is moved.
-          id: `orbit-${m.id}`, type: 'orbit', position: { x: r.x, y: r.y }, width: r.w, height: r.h,
-          zIndex: 0, hidden: !editModeRef.current, deletable: false, draggable: false,
-          data: {
-            machineId: m.id, machineName: m.name,
-            onResize: (p: ResizeParams) => {
-              const patch = { orbit_x: Math.round(p.x), orbit_y: Math.round(p.y), orbit_w: Math.round(p.width), orbit_h: Math.round(p.height) };
-              saveMachineLayout(m.id, patch).catch(() => {});
-              setNodes((nds) => nds.map((n) => n.id === m.id ? { ...n, data: { ...n.data, machine: { ...(n.data as MachineNodeData).machine, ...patch } } } : n));
-              // a redrawn orbit may now cover (or release) cobots — relink them
-              reconcileChildrenRef.current(m.id, { x: p.x, y: p.y, w: p.width, h: p.height });
-            },
-          },
-        });
-      }
-      out.push({
-        id: m.id, type: 'machine', position: { x: m.pos_x, y: m.pos_y },
-        width: m.pos_w ?? 152, height: m.pos_h ?? 64, zIndex: 1,
-        data: {
-          machine: m, editMode: editModeRef.current, onPickPhoto: pickPhoto, onRotate: rotateMachine, onPickModel: pickModel, onSetHeight: setHeight, onSetKind: setKind,
-          onResize: (p: ResizeParams) => saveMachineLayout(m.id, { pos_x: Math.round(p.x), pos_y: Math.round(p.y), pos_w: Math.round(p.width), pos_h: Math.round(p.height) }).catch(() => {}),
-        },
-      });
+      const orbit = makeOrbitNode(m);
+      if (orbit) out.push(orbit);
+      out.push(makeMachineNode(m));
     }
     return out;
-  }, [pickPhoto, rotateMachine, removeZone, renameZone, pickModel, setHeight, setKind, setNodes]);
+  }, [makeZoneNode, makeOrbitNode, makeMachineNode]);
 
   useEffect(() => {
     api.get<Plant[] | { items: Plant[] }>('/api/plants/')
@@ -708,14 +732,42 @@ export default function FactoryMap() {
 
   const applyStatus = useCallback((list: Array<{ id: string; status: string; operator: string | null; technicians?: MapMachine['technicians']; stop_reason?: string | null; line_stats?: MapMachine['line_stats']; current_job_number?: string | null; queued_ofs?: MapMachine['queued_ofs']; queued_total?: number; pipeline_ofs?: MapMachine['pipeline_ofs']; pipeline_total?: number; open_ticket: boolean; open_ticket_id: string | null; open_ticket_number: string | null }>) => {
     const byId = new Map(list.map((s) => [s.id, s]));
-    setNodes((nds) => nds.map((n) => {
-      if (n.type !== 'machine') return n;
-      const s = byId.get(n.id);
-      if (!s) return n;
-      const mm = (n.data as MachineNodeData).machine;
-      return { ...n, data: { ...n.data, machine: { ...mm, status: s.status, operator: s.operator, technicians: s.technicians ?? null, stop_reason: s.stop_reason ?? null, line_stats: s.line_stats ?? null, current_job_number: s.current_job_number ?? null, queued_ofs: s.queued_ofs ?? null, queued_total: s.queued_total ?? 0, pipeline_ofs: s.pipeline_ofs ?? null, pipeline_total: s.pipeline_total ?? 0, open_ticket: s.open_ticket, open_ticket_id: s.open_ticket_id, open_ticket_number: s.open_ticket_number } } };
-    }));
-    setUnplaced((u) => u.map((m) => { const s = byId.get(m.id); return s ? { ...m, status: s.status } : m; }));
+    setNodes((nds) => {
+      let changed = false;
+      const next = nds.map((n) => {
+        if (n.type !== 'machine') return n;
+        const s = byId.get(n.id);
+        if (!s) return n;
+        const mm = (n.data as MachineNodeData).machine;
+        // Keep the same node reference when the push carries no actual change —
+        // the memoized 3D blocks then skip re-rendering the whole scene every 4 s.
+        const same = mm.status === s.status && mm.operator === s.operator
+          && mm.open_ticket === s.open_ticket && mm.open_ticket_id === s.open_ticket_id
+          && mm.open_ticket_number === s.open_ticket_number
+          && (mm.stop_reason ?? null) === (s.stop_reason ?? null)
+          && (mm.current_job_number ?? null) === (s.current_job_number ?? null)
+          && (mm.queued_total ?? 0) === (s.queued_total ?? 0)
+          && (mm.pipeline_total ?? 0) === (s.pipeline_total ?? 0)
+          && JSON.stringify(mm.technicians ?? null) === JSON.stringify(s.technicians ?? null)
+          && JSON.stringify(mm.line_stats ?? null) === JSON.stringify(s.line_stats ?? null)
+          && JSON.stringify(mm.queued_ofs ?? null) === JSON.stringify(s.queued_ofs ?? null)
+          && JSON.stringify(mm.pipeline_ofs ?? null) === JSON.stringify(s.pipeline_ofs ?? null);
+        if (same) return n;
+        changed = true;
+        return { ...n, data: { ...n.data, machine: { ...mm, status: s.status, operator: s.operator, technicians: s.technicians ?? null, stop_reason: s.stop_reason ?? null, line_stats: s.line_stats ?? null, current_job_number: s.current_job_number ?? null, queued_ofs: s.queued_ofs ?? null, queued_total: s.queued_total ?? 0, pipeline_ofs: s.pipeline_ofs ?? null, pipeline_total: s.pipeline_total ?? 0, open_ticket: s.open_ticket, open_ticket_id: s.open_ticket_id, open_ticket_number: s.open_ticket_number } } };
+      });
+      return changed ? next : nds;
+    });
+    setUnplaced((u) => {
+      let changed = false;
+      const next = u.map((m) => {
+        const s = byId.get(m.id);
+        if (!s || m.status === s.status) return m;
+        changed = true;
+        return { ...m, status: s.status };
+      });
+      return changed ? next : u;
+    });
   }, [setNodes]);
 
   // Live status push over WebSocket (view mode only)
@@ -843,67 +895,49 @@ export default function FactoryMap() {
     dragRef.current = null;
     if (node.id === 'floorplan' || node.type === 'orbit') return;
     if (!d) {   // defensive: persist just the node that moved
-      if (node.type === 'zone') saveZone((node.data as ZoneNodeData).zone.id, { pos_x: Math.round(node.position.x), pos_y: Math.round(node.position.y) }).catch(() => {});
-      else if (node.type === 'machine') saveMachineLayout(node.id, { pos_x: Math.round(node.position.x), pos_y: Math.round(node.position.y) }).catch(() => {});
+      if (node.type === 'zone') editor.patchZone((node.data as ZoneNodeData).zone.id, { pos_x: Math.round(node.position.x), pos_y: Math.round(node.position.y) }, { label: 'move' });
+      else if (node.type === 'machine') editor.patchMachine(node.id, { pos_x: Math.round(node.position.x), pos_y: Math.round(node.position.y) }, { label: 'move' });
       return;
     }
     const start = d.startById.get(node.id) ?? { x: node.position.x, y: node.position.y };
     const dx = node.position.x - start.x, dy = node.position.y - start.y;
 
-    // Persist each carried machine: its new position, its orbit, its auto-link, and relink its cobots.
-    const orbitPos = new Map<string, XY>();                                              // orbit node id → new position
-    const machinePatch = new Map<string, { pos_x: number; pos_y: number; orbit_x?: number; orbit_y?: number }>();
+    // Build ONE undoable group move: every carried machine (with its orbit), zone,
+    // and 3D-only item (rode-along or recalled) with its before/after position.
+    const mv: GroupMove = { machines: [], zones: [], sensors: [], props: [] };
     for (const m of d.machines) {
       const nx = Math.round(m.mStart.x + dx), ny = Math.round(m.mStart.y + dy);
-      const patch: { pos_x: number; pos_y: number; orbit_x?: number; orbit_y?: number } = { pos_x: nx, pos_y: ny };
+      const before: GroupMove['machines'][number]['before'] = { pos_x: Math.round(m.mStart.x), pos_y: Math.round(m.mStart.y) };
+      const after: GroupMove['machines'][number]['after'] = { pos_x: nx, pos_y: ny };
       if (m.orbitId) {
-        const ox = Math.round(m.oStart.x + dx), oy = Math.round(m.oStart.y + dy);
-        patch.orbit_x = ox; patch.orbit_y = oy;
-        orbitPos.set(m.orbitId, { x: ox, y: oy });
+        before.orbit_x = Math.round(m.oStart.x); before.orbit_y = Math.round(m.oStart.y);
+        after.orbit_x = Math.round(m.oStart.x + dx); after.orbit_y = Math.round(m.oStart.y + dy);
       }
-      saveMachineLayout(m.id, patch).catch(() => {});      // position + orbit in one request
-      autoLinkRef.current(m.id, nx, ny, m.mSize.w, m.mSize.h);
-      if (m.orbitId) reconcileChildrenRef.current(m.id, { x: patch.orbit_x!, y: patch.orbit_y!, w: m.oSize.w, h: m.oSize.h });
-      machinePatch.set(m.id, patch);
+      mv.machines.push({ id: m.id, before, after });
     }
-
-    // Persist each carried zone's own position.
     for (const z of d.zones) {
-      saveZone(z.dbId, { pos_x: Math.round(z.zStart.x + dx), pos_y: Math.round(z.zStart.y + dy) }).catch(() => {});
+      mv.zones.push({ dbId: z.dbId, before: { x: Math.round(z.zStart.x), y: Math.round(z.zStart.y) }, after: { x: Math.round(z.zStart.x + dx), y: Math.round(z.zStart.y + dy) } });
     }
+    d.sensors.forEach((s) => mv.sensors.push({ id: s.id, before: { x: Math.round(s.sStart.x), y: Math.round(s.sStart.y) }, after: { x: Math.round(s.sStart.x + dx), y: Math.round(s.sStart.y + dy) } }));
+    d.sensorSnaps.forEach((s) => {
+      const cur = sensorsRef.current.find((x) => x.id === s.id);
+      mv.sensors.push({ id: s.id, before: { x: Math.round(cur?.pos_x ?? s.target.x), y: Math.round(cur?.pos_y ?? s.target.y) }, after: { x: Math.round(s.target.x + dx), y: Math.round(s.target.y + dy) } });
+    });
+    d.props.forEach((p) => mv.props.push({ id: p.id, before: { x: Math.round(p.pStart.x), y: Math.round(p.pStart.y) }, after: { x: Math.round(p.pStart.x + dx), y: Math.round(p.pStart.y + dy) } }));
+    d.propSnaps.forEach((p) => {
+      const cur = propsRef.current.find((x) => x.id === p.id);
+      mv.props.push({ id: p.id, before: { x: Math.round(cur?.pos_x ?? p.target.x), y: Math.round(cur?.pos_y ?? p.target.y) }, after: { x: Math.round(p.target.x + dx), y: Math.round(p.target.y + dy) } });
+    });
+    editor.commitGroupMove(mv);
 
-    // Reposition the 3D-only items the zone carried: items INSIDE ride the delta (sStart/pStart),
-    // items recalled from outside land on the department cluster (target) — both then shift by the drag delta.
-    const sensorMoves = new Map<string, XY>();
-    d.sensors.forEach((s) => sensorMoves.set(s.id, { x: Math.round(s.sStart.x + dx), y: Math.round(s.sStart.y + dy) }));
-    d.sensorSnaps.forEach((s) => sensorMoves.set(s.id, { x: Math.round(s.target.x + dx), y: Math.round(s.target.y + dy) }));
-    if (sensorMoves.size) {
-      sensorMoves.forEach((pos, id) => saveSensorLayout(id, { pos_x: pos.x, pos_y: pos.y }).catch(() => {}));
-      setSensors((ss) => ss.map((s) => { const p = sensorMoves.get(s.id); return p ? { ...s, pos_x: p.x, pos_y: p.y } : s; }));
+    // Auto-link is a POSITION-derived effect, deliberately outside the history:
+    // relink each moved machine and the cobots covered by its orbit.
+    for (const m of d.machines) {
+      const nx = Math.round(m.mStart.x + dx), ny = Math.round(m.mStart.y + dy);
+      autoLinkRef.current(m.id, nx, ny, m.mSize.w, m.mSize.h);
+      if (m.orbitId) reconcileChildrenRef.current(m.id, { x: Math.round(m.oStart.x + dx), y: Math.round(m.oStart.y + dy), w: m.oSize.w, h: m.oSize.h });
     }
-    const propMoves = new Map<string, XY>();
-    d.props.forEach((p) => propMoves.set(p.id, { x: Math.round(p.pStart.x + dx), y: Math.round(p.pStart.y + dy) }));
-    d.propSnaps.forEach((p) => propMoves.set(p.id, { x: Math.round(p.target.x + dx), y: Math.round(p.target.y + dy) }));
-    if (propMoves.size) {
-      propMoves.forEach((pos, id) => saveProp(id, { pos_x: pos.x, pos_y: pos.y }).catch(() => {}));
-      setProps((ps) => ps.map((p) => { const np = propMoves.get(p.id); return np ? { ...p, pos_x: np.x, pos_y: np.y } : p; }));
-    }
-
-    // Reflect the final rounded positions in the flow state (machine data + node & orbit positions).
-    setNodes((nds) => nds.map((n) => {
-      const mp = machinePatch.get(n.id);
-      if (mp) {
-        const mm = (n.data as MachineNodeData).machine;
-        return {
-          ...n, position: { x: mp.pos_x, y: mp.pos_y },
-          data: { ...n.data, machine: { ...mm, pos_x: mp.pos_x, pos_y: mp.pos_y, ...(mp.orbit_x != null ? { orbit_x: mp.orbit_x, orbit_y: mp.orbit_y } : {}) } },
-        };
-      }
-      const op = orbitPos.get(n.id);
-      if (op) return { ...n, position: op };
-      return n;
-    }));
-  }, [setNodes, setSensors, setProps]);
+  }, [editor]);
 
   const onNodeClick: NodeMouseHandler = useCallback((_, node) => {
     if (editMode || node.id === 'floorplan' || node.type === 'zone') return;
@@ -916,20 +950,14 @@ export default function FactoryMap() {
     setDetail(mm);
   }, [editMode]);
 
-  const placeMachine = useCallback(async (m: MapMachine) => {
-    const placedCount = nodes.filter((n) => n.type === 'machine').length;
+  // 2D list click: drop near the top-left in a small cascade (the 3D editor
+  // offers true click-to-place via the ghost instead).
+  const placeMachine = useCallback((m: MapMachine) => {
+    const placedCount = nodesRef.current.filter((n) => n.type === 'machine').length;
     const x = 60 + (placedCount % 6) * 40;
     const y = 60 + (placedCount % 6) * 40;
-    setNodes((nds) => [...nds, {
-      id: m.id, type: 'machine', position: { x, y }, width: 152, height: 64, zIndex: 1,
-      data: {
-        machine: { ...m, pos_x: x, pos_y: y, placed: true }, editMode: editModeRef.current, onPickPhoto: pickPhoto, onRotate: rotateMachine, onPickModel: pickModel, onSetHeight: setHeight, onSetKind: setKind,
-        onResize: (p: ResizeParams) => saveMachineLayout(m.id, { pos_x: Math.round(p.x), pos_y: Math.round(p.y), pos_w: Math.round(p.width), pos_h: Math.round(p.height) }).catch(() => {}),
-      },
-    }]);
-    setUnplaced((u) => u.filter((x2) => x2.id !== m.id));
-    try { await saveMachineLayout(m.id, { pos_x: x, pos_y: y }); } catch { /* ignore */ }
-  }, [nodes, setNodes, pickPhoto, rotateMachine, pickModel, setHeight, setKind]);
+    editor.placeMachine(m, x, y);
+  }, [editor]);
 
   const onUploadFloorPlan = useCallback(async (file: File) => {
     if (!plantId) return;
@@ -938,11 +966,12 @@ export default function FactoryMap() {
     finally { setLoading(false); }
   }, [plantId, load]);
 
-  const addZone = useCallback(async () => {
+  const addZone = useCallback(() => {
     if (!plantId) return;
-    await createZone(plantId, { name: 'Zone', pos_x: 40, pos_y: 40, pos_w: 320, pos_h: 220, color: '#6366f1' });
-    await load(plantId);
-  }, [plantId, load]);
+    editor.createZoneTracked(plantId, { name: 'Zone', pos_x: 40, pos_y: 40, pos_w: 320, pos_h: 220, color: '#6366f1' }, (z) => {
+      setNodes((nds) => [...nds, makeZoneNode({ id: z.id, name: z.name ?? 'Zone', color: z.color ?? '#6366f1', pos_x: z.pos_x ?? 40, pos_y: z.pos_y ?? 40, pos_w: z.pos_w ?? 320, pos_h: z.pos_h ?? 220 })]);
+    });
+  }, [plantId, editor, setNodes, makeZoneNode]);
 
   const statusCounts = useMemo(() => {
     const c: Record<string, number> = {};
@@ -957,12 +986,27 @@ export default function FactoryMap() {
     .map((n) => (n.data as ZoneNodeData).zone as ZoneLite)
     .sort((a, b) => a.name.localeCompare(b.name)), [nodes]);
 
-  const machines3d = useMemo<M3D[]>(() => nodes
-    .filter((n) => n.type === 'machine')
-    .map((n) => {
+  // M3D objects are cached per node REFERENCE: applyStatus keeps untouched nodes
+  // identical, so an unchanged machine hands the memoized 3D block the exact same
+  // object and its whole subtree skips re-rendering on the 4 s status push.
+  const m3dCache = useRef(new Map<string, { node: Node; m: M3D }>());
+  const machines3d = useMemo<M3D[]>(() => {
+    const cache = m3dCache.current;
+    const seen = new Set<string>();
+    const out: M3D[] = [];
+    for (const n of nodes) {
+      if (n.type !== 'machine') continue;
+      seen.add(n.id);
+      const hit = cache.get(n.id);
+      if (hit && hit.node === n) { out.push(hit.m); continue; }
       const mm = (n.data as MachineNodeData).machine;
-      return { id: mm.id, name: mm.name, status: mm.status, technicians: mm.technicians, stop_reason: mm.stop_reason, line_stats: mm.line_stats, pipeline_ofs: mm.pipeline_ofs, pipeline_total: mm.pipeline_total, open_ticket_number: mm.open_ticket_number, pos_x: n.position.x, pos_y: n.position.y, pos_w: n.width ?? 152, pos_h: n.height ?? 64, icon_url: mm.icon_url, model_url: mm.model_url, height_3d: mm.height_3d, model_scale: mm.model_scale, scale_y: mm.scale_y, scale_z: mm.scale_z, rotation_deg: mm.rotation_deg, family: mm.family, subtype: mm.subtype, function_label: mm.function_label, block_kind: mm.block_kind, asset_type: mm.asset_type, orbit_x: mm.orbit_x, orbit_y: mm.orbit_y, orbit_w: mm.orbit_w, orbit_h: mm.orbit_h };
-    }), [nodes]);
+      const m: M3D = { id: mm.id, name: mm.name, status: mm.status, technicians: mm.technicians, stop_reason: mm.stop_reason, line_stats: mm.line_stats, pipeline_ofs: mm.pipeline_ofs, pipeline_total: mm.pipeline_total, open_ticket_number: mm.open_ticket_number, pos_x: n.position.x, pos_y: n.position.y, pos_w: n.width ?? 152, pos_h: n.height ?? 64, icon_url: mm.icon_url, model_url: mm.model_url, height_3d: mm.height_3d, model_scale: mm.model_scale, scale_y: mm.scale_y, scale_z: mm.scale_z, rotation_deg: mm.rotation_deg, family: mm.family, subtype: mm.subtype, function_label: mm.function_label, block_kind: mm.block_kind, asset_type: mm.asset_type, orbit_x: mm.orbit_x, orbit_y: mm.orbit_y, orbit_w: mm.orbit_w, orbit_h: mm.orbit_h };
+      cache.set(n.id, { node: n, m });
+      out.push(m);
+    }
+    for (const k of [...cache.keys()]) if (!seen.has(k)) cache.delete(k);
+    return out;
+  }, [nodes]);
 
   // ── Saved department views ──
   // One view per department (bounding box of its placed machines) + an "overview"
@@ -989,20 +1033,21 @@ export default function FactoryMap() {
   // Wrap every placed machine of a department in a labelled zone (its bounding box +
   // breathing room). The zone is a plain rectangle — membership stays geometric, so
   // later dragging the zone carries whatever machines currently sit inside it.
-  const addZoneForDepartment = useCallback(async (deptName: string) => {
+  const addZoneForDepartment = useCallback((deptName: string) => {
     if (!plantId) return;
     const dv = departmentViews.find((d) => d.name === deptName);
     if (!dv) return;
     const { box } = dv;
-    await createZone(plantId, {
+    editor.createZoneTracked(plantId, {
       name: deptName, color: deptColor(deptName),
       pos_x: Math.round(box.minX - ZONE_DEPT_PADDING),
       pos_y: Math.round(box.minY - ZONE_DEPT_PADDING),
       pos_w: Math.round(box.maxX - box.minX + ZONE_DEPT_PADDING * 2),
       pos_h: Math.round(box.maxY - box.minY + ZONE_DEPT_PADDING * 2),
+    }, (z) => {
+      setNodes((nds) => [...nds, makeZoneNode({ id: z.id, name: z.name ?? deptName, color: z.color ?? deptColor(deptName), pos_x: z.pos_x ?? 0, pos_y: z.pos_y ?? 0, pos_w: z.pos_w ?? 320, pos_h: z.pos_h ?? 220 })]);
     });
-    await load(plantId);
-  }, [plantId, departmentViews, load]);
+  }, [plantId, departmentViews, editor, setNodes, makeZoneNode]);
 
   const overviewBox = useMemo<ViewBox | null>(() => {
     const ms = nodes.filter((n) => n.type === 'machine');
@@ -1062,20 +1107,20 @@ export default function FactoryMap() {
   }, [overrideByRegion, focusView, focusOn]);
 
   // Capture the current camera pose and save it as a free named view.
-  const saveCurrentView = useCallback(async () => {
+  // The name comes from an inline popover on the views bar (no window.prompt).
+  const [viewNameDraft, setViewNameDraft] = useState<string | null>(null);   // null = closed
+  const saveCurrentView = useCallback(async (name: string) => {
     const pose = poseReaderRef.current?.();
-    if (!pose || !plantId) return;
-    const name = window.prompt(t('factoryMap.viewNamePrompt'), '')?.trim();
-    if (!name) return;
+    if (!pose || !plantId || !name.trim()) return;
     try {
       const v = await createView(plantId, {
-        name,
+        name: name.trim(),
         target_px_x: pose.targetPxX, target_px_y: pose.targetPxY, target_y: pose.targetY,
         offset_x: pose.offsetX, offset_y: pose.offsetY, offset_z: pose.offsetZ,
       });
       setViews((vs) => [...vs, v]);
     } catch { /* permission / network — leave the bar unchanged */ }
-  }, [plantId, t]);
+  }, [plantId]);
 
   // Pin (or re-pin) the current camera pose to a region — the Overview or a
   // department — overriding its auto frame. Upserts the region's FactoryView.
@@ -1170,11 +1215,53 @@ export default function FactoryMap() {
     );
   };
 
-  const onMachine3d = useCallback((id: string) => {
-    setSelProp(null);                                   // selecting a machine clears any prop selection
-    if (editMode) { setSel3d(id || null); return; }
+  // Placement mode swallows selection clicks (the click is meant for the ghost).
+  const placementRef = useRef(placement);
+  useEffect(() => { placementRef.current = placement; }, [placement]);
+
+  // Live mirrors of the selection state for handlers bound outside React's render.
+  const sel3dRef = useRef(sel3d); useEffect(() => { sel3dRef.current = sel3d; }, [sel3d]);
+  const selPropRef = useRef(selProp); useEffect(() => { selPropRef.current = selProp; }, [selProp]);
+  const selSensorRef = useRef(selSensor); useEffect(() => { selSensorRef.current = selSensor; }, [selSensor]);
+  const selZoneRef = useRef(selZone3d); useEffect(() => { selZoneRef.current = selZone3d; }, [selZone3d]);
+  const mode3dRef = useRef(mode3d); useEffect(() => { mode3dRef.current = mode3d; }, [mode3d]);
+
+  // Ctrl-click multi-selection (3D edit mode): machines + blocks move as one group.
+  const [multiSel, setMultiSel] = useState<MultiSelection | null>(null);
+  const multiSelRef = useRef(multiSel);
+  useEffect(() => { multiSelRef.current = multiSel; }, [multiSel]);
+
+  // Grow/shrink the group: the current single selection (if any) seeds it, the
+  // clicked item toggles; back down to ONE member → collapse to single selection.
+  const toggleMulti = useCallback((kind: 'machines' | 'props', id: string) => {
+    const cur = multiSelRef.current ?? {
+      machines: sel3dRef.current ? [sel3dRef.current] : [],
+      props: selPropRef.current ? [selPropRef.current] : [],
+    };
+    const next: MultiSelection = { machines: [...cur.machines], props: [...cur.props] };
+    const arr = next[kind];
+    const at = arr.indexOf(id);
+    if (at >= 0) arr.splice(at, 1); else arr.push(id);
+    const total = next.machines.length + next.props.length;
+    setSel3d(null); setSelProp(null); setSelSensor(null); setSelZone3d(null);
+    if (total === 0) { setMultiSel(null); return; }
+    if (total === 1) {
+      setMultiSel(null);
+      if (next.machines.length) setSel3d(next.machines[0]); else setSelProp(next.props[0]);
+      return;
+    }
+    setMultiSel(next);
+  }, []);
+
+  const onMachine3d = useCallback((id: string, additive?: boolean) => {
+    if (placementRef.current) return;
+    if (editModeRef.current && additive && id) { toggleMulti('machines', id); return; }
+    setMultiSel(null);
+    setSelProp(null);                                   // selecting a machine clears any other selection
+    setSelSensor(null); setSelZone3d(null);
+    if (editModeRef.current) { setSel3d(id || null); return; }
     if (!id) { setPitStopOfId(null); setPitStopZone(false); return; }
-    const n = nodes.find((x) => x.id === id);
+    const n = nodesRef.current.find((x) => x.id === id);
     if (!n) return;
     const mm = (n.data as MachineNodeData).machine;
     // Clicking the Pit Stop zone opens its KPI panel (a buffer, not a machine).
@@ -1183,18 +1270,13 @@ export default function FactoryMap() {
       return;
     }
     setOfPanel(null); setPitStopOfId(null); setPitStopZone(false); setDetail(mm);
-  }, [editMode, nodes]);
+  }, [toggleMulti]);
 
   const onCommit3d = useCallback<Commit>((id, patch) => {
-    saveMachineLayout(id, patch).catch(() => {});
-    const node = nodes.find((n) => n.id === id);
-    setNodes((nds) => nds.map((n) => {
-      if (n.id !== id) return n;
-      const mm = (n.data as MachineNodeData).machine;
-      return { ...n, position: { x: patch.pos_x, y: patch.pos_y }, data: { ...n.data, machine: { ...mm, model_scale: patch.model_scale, scale_y: patch.scale_y, scale_z: patch.scale_z, rotation_deg: patch.rotation_deg, pos_x: patch.pos_x, pos_y: patch.pos_y } } };
-    }));
+    const node = nodesRef.current.find((n) => n.id === id);
+    editor.patchMachine(id, patch, { label: 'transform' });
     autoLinkRef.current(id, patch.pos_x, patch.pos_y, node?.width ?? 152, node?.height ?? 64);
-  }, [setNodes, nodes]);
+  }, [editor]);
 
   // ── Decorative props (3D-only) ──
   // Spawn point = centre of the placed machines' bounding box (matches Factory3D's centroid).
@@ -1236,20 +1318,32 @@ export default function FactoryMap() {
 
   // Resolve each prop's live status from its linked equipment, and — for
   // conveyors tied to a kiosk machine — the OF loaded there right now (both
-  // update as the WS pushes status).
+  // update as the WS pushes status). Cached per (prop ref + derived fields) so
+  // an unchanged prop keeps its P3D reference and the memoized block skips work.
+  const p3dCache = useRef(new Map<string, { src: MapProp; out: P3D }>());
   const props3d = useMemo<P3D[]>(() => {
     const byMachineId = new Map<string, MapMachine>();
     equipById.forEach((e) => { if (e.machine_id) byMachineId.set(e.machine_id, e); });
-    return props.map((p) => {
+    const cache = p3dCache.current;
+    const seen = new Set<string>();
+    const out = props.map((p) => {
+      seen.add(p.id);
       const m = p.machine_id ? byMachineId.get(p.machine_id) : undefined;
-      return {
-        ...p,
-        status: p.equipment_id ? (equipById.get(p.equipment_id)?.status ?? null) : null,
-        job_number: m?.current_job_number ?? null,
-        queued_ofs: m?.queued_ofs ?? null,
-        queued_total: m?.queued_total ?? 0,
-      };
+      const status = p.equipment_id ? (equipById.get(p.equipment_id)?.status ?? null) : null;
+      const job_number = m?.current_job_number ?? null;
+      const queued_ofs = m?.queued_ofs ?? null;
+      const queued_total = m?.queued_total ?? 0;
+      const hit = cache.get(p.id);
+      if (hit && hit.src === p && hit.out.status === status && hit.out.job_number === job_number
+          && hit.out.queued_ofs === queued_ofs && hit.out.queued_total === queued_total) {
+        return hit.out;
+      }
+      const next: P3D = { ...p, status, job_number, queued_ofs, queued_total };
+      cache.set(p.id, { src: p, out: next });
+      return next;
     });
+    for (const k of [...cache.keys()]) if (!seen.has(k)) cache.delete(k);
+    return out;
   }, [props, equipById]);
 
   // ── Pit Stop buffer ──
@@ -1314,24 +1408,31 @@ export default function FactoryMap() {
     if (of) focusPitStopOf(of);
   }, [pitStopSearch, pitStop, focusPitStopOf]);
 
-  const onSelectProp = useCallback((id: string) => {
-    setSel3d(null);                                     // selecting a prop clears any machine selection
-    if (!editMode) {                                    // view mode
+  const equipByIdRef = useRef(equipById);
+  useEffect(() => { equipByIdRef.current = equipById; }, [equipById]);
+
+  const onSelectProp = useCallback((id: string, additive?: boolean) => {
+    if (placementRef.current) return;
+    if (editModeRef.current && additive && id) { toggleMulti('props', id); return; }
+    setMultiSel(null);
+    setSel3d(null);                                     // selecting a prop clears any other selection
+    setSelSensor(null); setSelZone3d(null);
+    if (!editModeRef.current) {                         // view mode
       if (!id) { setSelProp(null); return; }
-      const pr = props.find((p) => p.id === id);
+      const pr = propsRef.current.find((p) => p.id === id);
       // A conveyor tied to a machine opens that machine's OFs (Ordres de fabrication).
       if (pr?.machine_id) {
-        const mm = Array.from(equipById.values()).find((e) => e.machine_id === pr.machine_id);
+        const mm = Array.from(equipByIdRef.current.values()).find((e) => e.machine_id === pr.machine_id);
         setDetail(null);
         setOfPanel({ machineId: pr.machine_id, name: mm?.name ?? '', role: pr.role ?? null });
         return;
       }
-      const eq = pr?.equipment_id ? equipById.get(pr.equipment_id) : null;
+      const eq = pr?.equipment_id ? equipByIdRef.current.get(pr.equipment_id) : null;
       if (eq) { setOfPanel(null); setDetail(eq); }
       return;
     }
     setSelProp(id || null);
-  }, [editMode, props, equipById]);
+  }, [toggleMulti]);
 
   // Fetch the machine's OFs whenever the conveyor OF panel opens.
   useEffect(() => {
@@ -1344,52 +1445,11 @@ export default function FactoryMap() {
     return () => { cancelled = true; };
   }, [ofPanel]);
 
-  const setPropMachine = useCallback((id: string, machine_id: string | null) => {
-    saveProp(id, { machine_id }).catch(() => {});
-    setProps((ps) => ps.map((p) => (p.id === id ? { ...p, machine_id } : p)));
-  }, []);
-
-  const setPropRole = useCallback((id: string, role: string | null) => {
-    saveProp(id, { role }).catch(() => {});
-    setProps((ps) => ps.map((p) => (p.id === id ? { ...p, role } : p)));
-  }, []);
-
-  const linkProp = useCallback((id: string, equipment_id: string | null) => {
-    saveProp(id, { equipment_id }).catch(() => {});
-    setProps((ps) => ps.map((p) => (p.id === id ? { ...p, equipment_id } : p)));
-  }, []);
-
-  // Precise rotation by exact increments (persists immediately) — for the selected block/machine.
-  const rotateProp = useCallback((id: string, delta: number) => {
-    setProps((ps) => ps.map((p) => {
-      if (p.id !== id) return p;
-      const deg = ((((p.rotation_deg ?? 0) + delta) % 360) + 360) % 360;
-      saveProp(id, { rotation_deg: deg }).catch(() => {});
-      return { ...p, rotation_deg: deg };
-    }));
-  }, []);
-
-  const rotateMachineBy = useCallback((id: string, delta: number) => {
-    setNodes((nds) => nds.map((n) => {
-      if (n.id !== id) return n;
-      const cur = (n.data as MachineNodeData).machine;
-      const deg = ((((cur.rotation_deg ?? 0) + delta) % 360) + 360) % 360;
-      saveMachineLayout(id, { rotation_deg: deg }).catch(() => {});
-      return { ...n, data: { ...n.data, machine: { ...cur, rotation_deg: deg } } };
-    }));
-  }, [setNodes]);
-
-  const rotateSelected = useCallback((delta: number) => {
-    if (selProp) rotateProp(selProp, delta);
-    else if (sel3d) rotateMachineBy(sel3d, delta);
-  }, [selProp, sel3d, rotateProp, rotateMachineBy]);
-
   // Set the parent machine a cobot/conveyor serves (drives "stop with the machine").
-  const setParent = useCallback((id: string, parent_equipment_id: string | null) => {
-    saveMachineLayout(id, { parent_equipment_id }).catch(() => {});
-    setNodes((nds) => nds.map((n) => n.id === id
-      ? { ...n, data: { ...n.data, machine: { ...(n.data as MachineNodeData).machine, parent_equipment_id } } } : n));
-  }, [setNodes]);
+  // Auto-link calls pass history:false — a position-derived effect shouldn't pollute undo.
+  const setParent = useCallback((id: string, parent_equipment_id: string | null, history = true) => {
+    editor.patchMachine(id, { parent_equipment_id: parent_equipment_id as MapMachine['parent_equipment_id'] }, { label: 'parent', history });
+  }, [editor]);
 
   // The production machine whose orbit (footprint + margin) contains a point — nearest centre wins.
   const findOrbitParent = useCallback((cx: number, cy: number, selfId: string): string | null => {
@@ -1409,12 +1469,12 @@ export default function FactoryMap() {
 
   // Auto-link a dropped cobot/conveyor to whatever machine orbit it landed in (or clear it).
   const autoLinkByOrbit = useCallback((id: string, posX: number, posY: number, w: number, h: number) => {
-    const node = nodes.find((n) => n.id === id);
+    const node = nodesRef.current.find((n) => n.id === id);
     const mm = node ? (node.data as MachineNodeData).machine : null;
     if (!mm || !isOrbitChild(mm)) return;
     const parentId = findOrbitParent(posX + w / 2, posY + h / 2, id);
-    if ((mm.parent_equipment_id ?? null) !== (parentId ?? null)) setParent(id, parentId);
-  }, [nodes, findOrbitParent, setParent]);
+    if ((mm.parent_equipment_id ?? null) !== (parentId ?? null)) setParent(id, parentId, false);
+  }, [findOrbitParent, setParent]);
   useEffect(() => { autoLinkRef.current = autoLinkByOrbit; }, [autoLinkByOrbit]);
 
   // After a host's orbit is reshaped/moved, relink the cobots inside it and release ones that left.
@@ -1426,35 +1486,45 @@ export default function FactoryMap() {
       const cx = n.position.x + (n.width ?? 152) / 2, cy = n.position.y + (n.height ?? 64) / 2;
       const inside = rectContains(rect, cx, cy);
       const cur = mm.parent_equipment_id ?? null;
-      if (inside && cur !== hostId) setParent(n.id, hostId);
-      else if (!inside && cur === hostId) setParent(n.id, null);
+      if (inside && cur !== hostId) setParent(n.id, hostId, false);
+      else if (!inside && cur === hostId) setParent(n.id, null, false);
     }
   }, [setParent]);
   useEffect(() => { reconcileChildrenRef.current = reconcileHostChildren; }, [reconcileHostChildren]);
 
-  const addProp = useCallback(async (kind: string) => {
-    if (!plantId) return;
-    const cat = PROP_CATALOG.find((c) => c.kind === kind) ?? PROP_CATALOG[PROP_CATALOG.length - 1];
-    const created = await createProp(plantId, {
-      kind: cat.kind, pos_w: cat.w, pos_h: cat.h, height_3d: cat.height,
-      pos_x: Math.round(mapCenter.x - cat.w / 2), pos_y: Math.round(mapCenter.y - cat.h / 2),
-    });
-    setProps((ps) => [...ps, created]);
-    setSel3d(null);
-    setSelProp(created.id);
-  }, [plantId, mapCenter]);
-
-  const onPropCommit = useCallback<PropCommit>((id, patch) => {
-    saveProp(id, patch).catch(() => {});
-    setProps((ps) => ps.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  // Palette click arms the ghost — the block is created where the user clicks the floor.
+  const startPropPlacement = useCallback((kind: string) => {
+    setSel3d(null); setSelProp(null); setSelSensor(null); setSelZone3d(null); setMultiSel(null);
+    setPlacement({ type: 'prop', kind });
   }, []);
 
-  const deleteSelProp = useCallback(() => {
-    if (!selProp) return;
-    deleteProp(selProp).catch(() => {});
-    setProps((ps) => ps.filter((p) => p.id !== selProp));
-    setSelProp(null);
-  }, [selProp]);
+  const startMachinePlacement = useCallback((m: MapMachine) => {
+    setSel3d(null); setSelProp(null); setSelSensor(null); setSelZone3d(null); setMultiSel(null);
+    setPlacement({ type: 'machine', m });
+  }, []);
+
+  // Ghost click → create/place at that spot. Blocks STAY armed for rapid stamping
+  // (Esc to stop); a machine is unique, so placing it ends its placement.
+  const onPlace3d = useCallback((posX: number, posY: number) => {
+    if (!placement || !plantId) return;
+    if (placement.type === 'prop') {
+      const cat = PROP_CATALOG.find((c) => c.kind === placement.kind) ?? PROP_CATALOG[PROP_CATALOG.length - 1];
+      editor.createPropTracked(plantId, {
+        kind: cat.kind, pos_w: cat.w, pos_h: cat.h, height_3d: cat.height,
+        pos_x: posX, pos_y: posY,
+      }, undefined, (created) => { setSel3d(null); setSelProp(created.id); });
+    } else {
+      editor.placeMachine(placement.m, posX, posY);
+      setPlacement(null);
+      setSelProp(null);
+      setSel3d(placement.m.id);
+    }
+  }, [placement, plantId, editor]);
+
+  const onPropCommit = useCallback<PropCommit>((id, patch) => {
+    editor.patchProp(id, patch, { label: 'transform' });
+  }, [editor]);
+
 
   // ── Temperature sensors (3D thermometers + the bottom badge) ──
   const sensors3d = useMemo<S3D[]>(
@@ -1480,14 +1550,89 @@ export default function FactoryMap() {
     [nodes]);
 
   const onSelectSensor = useCallback((id: string) => {
-    setSel3d(null); setSelProp(null);
+    if (placementRef.current) return;
+    setMultiSel(null);
+    setSel3d(null); setSelProp(null); setSelZone3d(null);
     setSelSensor(id || null);
   }, []);
 
-  const onSensorCommit = useCallback<SensorCommit>((id, patch) => {
-    saveSensorLayout(id, patch).catch(() => {});
-    setSensors((ss) => ss.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  // ── Zones on the 3D floor (edit mode) ──
+  const zones3d = useMemo<Z3D[]>(() => nodes
+    .filter((n) => n.type === 'zone')
+    .map((n) => {
+      const z = (n.data as ZoneNodeData).zone;
+      return { id: z.id, name: z.name, color: z.color, pos_x: n.position.x, pos_y: n.position.y, pos_w: n.width ?? 320, pos_h: n.height ?? 220 };
+    }), [nodes]);
+
+  const onSelectZone3d = useCallback((id: string) => {
+    if (placementRef.current) return;
+    setMultiSel(null);
+    setSel3d(null); setSelProp(null); setSelSensor(null);
+    setSelZone3d(id || null);
   }, []);
+
+  // 2D selection → properties panel: exactly ONE machine/zone node selected.
+  // (Multi-select keeps the group-drag behaviour, no panel.)
+  const [sel2d, setSel2d] = useState<{ kind: 'machine' | 'zone'; id: string } | null>(null);
+  const onSelectionChange = useCallback(({ nodes: sel }: { nodes: Node[] }) => {
+    if (!editModeRef.current || sel.length !== 1) { setSel2d(null); return; }
+    const n = sel[0];
+    if (n.type === 'machine') setSel2d({ kind: 'machine', id: n.id });
+    else if (n.type === 'zone') setSel2d({ kind: 'zone', id: (n.data as ZoneNodeData).zone.id });
+    else setSel2d(null);
+  }, []);
+  const clear2dSelection = useCallback(() => {
+    setSel2d(null);
+    setNodes((nds) => (nds.some((n) => n.selected) ? nds.map((n) => (n.selected ? { ...n, selected: false } : n)) : nds));
+  }, [setNodes]);
+
+  const onZoneCommit3d = useCallback<ZoneCommit3D>((id, patch) => {
+    editor.patchZone(id, patch, { label: 'zone' });
+  }, [editor]);
+
+  // Group-gizmo release → ONE undoable move for every member (explicit orbits ride along).
+  const onMultiCommit3d = useCallback((dxPx: number, dyPx: number) => {
+    const sel = multiSelRef.current;
+    if (!sel || (dxPx === 0 && dyPx === 0)) return;
+    const mv: GroupMove = { machines: [], zones: [], sensors: [], props: [] };
+    for (const id of sel.machines) {
+      const n = nodesRef.current.find((x) => x.id === id && x.type === 'machine');
+      if (!n) continue;
+      const mm = (n.data as MachineNodeData).machine;
+      const before: GroupMove['machines'][number]['before'] = { pos_x: Math.round(n.position.x), pos_y: Math.round(n.position.y) };
+      const after: GroupMove['machines'][number]['after'] = { pos_x: Math.round(n.position.x) + dxPx, pos_y: Math.round(n.position.y) + dyPx };
+      if (mm.orbit_x != null || mm.orbit_y != null) {
+        before.orbit_x = mm.orbit_x; before.orbit_y = mm.orbit_y;
+        after.orbit_x = (mm.orbit_x ?? 0) + dxPx; after.orbit_y = (mm.orbit_y ?? 0) + dyPx;
+      }
+      mv.machines.push({ id, before, after });
+    }
+    for (const id of sel.props) {
+      const p = propsRef.current.find((x) => x.id === id);
+      if (!p) continue;
+      mv.props.push({ id, before: { x: Math.round(p.pos_x), y: Math.round(p.pos_y) }, after: { x: Math.round(p.pos_x) + dxPx, y: Math.round(p.pos_y) + dyPx } });
+    }
+    editor.commitGroupMove(mv);
+    for (const m of mv.machines) {
+      const n = nodesRef.current.find((x) => x.id === m.id);
+      autoLinkRef.current(m.id, m.after.pos_x ?? 0, m.after.pos_y ?? 0, n?.width ?? 152, n?.height ?? 64);
+    }
+  }, [editor]);
+
+  // Delete the whole group as ONE composite undo step.
+  const deleteMultiSelection = useCallback(() => {
+    const sel = multiSelRef.current;
+    if (!sel) return;
+    useEditorStore.getState().batch('delete selection', () => {
+      for (const id of sel.props) editor.deletePropTracked(id);
+      for (const id of sel.machines) editor.unplaceMachine(id);
+    });
+    setMultiSel(null);
+  }, [editor]);
+
+  const onSensorCommit = useCallback<SensorCommit>((id, patch) => {
+    editor.patchSensor(id, patch, { label: 'move' });
+  }, [editor]);
 
   // Cached outdoor weather for the overview badge — refreshed on plant change + every 10 min.
   useEffect(() => {
@@ -1524,13 +1669,17 @@ export default function FactoryMap() {
 
   // Duplicate the selected block — exact same size/scale/rotation, offset a little
   // so the copy is visible. Starts UNLINKED (a clone shouldn't share the original's
-  // equipment link). createProp can't set the scale fields, so we patch them after.
-  const duplicateSelProp = useCallback(async () => {
+  // equipment link). createProp can't set the scale fields, so they're patched after.
+  const duplicateSelProp = useCallback(() => {
     if (!selProp || !plantId) return;
-    const src = props.find((p) => p.id === selProp);
+    const src = propsRef.current.find((p) => p.id === selProp);
     if (!src) return;
     const OFFSET = 30;   // px, so the clone doesn't sit exactly on top of the original
-    const created = await createProp(plantId, {
+    const scalePatch: PropPatch = {};
+    if (src.model_scale != null) scalePatch.model_scale = src.model_scale;
+    if (src.scale_y != null) scalePatch.scale_y = src.scale_y;
+    if (src.scale_z != null) scalePatch.scale_z = src.scale_z;
+    editor.createPropTracked(plantId, {
       kind: src.kind,
       label: src.label,
       model_url: src.model_url,
@@ -1540,20 +1689,8 @@ export default function FactoryMap() {
       pos_h: src.pos_h,
       rotation_deg: src.rotation_deg ?? 0,
       height_3d: src.height_3d,
-    });
-    const scalePatch: PropPatch = {};
-    if (src.model_scale != null) scalePatch.model_scale = src.model_scale;
-    if (src.scale_y != null) scalePatch.scale_y = src.scale_y;
-    if (src.scale_z != null) scalePatch.scale_z = src.scale_z;
-    let copy = created;
-    if (Object.keys(scalePatch).length) {
-      await saveProp(created.id, scalePatch);
-      copy = { ...created, ...scalePatch };
-    }
-    setProps((ps) => [...ps, copy]);
-    setSel3d(null);
-    setSelProp(copy.id);
-  }, [selProp, plantId, props]);
+    }, scalePatch, (copy) => { setSel3d(null); setSelProp(copy.id); });
+  }, [selProp, plantId, editor]);
 
   // Live maintenance KPIs for the selected machine (real data from /api/kpis)
   useEffect(() => {
@@ -1569,7 +1706,149 @@ export default function FactoryMap() {
     return () => { cancelled = true; };
   }, [detail?.machine_id]);
 
-  useEffect(() => { if (!mode3d || !editMode) { setSel3d(null); setSelProp(null); setSelSensor(null); } }, [mode3d, editMode]);
+  useEffect(() => { if (!mode3d || !editMode) { setSel3d(null); setSelProp(null); setSelSensor(null); setSelZone3d(null); setPlacement(null); setMultiSel(null); } }, [mode3d, editMode]);
+
+  // ── permission gate: only users who can update machines may edit the layout ──
+  const canEdit = can('machines', 'update');
+  useEffect(() => { if (!canEdit && editMode) setEditMode(false); }, [canEdit, editMode]);
+
+  // Fresh plant → fresh undo history and save ledger (old ids are meaningless here).
+  useEffect(() => {
+    useEditorStore.getState().reset();
+    setPlacement(null);
+    setMultiSel(null);
+  }, [plantId]);
+
+  // Never lose work silently: block tab close while writes are in flight or failed.
+  const savesPending = useEditorStore((s) => s.pending);
+  const savesFailed = useEditorStore((s) => s.failed.length);
+  useEffect(() => {
+    if (savesPending === 0 && savesFailed === 0) return;
+    const h = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener('beforeunload', h);
+    return () => window.removeEventListener('beforeunload', h);
+  }, [savesPending, savesFailed]);
+
+  // ── keyboard: Esc cancel/deselect · Del delete/remove · M/R/S gizmo modes ·
+  //    Ctrl+Z/Y undo/redo · Ctrl+D duplicate · arrows nudge (Shift ×10) ──
+  // One nudge "burst" (repeated arrow presses) becomes ONE undo entry and ONE save.
+  const nudgeRef = useRef<{ kind: 'machine' | 'prop' | 'sensor' | 'zone'; id: string; start: XY; cur: XY; timer: ReturnType<typeof setTimeout> } | null>(null);
+
+  const nudgeSelected = useCallback((dx: number, dy: number) => {
+    const kind = selPropRef.current ? 'prop' : sel3dRef.current ? 'machine' : selSensorRef.current ? 'sensor' : selZoneRef.current ? 'zone' : null;
+    if (!kind) return;
+    const id = (selPropRef.current ?? sel3dRef.current ?? selSensorRef.current ?? selZoneRef.current)!;
+    const n = nudgeRef.current;
+    if (n && (n.kind !== kind || n.id !== id)) { clearTimeout(n.timer); nudgeRef.current = null; }
+    if (!nudgeRef.current) {
+      // capture the burst's starting position for the single undo entry
+      let start: XY | null = null;
+      if (kind === 'machine' || kind === 'zone') {
+        const node = nodesRef.current.find((x) => x.id === (kind === 'zone' ? `zone-${id}` : id));
+        if (node) start = { x: node.position.x, y: node.position.y };
+      } else if (kind === 'prop') {
+        const p = propsRef.current.find((x) => x.id === id);
+        if (p) start = { x: p.pos_x, y: p.pos_y };
+      } else {
+        const s = sensorsRef.current.find((x) => x.id === id);
+        if (s && s.pos_x != null && s.pos_y != null) start = { x: s.pos_x, y: s.pos_y };
+      }
+      if (!start) return;
+      nudgeRef.current = { kind, id, start, cur: { ...start }, timer: setTimeout(() => {}, 0) };
+    }
+    const st = nudgeRef.current;
+    st.cur = { x: st.cur.x + dx, y: st.cur.y + dy };
+    const pos = { pos_x: Math.round(st.cur.x), pos_y: Math.round(st.cur.y) };
+    // instant optimistic preview…
+    if (kind === 'machine') editor.applyMachinePatch(id, pos);
+    else if (kind === 'prop') editor.applyPropPatch(id, pos);
+    else if (kind === 'zone') editor.applyZonePatch(id, pos);
+    else editor.applySensorPatch(id, pos);
+    // …and one persisted, undoable commit when the burst settles
+    clearTimeout(st.timer);
+    st.timer = setTimeout(() => {
+      const before = { pos_x: Math.round(st.start.x), pos_y: Math.round(st.start.y) };
+      if (kind === 'machine') editor.patchMachine(id, pos, { label: 'nudge', before });
+      else if (kind === 'prop') editor.patchProp(id, pos, { label: 'nudge', before });
+      else if (kind === 'zone') editor.patchZone(id, pos, { label: 'nudge', before });
+      else editor.patchSensor(id, pos, { label: 'nudge', before });
+      nudgeRef.current = null;
+    }, 500);
+  }, [editor]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!editModeRef.current) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)) return;
+      const mod = e.ctrlKey || e.metaKey;
+      const store = useEditorStore.getState();
+      if (mod && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) store.redo(); else store.undo();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); store.redo(); return; }
+      if (e.key === 'Escape') {
+        if (placementRef.current) { setPlacement(null); return; }
+        setMultiSel(null);
+        setSel3d(null); setSelProp(null); setSelSensor(null); setSelZone3d(null);
+        clear2dSelection();
+        return;
+      }
+      if (!mode3dRef.current) return;                      // the rest is 3D-editor only
+      if (mod && e.key.toLowerCase() === 'd') {
+        if (selPropRef.current) { e.preventDefault(); duplicateSelProp(); }
+        return;
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (multiSelRef.current) { e.preventDefault(); deleteMultiSelection(); }
+        else if (selPropRef.current) { e.preventDefault(); editor.deletePropTracked(selPropRef.current); }
+        else if (selZoneRef.current) { e.preventDefault(); removeZone(selZoneRef.current); }
+        else if (sel3dRef.current) { e.preventDefault(); editor.unplaceMachine(sel3dRef.current); }
+        return;
+      }
+      const k = e.key.toLowerCase();
+      if (k === 'm' || k === 'g') { setTransformMode('translate'); return; }
+      if (k === 'r') { setTransformMode('rotate'); return; }
+      if (k === 's') { setTransformMode('scale'); return; }
+      const step = e.shiftKey ? 10 : 1;
+      if (e.key === 'ArrowLeft') { e.preventDefault(); nudgeSelected(-step, 0); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); nudgeSelected(step, 0); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); nudgeSelected(0, -step); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); nudgeSelected(0, step); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [editor, duplicateSelProp, removeZone, nudgeSelected, clear2dSelection, deleteMultiSelection]);
+
+  // Ghost footprint for the item being placed (blocks: catalog default; machines: saved/default footprint).
+  const placementSpec = useMemo<PlacementSpec | null>(() => {
+    if (!placement) return null;
+    if (placement.type === 'prop') {
+      const cat = PROP_CATALOG.find((c) => c.kind === placement.kind) ?? PROP_CATALOG[PROP_CATALOG.length - 1];
+      return { w: cat.w, h: cat.h, height: cat.height, label: t(`factoryMap.block_${cat.kind}`) };
+    }
+    return { w: placement.m.pos_w ?? 152, h: placement.m.pos_h ?? 64, height: placement.m.height_3d ?? 3, label: placement.m.name };
+  }, [placement, t]);
+
+  // What the properties panel shows (edit mode, 2D and 3D). Machine position/size
+  // come from the NODE — the live source of truth while editing.
+  const panelSelection = useMemo<PanelSelection | null>(() => {
+    if (!editMode) return null;
+    const machineSel = mode3d ? sel3d : (sel2d?.kind === 'machine' ? sel2d.id : null);
+    const zoneSel = mode3d ? selZone3d : (sel2d?.kind === 'zone' ? sel2d.id : null);
+    if (mode3d && selProp) { const p = props.find((x) => x.id === selProp); return p ? { kind: 'prop', p } : null; }
+    if (machineSel) {
+      const n = nodes.find((x) => x.id === machineSel);
+      if (!n) return null;
+      const mm = (n.data as MachineNodeData).machine;
+      return { kind: 'machine', m: { ...mm, pos_x: n.position.x, pos_y: n.position.y, pos_w: n.width ?? mm.pos_w ?? 152, pos_h: n.height ?? mm.pos_h ?? 64 } };
+    }
+    if (mode3d && selSensor) { const s = sensors.find((x) => x.id === selSensor); return s ? { kind: 'sensor', s } : null; }
+    if (zoneSel) { const z = zones3d.find((x) => x.id === zoneSel); return z ? { kind: 'zone', z } : null; }
+    return null;
+  }, [mode3d, editMode, selProp, sel3d, selSensor, selZone3d, sel2d, props, nodes, sensors, zones3d]);
 
   // Fullscreen for the 3D view (real browser fullscreen; Esc exits). The R3F Canvas
   // auto-resizes to its container, so toggling fullscreen just works.
@@ -1617,10 +1896,13 @@ export default function FactoryMap() {
           <button onClick={() => { setMode3d(true); setSel3d(null); }} className={`px-3 py-1.5 ${mode3d ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>3D</button>
         </span>
 
-        <span className="inline-flex rounded-lg border border-gray-700 overflow-hidden text-sm">
-          <button onClick={() => setEditMode(false)} className={`flex items-center gap-1.5 px-3 py-1.5 ${!editMode ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}><Eye size={14} /> {t('factoryMap.view')}</button>
-          <button onClick={() => { setEditMode(true); setDetail(null); }} className={`flex items-center gap-1.5 px-3 py-1.5 ${editMode ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}><Pencil size={14} /> {t('factoryMap.edit')}</button>
-        </span>
+        {canEdit && (
+          <span className="inline-flex rounded-lg border border-gray-700 overflow-hidden text-sm">
+            <button onClick={() => setEditMode(false)} className={`flex items-center gap-1.5 px-3 py-1.5 ${!editMode ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}><Eye size={14} /> {t('factoryMap.view')}</button>
+            <button onClick={() => { setEditMode(true); setDetail(null); }} className={`flex items-center gap-1.5 px-3 py-1.5 ${editMode ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}><Pencil size={14} /> {t('factoryMap.edit')}</button>
+          </span>
+        )}
+        {editMode && <SaveStatusPill />}
 
         {editMode && !mode3d && (
           <>
@@ -1688,8 +1970,8 @@ export default function FactoryMap() {
                     <div key={z.id} className="w-full flex items-center gap-2 text-xs text-gray-200 border border-gray-700 rounded-lg px-2.5 py-2 bg-gray-900">
                       <span style={{ width: 10, height: 10, borderRadius: 3, background: z.color, flexShrink: 0 }} />
                       <span className="truncate flex-1">{z.name}</span>
-                      <button title={t('factoryMap.deleteZone')}
-                        onClick={() => { if (window.confirm(t('factoryMap.deleteZoneConfirm', { name: z.name }))) removeZone(z.id); }}
+                      <button title={`${t('factoryMap.deleteZone')} (Ctrl+Z ${t('factoryMap.undo')})`}
+                        onClick={() => removeZone(z.id)}
                         className="text-gray-500 hover:text-red-400 flex-shrink-0">
                         <Trash2 size={13} />
                       </button>
@@ -1748,102 +2030,68 @@ export default function FactoryMap() {
                     )}
                   </span>
                 ))}
-                {editMode && (
-                  <button onClick={saveCurrentView} title={t('factoryMap.saveViewHint')}
+                {editMode && (viewNameDraft === null ? (
+                  <button onClick={() => setViewNameDraft('')} title={t('factoryMap.saveViewHint')}
                     className="inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded-md bg-gray-800 text-gray-200 border border-dashed border-gray-600 hover:border-indigo-500/60 hover:text-white transition-colors">
                     <Camera size={13} /> {t('factoryMap.saveView')}
                   </button>
-                )}
+                ) : (
+                  <form
+                    onSubmit={(e) => { e.preventDefault(); saveCurrentView(viewNameDraft); setViewNameDraft(null); }}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-gray-800 border border-indigo-500/60">
+                    <Camera size={13} className="text-indigo-300" />
+                    <input
+                      autoFocus value={viewNameDraft}
+                      onChange={(e) => setViewNameDraft(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Escape') { setViewNameDraft(null); (e.target as HTMLInputElement).blur(); } e.stopPropagation(); }}
+                      placeholder={t('factoryMap.viewNamePlaceholder')}
+                      className="w-32 bg-transparent text-xs text-gray-100 placeholder-gray-500 focus:outline-none py-0.5"
+                    />
+                    <button type="submit" disabled={!viewNameDraft.trim()}
+                      className="px-1 text-xs text-emerald-400 hover:text-emerald-300 disabled:opacity-30">✓</button>
+                    <button type="button" onClick={() => setViewNameDraft(null)}
+                      className="px-1 text-xs text-gray-400 hover:text-gray-200">✕</button>
+                  </form>
+                ))}
               </div>
               {/* 3D transform toolbar — stacked UNDER the views row (same column)
-                  so the wrapping views bar never covers the edit controls. */}
+                  so the wrapping views bar never covers the edit controls. All
+                  per-item controls live in the properties panel on the right. */}
               {editMode && (
                 <div className="flex flex-wrap items-center gap-2 max-w-full bg-gray-900/90 border border-gray-700 rounded-lg px-2 py-1.5">
                   <span className="inline-flex rounded border border-gray-700 overflow-hidden text-xs">
-                    <button onClick={() => setTransformMode('translate')} className={`px-2 py-1 ${transformMode === 'translate' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>{t('factoryMap.move')}</button>
-                    <button onClick={() => setTransformMode('rotate')} className={`px-2 py-1 ${transformMode === 'rotate' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>{t('factoryMap.rotate')}</button>
-                    <button onClick={() => setTransformMode('scale')} className={`px-2 py-1 ${transformMode === 'scale' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>{t('factoryMap.scale')}</button>
+                    <button onClick={() => setTransformMode('translate')} title={`${t('factoryMap.move')} (M)`} className={`px-2 py-1 ${transformMode === 'translate' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>{t('factoryMap.move')}</button>
+                    <button onClick={() => setTransformMode('rotate')} title={`${t('factoryMap.rotate')} (R)`} className={`px-2 py-1 ${transformMode === 'rotate' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>{t('factoryMap.rotate')}</button>
+                    <button onClick={() => setTransformMode('scale')} title={`${t('factoryMap.scale')} (S)`} className={`px-2 py-1 ${transformMode === 'scale' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>{t('factoryMap.scale')}</button>
                   </span>
-                  {sel3d && (
-                    <select
-                      title={t('factoryMap.parentTitle')}
-                      value={(nodes.find((n) => n.id === sel3d)?.data as MachineNodeData | undefined)?.machine.parent_equipment_id ?? ''}
-                      onChange={(e) => setParent(sel3d, e.target.value || null)}
-                      className="bg-gray-800 border border-gray-700 rounded text-xs text-gray-200 px-1.5 py-1 max-w-[150px] focus:outline-none focus:border-indigo-500"
-                    >
-                      <option value="">{t('factoryMap.noParent')}</option>
-                      {equipOptions.filter((o) => o.id !== sel3d).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-                    </select>
-                  )}
-                  {(sel3d || selProp) && (
-                    <span className="inline-flex items-center rounded border border-gray-700 overflow-hidden">
-                      <button onClick={() => rotateSelected(-90)} title={t('factoryMap.rotateNeg90')} className="px-1.5 py-1 text-[11px] text-gray-300 hover:bg-gray-700">-90°</button>
-                      <button onClick={() => rotateSelected(-45)} title={t('factoryMap.rotateNeg45')} className="flex items-center gap-0.5 px-1.5 py-1 text-[11px] text-gray-300 hover:bg-gray-700"><RotateCcw size={13} />45°</button>
-                      <button onClick={() => rotateSelected(45)} title={t('factoryMap.rotatePos45')} className="flex items-center gap-0.5 px-1.5 py-1 text-[11px] text-gray-300 hover:bg-gray-700"><RotateCw size={13} />45°</button>
-                      <button onClick={() => rotateSelected(90)} title={t('factoryMap.rotatePos90')} className="px-1.5 py-1 text-[11px] text-gray-300 hover:bg-gray-700">+90°</button>
-                    </span>
-                  )}
+                  <button onClick={() => setSnap(!snap)} title={t('factoryMap.snapHint')}
+                    className={`flex items-center gap-1 px-2 py-1 rounded border text-xs ${snap ? 'bg-indigo-600/20 border-indigo-500/60 text-indigo-200' : 'border-gray-700 text-gray-400 hover:text-gray-200'}`}>
+                    <Magnet size={12} /> {t('factoryMap.snap')}
+                  </button>
                   <span className="text-xs text-gray-500">
-                    {selSensor ? t('factoryMap.hintSensor') : selProp ? t('factoryMap.hintBlock') : sel3d ? t('factoryMap.hintMachine') : t('factoryMap.hintNone')}
+                    {multiSel ? t('factoryMap.hintMulti', { count: multiSel.machines.length + multiSel.props.length })
+                      : selSensor ? t('factoryMap.hintSensor') : selProp ? t('factoryMap.hintBlock') : sel3d ? t('factoryMap.hintMachine') : selZone3d ? t('factoryMap.hintZone') : t('factoryMap.hintNone')}
                   </span>
-                  {selProp && (
-                    <>
-                      <select
-                        title={t('factoryMap.linkTitle')}
-                        value={props.find((p) => p.id === selProp)?.equipment_id ?? ''}
-                        onChange={(e) => linkProp(selProp, e.target.value || null)}
-                        className="bg-gray-800 border border-gray-700 rounded text-xs text-gray-200 px-1.5 py-1 max-w-[150px] focus:outline-none focus:border-indigo-500"
-                      >
-                        <option value="">{t('factoryMap.notLinked')}</option>
-                        {equipOptions.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-                      </select>
-                      {props.find((p) => p.id === selProp)?.kind === 'conveyor' && (
-                        <>
-                          <select
-                            title={t('factoryMap.ofMachineTitle')}
-                            value={props.find((p) => p.id === selProp)?.machine_id ?? ''}
-                            onChange={(e) => setPropMachine(selProp, e.target.value || null)}
-                            className="bg-gray-800 border border-indigo-700/60 rounded text-xs text-gray-200 px-1.5 py-1 max-w-[150px] focus:outline-none focus:border-indigo-500"
-                          >
-                            <option value="">{t('factoryMap.ofNoMachine')}</option>
-                            {machineOptions.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-                          </select>
-                          {props.find((p) => p.id === selProp)?.machine_id && (
-                            <span className="inline-flex rounded border border-gray-700 overflow-hidden text-xs">
-                              {(['input', 'output'] as const).map((r) => {
-                                const active = props.find((p) => p.id === selProp)?.role === r;
-                                return (
-                                  <button key={r} onClick={() => setPropRole(selProp, active ? null : r)}
-                                    className={`px-2 py-1 ${active ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
-                                    {t(`factoryMap.role_${r}`)}
-                                  </button>
-                                );
-                              })}
-                            </span>
-                          )}
-                        </>
-                      )}
-                      <button onClick={() => pickPropModel(selProp)} title={t('factoryMap.uploadGlb')} className="flex items-center gap-1 text-xs text-gray-300 hover:text-white">
-                        <Box size={12} /> .glb
-                      </button>
-                      <button onClick={duplicateSelProp} title={t('factoryMap.duplicateTitle')} className="flex items-center gap-1 text-xs text-gray-300 hover:text-white">
-                        <Copy size={12} /> {t('factoryMap.duplicate')}
-                      </button>
-                      <button onClick={deleteSelProp} className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300">
-                        <Trash2 size={12} /> {t('factoryMap.deleteBlock')}
-                      </button>
-                    </>
+                  {(sel3d || selProp || selSensor || selZone3d || multiSel) && (
+                    <button onClick={() => { setSel3d(null); setSelProp(null); setSelSensor(null); setSelZone3d(null); setMultiSel(null); }}
+                      title={`${t('factoryMap.deselect')} (Esc)`} className="text-xs text-gray-400 hover:text-gray-200">✕</button>
                   )}
-                  {(sel3d || selProp || selSensor) && <button onClick={() => { setSel3d(null); setSelProp(null); setSelSensor(null); }} className="text-xs text-gray-400 hover:text-gray-200">✕</button>}
                 </div>
               )}
             </div>
           )}
-          {/* Camera controls hint — Shift+drag pans (moves) instead of rotating */}
+          {/* Camera controls hint — Shift+drag pans (moves) instead of rotating.
+              While placing, it flips into the placement instruction. */}
           {mode3d && (
-            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 text-[11px] text-gray-300 bg-gray-900/85 border border-gray-700 rounded-full px-3 py-1 pointer-events-none">
-              <Move size={12} className="text-indigo-400" /> {t('factoryMap.shiftToPan')}
-            </div>
+            placement ? (
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 text-[11px] text-indigo-100 bg-indigo-600/90 border border-indigo-400 rounded-full px-3 py-1 pointer-events-none">
+                <Plus size={12} /> {t('factoryMap.placementHint')}
+              </div>
+            ) : (
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 text-[11px] text-gray-300 bg-gray-900/85 border border-gray-700 rounded-full px-3 py-1 pointer-events-none">
+                <Move size={12} className="text-indigo-400" /> {t('factoryMap.shiftToPan')}
+              </div>
+            )
           )}
           {/* Temperature badge (bottom-right): the nearest sensor's indoor reading as
               you navigate; away from any sensor (overview) the plant's outdoor weather. */}
@@ -1907,7 +2155,7 @@ export default function FactoryMap() {
                     <div className="space-y-0.5">
                       {([
                         { color: COMPLETENESS_HEX.full, label: t('pitStop.kpi.inFull') },
-                        { color: COMPLETENESS_HEX.almost, label: '≥ 90 %' },
+                        { color: COMPLETENESS_HEX.almost, label: '> 90 %' },
                         { color: COMPLETENESS_HEX.low, label: '< 90 %' },
                         { color: COMPLETENESS_HEX.unknown, label: t('pitStop.noBom') },
                       ]).map((e) => (
@@ -1924,16 +2172,30 @@ export default function FactoryMap() {
                     </div>
                   </div>
                   {pitStop.categories.length > 0 && (
-                    <div>
-                      <p className="text-[10px] uppercase tracking-wide text-gray-500 mb-1">{t('pitStop.legendCategories')}</p>
-                      <div className="space-y-0.5">
-                        {pitStop.categories.map((c) => (
-                          <div key={c.name} className="flex items-center gap-1.5 text-gray-300">
-                            <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: c.color }} />
-                            {c.name}
+                    <div className="space-y-1.5">
+                      <p className="text-[10px] uppercase tracking-wide text-gray-500">{t('pitStop.legendCategories')}</p>
+                      {([
+                        { label: t('pitStop.family.caseGoods'), accent: PIT_CG_ACCENT,
+                          cats: pitStop.categories.filter((c) => c.family === 'cg' || c.family === 'both') },
+                        { label: t('pitStop.family.softGoods'), accent: PIT_SG_ACCENT,
+                          cats: pitStop.categories.filter((c) => c.family === 'sg' || c.family === 'both') },
+                      ] as { label: string; accent: string; cats: PitStopCategory[] }[])
+                        .filter((g) => g.cats.length > 0)
+                        .map((g) => (
+                          <div key={g.label}>
+                            <p className="text-[10px] uppercase tracking-wide mb-0.5 flex items-center gap-1" style={{ color: g.accent }}>
+                              <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ background: g.accent }} />{g.label}
+                            </p>
+                            <div className="space-y-0.5 pl-3">
+                              {g.cats.map((c) => (
+                                <div key={c.name} className="flex items-center gap-1.5 text-gray-300">
+                                  <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: c.color }} />
+                                  {c.name}
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         ))}
-                      </div>
                     </div>
                   )}
                 </div>
@@ -1960,6 +2222,9 @@ export default function FactoryMap() {
               onNearestSensorChange={setNearestSensorId}
               machinePoints={machinePoints}
               pitStop={pitStop} onSelectPitStopOf={onSelectPitStopOf} selectedPitStopOfId={pitStopOfId}
+              zones={zones3d} selectedZoneId={selZone3d} onSelectZone={onSelectZone3d} onZoneCommit={onZoneCommit3d}
+              snap={snap} placement={editMode ? placementSpec : null} onPlace={onPlace3d}
+              multiSelection={multiSel} onMultiCommit={onMultiCommit3d}
               infoId={!editMode ? (detail?.id ?? null) : null} infoKpi={kpi} focus={focus}
               onPoseReader={(r) => { poseReaderRef.current = r; }} />
           ) : (
@@ -1967,7 +2232,9 @@ export default function FactoryMap() {
           <ReactFlow
             nodes={nodes} onNodesChange={onNodesChange} nodeTypes={nodeTypes}
             onNodeDragStart={onNodeDragStart} onNodeDrag={onNodeDrag} onNodeDragStop={onNodeDragStop} onNodeClick={onNodeClick}
+            onSelectionChange={onSelectionChange}
             nodesDraggable={editMode} nodesConnectable={false} elementsSelectable={editMode}
+            deleteKeyCode={null}
             colorMode="dark" fitView minZoom={0.2} proOptions={{ hideAttribution: true }} style={{ background: 'transparent' }}
           >
             <Background gap={24} color="#1f2937" />
@@ -1976,21 +2243,108 @@ export default function FactoryMap() {
           </ReactFlow>
           </PitStop2DCtx.Provider>
           )}
-          {/* Block palette — add decorative support equipment directly in 3D */}
+          {/* Add panel — blocks AND unplaced machines, both placed by clicking the
+              floor (the armed item highlights; Esc disarms). */}
           {mode3d && editMode && (
-            <div className="absolute bottom-3 left-3 z-10 max-w-[220px] bg-gray-900/90 border border-gray-700 rounded-lg p-2">
+            <div className="absolute bottom-3 left-3 z-10 w-[230px] max-h-[55%] overflow-y-auto bg-gray-900/90 border border-gray-700 rounded-lg p-2">
               <p className="text-[11px] text-gray-500 mb-1.5 px-0.5">{t('factoryMap.addBlock')}</p>
               <div className="flex flex-wrap gap-1.5">
-                {PROP_CATALOG.map((c) => (
-                  <button key={c.kind} onClick={() => addProp(c.kind)} title={`${t('factoryMap.add')} ${t(`factoryMap.block_${c.kind}`)}`}
-                    className="flex items-center gap-1 px-2 py-1 text-[11px] text-gray-200 bg-gray-800 hover:bg-indigo-600 border border-gray-700 rounded">
-                    <Plus size={11} /> {t(`factoryMap.block_${c.kind}`)}
-                  </button>
-                ))}
+                {PROP_CATALOG.map((c) => {
+                  const active = placement?.type === 'prop' && placement.kind === c.kind;
+                  return (
+                    <button key={c.kind}
+                      onClick={() => (active ? setPlacement(null) : startPropPlacement(c.kind))}
+                      title={`${t('factoryMap.add')} ${t(`factoryMap.block_${c.kind}`)} — ${t('factoryMap.placementHint')}`}
+                      className={`flex items-center gap-1 px-2 py-1 text-[11px] border rounded ${active ? 'bg-indigo-600 border-indigo-400 text-white' : 'text-gray-200 bg-gray-800 hover:bg-indigo-600 border-gray-700'}`}>
+                      <Plus size={11} /> {t(`factoryMap.block_${c.kind}`)}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="mt-2.5 pt-2 border-t border-gray-800">
+                <p className="text-[11px] text-gray-500 mb-1.5 px-0.5">{t('factoryMap.unplaced')} · {unplaced.length}</p>
+                {unplaced.length > 0 && (
+                  <input value={unplacedSearch} onChange={(e) => setUnplacedSearch(e.target.value)} placeholder={t('factoryMap.searchMachines')}
+                    className="w-full mb-1.5 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-[11px] text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500" />
+                )}
+                <div className="space-y-1">
+                  {unplaced.filter((m) => m.name.toLowerCase().includes(unplacedSearch.toLowerCase())).map((m) => {
+                    const active = placement?.type === 'machine' && placement.m.id === m.id;
+                    return (
+                      <button key={m.id}
+                        onClick={() => (active ? setPlacement(null) : startMachinePlacement(m))}
+                        title={t('factoryMap.placementHint')}
+                        className={`w-full flex items-center gap-2 text-left text-[11px] border rounded px-2 py-1.5 transition-colors ${active ? 'bg-indigo-600 border-indigo-400 text-white' : 'text-gray-200 border-gray-700 bg-gray-900 hover:border-indigo-500/50 hover:bg-gray-800'}`}>
+                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: STATUS_COLORS[m.status] ?? STATUS_COLORS.idle, flexShrink: 0 }} />
+                        <span className="truncate">{m.name}</span>
+                      </button>
+                    );
+                  })}
+                  {unplaced.length === 0 && <p className="text-[11px] text-gray-600 px-0.5">{t('factoryMap.allPlaced')}</p>}
+                </div>
               </div>
             </div>
           )}
         </div>
+
+        {/* Group panel — Ctrl-click selection: count + group actions */}
+        {editMode && mode3d && multiSel && (
+          <aside className="w-72 flex-shrink-0 border-l border-gray-800 overflow-y-auto p-3.5 bg-gray-950">
+            <div className="flex items-start justify-between mb-3">
+              <h3 className="text-white font-semibold text-sm leading-snug">
+                {t('factoryMap.multiTitle', { count: multiSel.machines.length + multiSel.props.length })}
+              </h3>
+              <button onClick={() => setMultiSel(null)} title={`${t('common.close')} (Esc)`} className="text-gray-500 hover:text-gray-300 flex-shrink-0 ml-2"><X size={16} /></button>
+            </div>
+            <p className="text-[11px] text-gray-500 mb-3">{t('factoryMap.multiHelp')}</p>
+            <ul className="space-y-1 mb-4 max-h-64 overflow-y-auto">
+              {multiSel.machines.map((id) => {
+                const n = nodes.find((x) => x.id === id);
+                const nm = n ? (n.data as MachineNodeData).machine.name : id;
+                return (
+                  <li key={id} className="flex items-center gap-2 text-xs text-gray-300 bg-gray-900 border border-gray-800 rounded px-2 py-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 flex-shrink-0" />
+                    <span className="truncate flex-1">{nm}</span>
+                    <button onClick={() => toggleMulti('machines', id)} className="text-gray-600 hover:text-gray-300 flex-shrink-0">✕</button>
+                  </li>
+                );
+              })}
+              {multiSel.props.map((id) => {
+                const p = props.find((x) => x.id === id);
+                const nm = p ? (p.label || t(`factoryMap.block_${p.kind}`)) : id;
+                return (
+                  <li key={id} className="flex items-center gap-2 text-xs text-gray-300 bg-gray-900 border border-gray-800 rounded px-2 py-1">
+                    <span className="w-1.5 h-1.5 rounded-sm bg-gray-500 flex-shrink-0" />
+                    <span className="truncate flex-1">{nm}</span>
+                    <button onClick={() => toggleMulti('props', id)} className="text-gray-600 hover:text-gray-300 flex-shrink-0">✕</button>
+                  </li>
+                );
+              })}
+            </ul>
+            <button onClick={deleteMultiSelection} title={`${t('common.delete')} (Del)`}
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs text-red-300 bg-red-500/10 border border-red-500/30 hover:bg-red-500/20">
+              <Trash2 size={13} /> {t('factoryMap.deleteSelection')}
+            </button>
+          </aside>
+        )}
+
+        {/* Properties panel (edit mode, single selection) — exact numbers, links & actions */}
+        {!multiSel && panelSelection && (
+          <MapEditorPanel
+            selection={panelSelection}
+            editor={editor}
+            equipOptions={equipOptions}
+            machineOptions={machineOptions}
+            onClose={() => { setSel3d(null); setSelProp(null); setSelSensor(null); setSelZone3d(null); clear2dSelection(); }}
+            onPickMachinePhoto={pickPhoto}
+            onPickMachineModel={pickModel}
+            onPickPropModel={pickPropModel}
+            onDuplicateProp={() => duplicateSelProp()}
+            onDeleteProp={(id) => editor.deletePropTracked(id)}
+            onUnplaceMachine={(id) => editor.unplaceMachine(id)}
+            onDeleteZone={removeZone}
+          />
+        )}
 
         {/* Detail panel (View mode) */}
         {!editMode && detail && (
@@ -2163,6 +2517,10 @@ export default function FactoryMap() {
                             ) : isDueToday(of.scheduled_date) ? (
                               <span className="text-[9px] font-bold px-1 rounded" style={{ background: `${OF_LATE_HEX}22`, color: OF_LATE_HEX }}>{t('pitStop.dueToday')}</span>
                             ) : null}
+                            <span className="text-[9px] font-bold px-1 rounded flex-shrink-0"
+                              style={{ background: `${of.family === 'sg' ? PIT_SG_ACCENT : PIT_CG_ACCENT}22`, color: of.family === 'sg' ? PIT_SG_ACCENT : PIT_CG_ACCENT }}>
+                              {of.family.toUpperCase()}
+                            </span>
                           </span>
                           <span className="text-[11px] text-gray-400 flex-shrink-0">
                             {of.completeness_pct != null ? `${Math.round(of.completeness_pct)} %` : '—'}
@@ -2205,6 +2563,10 @@ export default function FactoryMap() {
                     <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded"
                       style={{ background: `${ofStateColor(of.state)}22`, color: ofStateColor(of.state) }}>
                       {t(`pitStop.state.${of.state}`)}
+                    </span>
+                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded"
+                      style={{ background: `${of.family === 'sg' ? PIT_SG_ACCENT : PIT_CG_ACCENT}22`, color: of.family === 'sg' ? PIT_SG_ACCENT : PIT_CG_ACCENT }}>
+                      {of.family === 'sg' ? t('pitStop.family.softGoods') : t('pitStop.family.caseGoods')}
                     </span>
                     {of.late && (
                       <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded"

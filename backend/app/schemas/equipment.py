@@ -84,6 +84,7 @@ class EquipmentOut(BaseModel):
     family: Optional[str] = None
     pm_strategy: Optional[str] = None
     cleaning_priority: Optional[str] = None
+    icon_url: Optional[str] = None
     model_url: Optional[str] = None
     height_3d: Optional[float] = None
     model_scale: Optional[float] = None

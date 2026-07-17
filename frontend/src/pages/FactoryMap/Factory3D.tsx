@@ -1,8 +1,9 @@
-import { useMemo, useRef, useEffect, useState, forwardRef, Suspense, createContext, useContext } from 'react';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, Grid, Html, Edges, useTexture, useGLTF, useAnimations, TransformControls, Billboard } from '@react-three/drei';
+import { useMemo, useRef, useEffect, useLayoutEffect, useState, forwardRef, memo, Suspense, createContext, useContext } from 'react';
+import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
+import { OrbitControls, Grid, Html, Edges, Line, Detailed, useTexture, useGLTF, useAnimations, TransformControls, Billboard } from '@react-three/drei';
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { useTranslation } from 'react-i18next';
 import { STATUS_HEX as STATUS_COLORS, STATUS_LABEL as STATUS_LABELS } from '../../utils/statusColors';
 import { initials } from '../../utils/initials';
@@ -68,6 +69,39 @@ export const ORBIT_MARGIN = 60;
 export type TMode = 'translate' | 'rotate' | 'scale';
 export type Commit = (id: string, patch: { pos_x: number; pos_y: number; model_scale: number; scale_y: number; scale_z: number; rotation_deg: number }) => void;
 
+// Grid/angle snapping for the edit gizmo: 10 map-px translation steps, 15° rotation.
+const SNAP_PX = 10;
+const SNAP_TRANSLATE = SNAP_PX * SCALE;
+const SNAP_ROTATE = Math.PI / 12;
+
+// A zone rendered on the 3D floor (edit mode) so departments can be organized
+// without switching back to 2D.
+export interface Z3D {
+  id: string;
+  name: string;
+  color: string;
+  pos_x: number;
+  pos_y: number;
+  pos_w: number;
+  pos_h: number;
+}
+export type ZoneCommit3D = (id: string, patch: { pos_x: number; pos_y: number; pos_w: number; pos_h: number }) => void;
+
+// Click-to-place ghost: footprint (map px) + world height of the item being placed.
+export interface PlacementSpec {
+  w: number;
+  h: number;
+  height: number;
+  label: string;
+}
+
+// Ctrl-click multi-selection: ids by kind. The page owns the state; Factory3D
+// draws footprints on every member and one shared translate gizmo at the centroid.
+export interface MultiSelection {
+  machines: string[];
+  props: string[];
+}
+
 function heightFor(m: M3D): number {
   const s = `${m.family ?? ''} ${m.subtype ?? ''} ${m.function_label ?? ''} ${m.name}`.toLowerCase();
   if (/convoyeur|conveyor|tapis|table|roulett/.test(s)) return 1.2;
@@ -90,10 +124,18 @@ function SunLight() {
   );
 }
 
-interface BoxProps { w: number; d: number; h: number; color: string; id: string; name: string; onSelect: (id: string) => void }
+// `additive` = Ctrl/Cmd-click — the page grows a multi-selection instead of replacing it.
+export type SelectFn = (id: string, additive?: boolean) => void;
 
-const boxHandlers = (id: string, onSelect: (id: string) => void) => ({
-  onClick: (e: { stopPropagation: () => void }) => { e.stopPropagation(); onSelect(id); },
+interface BoxProps { w: number; d: number; h: number; color: string; id: string; name: string; onSelect: SelectFn }
+
+const boxHandlers = (id: string, onSelect: SelectFn) => ({
+  onClick: (e: { stopPropagation: () => void; ctrlKey?: boolean; metaKey?: boolean; nativeEvent?: MouseEvent }) => {
+    e.stopPropagation();
+    // modifier lives on the DOM event (prototype getters don't survive r3f's spread)
+    const ne = e.nativeEvent;
+    onSelect(id, !!(ne?.ctrlKey || ne?.metaKey || e.ctrlKey || e.metaKey));
+  },
   onPointerOver: (e: { stopPropagation: () => void }) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; },
   onPointerOut: () => { document.body.style.cursor = 'default'; },
 });
@@ -134,15 +176,83 @@ function PhotoMesh({ url, w, d, h, color, id, name, onSelect }: BoxProps & { url
   );
 }
 
+// ── Static-GLB draw-call collapse ─────────────────────────────────────────────
+// Uploaded machine models arrive with hundreds of sub-meshes (one per CAD part)
+// and dominate the scene's draw calls (~5.5k of ~7k measured). For models with
+// NO animations and NO skinning we bake every eligible mesh's world transform
+// into its geometry and merge them per material — visually identical, but one
+// draw call per material instead of one per part. Ineligible meshes (multi-
+// material groups, morph targets, mirrored transforms) are kept as-is.
+// Cached per URL so multiple instances share the merged geometries.
+const mergedGltfCache = new Map<string, THREE.Object3D>();
+
+function buildMergedGltf(scene: THREE.Object3D): THREE.Object3D {
+  scene.updateWorldMatrix(true, true);
+  const buckets = new Map<string, { material: THREE.Material; geos: THREE.BufferGeometry[] }>();
+  const out = new THREE.Group();
+  const keepAsIs: THREE.Mesh[] = [];
+  scene.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    const geo = m.geometry as THREE.BufferGeometry;
+    const eligible = !Array.isArray(m.material)
+      && !(geo.morphAttributes && Object.keys(geo.morphAttributes).length)
+      && m.matrixWorld.determinant() > 0;   // mirrored transforms would flip winding
+    if (!eligible) { keepAsIs.push(m); return; }
+    const mat = m.material as THREE.Material;
+    // merge only geometries with the same attribute layout (mergeGeometries requirement)
+    const sig = `${mat.uuid}|${Object.keys(geo.attributes).sort().join(',')}|${geo.index ? 1 : 0}`;
+    let b = buckets.get(sig);
+    if (!b) { b = { material: mat, geos: [] }; buckets.set(sig, b); }
+    const g = geo.clone();
+    g.applyMatrix4(m.matrixWorld);
+    b.geos.push(g);
+  });
+  for (const { material, geos } of buckets.values()) {
+    try {
+      const merged = geos.length === 1 ? geos[0] : mergeGeometries(geos, false);
+      if (!merged) throw new Error('merge failed');
+      const mesh = new THREE.Mesh(merged, material);
+      mesh.castShadow = true;
+      out.add(mesh);
+      if (geos.length > 1) geos.forEach((g) => { if (g !== merged) g.dispose(); });
+    } catch {
+      // incompatible attribute data — fall back to individual baked meshes
+      for (const g of geos) {
+        const mesh = new THREE.Mesh(g, material);
+        mesh.castShadow = true;
+        out.add(mesh);
+      }
+    }
+  }
+  for (const m of keepAsIs) {
+    const c = m.clone();
+    c.geometry = m.geometry;
+    m.matrixWorld.decompose(c.position, c.quaternion, c.scale);
+    c.castShadow = true;
+    out.add(c);
+  }
+  return out;
+}
+
 function GltfModel({ url, w, d, color, id, name, onSelect, animate }: BoxProps & { url: string; animate?: boolean }) {
   const { scene, animations } = useGLTF(url);
   // SkeletonUtils.clone keeps skinned-mesh bindings intact so multiple instances
   // (and glTF animation clips) work — plain scene.clone(true) breaks rigged models.
+  // Static models (no clips, no skinning) instead go through the per-material
+  // merge above, collapsing hundreds of part-meshes into a handful of draw calls.
   const cloned = useMemo(() => {
-    const c = skeletonClone(scene);
-    c.traverse((o) => { (o as THREE.Mesh).castShadow = true; });
-    return c;
-  }, [scene]);
+    let hasSkin = false;
+    scene.traverse((o) => { if ((o as THREE.SkinnedMesh).isSkinnedMesh) hasSkin = true; });
+    if (animations.length || hasSkin) {
+      const c = skeletonClone(scene);
+      c.traverse((o) => { (o as THREE.Mesh).castShadow = true; });
+      return c;
+    }
+    let tpl = mergedGltfCache.get(url);
+    if (!tpl) { tpl = buildMergedGltf(scene); mergedGltfCache.set(url, tpl); }
+    return tpl.clone(true);   // meshes are cloned, merged geometries/materials shared
+  }, [scene, animations, url]);
   const groupRef = useRef<THREE.Group>(null);
   const { actions } = useAnimations(animations, groupRef);
 
@@ -381,11 +491,40 @@ function ConveyorFlow({ w, d, y, animate }: { w: number; d: number; y: number; a
   );
 }
 
+// Shared conveyor materials + unit geometries (instanced parts) — module level,
+// one allocation for the whole app.
+const conveyorRollerMat = new THREE.MeshStandardMaterial({ color: '#9ca3af', metalness: 0.6, roughness: 0.4 });
+const conveyorLegMat = new THREE.MeshStandardMaterial({ color: '#1f2937' });
+const unitCylinderGeo = new THREE.CylinderGeometry(1, 1, 1, 10);
+const unitBoxGeo = new THREE.BoxGeometry(1, 1, 1);
+
 function ConveyorMesh({ w, d, h, color, id, name, onSelect, animate }: BoxProps & { animate?: boolean }) {
   const legH = h * 0.7;
   const beltY = legH;
   const rollers = Math.min(14, Math.max(3, Math.round(w / 0.6)));
   const legW = Math.max(w * 0.03, 0.06), legD = Math.max(d * 0.06, 0.06);
+  // Rollers and legs as ONE InstancedMesh each (2 draw calls instead of up to 18).
+  const rollerRef = useRef<THREE.InstancedMesh>(null);
+  const legRef = useRef<THREE.InstancedMesh>(null);
+  useLayoutEffect(() => {
+    const o = new THREE.Object3D();
+    for (let i = 0; i < rollers; i++) {
+      o.position.set(-w / 2 + (i + 0.5) * (w / rollers), beltY + h * 0.1, 0);
+      o.rotation.set(Math.PI / 2, 0, 0);
+      o.scale.set(d * 0.06, d * 0.9, d * 0.06);   // unit cylinder: r=1, h=1
+      o.updateMatrix();
+      rollerRef.current?.setMatrixAt(i, o.matrix);
+    }
+    ([[-1, -1], [1, -1], [-1, 1], [1, 1]] as const).forEach(([sx, sz], i) => {
+      o.position.set((sx * w) / 2 * 0.9, legH / 2, (sz * d) / 2 * 0.8);
+      o.rotation.set(0, 0, 0);
+      o.scale.set(legW, legH, legD);
+      o.updateMatrix();
+      legRef.current?.setMatrixAt(i, o.matrix);
+    });
+    if (rollerRef.current) rollerRef.current.instanceMatrix.needsUpdate = true;
+    if (legRef.current) legRef.current.instanceMatrix.needsUpdate = true;
+  }, [w, d, h, rollers, beltY, legH, legW, legD]);
   return (
     <group {...boxHandlers(id, onSelect)}>
       <mesh position={[0, beltY, 0]} castShadow receiveShadow>
@@ -398,21 +537,8 @@ function ConveyorMesh({ w, d, h, color, id, name, onSelect, animate }: BoxProps 
           <meshStandardMaterial color={color} />
         </mesh>
       ))}
-      {Array.from({ length: rollers }).map((_, i) => {
-        const x = -w / 2 + (i + 0.5) * (w / rollers);
-        return (
-          <mesh key={i} position={[x, beltY + h * 0.1, 0]} rotation={[Math.PI / 2, 0, 0]} castShadow>
-            <cylinderGeometry args={[d * 0.06, d * 0.06, d * 0.9, 10]} />
-            <meshStandardMaterial color="#9ca3af" metalness={0.6} roughness={0.4} />
-          </mesh>
-        );
-      })}
-      {[[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([sx, sz], i) => (
-        <mesh key={i} position={[(sx * w) / 2 * 0.9, legH / 2, (sz * d) / 2 * 0.8]} castShadow>
-          <boxGeometry args={[legW, legH, legD]} />
-          <meshStandardMaterial color="#1f2937" />
-        </mesh>
-      ))}
+      <instancedMesh ref={rollerRef} args={[unitCylinderGeo, conveyorRollerMat, rollers]} castShadow />
+      <instancedMesh ref={legRef} args={[unitBoxGeo, conveyorLegMat, 4]} castShadow />
       <ConveyorFlow w={w} d={d} y={beltY + h * 0.18} animate={animate ?? true} />
       <Label y={h + 0.6} text={name} />
     </group>
@@ -610,6 +736,12 @@ function FurnitureFlow({ w, db, deckH, animate, mats }: { w: number; db: number;
  * the belt runs, red on a stop). `ponytail`/`glasses` differentiate the crew.
  * Leans over the belt driving screws while the line runs; goes still (but
  * keeps breathing) when it stops. Built at the origin facing +z. */
+// Camera distance (world units) beyond which a line worker renders as a 4-mesh
+// silhouette (legs/torso/head/status helmet) instead of ~40 detailed meshes. At
+// that range only the blue suit + helmet colour read anyway; the swap cuts the
+// plant-overview draw calls by >1k with no legible visual change.
+const WORKER_LOD_DISTANCE = 26;
+
 function LineWorkerFigure3D({ mats, phase = 0, ponytail = false, glasses = false, animate }: {
   mats: LineMats; phase?: number; ponytail?: boolean; glasses?: boolean; animate: boolean;
 }) {
@@ -639,6 +771,7 @@ function LineWorkerFigure3D({ mats, phase = 0, ponytail = false, glasses = false
     }
   });
   return (
+    <Detailed distances={[0, WORKER_LOD_DISTANCE]}>
     <group>
       {/* boots + legs */}
       {[-1, 1].map((k) => (
@@ -766,6 +899,22 @@ function LineWorkerFigure3D({ mats, phase = 0, ponytail = false, glasses = false
         </group>
       </group>
     </group>
+    {/* far LOD — blue silhouette + live-status helmet (4 meshes) */}
+    <group>
+      <mesh material={mats.suit} position={[0, 0.38, 0]}>
+        <boxGeometry args={[0.42, 0.76, 0.3]} />
+      </mesh>
+      <mesh material={mats.suit} position={[0, 1.05, 0]}>
+        <capsuleGeometry args={[0.26, 0.34, 4, 8]} />
+      </mesh>
+      <mesh material={mats.suitShadow} position={[0, 1.5, 0]}>
+        <sphereGeometry args={[0.28, 8, 8]} />
+      </mesh>
+      <mesh material={mats.status} position={[0, 1.68, 0]} scale={[1, 0.68, 1]}>
+        <sphereGeometry args={[0.31, 8, 8]} />
+      </mesh>
+    </group>
+    </Detailed>
   );
 }
 
@@ -1462,22 +1611,20 @@ export type PitStopCtxValue = {
 };
 const PitStopCtx = createContext<PitStopCtxValue>({ state: null });
 
-const PIT_DEFAULTS = { lanes: 41, slots_per_lane: 8 };
+const PIT_DEFAULTS = { lanes: 41, slots_per_lane: 8, sg_lanes: 7 };
 
-/** lane/slot (1-based) → local x/z inside the zone footprint. */
-function pitSlotXZ(w: number, d: number, lanes: number, slots: number, lane: number, slot: number): [number, number] {
-  const pitch = d / lanes;
-  const slotW = w / slots;
-  const z = -d / 2 + (Math.min(Math.max(lane, 1), lanes) - 0.5) * pitch;
-  const x = -w / 2 + (Math.min(Math.max(slot, 1), slots) - 0.5) * slotW;
-  return [x, z];
-}
+// Furniture-family accents used to delineate the two physical buffer areas
+// (case goods vs soft goods) on the 3D map and in the legend.
+const CG_ACCENT = '#f59e0b';   // amber — case goods (the large area)
+const SG_ACCENT = '#8b5cf6';   // violet — soft goods (the smaller area)
 
 /** The static conveyor field — one InstancedMesh each for rollers, rails and
  * legs, matrices set once per geometry change. No pointer handlers → R3F never
- * raycasts these ~1700 instances. */
-function PitStopStructure({ w, d, lanes, mats }: { w: number; d: number; lanes: number; mats: PitMats }) {
-  const pitch = d / lanes;
+ * raycasts these ~1700 instances. The lanes are split into a soft-goods block
+ * (first `sgLanes`) and a case-goods block, separated by a `gap` aisle. */
+function PitStopStructure({ w, d, lanes, sgLanes, gap, pitch, mats }: {
+  w: number; d: number; lanes: number; sgLanes: number; gap: number; pitch: number; mats: PitMats;
+}) {
   const laneW = Math.min(pitch * 0.78, 1.15);
   const rollerR = Math.max(0.03, Math.min(pitch * 0.16, 0.07));
   const legH = 0.5;
@@ -1491,7 +1638,8 @@ function PitStopStructure({ w, d, lanes, mats }: { w: number; d: number; lanes: 
 
   useEffect(() => {
     const o = new THREE.Object3D();
-    const laneZ = (i: number) => -d / 2 + (i + 0.5) * pitch;
+    // lane i (0-based) sits past the aisle once it belongs to the case-goods block.
+    const laneZ = (i: number) => -d / 2 + (i + 0.5) * pitch + (i >= sgLanes ? gap : 0);
     let r = 0, ra = 0, lg = 0;
     for (let i = 0; i < lanes; i++) {
       const z = laneZ(i);
@@ -1523,7 +1671,7 @@ function PitStopStructure({ w, d, lanes, mats }: { w: number; d: number; lanes: 
     for (const m of [rollers.current, rails.current, legs.current]) {
       if (m) m.instanceMatrix.needsUpdate = true;
     }
-  }, [w, d, lanes, pitch, laneW, rollerR, deckY, perLane, legPairs]);
+  }, [w, d, lanes, sgLanes, gap, pitch, laneW, rollerR, deckY, perLane, legPairs]);
 
   return (
     <>
@@ -1540,94 +1688,89 @@ function PitStopStructure({ w, d, lanes, mats }: { w: number; d: number; lanes: 
   );
 }
 
-/** Striped traffic cone (orange body, two white bands, square base) standing on
- * a stack that needs attention: the OF is LATE or its ETD is today. Bobs gently
- * so it catches the eye without the alarm-pulse of the machine beacons. */
-function TrafficCone({ y }: { y: number }) {
-  const ref = useRef<THREE.Group>(null);
+// ── Instanced Pit-Stop rendering ──────────────────────────────────────────────
+// Slabs, base plates and warning cones for ALL stacks render as a handful of
+// InstancedMesh buckets (one per material/colour) instead of one mesh per box —
+// ~700 draw calls → ~20 with 117 OFs. Each stack keeps its own invisible hit
+// volume (hover/click), name chip and selection outline.
+
+/** Everything the per-OF interaction layer needs, precomputed with the matrices. */
+interface StackLayout {
+  of: PitStopOf;
+  x: number;
+  z: number;
+  fw: number;
+  fd: number;
+  top: number;
+  late: boolean;
+  plateColor: string;
+}
+
+/** Fixed-capacity instanced boxes: one bucket = one material. */
+function InstancedBoxes({ material, matrices, geometry }: { material: THREE.Material; matrices: THREE.Matrix4[]; geometry?: THREE.BufferGeometry }) {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  useLayoutEffect(() => {
+    const m = ref.current;
+    if (!m) return;
+    matrices.forEach((mat, i) => m.setMatrixAt(i, mat));
+    m.count = matrices.length;
+    m.instanceMatrix.needsUpdate = true;
+    m.computeBoundingSphere();
+  }, [matrices]);
+  return <instancedMesh ref={ref} args={[geometry ?? unitBoxGeo, material, Math.max(matrices.length, 1)]} castShadow />;
+}
+
+// Cone parts (shared geometries/materials — every cone is identical, only placed).
+const coneBodyGeo = new THREE.ConeGeometry(0.3, 0.8, 20);
+const coneBand1Geo = new THREE.CylinderGeometry(0.3 * (1 - 0.38 / 0.8) * 1.07, 0.3 * (1 - 0.24 / 0.8) * 1.07, 0.14, 18);
+const coneBand2Geo = new THREE.CylinderGeometry(0.3 * (1 - 0.6 / 0.8) * 1.07, 0.3 * (1 - 0.5 / 0.8) * 1.07, 0.1, 18);
+const coneOrangeMat = new THREE.MeshStandardMaterial({ color: '#f97316', roughness: 0.5, emissive: '#f97316', emissiveIntensity: 0.28 });
+const coneWhiteMat = new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.45 });
+
+/** All late/due-today cones as 4 instanced meshes inside ONE bobbing group —
+ * the bob phase is shared (as it always was), so a single group.position.y
+ * animation moves every cone without touching a matrix per frame. */
+function InstancedCones({ stacks }: { stacks: StackLayout[] }) {
+  const grp = useRef<THREE.Group>(null);
   useFrame((state) => {
-    if (ref.current) ref.current.position.y = y + Math.sin(state.clock.elapsedTime * 2.2) * 0.07;
+    if (grp.current) grp.current.position.y = Math.sin(state.clock.elapsedTime * 2.2) * 0.07;
   });
-  const mats = useMemo(() => ({
-    orange: new THREE.MeshStandardMaterial({ color: '#f97316', roughness: 0.5, emissive: '#f97316', emissiveIntensity: 0.28 }),
-    white:  new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.45 }),
-  }), []);
-  useEffect(() => () => { mats.orange.dispose(); mats.white.dispose(); }, [mats]);
-  const H = 0.8, R = 0.3;                       // cone body height / base radius
-  // A white band = a slightly wider frustum matching the cone's slope at [h0, h1].
-  const band = (h0: number, h1: number) => {
-    const r = (h: number) => R * (1 - h / H) * 1.07;
-    return (
-      <mesh key={h0} material={mats.white} position={[0, 0.06 + (h0 + h1) / 2, 0]}>
-        <cylinderGeometry args={[r(h1), r(h0), h1 - h0, 18]} />
-      </mesh>
-    );
-  };
+  const parts = useMemo(() => {
+    const o = new THREE.Object3D();
+    const base: THREE.Matrix4[] = [], body: THREE.Matrix4[] = [], b1: THREE.Matrix4[] = [], b2: THREE.Matrix4[] = [];
+    for (const s of stacks) {
+      const y = s.top + 0.06;
+      o.rotation.set(0, 0, 0); o.scale.set(0.56, 0.06, 0.56);
+      o.position.set(s.x, y + 0.03, s.z); o.updateMatrix(); base.push(o.matrix.clone());
+      o.scale.set(1, 1, 1);
+      o.position.set(s.x, y + 0.06 + 0.4, s.z); o.updateMatrix(); body.push(o.matrix.clone());
+      o.position.set(s.x, y + 0.06 + 0.31, s.z); o.updateMatrix(); b1.push(o.matrix.clone());
+      o.position.set(s.x, y + 0.06 + 0.55, s.z); o.updateMatrix(); b2.push(o.matrix.clone());
+    }
+    return { base, body, b1, b2 };
+  }, [stacks]);
+  if (!stacks.length) return null;
   return (
-    <group ref={ref} position={[0, y, 0]}>
-      <mesh material={mats.orange} position={[0, 0.03, 0]} castShadow>
-        <boxGeometry args={[0.56, 0.06, 0.56]} />
-      </mesh>
-      <mesh material={mats.orange} position={[0, 0.06 + H / 2, 0]} castShadow>
-        <coneGeometry args={[R, H, 20]} />
-      </mesh>
-      {band(0.24, 0.38)}
-      {band(0.5, 0.6)}
+    <group ref={grp}>
+      <InstancedBoxes material={coneOrangeMat} matrices={parts.base} />
+      <InstancedBoxes material={coneOrangeMat} matrices={parts.body} geometry={coneBodyGeo} />
+      <InstancedBoxes material={coneWhiteMat} matrices={parts.b1} geometry={coneBand1Geo} />
+      <InstancedBoxes material={coneWhiteMat} matrices={parts.b2} geometry={coneBand2Geo} />
     </group>
   );
 }
 
-/** One OF standing in the buffer: base plate in the OF-state colour, one slab
- * per component (category colour, height ∝ on-hand), invisible hit volume for
- * hover/click, chip on hover, traffic cone when late / due today. Deck-top anchored. */
-function PitStopStack({ of, x, z, deckY, slotW, laneW, categoryMat, mats, onSelectOf, selected }: {
-  of: PitStopOf; x: number; z: number; deckY: number; slotW: number; laneW: number;
-  categoryMat: (category: string | null) => THREE.Material;
-  mats: PitMats; onSelectOf?: (id: string) => void; selected: boolean;
+/** Per-OF interaction layer: invisible hover/click volume, hover/selected chip,
+ * selection outline on the (instanced) base plate. The visible boxes live in
+ * the instanced buckets built by PitStopMesh. */
+function PitStopStack({ s, deckY, onSelectOf, selected }: {
+  s: StackLayout; deckY: number; onSelectOf?: (id: string) => void; selected: boolean;
 }) {
   const { t } = useTranslation();
   const [hover, setHover] = useState(false);
-  // deterministic small yaw per slab (stable from job number) → hand-stacked look
-  const jitter = useMemo(() => {
-    let h = 0;
-    for (let i = 0; i < of.job_number.length; i++) h = (h * 31 + of.job_number.charCodeAt(i)) >>> 0;
-    return ((h % 100) / 100 - 0.5) * 0.12;
-  }, [of.job_number]);
-
-  const fw = Math.min(slotW * 0.72, 1.9);             // slab footprint
-  const fd = Math.min(laneW * 1.05, 1.3);
-  const layers = of.components.filter((c) => c.on_hand > 0);
-  const rawH = layers.map((c) => 0.14 + Math.min(c.on_hand, 60) * 0.012);
-  const total = rawH.reduce((a, b) => a + b, 0);
-  const k = total > 2.2 ? 2.2 / total : 1;            // cap the pile height
-  // Base plate = completeness semaphore (green 100 % / amber ≥90 % / red below).
-  const plateColor = ofPlateColor(of.state, of.completeness_pct, of.in_full);
-  const cancelled = of.state === 'cancelled';
-
-  let y = deckY + 0.05;
-  const slabs = layers.map((c, i) => {
-    const hh = rawH[i] * k;
-    const slab = (
-      <mesh key={c.code} material={cancelled ? mats.cancelled : categoryMat(c.category)}
-        position={[0, y + hh / 2, 0]} rotation={[0, jitter * (i % 2 ? 1 : -1), 0]} castShadow>
-        <boxGeometry args={[fw * (1 - i * 0.03), hh * 0.94, fd * (1 - i * 0.03)]} />
-      </mesh>
-    );
-    y += hh;
-    return slab;
-  });
-  const top = y;
-
+  const { of, fw, fd, top } = s;
   return (
-    <group position={[x, 0, z]}>
-      {/* base plate — the OF's derived state colour */}
-      <mesh position={[0, deckY + 0.02, 0]}>
-        <boxGeometry args={[fw * 1.14, 0.07, fd * 1.14]} />
-        <meshStandardMaterial color={plateColor} emissive={plateColor} emissiveIntensity={0.25}
-          transparent={cancelled} opacity={cancelled ? 0.6 : 1} />
-        {selected && <Edges color="#ffffff" />}
-      </mesh>
-      {slabs}
+    <group position={[s.x, 0, s.z]}>
       {/* single hover/click volume over the whole stack */}
       <mesh
         position={[0, deckY + (top - deckY) / 2 + 0.05, 0]}
@@ -1638,11 +1781,17 @@ function PitStopStack({ of, x, z, deckY, slotW, laneW, categoryMat, mats, onSele
         <boxGeometry args={[fw * 1.2, Math.max(top - deckY, 0.3) + 0.15, fd * 1.2]} />
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
-      {(of.late || isDueToday(of.scheduled_date)) && <TrafficCone y={top + 0.06} />}
+      {selected && (
+        <mesh position={[0, deckY + 0.02, 0]}>
+          <boxGeometry args={[fw * 1.14, 0.07, fd * 1.14]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+          <Edges color="#ffffff" />
+        </mesh>
+      )}
       {(hover || selected) && (
-        <Html position={[0, top + (of.late || isDueToday(of.scheduled_date) ? 1.5 : 0.7), 0]} center zIndexRange={[35, 0]} style={{ pointerEvents: 'none' }}>
+        <Html position={[0, top + (s.late ? 1.5 : 0.7), 0]} center zIndexRange={[35, 0]} style={{ pointerEvents: 'none' }}>
           <div style={{
-            background: 'rgba(13,20,33,0.94)', border: `1.5px solid ${plateColor}`, color: '#e5e7eb',
+            background: 'rgba(13,20,33,0.94)', border: `1.5px solid ${s.plateColor}`, color: '#e5e7eb',
             borderRadius: 8, padding: '3px 9px', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap',
             fontFamily: 'system-ui, sans-serif', textAlign: 'center',
           }}>
@@ -1657,29 +1806,46 @@ function PitStopStack({ of, x, z, deckY, slotW, laneW, categoryMat, mats, onSele
   );
 }
 
+/** Floating header naming one physical buffer area (Case goods / Soft goods),
+ * bordered in the family accent. Html so it stays legible offline (troika fails). */
+function PitAreaLabel({ z, text, accent }: { z: number; text: string; accent: string }) {
+  return (
+    <Html position={[0, 3.0, z]} center distanceFactor={20} zIndexRange={[22, 0]} style={{ pointerEvents: 'none' }}>
+      <div style={{
+        fontSize: 11, fontWeight: 800, letterSpacing: '0.6px', textTransform: 'uppercase',
+        color: '#e5e7eb', background: 'rgba(13,20,33,0.82)', border: `1.5px solid ${accent}`,
+        padding: '2px 8px', borderRadius: 5, whiteSpace: 'nowrap', transform: 'translateY(-50%)',
+      }}>{text}</div>
+    </Html>
+  );
+}
+
 /** Scoreboard at the zone's exit corner (same construction language as the
- * line TVs): compact KPI row (OFs · in full · ≥90 % · oldest) + the OTIF PIT
- * availability table mirroring the client's report — per band (100 % / 90 %+
- * cumulative): EU available CG / SG, OTIF %, CG OF count. Canvas texture —
- * troika fonts fail offline in this app. */
+ * line TVs): the client's Feuil1 KPI table verbatim — EU total / EU pit /
+ * Dispo sur ligne / Assigné non disponible / Attente quincaillerie / the two
+ * availability bands (with OTIF % + CG OF count) / Attente réparation, all
+ * split CG | SG in availability-weighted EU. Canvas texture — troika fonts
+ * fail offline in this app. */
 const OTIF_ZERO = { cg_eu: 0, sg_eu: 0, otif_pct: null, cg_ofs: 0 } as const;
+const PAIR_ZERO = { cg: 0, sg: 0 } as const;
 
 function PitStopBoard({ x, kpis, mats }: { x: number; kpis: PitStopState['kpis']; mats: PitMats }) {
   const { t } = useTranslation();
   const title = t('pitStop.board.title');
-  const lOfs = t('pitStop.board.ofs'), lFull = t('pitStop.board.inFull');
-  const lAlmost = t('pitStop.board.almost'), lOldest = t('pitStop.board.oldest');
-  const lDispo = t('pitStop.board.dispoHeader'), lCg = t('pitStop.board.cg'), lSg = t('pitStop.board.sg');
+  const lCg = t('pitStop.board.cg'), lSg = t('pitStop.board.sg');
   const lOtif = t('pitStop.board.otif'), lOfCg = t('pitStop.board.ofCg');
   const lEuFull = t('pitStop.board.euFull'), lEuGe90 = t('pitStop.board.euGe90');
-  const oldest = kpis.oldest_age_minutes != null
-    ? (kpis.oldest_age_minutes >= 60 ? `${Math.floor(kpis.oldest_age_minutes / 60)} h` : `${kpis.oldest_age_minutes} m`)
-    : '—';
-  // tolerate a state served by an older backend (no otif block yet)
+  const lEuTotal = t('pitStop.board.euTotal'), lEuPit = t('pitStop.board.euPit');
+  const lOnLine = t('pitStop.board.onLine'), lAssigned = t('pitStop.board.assignedUnavailable');
+  const lHardware = t('pitStop.board.awaitingHardware'), lRepair = t('pitStop.board.awaitingRepair');
+  // tolerate a state served by an older backend (no otif/board block yet)
   const bFull = kpis.otif?.full ?? OTIF_ZERO;
   const bGe90 = kpis.otif?.ge90 ?? OTIF_ZERO;
+  const board = kpis.board;
+  const p = (k: keyof NonNullable<PitStopState['kpis']['board']>) => board?.[k] ?? PAIR_ZERO;
+  const boardKey = JSON.stringify(board ?? null);
   const tex = useMemo(() => {
-    const W = 1024, H = 680, HEAD = 88, PAD = 12;
+    const W = 1024, H = 680, HEAD = 76, PAD = 12;
     const cvs = document.createElement('canvas');
     cvs.width = W; cvs.height = H;
     const ctx = cvs.getContext('2d')!;
@@ -1690,69 +1856,62 @@ function PitStopBoard({ x, kpis, mats }: { x: number; kpis: PitStopState['kpis']
     ctx.fillStyle = '#1e2740';
     ctx.fillRect(0, 0, W, HEAD);
     ctx.fillStyle = '#ffffff';
-    ctx.font = '700 46px system-ui, sans-serif';
+    ctx.font = '700 42px system-ui, sans-serif';
     ctx.fillText(title, W / 2, HEAD / 2 + 2, W - 40);
 
-    // ── compact KPI row (4 cells) ───────────────────────────────────────────
-    const kw = (W - 5 * PAD) / 4, kh = 140, ky = HEAD + PAD;
-    const cell = (cx: number, label: string, value: string, valueColor = '#ffffff') => {
-      ctx.fillStyle = '#111a2c';
-      ctx.fillRect(cx, ky, kw, kh);
-      ctx.fillStyle = '#94a3b8';
-      ctx.font = '600 27px system-ui, sans-serif';
-      ctx.fillText(label, cx + kw / 2, ky + 32, kw - 20);
-      ctx.fillStyle = valueColor;
-      ctx.font = '800 66px system-ui, sans-serif';
-      ctx.fillText(value, cx + kw / 2, ky + 32 + (kh - 44) / 2, kw - 24);
-    };
-    cell(PAD, lOfs, String(kpis.total));
-    cell(PAD * 2 + kw, lFull, String(kpis.in_full), '#16a34a');
-    cell(PAD * 3 + kw * 2, lAlmost, String(kpis.almost), '#eab308');
-    cell(PAD * 4 + kw * 3, lOldest, oldest, kpis.late > 0 ? '#fb923c' : '#ffffff');
-
-    // ── OTIF PIT availability table (client's report layout) ───────────────
-    // columns: band label | CG | SG | OTIF | OF CG
-    const colX = [PAD, 392, 550, 708, 866, W - PAD];
+    // ── the client's KPI table: label | CG | SG | OTIF | OF CG ──────────────
+    const colX = [PAD, 470, 606, 742, 878, W - PAD];
     const colC = (i: number) => (colX[i] + colX[i + 1]) / 2;
-    const headY = ky + kh + 18, headH = 54;
+    const headY = HEAD + PAD, headH = 46;
     ctx.fillStyle = '#1e2740';
     ctx.fillRect(PAD, headY, W - 2 * PAD, headH);
     ctx.fillStyle = '#cbd5e1';
-    ctx.font = '700 32px system-ui, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(lDispo, colX[0] + 16, headY + headH / 2 + 2, colX[1] - colX[0] - 28);
-    ctx.textAlign = 'center';
+    ctx.font = '700 27px system-ui, sans-serif';
     [lCg, lSg, lOtif, lOfCg].forEach((h, i) => ctx.fillText(h, colC(i + 1), headY + headH / 2 + 2, colX[i + 2] - colX[i + 1] - 16));
     const otifColor = (pct: number | null) =>
       pct == null ? '#64748b' : pct >= 90 ? '#16a34a' : pct >= 70 ? '#eab308' : '#fb923c';
-    const row = (ry: number, rh: number, label: string, b: typeof bFull) => {
-      ctx.fillStyle = '#111a2c';
+    const GAP = 6;
+    const rh = (H - (headY + headH) - PAD * 2 - GAP * 7) / 8;
+    let ry = headY + headH + PAD;
+    const row = (label: string, cells: [string, string][], emphasis = false) => {
+      ctx.fillStyle = emphasis ? '#16213a' : '#111a2c';
       ctx.fillRect(PAD, ry, W - 2 * PAD, rh);
-      ctx.fillStyle = '#94a3b8';
-      ctx.font = '600 31px system-ui, sans-serif';
+      ctx.fillStyle = emphasis ? '#e2e8f0' : '#94a3b8';
+      ctx.font = `${emphasis ? 700 : 600} 26px system-ui, sans-serif`;
       ctx.textAlign = 'left';
-      ctx.fillText(label, colX[0] + 16, ry + rh / 2 + 2, colX[1] - colX[0] - 28);
+      ctx.fillText(label, colX[0] + 14, ry + rh / 2 + 2, colX[1] - colX[0] - 24);
       ctx.textAlign = 'center';
-      ctx.font = '800 58px system-ui, sans-serif';
-      const vals: [string, string][] = [
-        [String(Math.round(b.cg_eu)), '#ffffff'],
-        [String(Math.round(b.sg_eu)), '#ffffff'],
-        [b.otif_pct != null ? `${b.otif_pct} %` : '—', otifColor(b.otif_pct)],
-        [String(b.cg_ofs), '#ffffff'],
-      ];
-      vals.forEach(([v, c], i) => {
+      ctx.font = '800 38px system-ui, sans-serif';
+      cells.forEach(([v, c], i) => {
         ctx.fillStyle = c;
-        ctx.fillText(v, colC(i + 1), ry + rh / 2 + 3, colX[i + 2] - colX[i + 1] - 16);
+        ctx.fillText(v, colC(i + 1), ry + rh / 2 + 2, colX[i + 2] - colX[i + 1] - 16);
       });
+      ry += rh + GAP;
     };
-    const rh = (H - (headY + headH) - PAD * 3) / 2;
-    row(headY + headH + PAD, rh, lEuFull, bFull);
-    row(headY + headH + PAD * 2 + rh, rh, lEuGe90, bGe90);
+    const eu = (pr: { cg: number; sg: number }, emphasis = false): [string, string][] => [
+      [String(pr.cg), emphasis ? '#ffffff' : '#e2e8f0'],
+      [String(pr.sg), emphasis ? '#ffffff' : '#e2e8f0'],
+    ];
+    const bandCells = (b: typeof bFull): [string, string][] => [
+      [String(b.cg_eu), '#ffffff'],
+      [String(b.sg_eu), '#ffffff'],
+      [b.otif_pct != null ? `${b.otif_pct} %` : '—', otifColor(b.otif_pct)],
+      [String(b.cg_ofs), '#ffffff'],
+    ];
+    row(lEuTotal, eu(p('eu_total'), true), true);
+    row(lEuPit, eu(p('eu_pit')));
+    row(lOnLine, eu(p('on_line')));
+    row(lAssigned, eu(p('assigned_unavailable')));
+    row(lHardware, eu(p('awaiting_hardware')));
+    row(lEuFull, bandCells(bFull), true);
+    row(lEuGe90, bandCells(bGe90), true);
+    row(lRepair, eu(p('awaiting_repair')));
     const texture = new THREE.CanvasTexture(cvs);
     texture.anisotropy = 8;
     return texture;
-  }, [title, lOfs, lFull, lAlmost, lOldest, lDispo, lCg, lSg, lOtif, lOfCg, lEuFull, lEuGe90,
-      kpis.total, kpis.in_full, kpis.almost, kpis.late, oldest,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [title, lCg, lSg, lOtif, lOfCg, lEuFull, lEuGe90,
+      lEuTotal, lEuPit, lOnLine, lAssigned, lHardware, lRepair, boardKey,
       bFull.cg_eu, bFull.sg_eu, bFull.otif_pct, bFull.cg_ofs,
       bGe90.cg_eu, bGe90.sg_eu, bGe90.otif_pct, bGe90.cg_ofs]);
   useEffect(() => () => tex.dispose(), [tex]);
@@ -1779,6 +1938,8 @@ function PitStopBoard({ x, kpis, mats }: { x: number; kpis: PitStopState['kpis']
 function usePitMats() {
   const mats = useMemo(() => ({
     slab:      new THREE.MeshStandardMaterial({ color: '#141b29', roughness: 0.92 }),
+    sgFloor:   new THREE.MeshStandardMaterial({ color: '#191a2e', roughness: 0.92 }),  // faint violet tint → soft-goods area
+    divider:   new THREE.MeshStandardMaterial({ color: '#4b5a72', roughness: 0.6, emissive: '#2a3550', emissiveIntensity: 0.25 }),
     roller:    new THREE.MeshStandardMaterial({ color: '#9aa3ad', metalness: 0.6, roughness: 0.4 }),
     rail:      new THREE.MeshStandardMaterial({ color: '#2b3648', roughness: 0.7 }),
     leg:       new THREE.MeshStandardMaterial({ color: '#1f2937', roughness: 0.75 }),
@@ -1790,15 +1951,30 @@ function usePitMats() {
 type PitMats = ReturnType<typeof usePitMats>;
 
 function PitStopMesh({ w, d, id, name, onSelect }: Omit<BoxProps, 'h' | 'color'>) {
+  const { t } = useTranslation();
   const { state, onSelectOf, selectedOfId } = useContext(PitStopCtx);
   const mats = usePitMats();
   const lanes = state?.config.lanes ?? PIT_DEFAULTS.lanes;
   const slots = state?.config.slots_per_lane ?? PIT_DEFAULTS.slots_per_lane;
-  const pitch = d / lanes;
+  // Physical CG/SG split: the FIRST `sgLanes` lanes form the (smaller) soft-goods
+  // area, separated from the case-goods area by a visible aisle (`gap`). Lanes are
+  // compressed slightly so the whole field still fits the zone footprint `d`.
+  const sgLanes = Math.min(Math.max(state?.config.sg_lanes ?? PIT_DEFAULTS.sg_lanes, 0), lanes - 1);
+  const cgLanes = lanes - sgLanes;
+  const gap = sgLanes > 0 ? (d / lanes) * 1.8 : 0;
+  const pitch = (d - gap) / lanes;
   const laneW = Math.min(pitch * 0.78, 1.15);
   const rollerR = Math.max(0.03, Math.min(pitch * 0.16, 0.07));
   const deckY = 0.5 + rollerR * 2;                    // stack resting height (top of rollers)
   const slotW = w / slots;
+  // 1-based lane → z. Soft goods take the FIRST `sgLanes` lanes (left of the
+  // aisle), case goods the rest — so the small SG area sits before the CG field.
+  const laneZ = (lane: number) => -d / 2 + (lane - 0.5) * pitch + (lane > sgLanes ? gap : 0);
+  const cgDepth = cgLanes * pitch;
+  const sgDepth = sgLanes * pitch;
+  const sgCenterZ = -d / 2 + sgDepth / 2;
+  const cgCenterZ = d / 2 - cgDepth / 2;
+  const dividerZ = -d / 2 + sgDepth + gap / 2;
 
   // Category name → shared material (from the plant's registry colours).
   const categoryMats = useMemo(() => {
@@ -1834,8 +2010,9 @@ function PitStopMesh({ w, d, id, name, onSelect }: Omit<BoxProps, 'h' | 'color'>
       }
     }
     for (const [key, group] of cells) {
-      const [lane, slot] = key.split('-').map(Number);
-      const [cx, z] = pitSlotXZ(w, d, lanes, slots, lane, slot);
+      const [lane, slot] = key.split('-').map(Number);            // already clamped in the key
+      const cx = -w / 2 + (slot - 0.5) * slotW;
+      const z = laneZ(lane);
       if (group.length > 1) group.sort((a, b) => a.job_number.localeCompare(b.job_number));
       const berthW = slotW / group.length;
       group.forEach((of, i) => {
@@ -1846,19 +2023,111 @@ function PitStopMesh({ w, d, id, name, onSelect }: Omit<BoxProps, 'h' | 'color'>
       out.push({ of, x: -w / 2 - 1.3, z: -d / 2 + 1.0 + i * 1.7, berthW: slotW });
     });
     return out;
-  }, [state?.ofs, w, d, lanes, slots, slotW]);
+  }, [state?.ofs, w, d, lanes, slots, slotW, pitch, sgLanes, gap]);
+
+  // Bake every stack's plate + slabs into per-material instance buckets (the
+  // exact same boxes the per-OF meshes used to draw), and keep a StackLayout
+  // per OF for the interaction layer.
+  const { stacks, slabBuckets, plateBuckets } = useMemo(() => {
+    const o = new THREE.Object3D();
+    const slabB = new Map<string, THREE.Matrix4[]>();      // key: category name ('' fallback, '\0cancelled')
+    const plateB = new Map<string, THREE.Matrix4[]>();     // key: `${color}|${cancelled ? 1 : 0}`
+    const outStacks: StackLayout[] = [];
+    const push = (m: Map<string, THREE.Matrix4[]>, k: string) => {
+      let arr = m.get(k);
+      if (!arr) { arr = []; m.set(k, arr); }
+      arr.push(o.matrix.clone());
+    };
+    for (const { of, x, z, berthW } of placed) {
+      const fw = Math.min(berthW * 0.72, 1.9);             // slab footprint
+      const fd = Math.min(laneW * 1.05, 1.3);
+      // deterministic small yaw per slab (stable from job number) → hand-stacked look
+      let hsh = 0;
+      for (let i = 0; i < of.job_number.length; i++) hsh = (hsh * 31 + of.job_number.charCodeAt(i)) >>> 0;
+      const jitter = ((hsh % 100) / 100 - 0.5) * 0.12;
+      const layers = of.components.filter((c) => c.on_hand > 0);
+      const rawH = layers.map((c) => 0.14 + Math.min(c.on_hand, 60) * 0.012);
+      const total = rawH.reduce((a, b) => a + b, 0);
+      const k = total > 2.2 ? 2.2 / total : 1;             // cap the pile height
+      const cancelled = of.state === 'cancelled';
+      // Base plate = completeness semaphore (green 100 % / yellow >90 % / red below).
+      const plateColor = ofPlateColor(of.state, of.completeness_pct, of.in_full);
+      o.position.set(x, deckY + 0.02, z);
+      o.rotation.set(0, 0, 0);
+      o.scale.set(fw * 1.14, 0.07, fd * 1.14);
+      o.updateMatrix();
+      push(plateB, `${plateColor}|${cancelled ? 1 : 0}`);
+      let y = deckY + 0.05;
+      layers.forEach((c, i) => {
+        const hh = rawH[i] * k;
+        o.position.set(x, y + hh / 2, z);
+        o.rotation.set(0, jitter * (i % 2 ? 1 : -1), 0);
+        o.scale.set(fw * (1 - i * 0.03), hh * 0.94, fd * (1 - i * 0.03));
+        o.updateMatrix();
+        push(slabB, cancelled ? '\0cancelled' : (c.category ?? ''));
+        y += hh;
+      });
+      outStacks.push({
+        of, x, z, fw, fd, top: y,
+        late: of.late || isDueToday(of.scheduled_date),
+        plateColor,
+      });
+    }
+    return { stacks: outStacks, slabBuckets: slabB, plateBuckets: plateB };
+  }, [placed, laneW, deckY]);
+
+  // One emissive material per plate colour (few distinct colours; disposed on change).
+  const plateMats = useMemo(() => {
+    const m = new Map<string, THREE.MeshStandardMaterial>();
+    for (const key of plateBuckets.keys()) {
+      const [color, flag] = key.split('|');
+      m.set(key, new THREE.MeshStandardMaterial({
+        color, emissive: color, emissiveIntensity: 0.25,
+        transparent: flag === '1', opacity: flag === '1' ? 0.6 : 1,
+      }));
+    }
+    return m;
+  }, [plateBuckets]);
+  useEffect(() => () => { plateMats.forEach((m) => m.dispose()); }, [plateMats]);
 
   return (
     <group {...boxHandlers(id, onSelect)}>
-      {/* ground slab marking the zone (the click target for the zone itself) */}
-      <mesh material={mats.slab} position={[0, 0.03, 0]} receiveShadow>
-        <boxGeometry args={[w + 0.8, 0.06, d + 0.8]} />
+      {/* Two physical areas: the ~5× smaller soft-goods floor FIRST (left), then
+          the large case-goods floor, separated by an aisle. Each floor is the click
+          target for the zone and is outlined in its family accent (amber CG · violet SG). */}
+      <mesh material={mats.slab} position={[0, 0.03, cgCenterZ]} receiveShadow>
+        <boxGeometry args={[w + 0.8, 0.06, cgDepth + 0.5]} />
+        <Edges color={CG_ACCENT} />
       </mesh>
-      <PitStopStructure w={w} d={d} lanes={lanes} mats={mats} />
-      {placed.map(({ of, x, z, berthW }) => (
-        <PitStopStack key={of.job_order_id} of={of} x={x} z={z} deckY={deckY}
-          slotW={berthW} laneW={laneW} categoryMat={categoryMat} mats={mats}
-          onSelectOf={onSelectOf} selected={selectedOfId === of.job_order_id} />
+      {sgLanes > 0 && (
+        <>
+          <mesh material={mats.sgFloor} position={[0, 0.03, sgCenterZ]} receiveShadow>
+            <boxGeometry args={[w + 0.8, 0.06, sgDepth + 0.5]} />
+            <Edges color={SG_ACCENT} />
+          </mesh>
+          {/* divider curb in the aisle between the two areas */}
+          <mesh material={mats.divider} position={[0, 0.06, dividerZ]}>
+            <boxGeometry args={[w + 0.6, 0.06, 0.14]} />
+          </mesh>
+        </>
+      )}
+      <PitStopStructure w={w} d={d} lanes={lanes} sgLanes={sgLanes} gap={gap} pitch={pitch} mats={mats} />
+      {/* area headers (only on the full map, where state is polled) */}
+      {state && <PitAreaLabel z={cgCenterZ} text={t('pitStop.family.caseGoods')} accent={CG_ACCENT} />}
+      {state && sgLanes > 0 && <PitAreaLabel z={sgCenterZ} text={t('pitStop.family.softGoods')} accent={SG_ACCENT} />}
+      {/* instanced plates + component slabs (one bucket per material/colour) */}
+      {[...plateBuckets.entries()].map(([key, matrices]) => (
+        <InstancedBoxes key={`p${key}-${matrices.length}`} material={plateMats.get(key)!} matrices={matrices} />
+      ))}
+      {[...slabBuckets.entries()].map(([key, matrices]) => (
+        <InstancedBoxes key={`s${key}-${matrices.length}`}
+          material={key === '\0cancelled' ? mats.cancelled : categoryMat(key || null)} matrices={matrices} />
+      ))}
+      <InstancedCones stacks={stacks.filter((s) => s.late)} />
+      {/* interaction layer — hover/click volume + chip + selection outline per OF */}
+      {stacks.map((s) => (
+        <PitStopStack key={s.of.job_order_id} s={s} deckY={deckY}
+          onSelectOf={onSelectOf} selected={selectedOfId === s.of.job_order_id} />
       ))}
       {state && <PitStopBoard x={w / 2 + 1.6} kpis={state.kpis} mats={mats} />}
       <Label y={3.2} text={name} />
@@ -1975,8 +2244,8 @@ function ConveyorOfChip({ y, role, jobNumber, queued = [], queuedTotal = 0 }: {
   );
 }
 
-const PropBlock = forwardRef<THREE.Group, { p: P3D; cx: number; cy: number; onSelect: (id: string) => void; editMode?: boolean }>(
-  function PropBlock({ p, cx, cy, onSelect, editMode = false }, ref) {
+const PropBlock = forwardRef<THREE.Group, { p: P3D; cx: number; cy: number; onSelect: SelectFn; editMode?: boolean; selected?: boolean }>(
+  function PropBlock({ p, cx, cy, onSelect, editMode = false, selected = false }, ref) {
     const w = Math.max(p.pos_w, 20) * SCALE;
     const d = Math.max(p.pos_h, 20) * SCALE;
     const h = p.height_3d ?? propHeight(p.kind);
@@ -2007,12 +2276,15 @@ const PropBlock = forwardRef<THREE.Group, { p: P3D; cx: number; cy: number; onSe
           <ConveyorOfChip y={h + 1.35 / psy} role={p.role ?? null} jobNumber={p.job_number ?? null}
             queued={p.queued_ofs ?? []} queuedTotal={p.queued_total ?? 0} />
         )}
+        {selected && <SelectionFootprint w={w} d={d} />}
       </group>
     );
   },
 );
 
-function SelectedProp({ p, cx, cy, mode, onCommit }: { p: P3D; cx: number; cy: number; mode: TMode; onCommit: PropCommit }) {
+const PropBlockMemo = memo(PropBlock);
+
+function SelectedProp({ p, cx, cy, mode, snap, onCommit }: { p: P3D; cx: number; cy: number; mode: TMode; snap: boolean; onCommit: PropCommit }) {
   const [grp, setGrp] = useState<THREE.Group | null>(null);
   const sclamp = (v: number) => Math.max(0.05, Math.round(v * 100) / 100);
   const commit = () => {
@@ -2028,14 +2300,15 @@ function SelectedProp({ p, cx, cy, mode, onCommit }: { p: P3D; cx: number; cy: n
   };
   return (
     <>
-      <PropBlock ref={setGrp} p={p} cx={cx} cy={cy} onSelect={() => {}} editMode />
+      <PropBlock ref={setGrp} p={p} cx={cx} cy={cy} onSelect={() => {}} editMode selected />
       {grp && (
         <TransformControls
           object={grp} mode={mode}
           showX={mode === 'translate' || mode === 'scale'}
           showY={mode === 'rotate' || mode === 'scale'}
           showZ={mode === 'translate' || mode === 'scale'}
-          rotationSnap={Math.PI / 4}
+          translationSnap={snap ? SNAP_TRANSLATE : null}
+          rotationSnap={snap ? SNAP_ROTATE : null}
           onMouseUp={commit}
         />
       )}
@@ -2570,8 +2843,213 @@ function MachinePipeline({ ofs, total, d, parentScale = [1, 1, 1] }: {
   );
 }
 
-const MachineBox = forwardRef<THREE.Group, { m: M3D; cx: number; cy: number; onSelect: (id: string) => void; editMode?: boolean }>(
-  function MachineBox({ m, cx, cy, onSelect, editMode = false }, ref) {
+/** Blue footprint rectangle on the floor under the selected item — lives INSIDE
+ * the item's group so it rides along live while the gizmo drags. */
+function SelectionFootprint({ w, d }: { w: number; d: number }) {
+  const pts = useMemo(() => [
+    [-w / 2, 0, -d / 2], [w / 2, 0, -d / 2], [w / 2, 0, d / 2], [-w / 2, 0, d / 2], [-w / 2, 0, -d / 2],
+  ] as [number, number, number][], [w, d]);
+  return (
+    <group position={[0, 0.05, 0]}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[w, d]} />
+        <meshBasicMaterial color="#3b82f6" transparent opacity={0.10} depthWrite={false} />
+      </mesh>
+      <Line points={pts} color="#60a5fa" lineWidth={1.5} />
+    </group>
+  );
+}
+
+/** Click-to-place: an invisible ground catcher moves a translucent ghost of the
+ * item under the cursor; a real click (not an orbit drag) places it at that map
+ * position. Snapping rounds to the same 10 px grid as the gizmo. Esc cancels
+ * (handled by the page's hotkeys — this component only reports placement). */
+function GhostPlacement({ cx, cy, spec, snap, onPlace }: {
+  cx: number; cy: number; spec: PlacementSpec; snap: boolean;
+  onPlace: (posX: number, posY: number) => void;
+}) {
+  const ghost = useRef<THREE.Group>(null);
+  const [visible, setVisible] = useState(false);
+  const w = Math.max(spec.w, 20) * SCALE;
+  const d = Math.max(spec.h, 20) * SCALE;
+  const h = spec.height;
+
+  const toMapPos = (pt: THREE.Vector3): { x: number; y: number } => {
+    let x = Math.round(pt.x / SCALE + cx - spec.w / 2);
+    let y = Math.round(pt.z / SCALE + cy - spec.h / 2);
+    if (snap) { x = Math.round(x / SNAP_PX) * SNAP_PX; y = Math.round(y / SNAP_PX) * SNAP_PX; }
+    return { x, y };
+  };
+
+  const moveGhost = (e: ThreeEvent<PointerEvent>) => {
+    if (!ghost.current) return;
+    const { x, y } = toMapPos(e.point);
+    ghost.current.position.set((x + spec.w / 2 - cx) * SCALE, 0, (y + spec.h / 2 - cy) * SCALE);
+    if (!visible) setVisible(true);
+  };
+
+  useEffect(() => {
+    document.body.style.cursor = 'crosshair';
+    return () => { document.body.style.cursor = 'default'; };
+  }, []);
+
+  return (
+    <>
+      {/* ground catcher — present only while placing, so no raycast cost otherwise */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]}
+        onPointerMove={moveGhost}
+        onClick={(e) => {
+          if (e.delta > 5) return;                    // orbit drag, not a click
+          e.stopPropagation();
+          const { x, y } = toMapPos(e.point);
+          onPlace(x, y);
+        }}
+      >
+        <planeGeometry args={[2400, 2400]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+      <group ref={ghost} visible={visible}>
+        <mesh position={[0, h / 2, 0]}>
+          <boxGeometry args={[w, h, d]} />
+          <meshStandardMaterial color="#818cf8" transparent opacity={0.35} depthWrite={false} />
+        </mesh>
+        <Edges scale={1.001} color="#a5b4fc">
+          <boxGeometry args={[w, h, d]} />
+        </Edges>
+        <SelectionFootprint w={w} d={d} />
+        <Html position={[0, h + 0.7, 0]} center zIndexRange={[45, 0]} style={{ pointerEvents: 'none' }}>
+          <div style={{
+            background: 'rgba(13,20,33,0.92)', border: '1px solid #818cf8', color: '#c7d2fe',
+            borderRadius: 8, padding: '2px 9px', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap',
+            fontFamily: 'system-ui, sans-serif',
+          }}>{spec.label}</div>
+        </Html>
+      </group>
+    </>
+  );
+}
+
+/** A zone drawn flat on the 3D floor (edit mode): tinted area + outline + name
+ * chip. Click selects it; the gizmo then moves/resizes it like any block. */
+const Zone3DBlock = forwardRef<THREE.Group, { z: Z3D; cx: number; cy: number; onSelect?: (id: string) => void; selected?: boolean }>(
+  function Zone3DBlock({ z, cx, cy, onSelect, selected = false }, ref) {
+    const w = Math.max(z.pos_w, 40) * SCALE;
+    const d = Math.max(z.pos_h, 40) * SCALE;
+    const x = ((z.pos_x + z.pos_w / 2) - cx) * SCALE;
+    const zz = ((z.pos_y + z.pos_h / 2) - cy) * SCALE;
+    const pts = useMemo(() => [
+      [-w / 2, 0, -d / 2], [w / 2, 0, -d / 2], [w / 2, 0, d / 2], [-w / 2, 0, d / 2], [-w / 2, 0, -d / 2],
+    ] as [number, number, number][], [w, d]);
+    return (
+      <group ref={ref} position={[x, 0, zz]}>
+        <mesh
+          rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.025, 0]}
+          onClick={onSelect ? (e) => { e.stopPropagation(); onSelect(z.id); } : undefined}
+          onPointerOver={onSelect ? (e) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; } : undefined}
+          onPointerOut={onSelect ? () => { document.body.style.cursor = 'default'; } : undefined}
+        >
+          <planeGeometry args={[w, d]} />
+          <meshBasicMaterial color={z.color} transparent opacity={selected ? 0.22 : 0.10} depthWrite={false} />
+        </mesh>
+        <group position={[0, 0.03, 0]}>
+          <Line points={pts} color={z.color} lineWidth={selected ? 2 : 1} dashed dashSize={0.6} gapSize={0.35} />
+        </group>
+        <Html position={[-w / 2 + 0.4, 0.1, -d / 2 + 0.4]} zIndexRange={[15, 0]} style={{ pointerEvents: 'none' }}>
+          <div style={{
+            color: z.color, background: 'rgba(13,20,33,0.75)', border: `1px solid ${z.color}55`,
+            borderRadius: 5, padding: '1px 7px', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap',
+            fontFamily: 'system-ui, sans-serif', transform: 'translate(0, -50%)',
+          }}>{z.name}</div>
+        </Html>
+      </group>
+    );
+  },
+);
+
+/** One shared translate gizmo for a Ctrl-click multi-selection: sits at the
+ * centroid, drags every member's THREE group live via the ref registry, and
+ * reports the final world-delta on release (the page persists it as ONE
+ * undoable group move). Remounted (via key) after each commit so the bases
+ * re-capture from the freshly saved positions. */
+function MultiTranslateGizmo({ items, refsMap, snap, onCommit }: {
+  items: { id: string; wx: number; wz: number }[];
+  refsMap: Map<string, THREE.Group>;
+  snap: boolean;
+  onCommit: (dxWorld: number, dzWorld: number) => void;
+}) {
+  const [pivot] = useState(() => new THREE.Group());
+  const start = useMemo(() => {
+    const cx = items.reduce((a, i) => a + i.wx, 0) / Math.max(items.length, 1);
+    const cz = items.reduce((a, i) => a + i.wz, 0) / Math.max(items.length, 1);
+    return new THREE.Vector3(cx, 0, cz);
+  }, [items]);
+  const bases = useMemo(() => {
+    const m = new Map<string, THREE.Vector3>();
+    for (const i of items) {
+      const g = refsMap.get(i.id);
+      m.set(i.id, g ? g.position.clone() : new THREE.Vector3(i.wx, 0, i.wz));
+    }
+    return m;
+  }, [items, refsMap]);
+  useEffect(() => { pivot.position.copy(start); }, [pivot, start]);
+
+  const apply = () => {
+    const dx = pivot.position.x - start.x, dz = pivot.position.z - start.z;
+    for (const i of items) {
+      const g = refsMap.get(i.id), b = bases.get(i.id);
+      if (g && b) g.position.set(b.x + dx, b.y, b.z + dz);
+    }
+  };
+  return (
+    <>
+      <primitive object={pivot} />
+      <TransformControls
+        object={pivot} mode="translate" showX showZ showY={false}
+        translationSnap={snap ? SNAP_TRANSLATE : null}
+        onObjectChange={apply}
+        onMouseUp={() => {
+          const dx = pivot.position.x - start.x, dz = pivot.position.z - start.z;
+          if (Math.abs(dx) > 1e-6 || Math.abs(dz) > 1e-6) onCommit(dx, dz);
+        }}
+      />
+    </>
+  );
+}
+
+/** Selected zone: gizmo translate moves it, scale reshapes it (committed back
+ * into pos_w/pos_h — zones have no rotation in the data model). */
+function SelectedZone({ z, cx, cy, mode, snap, onCommit }: { z: Z3D; cx: number; cy: number; mode: TMode; snap: boolean; onCommit: ZoneCommit3D }) {
+  const [grp, setGrp] = useState<THREE.Group | null>(null);
+  const commit = () => {
+    if (!grp) return;
+    const newW = Math.max(40, Math.round(z.pos_w * grp.scale.x));
+    const newH = Math.max(40, Math.round(z.pos_h * grp.scale.z));
+    onCommit(z.id, {
+      pos_x: Math.round(grp.position.x / SCALE + cx - newW / 2),
+      pos_y: Math.round(grp.position.z / SCALE + cy - newH / 2),
+      pos_w: newW,
+      pos_h: newH,
+    });
+    grp.scale.set(1, 1, 1);
+  };
+  return (
+    <>
+      <Zone3DBlock ref={setGrp} z={z} cx={cx} cy={cy} selected />
+      {grp && (
+        <TransformControls
+          object={grp} mode={mode === 'rotate' ? 'translate' : mode}
+          showX showY={false} showZ
+          translationSnap={snap ? SNAP_TRANSLATE : null}
+          onMouseUp={commit}
+        />
+      )}
+    </>
+  );
+}
+
+const MachineBox = forwardRef<THREE.Group, { m: M3D; cx: number; cy: number; onSelect: SelectFn; editMode?: boolean; selected?: boolean }>(
+  function MachineBox({ m, cx, cy, onSelect, editMode = false, selected = false }, ref) {
     const w = Math.max(m.pos_w, 40) * SCALE;
     const d = Math.max(m.pos_h, 40) * SCALE;
     const h = m.height_3d ?? heightFor(m);
@@ -2614,12 +3092,18 @@ const MachineBox = forwardRef<THREE.Group, { m: M3D; cx: number; cy: number; onS
           <MachinePipeline ofs={m.pipeline_ofs ?? []} total={m.pipeline_total ?? 0}
             d={d} parentScale={[sx, sy, sz]} />
         )}
+        {selected && <SelectionFootprint w={w} d={d} />}
       </group>
     );
   },
 );
 
-function SelectedMachine({ m, cx, cy, mode, onCommit }: { m: M3D; cx: number; cy: number; mode: TMode; onCommit: Commit }) {
+// Memoized render path: the 4 s status push rebuilds the M3D array, but each
+// machine whose object survived unchanged (same reference — see the stable
+// cache in FactoryMap) skips its whole subtree re-render.
+const MachineBoxMemo = memo(MachineBox);
+
+function SelectedMachine({ m, cx, cy, mode, snap, onCommit }: { m: M3D; cx: number; cy: number; mode: TMode; snap: boolean; onCommit: Commit }) {
   // Attach the gizmo to the actual positioned group (via `object`), not a wrapper,
   // so the gizmo sits on the block and the drag delta is read back correctly.
   const [grp, setGrp] = useState<THREE.Group | null>(null);
@@ -2637,14 +3121,15 @@ function SelectedMachine({ m, cx, cy, mode, onCommit }: { m: M3D; cx: number; cy
   };
   return (
     <>
-      <MachineBox ref={setGrp} m={m} cx={cx} cy={cy} onSelect={() => {}} editMode />
+      <MachineBox ref={setGrp} m={m} cx={cx} cy={cy} onSelect={() => {}} editMode selected />
       {grp && (
         <TransformControls
           object={grp} mode={mode}
           showX={mode === 'translate' || mode === 'scale'}
           showY={mode === 'rotate' || mode === 'scale'}
           showZ={mode === 'translate' || mode === 'scale'}
-          rotationSnap={Math.PI / 4}
+          translationSnap={snap ? SNAP_TRANSLATE : null}
+          rotationSnap={snap ? SNAP_ROTATE : null}
           onMouseUp={commit}
         />
       )}
@@ -2859,7 +3344,7 @@ const Thermometer3D = forwardRef<THREE.Group, {
   );
 });
 
-function SelectedSensor({ s, cx, cy, unit, onCommit }: { s: S3D; cx: number; cy: number; unit: TempUnit; onCommit: SensorCommit }) {
+function SelectedSensor({ s, cx, cy, unit, snap, onCommit }: { s: S3D; cx: number; cy: number; unit: TempUnit; snap: boolean; onCommit: SensorCommit }) {
   const [grp, setGrp] = useState<THREE.Group | null>(null);
   const commit = () => {
     if (!grp) return;
@@ -2872,7 +3357,8 @@ function SelectedSensor({ s, cx, cy, unit, onCommit }: { s: S3D; cx: number; cy:
     <>
       <Thermometer3D ref={setGrp} s={s} cx={cx} cy={cy} unit={unit} />
       {grp && (
-        <TransformControls object={grp} mode="translate" showX showZ showY={false} onMouseUp={commit} />
+        <TransformControls object={grp} mode="translate" showX showZ showY={false}
+          translationSnap={snap ? SNAP_TRANSLATE : null} onMouseUp={commit} />
       )}
     </>
   );
@@ -2964,10 +3450,13 @@ export default function Factory3D({ machines, floorPlanUrl, onSelect, editMode =
   props = [], onSelectProp, selectedPropId = null, onPropCommit, infoId = null, infoKpi = null, cameraPosition = [40, 45, 55], focus = null, onPoseReader,
   tvThresholds, globalLineStats = null,
   sensors = [], tempUnit = 'C', selectedSensorId = null, onSelectSensor, onSensorCommit, onNearestSensorChange,
-  machinePoints = [], pitStop = null, onSelectPitStopOf, selectedPitStopOfId = null }: {
+  machinePoints = [], pitStop = null, onSelectPitStopOf, selectedPitStopOfId = null,
+  zones = [], selectedZoneId = null, onSelectZone, onZoneCommit,
+  snap = true, placement = null, onPlace,
+  multiSelection = null, onMultiCommit }: {
   machines: M3D[];
   floorPlanUrl: string | null;
-  onSelect: (id: string) => void;
+  onSelect: SelectFn;
   tvThresholds?: TvThresholds;   // efficiency-colour thresholds for the line TVs
   globalLineStats?: LineStats | null;   // the plant's global clock (own objective)
   editMode?: boolean;
@@ -2975,7 +3464,7 @@ export default function Factory3D({ machines, floorPlanUrl, onSelect, editMode =
   mode?: TMode;
   onCommit?: Commit;
   props?: P3D[];
-  onSelectProp?: (id: string) => void;
+  onSelectProp?: SelectFn;
   selectedPropId?: string | null;
   onPropCommit?: PropCommit;
   infoId?: string | null;
@@ -2993,6 +3482,15 @@ export default function Factory3D({ machines, floorPlanUrl, onSelect, editMode =
   pitStop?: PitStopState | null;                    // polled buffer state (null = none/no data yet)
   onSelectPitStopOf?: (jobOrderId: string) => void; // click on an OF stack
   selectedPitStopOfId?: string | null;
+  zones?: Z3D[];                                    // drawn flat on the floor in edit mode
+  selectedZoneId?: string | null;
+  onSelectZone?: (id: string) => void;
+  onZoneCommit?: ZoneCommit3D;
+  snap?: boolean;                                   // grid/angle snapping for the gizmo
+  placement?: PlacementSpec | null;                 // click-to-place ghost (edit mode)
+  onPlace?: (posX: number, posY: number) => void;
+  multiSelection?: MultiSelection | null;           // Ctrl-click group (edit mode)
+  onMultiCommit?: (dxPx: number, dyPx: number) => void;   // group-drag delta in map px
 }) {
   // Freeze the scene centre once (per mount / plant) so moving a machine doesn't drift everything.
   // Centre on machines (props don't shift it); fall back to props when a plant has only props.
@@ -3009,6 +3507,33 @@ export default function Factory3D({ machines, floorPlanUrl, onSelect, editMode =
     centerRef.current = [(minX + maxX) / 2, (minY + maxY) / 2];
   }
   const [cx, cy] = centerRef.current ?? [0, 0];
+
+  // Ref registry for multi-selected groups — the shared gizmo drags them live.
+  const multiRefs = useRef(new Map<string, THREE.Group>());
+  const multiRefCbs = useRef(new Map<string, (g: THREE.Group | null) => void>());
+  const refFor = (id: string) => {
+    let cb = multiRefCbs.current.get(id);
+    if (!cb) {
+      cb = (g) => { if (g) multiRefs.current.set(id, g); else multiRefs.current.delete(id); };
+      multiRefCbs.current.set(id, cb);
+    }
+    return cb;
+  };
+  const inMultiM = (id: string) => !!multiSelection?.machines.includes(id);
+  const inMultiP = (id: string) => !!multiSelection?.props.includes(id);
+  const multiItems = useMemo(() => {
+    if (!multiSelection) return [];
+    const items: { id: string; wx: number; wz: number }[] = [];
+    for (const m of machines) {
+      if (!multiSelection.machines.includes(m.id)) continue;
+      items.push({ id: m.id, wx: ((m.pos_x + m.pos_w / 2) - cx) * SCALE, wz: ((m.pos_y + m.pos_h / 2) - cy) * SCALE });
+    }
+    for (const p of props) {
+      if (!multiSelection.props.includes(p.id)) continue;
+      items.push({ id: p.id, wx: ((p.pos_x + p.pos_w / 2) - cx) * SCALE, wz: ((p.pos_y + p.pos_h / 2) - cy) * SCALE });
+    }
+    return items;
+  }, [multiSelection, machines, props, cx, cy]);
 
   const clearSelection = () => { onSelect(''); onSelectProp?.(''); onSelectSensor?.(''); };
 
@@ -3031,16 +3556,37 @@ export default function Factory3D({ machines, floorPlanUrl, onSelect, editMode =
         </>
       )}
       {machines.map((m) => (editMode && selectedId === m.id && onCommit)
-        ? <SelectedMachine key={m.id} m={m} cx={cx} cy={cy} mode={mode} onCommit={onCommit} />
-        : <MachineBox key={m.id} m={m} cx={cx} cy={cy} onSelect={onSelect} editMode={editMode} />)}
+        ? <SelectedMachine key={m.id} m={m} cx={cx} cy={cy} mode={mode} snap={snap} onCommit={onCommit} />
+        : <MachineBoxMemo key={m.id} ref={editMode && inMultiM(m.id) ? refFor(m.id) : undefined}
+            m={m} cx={cx} cy={cy} onSelect={onSelect} editMode={editMode} selected={editMode && inMultiM(m.id)} />)}
       <GlobalLineTV machines={machines} cx={cx} cy={cy} stats={globalLineStats} />
       {props.map((p) => (editMode && selectedPropId === p.id && onPropCommit)
-        ? <SelectedProp key={p.id} p={p} cx={cx} cy={cy} mode={mode} onCommit={onPropCommit} />
-        : <PropBlock key={p.id} p={p} cx={cx} cy={cy} onSelect={onSelectProp ?? (() => {})} editMode={editMode} />)}
+        ? <SelectedProp key={p.id} p={p} cx={cx} cy={cy} mode={mode} snap={snap} onCommit={onPropCommit} />
+        : <PropBlockMemo key={p.id} ref={editMode && inMultiP(p.id) ? refFor(p.id) : undefined}
+            p={p} cx={cx} cy={cy} onSelect={onSelectProp ?? (() => {})} editMode={editMode} selected={editMode && inMultiP(p.id)} />)}
+      {/* Ctrl-click group: one translate gizmo at the centroid; keyed by the group's
+          make-up + positions so it re-bases after every commit */}
+      {editMode && multiItems.length > 1 && onMultiCommit && (
+        <MultiTranslateGizmo
+          key={multiItems.map((i) => `${i.id}:${Math.round(i.wx * 100)},${Math.round(i.wz * 100)}`).join('|')}
+          items={multiItems} refsMap={multiRefs.current} snap={snap}
+          onCommit={(dx, dz) => onMultiCommit(Math.round(dx / SCALE), Math.round(dz / SCALE))}
+        />
+      )}
+      {/* Zones — flat floor areas, editable without leaving 3D (edit mode only).
+          While placing, they go click-transparent so the ghost catcher underneath
+          receives the click (zones often cover most of the floor). */}
+      {editMode && zones.map((z) => (selectedZoneId === z.id && onZoneCommit)
+        ? <SelectedZone key={z.id} z={z} cx={cx} cy={cy} mode={mode} snap={snap} onCommit={onZoneCommit} />
+        : <Zone3DBlock key={z.id} z={z} cx={cx} cy={cy} onSelect={placement ? undefined : onSelectZone} />)}
       {/* Temperature sensors — little thermometers; drag to reposition in edit mode */}
       {sensors.map((s) => (editMode && selectedSensorId === s.id && onSensorCommit)
-        ? <SelectedSensor key={s.id} s={s} cx={cx} cy={cy} unit={tempUnit} onCommit={onSensorCommit} />
+        ? <SelectedSensor key={s.id} s={s} cx={cx} cy={cy} unit={tempUnit} snap={snap} onCommit={onSensorCommit} />
         : <Thermometer3D key={s.id} s={s} cx={cx} cy={cy} unit={tempUnit} onSelect={onSelectSensor} editMode={editMode} />)}
+      {/* Click-to-place ghost — only mounted while placing */}
+      {editMode && placement && onPlace && (
+        <GhostPlacement cx={cx} cy={cy} spec={placement} snap={snap} onPlace={onPlace} />
+      )}
       {!editMode && <NearestSensorTracker sensors={sensors} machinePoints={machinePoints} cx={cx} cy={cy} onChange={onNearestSensorChange} />}
       {/* Orbit areas — drop a cobot/conveyor inside a machine's orbit to auto-link it */}
       {editMode && machines.filter((m) => (m.asset_type ?? 'production') === 'production').map((m) => {
