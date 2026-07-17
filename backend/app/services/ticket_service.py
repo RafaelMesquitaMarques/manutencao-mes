@@ -35,6 +35,14 @@ _OPEN_TICKET_STATUSES = (TicketStatus.completed, TicketStatus.cancelled)
 _ACTIVE_INTERVENTION_STATUSES = ("waiting", "in_progress")
 
 
+def _estimated_hours_from_downtime(ticket: MaintenanceTicket) -> Optional[float]:
+    """Default labor estimate for a ticket-born WO: the ticket's estimated
+    machine downtime converted to hours. Downtime ≠ labor, so this is only a
+    fallback for when the assigner didn't type an estimate."""
+    mins = ticket.estimated_downtime_minutes
+    return round(mins / 60, 2) if mins else None
+
+
 class DuplicateTicketError(Exception):
     """An open ticket already exists for the machine and the caller did not
     explicitly confirm creating a second one (``force``). Carries the existing
@@ -392,6 +400,7 @@ class TicketService:
             description=ticket.diagnosis,
             ticket_id=ticket.id,
             source=WorkOrderSource.ticket,
+            estimated_hours=_estimated_hours_from_downtime(ticket),
         )
         self.db.add(wo)
         await self.db.flush()
@@ -410,8 +419,11 @@ class TicketService:
         ticket_id: UUID,
         technician_id: UUID,
         assigned_by_id: UUID,
+        estimated_hours: Optional[float] = None,
     ) -> tuple[MaintenanceTicket, WorkOrder]:
-        """Assign a technician to a ticket and auto-create a linked work order."""
+        """Assign a technician to a ticket and auto-create a linked work order.
+        ``estimated_hours`` overrides the WO labor estimate; when omitted it
+        defaults to the ticket's estimated downtime converted to hours."""
         ticket = await self.db.get(MaintenanceTicket, ticket_id)
         if not ticket:
             raise ValueError("Ticket not found")
@@ -479,6 +491,10 @@ class TicketService:
             ticket_id=ticket.id,
             source=WorkOrderSource.ticket,
             estimated_downtime_minutes=ticket.estimated_downtime_minutes,
+            estimated_hours=(
+                estimated_hours if estimated_hours is not None
+                else _estimated_hours_from_downtime(ticket)
+            ),
         )
         self.db.add(wo)
         await self.db.flush()

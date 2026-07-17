@@ -124,6 +124,13 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
   const [techs, setTechs]         = useState<TechnicianFull[]>([]);
   const [techId, setTechId]       = useState('');
   const [assigning, setAssigning] = useState(false);
+  // Labor estimate for the auto-created WO — pre-filled from the ticket's
+  // estimated downtime (rough proxy: downtime ≠ labor, hence editable).
+  const [estHours, setEstHours]   = useState(() =>
+    ticket.estimated_downtime_minutes
+      ? String(Math.round((ticket.estimated_downtime_minutes / 60) * 100) / 100)
+      : ''
+  );
   const [showClose, setShowClose] = useState(false);
   const [closing, setClosing]     = useState(false);
   const [commentText, setCommentText]     = useState('');
@@ -146,7 +153,8 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
     if (!techId) return;
     setAssigning(true); setErr('');
     try {
-      await assignTicket(ticket.id, techId);
+      const h = estHours.trim() === '' ? NaN : Number(estHours);
+      await assignTicket(ticket.id, techId, Number.isFinite(h) && h >= 0 ? h : undefined);
       onRefresh();
     } catch (e: unknown) {
       setErr((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Error');
@@ -233,12 +241,28 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
                 <option key={t.id} value={t.id}>{t.full_name ?? t.email}</option>
               ))}
             </select>
+            <input
+              type="number"
+              min="0"
+              step="0.25"
+              value={estHours}
+              onChange={(e) => setEstHours(e.target.value)}
+              placeholder={t('tickets.estimatedHoursShort')}
+              title={t('form.estimatedHoursLabel')}
+              aria-label={t('form.estimatedHoursLabel')}
+              className="input-field w-24 text-sm"
+            />
             <button onClick={doAssign} disabled={assigning || !techId}
               className="btn-primary px-4 py-2 text-sm flex items-center gap-1.5">
               {assigning ? <Spinner size="sm" /> : <UserCheck size={14} />}
               {assigning ? 'Creating WO…' : 'Assign + WO'}
             </button>
           </div>
+          {!!ticket.estimated_downtime_minutes && (
+            <p className="text-[11px] text-gray-600">
+              {t('tickets.estHoursDerivedHint', { min: ticket.estimated_downtime_minutes })}
+            </p>
+          )}
           {err && <p className="text-red-400 text-xs">{err}</p>}
         </div>
       )}

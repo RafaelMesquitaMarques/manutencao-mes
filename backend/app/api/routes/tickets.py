@@ -5,7 +5,7 @@ from typing import Optional
 from uuid import UUID
 from datetime import datetime, timezone
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.db.session import get_db
 from app.models.models import MaintenanceTicket, TicketComment, Machine, User, TicketStatus, WorkOrder, WorkOrderStatus, Equipment, MachineIntervention, InterventionPart, StockItem, WorkOrderTechnician, Technician
@@ -23,6 +23,9 @@ from app.core.plant_scope import ensure_same_plant, plant_scoped, require_techni
 
 class TicketAssign(BaseModel):
     technician_id: UUID
+    # Labor estimate for the auto-created WO; omitted → derived from the
+    # ticket's estimated downtime.
+    estimated_hours: Optional[float] = Field(default=None, ge=0)
 
 router = APIRouter()
 
@@ -308,7 +311,10 @@ async def assign_ticket(
     await _require_technician_in_plant(db, data.technician_id, ticket.plant_id)
     svc = TicketService(db)
     try:
-        ticket, wo = await svc.assign_ticket(ticket_id, data.technician_id, current_user.id)
+        ticket, wo = await svc.assign_ticket(
+            ticket_id, data.technician_id, current_user.id,
+            estimated_hours=data.estimated_hours,
+        )
         ticket_out = await _enrich(ticket, db, with_comments=False)
         wo_out = await _enrich_wo_simple(wo, db)
         return {"ticket": ticket_out, "work_order": wo_out}

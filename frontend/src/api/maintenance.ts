@@ -144,11 +144,15 @@ export const generateWorkOrder = async (
 
 export const assignTicket = async (
   ticketId: string,
-  technicianId: string
+  technicianId: string,
+  estimatedHours?: number
 ): Promise<{ ticket: MaintenanceTicket; work_order: WorkOrder }> => {
   const { data } = await api.patch<{ ticket: MaintenanceTicket; work_order: WorkOrder }>(
     `/api/tickets/${ticketId}/assign`,
-    { technician_id: technicianId }
+    {
+      technician_id: technicianId,
+      ...(estimatedHours != null ? { estimated_hours: estimatedHours } : {}),
+    }
   );
   return data;
 };

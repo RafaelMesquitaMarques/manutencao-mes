@@ -59,8 +59,16 @@ function TicketRow({ ticket, techs, onRefresh }: {
   onRefresh: () => void;
 }) {
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const [showAssign, setShowAssign] = useState(false);
   const [techId, setTechId] = useState('');
+  // Labor estimate for the auto-created WO — pre-filled from the ticket's
+  // estimated downtime (rough proxy: downtime ≠ labor, hence editable).
+  const [estHours, setEstHours] = useState(() =>
+    ticket.estimated_downtime_minutes
+      ? String(Math.round((ticket.estimated_downtime_minutes / 60) * 100) / 100)
+      : ''
+  );
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -69,7 +77,8 @@ function TicketRow({ ticket, techs, onRefresh }: {
     setBusy(true);
     setErr('');
     try {
-      await assignTicket(ticket.id, techId);
+      const h = estHours.trim() === '' ? NaN : Number(estHours);
+      await assignTicket(ticket.id, techId, Number.isFinite(h) && h >= 0 ? h : undefined);
       setShowAssign(false);
       onRefresh();
     } catch (e: unknown) {
@@ -145,6 +154,17 @@ function TicketRow({ ticket, techs, onRefresh }: {
               <option key={t.id} value={t.id}>{t.full_name ?? t.email}</option>
             ))}
           </select>
+          <input
+            type="number"
+            min="0"
+            step="0.25"
+            value={estHours}
+            onChange={(e) => setEstHours(e.target.value)}
+            placeholder={t('tickets.estimatedHoursShort')}
+            title={t('form.estimatedHoursLabel')}
+            aria-label={t('form.estimatedHoursLabel')}
+            className="input-field w-16 text-xs py-1"
+          />
           <button
             onClick={doAssign}
             disabled={busy || !techId}
