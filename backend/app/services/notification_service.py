@@ -362,19 +362,22 @@ class NotificationService:
 
     # ── Recipient resolution ─────────────────────────────────────────────────
 
-    async def _local_now_minutes(self, machine: Optional[Machine]) -> int:
-        """Minutes since midnight in the plant's timezone (falls back to the
-        default when the machine has no plant or the tz name is invalid)."""
+    async def _plant_tz(self, machine: Optional[Machine]) -> ZoneInfo:
+        """The plant's timezone (falls back to the default when the machine has
+        no plant or the tz name is invalid)."""
         tz_name = None
         if machine is not None and machine.plant_id:
             tz_name = (await self.db.execute(
                 select(Plant.timezone).where(Plant.id == machine.plant_id)
             )).scalar_one_or_none()
         try:
-            tz = ZoneInfo(tz_name or DEFAULT_TZ)
+            return ZoneInfo(tz_name or DEFAULT_TZ)
         except Exception:
-            tz = ZoneInfo(DEFAULT_TZ)
-        now = datetime.now(tz)
+            return ZoneInfo(DEFAULT_TZ)
+
+    async def _local_now_minutes(self, machine: Optional[Machine]) -> int:
+        """Minutes since midnight in the plant's timezone."""
+        now = datetime.now(await self._plant_tz(machine))
         return now.hour * 60 + now.minute
 
     @staticmethod
@@ -509,14 +512,18 @@ class NotificationService:
         if not recipients:
             logger.warning("[ESCALATION] No recipients for level %s", level)
             return
-        tag = "Reminder" if reminder else "Escalation"
-        subject = f"[MES] {tag} L{level}: {alert.alert_number}"
+        tag = "Rappel" if reminder else "Escalade"
+        subject = f"[MES] {tag} N{level}: {alert.alert_number}"
+        opened_local = "—"
+        if alert.created_at:
+            tz = await self._plant_tz(machine)
+            opened_local = alert.created_at.astimezone(tz).strftime("%Y-%m-%d %H:%M")
         body = (
-            f"{tag} Level {level}\n"
-            f"Alert: {alert.alert_number}\n"
-            f"Priority: {alert.priority}\n"
-            f"Problem: {alert.description or 'N/A'}\n"
-            f"Open since: {alert.created_at.isoformat()}"
+            f"Alerte: {alert.alert_number}\n"
+            f"Machine: {machine.name if machine else '—'}\n"
+            f"Priorité: {_priority_str(alert.priority)}\n"
+            f"Problème: {alert.description or '—'}\n"
+            f"Ouvert depuis: {opened_local}"
         )
         sms_text = render_sms_template(
             esc, "escalation_reminder" if reminder else "escalation",
@@ -551,8 +558,12 @@ class NotificationService:
         if not recipients:
             return
         where = f" — {machine_name}" if machine_name else ""
-        subject = f"[MES] CRITICAL: {ref_number}{where}"
-        body = f"Critical alert {ref_number}{where}\n{description or ''}"
+        subject = f"[MES] CRITIQUE: {ref_number}{where}"
+        body = (
+            f"Alerte CRITIQUE: {ref_number}\n"
+            f"Machine: {machine_name or '—'}\n"
+            f"{description or ''}"
+        )
         sms_text = render_sms_template(
             esc, "critical_alert",
             number=ref_number, machine=machine_name or "—",
@@ -728,7 +739,7 @@ class NotificationService:
         body = (
             f"Ticket: {ticket.ticket_number}\n"
             f"Machine: {where}\n"
-            f"Priority: {ticket.priority}\n"
+            f"Priorité: {_priority_str(ticket.priority)}\n"
             f"{ticket.description or ''}"
         )
         sms_text = render_sms_template(
@@ -780,11 +791,11 @@ class NotificationService:
         esc = await get_escalation_settings(self.db, getattr(ticket, "plant_id", None))
         if not esc.notify_on_ticket_assigned:
             return
-        subject = f"[MES] Ticket {ticket.ticket_number} assigned to you"
+        subject = f"[MES] Ticket {ticket.ticket_number} assigné"
         body = (
             f"Ticket: {ticket.ticket_number}\n"
             f"Machine: {machine_name}\n"
-            f"Priority: {ticket.priority}\n"
+            f"Priorité: {_priority_str(ticket.priority)}\n"
             f"{ticket.description or ''}"
         )
         sms_text = render_sms_template(
