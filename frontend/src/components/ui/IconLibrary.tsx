@@ -3,8 +3,23 @@ import {
   Clock, Wrench, AlertTriangle, UserX, CheckCircle, Package,
   Monitor, Eye, User, FlaskConical, Truck, Flame, Zap, Settings,
   Link2, Brush, XCircle, HardHat, Search, AlertOctagon, Plus,
-  Check, ChevronDown, BarChart3, Gauge, Bell, type LucideIcon,
+  Check, ChevronDown, BarChart3, Gauge, Bell,
+  Wind, Droplets, Cpu, SlidersHorizontal, Sparkles, HelpCircle,
+  Cog, Activity, Hammer, Scissors, Layers,
+  type LucideIcon,
 } from 'lucide-react';
+
+// Intervention-type icons: the DB stores a lucide component NAME chosen from
+// this set. Keep it a NAMED-import map — a namespace import (`import * as`)
+// defeats tree-shaking and drags the whole lucide-react package (~670 kB
+// minified) into the bundle, which is exactly what this map replaced.
+export const INTERVENTION_ICON_MAP: Record<string, LucideIcon> = {
+  Wrench, Zap, Wind, Droplets, Cpu, Gauge,
+  SlidersHorizontal, Sparkles, HelpCircle, Settings,
+  AlertTriangle, Cog, Activity, Hammer, Scissors,
+  Package, Layers, Flame,
+};
+export const INTERVENTION_ICONS = Object.keys(INTERVENTION_ICON_MAP);
 
 export const ICON_MAP: Record<string, LucideIcon> = {
   clock24: Clock,

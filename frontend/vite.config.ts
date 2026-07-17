@@ -26,4 +26,23 @@ export default defineConfig({
     // ws: true so the live-update WebSocket (/api/live/ws) also proxies in dev.
     proxy: { '/api': { target: 'http://localhost:8000', ws: true } },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Stable, individually-cacheable vendor chunks. Pages are lazy-loaded
+        // (React.lazy in App.tsx), so a heavy vendor only downloads when a page
+        // that uses it is first visited.
+        manualChunks(id: string) {
+          if (!id.includes('node_modules')) return undefined;
+          if (/[\\/]node_modules[\\/](three|@react-three)[\\/]/.test(id)) return 'vendor-three';
+          if (/[\\/]node_modules[\\/](echarts|zrender|echarts-for-react)[\\/]/.test(id)) return 'vendor-echarts';
+          if (/[\\/]node_modules[\\/]recharts.*[\\/]/.test(id) || /[\\/]node_modules[\\/](d3-|victory-)/.test(id)) return 'vendor-recharts';
+          if (/[\\/]node_modules[\\/]ag-grid/.test(id)) return 'vendor-aggrid';
+          if (/[\\/]node_modules[\\/]@fullcalendar[\\/]/.test(id)) return 'vendor-fullcalendar';
+          if (/[\\/]node_modules[\\/]@xyflow[\\/]/.test(id)) return 'vendor-xyflow';
+          return undefined;
+        },
+      },
+    },
+  },
 })

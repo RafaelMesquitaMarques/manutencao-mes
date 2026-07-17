@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Header from './Header';
@@ -54,7 +54,15 @@ const Layout = () => {
             board views) manage their own padding; everything else gets the standard
             page padding here. Narrow forms self-constrain via their own max-w. */}
         <main className={`flex-1 overflow-y-auto ${fullBleed ? '' : 'p-4 md:p-6'}`}>
-          <Outlet />
+          {/* Pages are lazy chunks (App.tsx): this inner Suspense keeps the
+              sidebar/header in place while a page chunk downloads. */}
+          <Suspense fallback={
+            <div className="h-full min-h-[40vh] flex items-center justify-center">
+              <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+          }>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
 import { usePlantStore } from './store/plantStore';
@@ -6,64 +6,77 @@ import { fetchMyPermissions, fetchMyPlants, getMe } from './api/auth';
 import ProtectedRoute from './pages/ProtectedRoute';
 import RequireView from './pages/RequireView';
 import Layout from './components/Layout/Layout';
-import Login from './pages/Login';
-import HomePage from './pages/Home/HomePage';
-import Dashboard from './pages/Dashboard';
-import WorkOrderList from './pages/WorkOrders/WorkOrderList';
-import WorkOrderDetail from './pages/WorkOrders/WorkOrderDetail';
-import NewWorkOrder from './pages/WorkOrders/NewWorkOrder';
-import TechnicianList from './pages/Technicians/TechnicianList';
-import NewTechnician from './pages/Technicians/NewTechnician';
-import TechnicianDetail from './pages/Technicians/TechnicianDetail';
-import KPIDashboard from './pages/KPIs/KPIDashboard';
-import MachineReport from './pages/KPIs/MachineReport';
-import CostsDashboard from './pages/Costs/CostsDashboard';
-import JobOrderList from './pages/JobOrders/JobOrderList';
-import JobOrderDetail from './pages/JobOrders/JobOrderDetail';
-import GestionBT from './pages/GestionBT/GestionBT';
-import IntelligenceDashboard from './pages/Intelligence/IntelligenceDashboard';
-import EquipmentList from './pages/Equipment/EquipmentList';
-import EquipmentDetail from './pages/Equipment/EquipmentDetail';
-import NewEquipment from './pages/Equipment/NewEquipment';
-import PMCalendar from './pages/PMCalendar/PMCalendar';
-import PlanList from './pages/MaintenancePlans/PlanList';
-import NewPlan from './pages/MaintenancePlans/NewPlan';
-import PlanDetail from './pages/MaintenancePlans/PlanDetail';
-import LaborScheduler from './pages/Schedule/LaborScheduler';
-import NewAlert from './pages/Alerts/NewAlert';
-import AlertDetail from './pages/Alerts/AlertDetail';
-import TicketList from './pages/Tickets/TicketList';
-import TicketDetail from './pages/Tickets/TicketDetail';
-import NewTicket from './pages/Tickets/NewTicket';
-import InventoryList    from './pages/Inventory/InventoryList';
-import InventoryDetail  from './pages/Inventory/InventoryDetail';
-import NewInventoryItem from './pages/Inventory/NewInventoryItem';
-import SupplierList     from './pages/Suppliers/SupplierList';
-import SupplierDetail   from './pages/Suppliers/SupplierDetail';
-import NewSupplier      from './pages/Suppliers/NewSupplier';
-import PurchaseOrderList from './pages/PurchaseOrders/PurchaseOrderList';
-import NewPurchaseOrder  from './pages/PurchaseOrders/NewPurchaseOrder';
-import MaintenanceDashboard from './pages/MaintenanceDashboard/MaintenanceDashboard';
-import MachinePage from './pages/Machines/MachinePage';
-import FactoryMap from './pages/FactoryMap/FactoryMap';
-import DashboardList from './pages/Dashboards/DashboardList';
-import DashboardPage from './pages/Dashboards/DashboardPage';
-import MyWorkPage from './pages/MyWork/MyWorkPage';
-import UsersSetup from './pages/Settings/UsersSetup';
-import EscalationSettingsPage from './pages/Settings/EscalationSettings';
-import FactoryCalendarPage from './pages/Settings/FactoryCalendar';
-import DeviceSettingsPage from './pages/Settings/DeviceSettings';
-import LineObjectivesPage from './pages/Settings/LineObjectives';
-import DepartmentSettings from './pages/Settings/Departments';
-import ShiftSettings from './pages/Settings/ShiftSettings';
-import UserDetail from './pages/Settings/UserDetail';
-import MyProfile from './pages/Settings/MyProfile';
-import ChangePassword from './pages/Settings/ChangePassword';
-import ForcedChangePassword from './pages/Settings/ForcedChangePassword';
-import AcceptInvite from './pages/AcceptInvite';
-import ForgotPassword from './pages/ForgotPassword';
-import ResetPassword from './pages/ResetPassword';
-import WOApproval from './pages/Supervisor/WOApproval';
+
+// Every page is lazy-loaded: the initial bundle stays small and heavy vendors
+// (three.js, echarts, ag-grid, fullcalendar…) download only when a page that
+// uses them is first visited (see manualChunks in vite.config.ts).
+const Login = lazy(() => import('./pages/Login'));
+const HomePage = lazy(() => import('./pages/Home/HomePage'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const WorkOrderList = lazy(() => import('./pages/WorkOrders/WorkOrderList'));
+const WorkOrderDetail = lazy(() => import('./pages/WorkOrders/WorkOrderDetail'));
+const NewWorkOrder = lazy(() => import('./pages/WorkOrders/NewWorkOrder'));
+const TechnicianList = lazy(() => import('./pages/Technicians/TechnicianList'));
+const NewTechnician = lazy(() => import('./pages/Technicians/NewTechnician'));
+const TechnicianDetail = lazy(() => import('./pages/Technicians/TechnicianDetail'));
+const KPIDashboard = lazy(() => import('./pages/KPIs/KPIDashboard'));
+const MachineReport = lazy(() => import('./pages/KPIs/MachineReport'));
+const CostsDashboard = lazy(() => import('./pages/Costs/CostsDashboard'));
+const JobOrderList = lazy(() => import('./pages/JobOrders/JobOrderList'));
+const JobOrderDetail = lazy(() => import('./pages/JobOrders/JobOrderDetail'));
+const GestionBT = lazy(() => import('./pages/GestionBT/GestionBT'));
+const IntelligenceDashboard = lazy(() => import('./pages/Intelligence/IntelligenceDashboard'));
+const EquipmentList = lazy(() => import('./pages/Equipment/EquipmentList'));
+const EquipmentDetail = lazy(() => import('./pages/Equipment/EquipmentDetail'));
+const NewEquipment = lazy(() => import('./pages/Equipment/NewEquipment'));
+const PMCalendar = lazy(() => import('./pages/PMCalendar/PMCalendar'));
+const PlanList = lazy(() => import('./pages/MaintenancePlans/PlanList'));
+const NewPlan = lazy(() => import('./pages/MaintenancePlans/NewPlan'));
+const PlanDetail = lazy(() => import('./pages/MaintenancePlans/PlanDetail'));
+const LaborScheduler = lazy(() => import('./pages/Schedule/LaborScheduler'));
+const NewAlert = lazy(() => import('./pages/Alerts/NewAlert'));
+const AlertDetail = lazy(() => import('./pages/Alerts/AlertDetail'));
+const TicketList = lazy(() => import('./pages/Tickets/TicketList'));
+const TicketDetail = lazy(() => import('./pages/Tickets/TicketDetail'));
+const NewTicket = lazy(() => import('./pages/Tickets/NewTicket'));
+const InventoryList = lazy(() => import('./pages/Inventory/InventoryList'));
+const InventoryDetail = lazy(() => import('./pages/Inventory/InventoryDetail'));
+const NewInventoryItem = lazy(() => import('./pages/Inventory/NewInventoryItem'));
+const SupplierList = lazy(() => import('./pages/Suppliers/SupplierList'));
+const SupplierDetail = lazy(() => import('./pages/Suppliers/SupplierDetail'));
+const NewSupplier = lazy(() => import('./pages/Suppliers/NewSupplier'));
+const PurchaseOrderList = lazy(() => import('./pages/PurchaseOrders/PurchaseOrderList'));
+const NewPurchaseOrder = lazy(() => import('./pages/PurchaseOrders/NewPurchaseOrder'));
+const MaintenanceDashboard = lazy(() => import('./pages/MaintenanceDashboard/MaintenanceDashboard'));
+const MachinePage = lazy(() => import('./pages/Machines/MachinePage'));
+const FactoryMap = lazy(() => import('./pages/FactoryMap/FactoryMap'));
+const DashboardList = lazy(() => import('./pages/Dashboards/DashboardList'));
+const DashboardPage = lazy(() => import('./pages/Dashboards/DashboardPage'));
+const MyWorkPage = lazy(() => import('./pages/MyWork/MyWorkPage'));
+const UsersSetup = lazy(() => import('./pages/Settings/UsersSetup'));
+const EscalationSettingsPage = lazy(() => import('./pages/Settings/EscalationSettings'));
+const FactoryCalendarPage = lazy(() => import('./pages/Settings/FactoryCalendar'));
+const DeviceSettingsPage = lazy(() => import('./pages/Settings/DeviceSettings'));
+const LineObjectivesPage = lazy(() => import('./pages/Settings/LineObjectives'));
+const DepartmentSettings = lazy(() => import('./pages/Settings/Departments'));
+const ShiftSettings = lazy(() => import('./pages/Settings/ShiftSettings'));
+const UserDetail = lazy(() => import('./pages/Settings/UserDetail'));
+const MyProfile = lazy(() => import('./pages/Settings/MyProfile'));
+const ChangePassword = lazy(() => import('./pages/Settings/ChangePassword'));
+const ForcedChangePassword = lazy(() => import('./pages/Settings/ForcedChangePassword'));
+const AcceptInvite = lazy(() => import('./pages/AcceptInvite'));
+const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
+const ResetPassword = lazy(() => import('./pages/ResetPassword'));
+const WOApproval = lazy(() => import('./pages/Supervisor/WOApproval'));
+
+// Route-level loading state while a lazy page chunk downloads.
+function PageFallback() {
+  return (
+    <div className="h-full min-h-[40vh] flex items-center justify-center">
+      <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+    </div>
+  );
+}
 
 // Old standalone intervention URL → unified kiosk (machine ref resolves by id or slug).
 function MachineIdRedirect() {
@@ -100,6 +113,7 @@ const App = () => {
 
   return (
   <BrowserRouter>
+    <Suspense fallback={<PageFallback />}>
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route
@@ -193,6 +207,7 @@ const App = () => {
       </Route>
       <Route path="*" element={<Navigate to="/home" replace />} />
     </Routes>
+    </Suspense>
   </BrowserRouter>
   );
 };

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Clock, Wrench, CheckCircle, Loader2, Mic, MicOff, Shield, Package, X, Plus, Trash2, Search, Users, UserPlus } from 'lucide-react';
-import * as LucideIcons from 'lucide-react';
+import { INTERVENTION_ICON_MAP } from '../../components/ui/IconLibrary';
 import {
   fetchMachineOperatorState,
   fetchInterventionTypes,
@@ -976,8 +976,7 @@ export function MaintenancePanel({ machineId, embedded = false }: { machineId: s
 }
 
 function DynamicIcon({ name, size = 28 }: { name: string; size?: number }) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const Icon = (LucideIcons as Record<string, any>)[name];
+  const Icon = INTERVENTION_ICON_MAP[name];
   if (Icon) return <Icon size={size} />;
   return <span style={{ fontSize: Math.floor(size * 0.6) }}>{name ? name[0] : '?'}</span>;
 }
