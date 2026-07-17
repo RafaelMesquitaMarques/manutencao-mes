@@ -19,7 +19,7 @@ from app.api.routes import (
     suppliers as suppliers_module, reports, escalation, factory_map, costs,
     departments as departments_module,
     factory_calendar, adam_devices, cortex_stations, shift_templates,
-    temperature_sensors, pit_stop,
+    temperature_sensors, pit_stop, sushi, sushi_devices,
 )
 from app.api.routes.machine_operator import router as machine_operator_router
 from app.api.routes.intervention_type_settings import router as intervention_types_router
@@ -1640,6 +1640,9 @@ app.include_router(factory_calendar.router,       prefix="/api/calendar",      t
 app.include_router(adam_devices.router,           prefix="/api/adam-devices",  tags=["ADAM Devices"],         dependencies=[Depends(resource_guard("settings_devices"))])
 app.include_router(cortex_stations.router,        prefix="/api/cortex-stations", tags=["Cortex Stations"],    dependencies=[Depends(resource_guard("settings_devices"))])
 app.include_router(temperature_sensors.router,    prefix="/api/temperature-sensors", tags=["Temperature Sensors"], dependencies=[Depends(resource_guard("settings_devices"))])
+app.include_router(sushi_devices.router,          prefix="/api/sushi-devices", tags=["Sushi Devices"],         dependencies=[Depends(resource_guard("settings_devices"))])
+app.include_router(sushi.condition_router,        prefix="/api/sushi",         tags=["Sushi Condition"],       dependencies=[Depends(resource_guard("equipment"))])
+app.include_router(sushi.ingest_router,           prefix="/api/sushi",         tags=["Sushi Ingest"])  # network-server webhook — X-Ingest-Token, no JWT
 app.include_router(reports.router,                prefix="/api/reports",       tags=["Reports"])
 app.include_router(escalation.router,             prefix="/api/escalation",    tags=["Escalation"])
 app.include_router(technicians.router,            prefix="/api/technicians",   tags=["Technicians"],          dependencies=[Depends(resource_guard("technicians"))])

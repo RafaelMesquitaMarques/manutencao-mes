@@ -5,7 +5,7 @@ Structured for multi-plant support from the ground up.
 import uuid
 from datetime import datetime
 from sqlalchemy import (
-    Column, String, Integer, Float, Boolean, DateTime, Date,
+    Column, String, Integer, BigInteger, Float, Boolean, DateTime, Date,
     ForeignKey, Text, Enum as SAEnum, JSON, UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -1294,6 +1294,74 @@ class TemperatureSensor(Base):
     updated_at      = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     plant           = relationship("Plant")
+
+
+class SushiSensorModel(str, enum.Enum):
+    xs770a = "xs770a"   # wireless vibration sensor (vibration + surface temperature, integrated)
+    xs530  = "xs530"    # XS110A wireless comm module + XS530 pressure measurement module
+    xs550  = "xs550"    # XS110A wireless comm module + XS550 temperature measurement module
+
+
+class SushiDevice(Base):
+    """A Yokogawa Sushi Sensor — battery-powered LoRaWAN condition-monitoring
+    device bound to a piece of `equipment` (NOT `machines`: readings feed the
+    asset-health side, like the legacy MQTT sensors).
+
+    Data path: sensor →(LoRaWAN)→ gateway → network server (ChirpStack / TTN /
+    embedded NS) →(HTTP integration)→ POST /api/sushi/uplink, authenticated by
+    the deployment-wide SUSHI_INGEST_TOKEN (X-Ingest-Token header). The row is
+    matched by `dev_eui`; unknown EUIs are rejected (fail closed — register the
+    device here first). Decoded measurements land as `Sensor`/`SensorReading`
+    rows (codes SUSHI-{EUI}-{VEL|ACC|TEMP|PRESS}[-axis]) so they ride the
+    existing hypertable; threshold crossings write `Alert` rows.
+
+    Health fields (battery/RSSI/diag/…) are written by the ingest path from the
+    sensor's own HRI (0x40) / DIAG (0x41) frames and radio metadata. Thresholds
+    are evaluated backend-side on every measurement uplink; NULL disables a
+    threshold. Payload contract: docs/sushi-sensor-contract.md."""
+    __tablename__ = "sushi_devices"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id      = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True, index=True)  # backfilled from equipment
+    name          = Column(String(200), nullable=False)
+    # LoRaWAN DevEUI (EUI-64), stored as 16 uppercase hex chars, no separators.
+    dev_eui       = Column(String(16), nullable=False, unique=True, index=True)
+    model         = Column(SAEnum(SushiSensorModel, native_enum=False), default=SushiSensorModel.xs770a)
+    equipment_id  = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True)
+    enabled       = Column(Boolean, default=True)
+    # The sensor's configured update period (set via the Sushi Sensor NFC app).
+    # Drives staleness: no uplink for >2.5 periods → stale, >6 → offline.
+    update_period_min = Column(Integer, default=60)
+    # Alarm thresholds (NULL = not evaluated). Vibration defaults follow the
+    # ISO 10816-3 group-2 flexible-support zone boundaries (B→C 4.5, C→D 7.1 mm/s).
+    vel_warn_mms  = Column(Float, nullable=True, default=4.5)   # velocity RMS warning (mm/s)
+    vel_crit_mms  = Column(Float, nullable=True, default=7.1)   # velocity RMS critical (mm/s)
+    acc_warn_ms2  = Column(Float, nullable=True)                # acceleration peak warning (m/s²)
+    acc_crit_ms2  = Column(Float, nullable=True)                # acceleration peak critical (m/s²)
+    temp_warn_c   = Column(Float, nullable=True)                # surface temperature warning (°C)
+    temp_crit_c   = Column(Float, nullable=True)                # surface temperature critical (°C)
+    press_min_mpa = Column(Float, nullable=True)                # pressure low bound (MPa)
+    press_max_mpa = Column(Float, nullable=True)                # pressure high bound (MPa)
+    # Health — written by the ingest path.
+    last_uplink_at  = Column(DateTime(timezone=True), nullable=True)
+    last_data_type  = Column(String(4), nullable=True)          # last frame type, e.g. "0x11"
+    battery_pct     = Column(Float, nullable=True)              # from HRI (device-estimated)
+    rssi_dbm        = Column(Float, nullable=True)              # radio metadata (gateway side) or HRI
+    snr_db          = Column(Float, nullable=True)
+    per_pct         = Column(Float, nullable=True)              # packet error rate, from HRI
+    uptime_min      = Column(Integer, nullable=True)            # from HRI
+    diag_status     = Column(BigInteger, nullable=True)         # NAMUR NE107 word (0x41), UINT32
+    diag_detail     = Column(BigInteger, nullable=True)
+    tag_name        = Column(String(20), nullable=True)         # device tag from INI frame (0x42)
+    dev_type        = Column(Integer, nullable=True)            # 0x47: 2=vibration, 3=temp module, 5=pressure module
+    dev_rev         = Column(Integer, nullable=True)
+    latitude        = Column(Float, nullable=True)              # GPS frames (0x43–0x45)
+    longitude       = Column(Float, nullable=True)
+    last_error      = Column(String(500), nullable=True)
+    created_at      = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at      = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    equipment       = relationship("Equipment")
 
 
 class LineTvSettings(Base):

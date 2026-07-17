@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft, Cpu, MapPin, Clock, Gauge, AlertCircle, Calendar,
@@ -9,7 +9,6 @@ import {
   Sparkles,
   type LucideIcon,
 } from 'lucide-react';
-import * as LucideIcons from 'lucide-react';
 import { fetchEquipmentById, fetchWorkOrders, fetchEquipment } from '../../api/workOrders';
 import { fetchMaintenancePlans } from '../../api/maintenancePlans';
 import {
@@ -27,6 +26,9 @@ import {
 } from '../../api/machines';
 import api from '../../api/axios';
 import { fetchDepartments } from '../../api/departments';
+import { fetchEquipmentCondition, type SushiCondition, type SushiSeries } from '../../api/sushi';
+import SushiIcon from '../../components/ui/SushiIcon';
+import ReactECharts from 'echarts-for-react';
 import { uploadFile } from '../../api/uploads';
 import { saveMachineLayout } from '../../api/factoryMap';
 import type {
@@ -37,7 +39,7 @@ import type {
   InterventionType,
 } from '../../types';
 import { format } from 'date-fns';
-import { IconRenderer, IconPicker } from '../../components/ui/IconLibrary';
+import { IconRenderer, IconPicker, INTERVENTION_ICON_MAP, INTERVENTION_ICONS } from '../../components/ui/IconLibrary';
 import PmStepsEditor from '../../components/pm/PmStepsEditor';
 import { humanHours } from '../../utils/duration';
 
@@ -67,7 +69,7 @@ const PRIORITY_COLORS: Record<string, string> = {
 
 // ─── Main tab types ──────────────────────────────────────────────────────────────
 
-type TabId = 'overview' | 'workorders' | 'plans' | 'configuration' | 'history';
+type TabId = 'overview' | 'workorders' | 'plans' | 'configuration' | 'history' | 'condition';
 
 // ─── Config sub-tab types ────────────────────────────────────────────────────────
 
@@ -889,16 +891,12 @@ function ParametersTab({ form, set, shiftsConfig }: {
 
 // ─── Intervention Types config tab ───────────────────────────────────────────────
 
-const IT_ICONS = [
-  'Wrench', 'Zap', 'Wind', 'Droplets', 'Cpu', 'Gauge',
-  'SlidersHorizontal', 'Sparkles', 'HelpCircle', 'Settings',
-  'AlertTriangle', 'Cog', 'Activity', 'Hammer', 'Scissors',
-  'Package', 'Layers', 'Flame',
-];
+// Picker choices + name→component map live in IconLibrary (named imports only —
+// a `import * as lucide` here used to pull the whole icon package into the bundle).
+const IT_ICONS = INTERVENTION_ICONS;
 
 function ITDynamicIcon({ name, size = 16 }: { name: string; size?: number }) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const Icon = (LucideIcons as Record<string, any>)[name];
+  const Icon = INTERVENTION_ICON_MAP[name];
   if (Icon) return <Icon size={size} />;
   return <span style={{ fontSize: Math.floor(size * 0.6) }}>{name ? name[0] : '?'}</span>;
 }
@@ -2077,12 +2075,430 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
   );
 }
 
+// ─── Condition monitoring (Yokogawa Sushi Sensors) ─────────────────────────────────
+
+const SUSHI_HEALTH_DOT: Record<string, string> = {
+  online: 'text-green-400', stale: 'text-amber-400',
+  offline: 'text-red-400', unknown: 'text-gray-500',
+};
+
+const METRIC_ORDER = ['vel', 'acc', 'temp', 'press'] as const;
+
+// Chart palette — validated for the app's dark surface (#0d1421) with the
+// dataviz six-checks script. Entity colors are fixed per axis (never cycled);
+// status colors are reserved for threshold state and never used as a series.
+const CHART = {
+  base: '#3987e5',
+  axis: { XYZ: '#3987e5', X: '#199e70', Y: '#c98500', Z: '#008300' } as Record<string, string>,
+  warn: '#fab219',
+  crit: '#d03b3b',
+  ink: '#8b94a7',
+  grid: 'rgba(148, 163, 184, 0.08)',
+};
+
+// Mini arc gauge for the chart-card readout: 180° track split into the alarm
+// zones (ok/warn/crit at low opacity), a full-color progress arc up to the
+// current value, and a dot marking it. Pure SVG — no chart runtime involved.
+function ConditionGauge({ value, warn, crit, low }: {
+  value: number;
+  warn?: number | null;
+  crit?: number | null;
+  low?: number | null;
+}) {
+  const W = 64, H = 38, CX = 32, CY = 34, R = 26, SW = 6;
+  const scale = crit != null ? crit * 1.25
+    : warn != null ? warn * 1.5
+    : Math.max(value * 1.4, 1);
+  const frac = Math.min(1, Math.max(0.005, value / scale));
+
+  const pt = (f: number) => {
+    const a = Math.PI * (1 - f);               // 0 → left, 1 → right
+    return { x: CX + R * Math.cos(a), y: CY - R * Math.sin(a) };
+  };
+  const arc = (f0: number, f1: number) => {
+    const p0 = pt(f0), p1 = pt(f1);
+    return `M ${p0.x.toFixed(2)} ${p0.y.toFixed(2)} A ${R} ${R} 0 0 1 ${p1.x.toFixed(2)} ${p1.y.toFixed(2)}`;
+  };
+
+  // Zone segments on the track (fractions of the scale).
+  const zones: { f0: number; f1: number; color: string }[] = [];
+  const wF = warn != null ? Math.min(1, warn / scale) : null;
+  const cF = crit != null ? Math.min(1, crit / scale) : null;
+  const lF = low != null ? Math.min(1, low / scale) : null;
+  if (lF != null) zones.push({ f0: 0, f1: lF, color: CHART.warn });
+  zones.push({ f0: lF ?? 0, f1: wF ?? cF ?? 1, color: CHART.base });
+  if (wF != null) zones.push({ f0: wF, f1: cF ?? 1, color: CHART.warn });
+  if (cF != null) zones.push({ f0: cF, f1: 1, color: CHART.crit });
+
+  const zoneColor = (f: number) =>
+    (cF != null && f >= cF) ? CHART.crit
+    : (wF != null && f >= wF) ? CHART.warn
+    : (lF != null && f <= lF) ? CHART.warn
+    : CHART.base;
+  const color = zoneColor(frac);
+  const dot = pt(frac);
+
+  return (
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-hidden="true" className="shrink-0">
+      {zones.filter((z) => z.f1 - z.f0 > 0.001).map((z, i) => (
+        <path key={i} d={arc(z.f0, z.f1)} stroke={z.color} strokeOpacity={0.22}
+          strokeWidth={SW} fill="none" strokeLinecap="round" />
+      ))}
+      <path d={arc(0, frac)} stroke={color} strokeWidth={SW} fill="none" strokeLinecap="round" />
+      <circle cx={dot.x} cy={dot.y} r={4.4} fill={color} stroke="#0d1421" strokeWidth={2} />
+    </svg>
+  );
+}
+
+function ConditionChart({ title, unit, series, warn, crit, low }: {
+  title: string;
+  unit: string;
+  series: SushiSeries[];
+  warn?: number | null;
+  crit?: number | null;
+  low?: number | null;
+}) {
+  const { t, i18n } = useTranslation();
+  const lang = (i18n.language || 'en').slice(0, 2);
+  const single = series.length === 1;
+
+  // Threshold guides — dashed, labeled, recessive.
+  const markLines: object[] = [];
+  const mk = (y: number, color: string, text: string) => ({
+    yAxis: y,
+    lineStyle: { color, type: [4, 4], width: 1, opacity: 0.9 },
+    label: { color, fontSize: 10, fontWeight: 600, formatter: text, position: 'insideEndTop' },
+  });
+  if (warn != null) markLines.push(mk(warn, CHART.warn, `${t('sushi.warn')} ${warn}`));
+  if (crit != null) markLines.push(mk(crit, CHART.crit, `${t('sushi.crit')} ${crit}`));
+  if (low != null) markLines.push(mk(low, CHART.warn, `${t('sushi.low')} ${low}`));
+
+  // Status recoloring of the line as it enters the alarm bands (single series
+  // only — with several axes, color stays with the entity).
+  const pieces: object[] = [];
+  if (single) {
+    if (low != null) pieces.push({ max: low, color: CHART.warn });
+    if (warn != null && crit != null) {
+      pieces.push({ min: warn, max: crit, color: CHART.warn }, { min: crit, color: CHART.crit });
+    } else if (warn != null) {
+      pieces.push({ min: warn, color: CHART.warn });
+    } else if (crit != null) {
+      pieces.push({ min: crit, color: CHART.crit });
+    }
+  }
+
+  const avgSeries = series.map((s, i) => {
+    const color = CHART.axis[s.axis || 'XYZ'] ?? CHART.base;
+    return {
+      name: s.axis || title,
+      type: 'line',
+      z: 3,
+      showSymbol: false,
+      smooth: 0.25,
+      lineStyle: { width: 2, ...(pieces.length ? {} : { color }) },
+      itemStyle: { color },
+      emphasis: { focus: 'none' },
+      areaStyle: single ? {
+        opacity: 1,
+        color: {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: 'rgba(57, 135, 229, 0.16)' },
+            { offset: 1, color: 'rgba(57, 135, 229, 0)' },
+          ],
+        },
+      } : undefined,
+      // dims 2/3 carry the bucket min/max for the tooltip
+      data: s.points.map((p) => [p.t, Number(p.avg.toFixed(3)), Number(p.min.toFixed(3)), Number(p.max.toFixed(3))]),
+      ...(i === 0 && markLines.length ? { markLine: { symbol: 'none', silent: true, animation: false, data: markLines } } : {}),
+    };
+  });
+
+  // Min–max envelope behind the line (single series): base + delta stack.
+  const bandSeries = single ? [
+    {
+      name: '__band-base',
+      type: 'line', stack: '__band', z: 1, silent: true,
+      showSymbol: false, lineStyle: { opacity: 0 }, emphasis: { disabled: true },
+      data: series[0].points.map((p) => [p.t, Number(p.min.toFixed(3))]),
+    },
+    {
+      name: '__band',
+      type: 'line', stack: '__band', z: 1, silent: true,
+      showSymbol: false, lineStyle: { opacity: 0 }, emphasis: { disabled: true },
+      areaStyle: { color: CHART.base, opacity: 0.14 },
+      data: series[0].points.map((p) => [p.t, Number((p.max - p.min).toFixed(3))]),
+    },
+  ] : [];
+
+  const option = {
+    backgroundColor: 'transparent',
+    animationDuration: 500,
+    animationEasing: 'cubicOut',
+    grid: { left: 46, right: 14, top: single ? 20 : 30, bottom: 26 },
+    ...(pieces.length ? {
+      visualMap: {
+        show: false, type: 'piecewise', dimension: 1,
+        seriesIndex: bandSeries.length ? [2] : [0],
+        pieces,
+        outOfRange: { color: CHART.base },
+      },
+    } : {}),
+    ...(single ? {} : {
+      legend: {
+        top: 0, right: 0, icon: 'roundRect',
+        itemWidth: 10, itemHeight: 3, itemGap: 10,
+        textStyle: { color: CHART.ink, fontSize: 10 },
+      },
+    }),
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(13, 20, 33, 0.95)',
+      borderColor: 'rgba(255,255,255,0.08)',
+      padding: [6, 10],
+      textStyle: { color: '#e5e7eb', fontSize: 12 },
+      axisPointer: {
+        type: 'cross',
+        lineStyle: { color: 'rgba(148,163,184,0.35)' },
+        crossStyle: { color: 'rgba(148,163,184,0.35)' },
+        label: { backgroundColor: '#1e293b', color: '#cbd5e1', fontSize: 10, borderRadius: 3 },
+      },
+      formatter: (ps: { seriesName: string; marker: string; value: [string, number, number?, number?] }[]) => {
+        const rows = ps.filter((x) => !String(x.seriesName).startsWith('__'));
+        if (!rows.length) return '';
+        const d = new Date(rows[0].value[0]);
+        const time = d.toLocaleString(lang, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        const body = rows.map((x) => {
+          const [, avg, mn, mx] = x.value;
+          const range = mn != null && mx != null && mx - mn > 0.005
+            ? ` <span style="color:${CHART.ink};font-size:11px">${mn.toFixed(2)} – ${mx.toFixed(2)}</span>`
+            : '';
+          return `${x.marker} <b>${avg.toFixed(2)}</b> <span style="color:${CHART.ink}">${unit}</span>${range}`;
+        }).join('<br/>');
+        return `<div style="color:${CHART.ink};font-size:11px;margin-bottom:2px">${time}</div>${body}`;
+      },
+    },
+    dataZoom: [{ type: 'inside', throttle: 50 }],
+    xAxis: {
+      type: 'time',
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: CHART.ink, fontSize: 10, hideOverlap: true },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: 'value',
+      scale: true,
+      splitNumber: 4,
+      axisLabel: { color: CHART.ink, fontSize: 10 },
+      splitLine: { lineStyle: { color: CHART.grid } },
+    },
+    series: [...bandSeries, ...avgSeries],
+  };
+
+  const latest = series.find((s) => s.latest)?.latest;
+  const status = latest == null ? 'ok'
+    : crit != null && latest.value >= crit ? 'critical'
+    : warn != null && latest.value >= warn ? 'warning'
+    : low != null && latest.value <= low ? 'warning'
+    : 'ok';
+
+  // Trend: latest vs ~1 h earlier (or the window start when shorter). For
+  // vibration/temperature "up" is the bad direction; pressure is direction-neutral.
+  const pts = series[0]?.points ?? [];
+  let delta: number | null = null;
+  if (latest && pts.length >= 2) {
+    const cutoff = new Date(latest.timestamp).getTime() - 3600_000;
+    const ref = [...pts].reverse().find((p) => new Date(p.t).getTime() <= cutoff) ?? pts[0];
+    delta = latest.value - ref.avg;
+  }
+  const isPress = low != null;
+  const deltaBad = delta != null && delta > 0 && !isPress;
+  const deltaGood = delta != null && delta < 0 && !isPress;
+
+  return (
+    <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
+      <div className="flex items-center justify-between mb-1.5 gap-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-gray-300 truncate">{title}</h3>
+          <div className="flex items-center gap-2 mt-1">
+            {status !== 'ok' && (
+              <span className={`inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border ${
+                status === 'critical'
+                  ? 'bg-red-500/10 border-red-500/40 text-red-400 animate-pulse'
+                  : 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+              }`}>
+                ▲ {t(`sushi.sev_${status}`)}
+              </span>
+            )}
+            {delta != null && Math.abs(delta) >= 0.01 && (
+              <span
+                title={t('sushi.delta1h')}
+                className={`inline-flex items-center gap-0.5 text-[11px] font-medium tabular-nums px-1.5 py-0.5 rounded-md bg-white/[0.04] ${
+                  deltaBad ? 'text-rose-400' : deltaGood ? 'text-emerald-400' : 'text-gray-400'
+                }`}
+              >
+                {delta > 0 ? '↗' : '↘'} {Math.abs(delta).toFixed(2)}
+                <span className="text-gray-600 ml-0.5">/1h</span>
+              </span>
+            )}
+          </div>
+        </div>
+        {latest && (
+          <div className="flex items-center gap-2.5 shrink-0">
+            <ConditionGauge value={latest.value} warn={warn} crit={crit} low={low} />
+            <div className="text-right leading-none">
+              <span className="text-[26px] font-bold text-white tabular-nums tracking-tight">
+                {latest.value.toFixed(2)}
+              </span>
+              <span className="block text-[11px] text-gray-500 mt-1">{unit}</span>
+            </div>
+          </div>
+        )}
+      </div>
+      <ReactECharts option={option} style={{ height: 235 }} notMerge />
+    </div>
+  );
+}
+
+function ConditionTab({ condition, hours, onHours }: {
+  condition: SushiCondition;
+  hours: number;
+  onHours: (h: number) => void;
+}) {
+  const { t, i18n } = useTranslation();
+  const lang = (i18n.language || 'en').slice(0, 2);
+  const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleString(lang) : '—');
+
+  const metricSeries = (metric: string) => condition.series.filter((s) => s.metric === metric && s.points.length > 0);
+  const th = condition.devices[0]?.thresholds;
+
+  const metricCards = METRIC_ORDER
+    .map((metric) => ({ metric, series: metricSeries(metric) }))
+    .filter((x) => x.series.length > 0);
+
+  return (
+    <div className="space-y-4">
+      {/* Device health cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {condition.devices.map((d) => (
+          <div key={d.id} className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <SushiIcon size={15} />
+                  <span className="text-sm font-semibold text-gray-200">{d.name}</span>
+                  <span className={`inline-flex items-center gap-1 text-xs ${SUSHI_HEALTH_DOT[d.health]}`}>
+                    ● {t(`devices.sushiHealth_${d.health}`)}
+                  </span>
+                </div>
+                <p className="text-[11px] text-gray-600 font-mono mt-0.5">
+                  {d.model.toUpperCase()} · {d.dev_eui}{d.tag_name ? ` · ${d.tag_name}` : ''}
+                </p>
+              </div>
+              {d.namur && d.namur !== 'good' && (
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/25 text-amber-400">
+                  {t(`devices.namur_${d.namur}`)}
+                </span>
+              )}
+            </div>
+            <div className="grid grid-cols-4 gap-2 mt-3 text-center">
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-gray-600">{t('devices.sushiBattery')}</p>
+                <p className={`text-sm font-semibold ${d.battery_pct != null && d.battery_pct < 10 ? 'text-red-400' : d.battery_pct != null && d.battery_pct < 20 ? 'text-amber-400' : 'text-gray-200'}`}>
+                  {d.battery_pct != null ? `${Math.round(d.battery_pct)}%` : '—'}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-gray-600">RSSI / SNR</p>
+                <p className="text-sm font-semibold text-gray-200">
+                  {d.rssi_dbm != null ? Math.round(d.rssi_dbm) : '—'}<span className="text-[10px] text-gray-500"> dBm</span>
+                  {d.snr_db != null ? ` ${d.snr_db.toFixed(1)}` : ''}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-gray-600">{t('sushi.period')}</p>
+                <p className="text-sm font-semibold text-gray-200">{d.update_period_min} min</p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-gray-600">{t('devices.sushiLastUplink')}</p>
+                <p className="text-xs font-medium text-gray-300 mt-0.5">{fmt(d.last_uplink_at)}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Range selector */}
+      <div className="flex items-center gap-1.5">
+        {[6, 24, 168, 720].map((h) => (
+          <button key={h} onClick={() => onHours(h)}
+            className={`px-2.5 py-1 text-xs rounded-lg border transition-colors ${
+              hours === h
+                ? 'border-blue-500/40 bg-blue-500/10 text-blue-300'
+                : 'border-white/[0.08] text-gray-500 hover:text-gray-300'
+            }`}>
+            {h === 6 ? t('sushi.range6h') : h === 24 ? t('sushi.range24h') : h === 168 ? t('sushi.range7d') : t('sushi.range30d')}
+          </button>
+        ))}
+      </div>
+
+      {/* Metric charts */}
+      {metricCards.length === 0 ? (
+        <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-8 text-center text-gray-600 text-sm">
+          {t('sushi.noData')}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {metricCards.map(({ metric, series }) => (
+            <ConditionChart
+              key={metric}
+              title={t(`sushi.metric_${metric}`)}
+              unit={series[0].unit}
+              series={series}
+              warn={metric === 'vel' ? th?.vel_warn_mms : metric === 'acc' ? th?.acc_warn_ms2 : metric === 'temp' ? th?.temp_warn_c : th?.press_max_mpa}
+              crit={metric === 'vel' ? th?.vel_crit_mms : metric === 'acc' ? th?.acc_crit_ms2 : metric === 'temp' ? th?.temp_crit_c : null}
+              low={metric === 'press' ? th?.press_min_mpa : null}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Recent condition alerts */}
+      <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
+        <h3 className="text-sm font-semibold text-gray-300 mb-3">{t('sushi.recentAlerts')}</h3>
+        {condition.alerts.length === 0 ? (
+          <p className="text-gray-600 text-sm">{t('sushi.noAlerts')}</p>
+        ) : (
+          <div className="space-y-2">
+            {condition.alerts.map((a) => (
+              <div key={a.id} className="flex items-center gap-3 text-sm">
+                <span className={`text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full ${
+                  a.severity === 'critical' ? 'bg-red-500/15 text-red-400' : 'bg-amber-500/15 text-amber-400'
+                }`}>
+                  {t(`sushi.sev_${a.severity}`, a.severity)}
+                </span>
+                <span className="text-gray-300 flex-1 truncate">{a.message}</span>
+                <span className="text-xs text-gray-600 whitespace-nowrap">{fmt(a.created_at)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────────
 
 export default function EquipmentDetail() {
   const { id } = useParams<{ id: string }>();
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
+  // Restore the list's type tab (e.g. /equipment?type=production) when we came from it.
+  const stateBackTo = (location.state as { backTo?: unknown } | null)?.backTo;
+  const backTo = typeof stateBackTo === 'string' && stateBackTo.startsWith('/equipment') ? stateBackTo : '/equipment';
   const [tab, setTab] = useState<TabId>('overview');
   const [equipment, setEquipment] = useState<Equipment | null>(null);
   const [wos, setWOs] = useState<WorkOrder[]>([]);
@@ -2093,6 +2509,9 @@ export default function EquipmentDetail() {
   const [costCenters, setCostCenters] = useState<{ name: string; code: string | null }[]>([]);
   // The plant's managed departments — the field picks from this list, not free text.
   const [departments, setDepartments] = useState<{ name: string }[]>([]);
+  // Sushi Sensor condition monitoring — the tab only exists when the asset has devices.
+  const [condition, setCondition] = useState<SushiCondition | null>(null);
+  const [condHours, setCondHours] = useState(24);
 
   useEffect(() => {
     if (!id) return;
@@ -2100,12 +2519,19 @@ export default function EquipmentDetail() {
       fetchEquipmentById(id),
       fetchWorkOrders({ equipment_id: id, limit: '50' }),
       fetchMaintenancePlans({ equipment_id: id }),
-    ]).then(([eq, wo, pl]) => {
+      fetchEquipmentCondition(id, 24),
+    ]).then(([eq, wo, pl, cond]) => {
       if (eq.status === 'fulfilled') setEquipment(eq.value);
       if (wo.status === 'fulfilled') setWOs(wo.value);
       if (pl.status === 'fulfilled') setPlans(pl.value.items);
+      if (cond.status === 'fulfilled') setCondition(cond.value);
       setLoading(false);
     });
+  }, [id]);
+
+  const changeCondHours = useCallback((h: number) => {
+    setCondHours(h);
+    if (id) fetchEquipmentCondition(id, h).then(setCondition).catch(() => {});
   }, [id]);
 
   useEffect(() => {
@@ -2134,8 +2560,11 @@ export default function EquipmentDetail() {
   const isAux = equipment.asset_type === 'auxiliary';
 
   // Auxiliary (utility) assets have no kiosk/MES layer → no operator-intervention history tab.
+  const hasCondition = (condition?.devices.length ?? 0) > 0;
+
   const tabs: { id: TabId; label: string }[] = [
     { id: 'overview',       label: t('equipment.tabOverview') },
+    ...(hasCondition ? [{ id: 'condition' as TabId, label: t('equipment.tabCondition') }] : []),
     { id: 'workorders',     label: `${t('equipment.tabWorkOrders')} (${wos.length})` },
     { id: 'plans',          label: `${t('equipment.tabPlans')} (${plans.length})` },
     ...(isAux ? [] : [{ id: 'history' as TabId, label: 'Historique' }]),
@@ -2147,7 +2576,7 @@ export default function EquipmentDetail() {
       {/* Back + Header */}
       <div>
         <button
-          onClick={() => navigate('/equipment')}
+          onClick={() => navigate(backTo)}
           className="flex items-center gap-1.5 text-gray-500 hover:text-gray-300 text-sm mb-4 transition-colors"
         >
           <ArrowLeft size={15} />
@@ -2216,6 +2645,10 @@ export default function EquipmentDetail() {
       </div>
 
       {/* Tab content */}
+      {tab === 'condition' && condition && (
+        <ConditionTab condition={condition} hours={condHours} onHours={changeCondHours} />
+      )}
+
       {tab === 'overview' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4 space-y-3">

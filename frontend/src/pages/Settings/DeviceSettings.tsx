@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Cpu, Plus, Loader2, Trash2, X, Check, Pencil, KeyRound, Circle, ScanLine, Thermometer } from 'lucide-react';
+import { Cpu, Plus, Loader2, Trash2, X, Check, Pencil, KeyRound, Circle, ScanLine, Thermometer, BatteryMedium } from 'lucide-react';
 import {
   fetchAdamDevices, createAdamDevice, updateAdamDevice, deleteAdamDevice,
   provisionMachineToken,
@@ -14,10 +14,16 @@ import {
   fetchTemperatureSensors, createTemperatureSensor, updateTemperatureSensor, deleteTemperatureSensor,
   type TemperatureSensor, type TemperatureSensorInput,
 } from '../../api/temperatureSensors';
+import {
+  fetchSushiDevices, createSushiDevice, updateSushiDevice, deleteSushiDevice,
+  type SushiDevice, type SushiDeviceInput, type SushiHealth,
+} from '../../api/sushi';
 import { fetchMachinesAll } from '../../api/machines';
 import { fetchDepartments, type Department } from '../../api/departments';
-import type { Machine } from '../../types';
+import { fetchEquipment } from '../../api/workOrders';
+import type { Equipment, Machine } from '../../types';
 import { usePermission } from '../../hooks/usePermission';
+import SushiIcon from '../../components/ui/SushiIcon';
 import { useAuthStore } from '../../store/authStore';
 import { formatTemp } from '../../utils/temperature';
 import Spinner from '../../components/ui/Spinner';
@@ -36,9 +42,21 @@ const BLANK_SENSOR: TemperatureSensorInput = {
   name: '', department: null, enabled: true, source: 'simulated', sim_baseline_c: 21, sim_amplitude_c: 2,
 };
 
+const BLANK_SUSHI: SushiDeviceInput = {
+  name: '', dev_eui: '', model: 'xs770a', equipment_id: null, enabled: true,
+  update_period_min: 60, vel_warn_mms: 4.5, vel_crit_mms: 7.1,
+  acc_warn_ms2: null, acc_crit_ms2: null, temp_warn_c: null, temp_crit_c: null,
+  press_min_mpa: null, press_max_mpa: null,
+};
+
 const STATUS_STYLE: Record<AdamDeviceStatus, string> = {
   online: 'text-green-400', offline: 'text-red-400',
   error: 'text-amber-400', unknown: 'text-gray-500',
+};
+
+const SUSHI_HEALTH_STYLE: Record<SushiHealth, string> = {
+  online: 'text-green-400', stale: 'text-amber-400',
+  offline: 'text-red-400', unknown: 'text-gray-500',
 };
 
 const inputCls =
@@ -74,18 +92,27 @@ export default function DeviceSettings() {
   const [sensorEditId, setSensorEditId] = useState<string | null>(null);
   const [sensorForm, setSensorForm] = useState<TemperatureSensorInput>(BLANK_SENSOR);
 
+  // Yokogawa Sushi sensors (LoRaWAN → network server → /api/sushi/uplink)
+  const [sushiDevices, setSushiDevices] = useState<SushiDevice[]>([]);
+  const [equipment, setEquipment] = useState<Equipment[]>([]);
+  const [showSushiForm, setShowSushiForm] = useState(false);
+  const [sushiEditId, setSushiEditId] = useState<string | null>(null);
+  const [sushiForm, setSushiForm] = useState<SushiDeviceInput>(BLANK_SUSHI);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [d, m, st, se, dep] = await Promise.all([
+      const [d, m, st, se, dep, su, eq] = await Promise.all([
         fetchAdamDevices(), fetchMachinesAll(), fetchCortexStations(), fetchTemperatureSensors(),
-        fetchDepartments(),
+        fetchDepartments(), fetchSushiDevices(), fetchEquipment({ limit: '500' }),
       ]);
       setDevices(d);
       setMachines(m);
       setStations(st);
       setSensors(se);
       setDepartments(dep);
+      setSushiDevices(su);
+      setEquipment(eq);
     } finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -206,6 +233,49 @@ export default function DeviceSettings() {
     if (!window.confirm(t('devices.deleteSensorConfirm'))) return;
     setErr('');
     try { await deleteTemperatureSensor(id); await load(); }
+    catch { setErr(t('common.error')); }
+  };
+
+  // ── Sushi sensors ──
+  const openSushiAdd = () => { setSushiEditId(null); setSushiForm(BLANK_SUSHI); setShowSushiForm(true); setErr(''); };
+  const openSushiEdit = (d: SushiDevice) => {
+    setSushiEditId(d.id);
+    setSushiForm({
+      name: d.name, dev_eui: d.dev_eui, model: d.model, equipment_id: d.equipment_id,
+      enabled: d.enabled, update_period_min: d.update_period_min,
+      vel_warn_mms: d.vel_warn_mms, vel_crit_mms: d.vel_crit_mms,
+      acc_warn_ms2: d.acc_warn_ms2, acc_crit_ms2: d.acc_crit_ms2,
+      temp_warn_c: d.temp_warn_c, temp_crit_c: d.temp_crit_c,
+      press_min_mpa: d.press_min_mpa, press_max_mpa: d.press_max_mpa,
+    });
+    setShowSushiForm(true); setErr('');
+  };
+  const closeSushiForm = () => { setShowSushiForm(false); setSushiEditId(null); };
+  const setSushi = <K extends keyof SushiDeviceInput>(k: K, v: SushiDeviceInput[K]) =>
+    setSushiForm((f) => ({ ...f, [k]: v }));
+  const sushiNum = (v: string): number | null => (v === '' ? null : Number(v));
+
+  const handleSushiSave = async () => {
+    if (!sushiForm.name.trim() || !sushiForm.dev_eui.trim()) return;
+    setBusy(true); setErr('');
+    try {
+      if (sushiEditId) await updateSushiDevice(sushiEditId, sushiForm);
+      else await createSushiDevice(sushiForm);
+      closeSushiForm();
+      await load();
+      flashSaved();
+    } catch (e) {
+      const d = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setErr(d === 'dev_eui_already_registered' ? t('devices.sushiDupEui')
+        : d === 'invalid_dev_eui' || (Array.isArray(d) && String(d).includes('invalid_dev_eui')) ? t('devices.sushiBadEui')
+        : t('common.error'));
+    } finally { setBusy(false); }
+  };
+
+  const handleSushiDelete = async (id: string) => {
+    if (!window.confirm(t('devices.deleteSushiConfirm'))) return;
+    setErr('');
+    try { await deleteSushiDevice(id); await load(); }
     catch { setErr(t('common.error')); }
   };
 
@@ -720,6 +790,240 @@ export default function DeviceSettings() {
       </div>
 
       <p className="text-xs text-gray-600">{t('devices.tempNote')}</p>
+
+      {/* ── Yokogawa Sushi sensors (LoRaWAN vibration / pressure / temperature) ── */}
+      <div className="flex items-start justify-between gap-4 pt-4">
+        <div>
+          <h2 className="text-lg font-bold text-white flex items-center gap-2">
+            <SushiIcon size={18} /> {t('devices.sushiTitle')}
+          </h2>
+          <p className="text-gray-500 text-sm mt-0.5">{t('devices.sushiSubtitle')}</p>
+        </div>
+        {canEdit && !showSushiForm && (
+          <button onClick={openSushiAdd} className="btn-secondary py-1.5 px-3 text-sm whitespace-nowrap">
+            <Plus size={14} /> {t('devices.addSushi')}
+          </button>
+        )}
+      </div>
+
+      {showSushiForm && (
+        <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-5 space-y-4">
+          <div className="flex items-center gap-2">
+            <SushiIcon size={16} />
+            <h3 className="text-sm font-semibold text-gray-200">
+              {sushiEditId ? t('devices.editSushi') : t('devices.addSushi')}
+            </h3>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <label className="space-y-1">
+              <span className="text-xs text-gray-400">{t('devices.name')}</span>
+              <input value={sushiForm.name} onChange={(e) => setSushi('name', e.target.value)}
+                placeholder="XS770A Presse 9" className={`${inputCls} w-full`} />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs text-gray-400">{t('devices.sushiDevEui')}</span>
+              <input value={sushiForm.dev_eui} onChange={(e) => setSushi('dev_eui', e.target.value)}
+                placeholder="0064B7xxxxxxxxxx" className={`${inputCls} w-full font-mono`} />
+              <span className="block text-[11px] text-gray-600">{t('devices.sushiDevEuiHint')}</span>
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs text-gray-400">{t('devices.model')}</span>
+              <select value={sushiForm.model}
+                onChange={(e) => setSushi('model', e.target.value as SushiDeviceInput['model'])}
+                className={`${inputCls} w-full`}>
+                <option value="xs770a">{t('devices.sushiModelXs770a')}</option>
+                <option value="xs530">{t('devices.sushiModelXs530')}</option>
+                <option value="xs550">{t('devices.sushiModelXs550')}</option>
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs text-gray-400">{t('devices.sushiEquipment')}</span>
+              <select value={sushiForm.equipment_id ?? ''} onChange={(e) => setSushi('equipment_id', e.target.value || null)}
+                className={`${inputCls} w-full`}>
+                <option value="">{t('devices.unlinked')}</option>
+                {equipment.map((eq) => (
+                  <option key={eq.id} value={eq.id}>{eq.name}{eq.code ? ` (${eq.code})` : ''}</option>
+                ))}
+              </select>
+              <span className="block text-[11px] text-gray-600">{t('devices.sushiEquipmentHint')}</span>
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs text-gray-400">{t('devices.sushiUpdatePeriod')}</span>
+              <input type="number" min={1} value={sushiForm.update_period_min}
+                onChange={(e) => setSushi('update_period_min', Number(e.target.value))}
+                className={`${inputCls} w-full`} />
+              <span className="block text-[11px] text-gray-600">{t('devices.sushiUpdatePeriodHint')}</span>
+            </label>
+          </div>
+
+          {/* Alarm thresholds — backend evaluates on threshold crossings */}
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{t('devices.sushiThresholds')}</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              {sushiForm.model === 'xs770a' && (
+                <>
+                  <label className="space-y-1">
+                    <span className="text-xs text-gray-400">{t('devices.sushiVelWarn')}</span>
+                    <input type="number" step="0.1" value={sushiForm.vel_warn_mms ?? ''}
+                      onChange={(e) => setSushi('vel_warn_mms', sushiNum(e.target.value))}
+                      className={`${inputCls} w-full`} />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs text-gray-400">{t('devices.sushiVelCrit')}</span>
+                    <input type="number" step="0.1" value={sushiForm.vel_crit_mms ?? ''}
+                      onChange={(e) => setSushi('vel_crit_mms', sushiNum(e.target.value))}
+                      className={`${inputCls} w-full`} />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs text-gray-400">{t('devices.sushiAccWarn')}</span>
+                    <input type="number" step="0.1" value={sushiForm.acc_warn_ms2 ?? ''}
+                      onChange={(e) => setSushi('acc_warn_ms2', sushiNum(e.target.value))}
+                      className={`${inputCls} w-full`} />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs text-gray-400">{t('devices.sushiAccCrit')}</span>
+                    <input type="number" step="0.1" value={sushiForm.acc_crit_ms2 ?? ''}
+                      onChange={(e) => setSushi('acc_crit_ms2', sushiNum(e.target.value))}
+                      className={`${inputCls} w-full`} />
+                  </label>
+                </>
+              )}
+              {sushiForm.model === 'xs530' && (
+                <>
+                  <label className="space-y-1">
+                    <span className="text-xs text-gray-400">{t('devices.sushiPressMin')}</span>
+                    <input type="number" step="0.01" value={sushiForm.press_min_mpa ?? ''}
+                      onChange={(e) => setSushi('press_min_mpa', sushiNum(e.target.value))}
+                      className={`${inputCls} w-full`} />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs text-gray-400">{t('devices.sushiPressMax')}</span>
+                    <input type="number" step="0.01" value={sushiForm.press_max_mpa ?? ''}
+                      onChange={(e) => setSushi('press_max_mpa', sushiNum(e.target.value))}
+                      className={`${inputCls} w-full`} />
+                  </label>
+                </>
+              )}
+              <label className="space-y-1">
+                <span className="text-xs text-gray-400">{t('devices.sushiTempWarn')}</span>
+                <input type="number" step="0.5" value={sushiForm.temp_warn_c ?? ''}
+                  onChange={(e) => setSushi('temp_warn_c', sushiNum(e.target.value))}
+                  className={`${inputCls} w-full`} />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs text-gray-400">{t('devices.sushiTempCrit')}</span>
+                <input type="number" step="0.5" value={sushiForm.temp_crit_c ?? ''}
+                  onChange={(e) => setSushi('temp_crit_c', sushiNum(e.target.value))}
+                  className={`${inputCls} w-full`} />
+              </label>
+            </div>
+            <p className="text-[11px] text-gray-600">{t('devices.sushiThresholdsHint')}</p>
+          </div>
+
+          <label className="flex items-center gap-2.5 cursor-pointer select-none">
+            <input type="checkbox" checked={sushiForm.enabled} onChange={(e) => setSushi('enabled', e.target.checked)}
+              className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500 cursor-pointer" />
+            <span className="text-sm text-gray-200">{t('devices.enabled')}</span>
+            <span className="text-xs text-gray-600">{t('devices.sushiEnabledHint')}</span>
+          </label>
+
+          <div className="flex items-center gap-2 pt-1">
+            <button onClick={handleSushiSave} disabled={busy || !sushiForm.name.trim() || !sushiForm.dev_eui.trim()}
+              className="btn-primary py-1.5 px-4 text-sm disabled:opacity-40">
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} {t('common.save')}
+            </button>
+            <button onClick={closeSushiForm} className="btn-secondary py-1.5 px-4 text-sm">{t('common.cancel')}</button>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-5">
+        {sushiDevices.length === 0 ? (
+          <p className="text-gray-600 text-sm">{t('devices.noSushi')}</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-gray-500 uppercase tracking-wide border-b border-white/[0.06]">
+                <th className="py-2 pr-4 font-medium">{t('devices.name')}</th>
+                <th className="py-2 pr-4 font-medium">{t('devices.sushiEquipment')}</th>
+                <th className="py-2 pr-4 font-medium">{t('devices.status')}</th>
+                <th className="py-2 pr-4 font-medium">{t('devices.sushiBattery')}</th>
+                <th className="py-2 pr-4 font-medium">{t('devices.sushiRadio')}</th>
+                <th className="py-2 pr-4 font-medium">{t('devices.sushiLastUplink')}</th>
+                <th className="py-2 pl-3 text-right font-medium w-24"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sushiDevices.map((d) => (
+                <tr key={d.id} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
+                  <td className="py-2.5 pr-4">
+                    <span className="text-gray-200">{d.name}</span>
+                    {!d.enabled && <span className="ml-2 text-[10px] text-gray-600 uppercase">{t('devices.disabled')}</span>}
+                    <span className="block text-[11px] text-gray-600 font-mono">
+                      {d.model.toUpperCase()} · {d.dev_eui}
+                    </span>
+                  </td>
+                  <td className="py-2.5 pr-4 text-gray-400">
+                    {d.equipment_name || <span className="text-amber-400/80">{t('devices.unlinked')}</span>}
+                  </td>
+                  <td className="py-2.5 pr-4">
+                    <span className={`inline-flex items-center gap-1.5 ${SUSHI_HEALTH_STYLE[d.health]}`}>
+                      <Circle size={8} fill="currentColor" strokeWidth={0} />
+                      {t(`devices.sushiHealth_${d.health}`)}
+                    </span>
+                    {d.namur && d.namur !== 'good' && (
+                      <span className="block text-[11px] text-amber-400/90">{t(`devices.namur_${d.namur}`)}</span>
+                    )}
+                    {d.last_error && (
+                      <span className="block text-[11px] text-red-400/80">{t(`devices.sushiErr_${d.last_error}`, d.last_error)}</span>
+                    )}
+                  </td>
+                  <td className="py-2.5 pr-4">
+                    {d.battery_pct != null ? (
+                      <span className={`inline-flex items-center gap-1 ${d.battery_pct < 10 ? 'text-red-400' : d.battery_pct < 20 ? 'text-amber-400' : 'text-gray-200'}`}>
+                        <BatteryMedium size={13} /> {Math.round(d.battery_pct)}%
+                      </span>
+                    ) : <span className="text-gray-600">—</span>}
+                  </td>
+                  <td className="py-2.5 pr-4 text-xs text-gray-400 font-mono">
+                    {d.rssi_dbm != null ? `${Math.round(d.rssi_dbm)} dBm` : '—'}
+                    {d.snr_db != null ? ` / ${d.snr_db.toFixed(1)} dB` : ''}
+                  </td>
+                  <td className="py-2.5 pr-4 text-gray-500 text-xs">{fmtSeen(d.last_uplink_at)}</td>
+                  <td className="py-2.5 pl-3 text-right whitespace-nowrap">
+                    {canEdit && (
+                      <>
+                        <button onClick={() => openSushiEdit(d)}
+                          className="text-gray-600 hover:text-blue-400 transition-colors mr-3" title={t('common.edit')}>
+                          <Pencil size={14} />
+                        </button>
+                        <button onClick={() => handleSushiDelete(d.id)}
+                          className="text-gray-600 hover:text-red-400 transition-colors" title={t('common.delete')}>
+                          <Trash2 size={14} />
+                        </button>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Where to point the LoRaWAN network server */}
+      <div className="text-xs text-gray-600 space-y-1">
+        <p>{t('devices.sushiNote')}</p>
+        <p className="font-mono text-gray-500">
+          POST {window.location.origin}/api/sushi/uplink · X-Ingest-Token
+          {sushiDevices.length > 0 && (
+            sushiDevices[0].ingest_configured
+              ? <span className="ml-2 text-green-500/80">{t('devices.sushiTokenSet')}</span>
+              : <span className="ml-2 text-amber-400/90">{t('devices.sushiTokenMissing')}</span>
+          )}
+        </p>
+      </div>
     </div>
   );
 }

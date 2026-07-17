@@ -163,7 +163,10 @@ class TicketService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def create_ticket(self, data: TicketCreate, created_by: str = "") -> MaintenanceTicket:
+    async def create_ticket(self, data: TicketCreate, created_by: str = "", notify: bool = True) -> MaintenanceTicket:
+        """`notify=False` skips the creation notifications (critical + ticket-opened
+        + claimable pings) — for callers that page people through their own channel,
+        e.g. the Sushi condition-alert SMS, so one event never double-pages."""
         machine = await self.db.get(Machine, data.machine_id)
         if not machine:
             # The ticket form sends an *equipment* id. A Machine usually already
@@ -192,6 +195,9 @@ class TicketService:
                     name=equipment.name,
                     code=equipment.code,
                     equipment_id=equipment.id,
+                    # Without the plant the ticket/alert would be born with
+                    # plant_id NULL — hidden by the fail-closed plant scoping.
+                    plant_id=equipment.plant_id,
                     is_active=True,
                 )
                 self.db.add(machine)
@@ -271,18 +277,19 @@ class TicketService:
                 ))
                 await self.db.flush()
 
-        from app.services.notification_service import NotificationService
-        notif = NotificationService(self.db)
-        if data.priority == AlertPriority.critical:
-            await notif.notify_new_critical(
-                ref_number=ticket.ticket_number,
-                description=getattr(data, "description", None),
-                machine_name=machine.name,
-                alert_id=alert_id,
-                ticket_id=ticket.id,
-                machine=machine,
-            )
-        await notif.notify_ticket_opened(ticket, machine.name)
+        if notify:
+            from app.services.notification_service import NotificationService
+            notif = NotificationService(self.db)
+            if data.priority == AlertPriority.critical:
+                await notif.notify_new_critical(
+                    ref_number=ticket.ticket_number,
+                    description=getattr(data, "description", None),
+                    machine_name=machine.name,
+                    alert_id=alert_id,
+                    ticket_id=ticket.id,
+                    machine=machine,
+                )
+            await notif.notify_ticket_opened(ticket, machine.name)
 
         await self.db.commit()
         await self.db.refresh(ticket)

@@ -38,6 +38,7 @@ TEMPLATE_DEFAULTS = {
     "ticket_completed":    "[MES] Ticket {number} terminé — {machine}",
     "ticket_assigned":     "[MES] Ticket {number} assigné — {machine} ({priority}): {description}",
     "claimable_tech":      "[MES] Ticket à prendre {number} — {machine} ({priority}). Ouvrez Mon travail.",
+    "condition_alert":     "[MES] Capteur {severity} — {machine}: {metric} {value} {unit} (seuil {limit}){ticket}",
 }
 
 
@@ -426,6 +427,48 @@ class NotificationService:
             recipients, esc, subject, body, sms_text,
             role_label="critical_alert", alert_id=alert_id, ticket_id=ticket_id,
             trigger="critical_alert",
+        )
+
+    async def notify_condition_alert(
+        self,
+        *,
+        equipment_name: str,
+        plant_id,
+        machine: Optional[Machine],
+        severity: str,
+        metric_label: str,
+        value: float,
+        unit: str,
+        limit_value: float,
+        ticket_number: Optional[str] = None,
+    ) -> None:
+        """Sushi Sensor condition-monitoring threshold crossing → SMS/email to
+        the plant's level-0 notification group (the same group ticket events
+        use). Called fire-and-forget from the sushi ingest path; the caller owns
+        severity filtering, freshness and the per-sensor cooldown. Channel
+        toggles: esc.sms_enabled/email_enabled + channel_matrix['condition_alert']."""
+        esc = await get_escalation_settings(self.db, plant_id)
+        recipients = await self._level_recipients(0, machine=machine, priority=severity, plant_id=plant_id)
+        if not recipients:
+            logger.info("[CONDITION] No level-0 recipients configured — notification skipped")
+            return
+        sev_label = "CRITIQUE" if severity == "critical" else "ALERTE"
+        subject = f"[MES] Condition {sev_label}: {equipment_name}"
+        body = (
+            f"Condition {sev_label}\n"
+            f"Équipement: {equipment_name}\n"
+            f"{metric_label}: {value:.2f} {unit} (seuil {limit_value:g} {unit})\n"
+            f"Ticket: {ticket_number or '—'}"
+        )
+        sms_text = render_sms_template(
+            esc, "condition_alert",
+            severity=sev_label, machine=equipment_name, metric=metric_label,
+            value=f"{value:.2f}", unit=unit, limit=f"{limit_value:g}",
+            ticket=f" → {ticket_number}" if ticket_number else "",
+        )
+        await self._dispatch(
+            recipients, esc, subject, body, sms_text,
+            role_label="condition_alert", trigger="condition_alert",
         )
 
     @staticmethod

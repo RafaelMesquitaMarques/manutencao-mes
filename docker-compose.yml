@@ -75,6 +75,12 @@ services:
       # OLLAMA_BASE_URL disables that fallback (local formatting when the API fails).
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
+      # Yokogawa Sushi Sensor LoRaWAN ingest — the network server's HTTP
+      # integration authenticates with this token (X-Ingest-Token header).
+      # SUSHI_BYTE_ORDER flips the payload decoder if the big-endian
+      # assumption proves wrong on real hardware (see docs/sushi-sensor-contract.md).
+      SUSHI_INGEST_TOKEN: ${SUSHI_INGEST_TOKEN:-}
+      SUSHI_BYTE_ORDER: ${SUSHI_BYTE_ORDER:-big}
     volumes:
       - uploads_data:/app/uploads
     depends_on:

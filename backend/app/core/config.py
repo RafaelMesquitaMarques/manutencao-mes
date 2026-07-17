@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     MAX_UPLOAD_MB: int = 200   # allows short SOP videos; override via env if needed
     UPLOAD_DIR: str = "/app/uploads"
 
+    # Yokogawa Sushi Sensor (LoRaWAN) ingest. The network server's HTTP
+    # integration must send this value in the X-Ingest-Token header; while
+    # empty the /api/sushi/uplink endpoint answers 503 (ingest disabled).
+    SUSHI_INGEST_TOKEN: str = ""
+    # Payload byte order — the Yokogawa manuals list fields MSB-first but never
+    # name an endianness. "big" (default) is the assumption to validate against
+    # the first real uplink; set "little" if values decode to nonsense.
+    SUSHI_BYTE_ORDER: str = "big"
+
     # Multi-plant phase 4 — kiosk hardening. False (default) keeps the historic
     # open shop-floor kiosk endpoints (QC tablets bookmark /machines/:slug with
     # no token). Flip to true only after provisioning per-machine kiosk tokens
