@@ -33,8 +33,10 @@ export const isDueToday = (scheduled: string | null | undefined): boolean => {
 export const OF_CATEGORY_FALLBACK = '#9ca3af';
 
 // Completeness semaphore — the BASE PLATE of a stack reads the OF's completeness
-// at a glance (same hues as the line-TV efficiency cells): green = in full
-// (100 %), amber = ≥ 90 %, red = below, grey = no BOM yet (unknown).
+// at a glance (same hues as the line-TV efficiency cells): green = 100 %
+// available (client's DispoPit% = 100 — non-gating carton may still be short),
+// yellow = strictly > 90 % (the client's bands use ">90", not ">="), red =
+// below, grey = no BOM yet (unknown).
 export const COMPLETENESS_HEX = {
   full:    '#16a34a',
   almost:  '#eab308',   // yellow (platform's canonical yellow), not amber
@@ -45,7 +47,8 @@ export const COMPLETENESS_HEX = {
 export const completenessColor = (pct: number | null | undefined, inFull: boolean): string =>
   inFull ? COMPLETENESS_HEX.full
   : pct == null ? COMPLETENESS_HEX.unknown
-  : pct >= 90 ? COMPLETENESS_HEX.almost
+  : pct >= 100 ? COMPLETENESS_HEX.full
+  : pct > 90 ? COMPLETENESS_HEX.almost
   : COMPLETENESS_HEX.low;
 
 /** Plate colour of one OF stack on the map: completeness semaphore, except a

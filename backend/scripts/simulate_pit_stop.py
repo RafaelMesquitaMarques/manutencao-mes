@@ -34,7 +34,8 @@ from app.models.models import (
 )
 from app.services.job_order_service import scan_job_order_at_machine
 from app.services.pit_stop_service import (
-    get_or_create_state, get_pit_stop_equipment, ingest_movement, pit_stop_config,
+    get_or_create_state, get_pit_stop_equipment, ingest_movement, of_family,
+    pit_stop_config,
 )
 
 SIM_OF = "SIM-PS-"
@@ -48,8 +49,28 @@ PRODUCTS = [
 
 # component code prefix per (default) category name
 CODE_PREFIX = {
-    "Panneaux": "PAN", "Quincaillerie": "QUI", "Rembourrage": "REM", "Coussins": "COU",
+    "Panneaux": "PAN", "Quincaillerie": "QUI", "Tiroirs": "TIR", "Coussins": "COU",
 }
+
+# BOM shape per furniture family (see seed_pit_stop.DEFAULT_CATEGORIES):
+#   soft goods  → only the rigid components are buffered here (panels + hardware);
+#   case goods  → panels + hardware, plus drawers / cushions when the piece has them.
+SHARED_CATS = ["Panneaux", "Quincaillerie"]
+CG_OPTIONAL = [("Tiroirs", 0.6), ("Coussins", 0.4)]   # (category, probability the piece has it)
+
+
+def _family_cats(fam, cats, rng):
+    """Category names for one OF's BOM, respecting the furniture family: soft goods
+    buffer only panels + hardware; case goods add drawers / cushions when present.
+    Falls back to a small random pick if the registry lacks the default names."""
+    chosen = [c for c in SHARED_CATS if c in cats]
+    if fam == "cg":
+        for cat, p in CG_OPTIONAL:
+            if cat in cats and rng.random() < p:
+                chosen.append(cat)
+    if not chosen and cats:
+        chosen = rng.sample(cats, k=min(2, len(cats)))
+    return chosen
 
 
 def _now() -> datetime:
@@ -111,14 +132,20 @@ async def _categories(s, plant):
     return [c.name for c in rows] or list(CODE_PREFIX)
 
 
-def _positions_for(cfg, rng, n=1):
-    lane = rng.randint(1, cfg["lanes"])
+def _positions_for(cfg, rng, family="cg", n=1):
+    """A bin in the family's physical area: soft goods land in the FIRST `sg_lanes`
+    lanes, case goods in the rest — matching the CG/SG split drawn on the 3D map."""
+    sg = int(cfg.get("sg_lanes", 0) or 0)
+    if family == "sg" and sg > 0:
+        lane = rng.randint(1, sg)
+    else:
+        lane = rng.randint(min(sg + 1, cfg["lanes"]), cfg["lanes"])
     return [f"L{lane:02d}-P{rng.randint(1, cfg['slots_per_lane']):02d}" for _ in range(n)]
 
 
 async def _spawn_of(s, plant, cfg, cats, lines, idx, rng, profile):
     """One OF with BOM + inbound history matching `profile`
-    (full | almost | partial | hold | released | gone)."""
+    (full | almost | partial | hw_wait | hold | released | gone)."""
     jo = JobOrder(
         job_number=f"{SIM_OF}{2000 + idx}",
         plant_id=plant.id,
@@ -132,10 +159,11 @@ async def _spawn_of(s, plant, cfg, cats, lines, idx, rng, profile):
     s.add(jo)
     await s.flush()
 
-    n_comp = rng.randint(2, min(5, max(2, len(cats) + 1)))
-    chosen = rng.sample(cats, k=min(n_comp, len(cats)))
-    while len(chosen) < n_comp:
-        chosen.append(rng.choice(cats))
+    # BOM composition follows the furniture family (same rule as the API's
+    # of_family): soft goods buffer only panels + hardware; case goods add drawers
+    # and/or cushions when the piece has them.
+    fam = of_family(jo.product_name, [])
+    chosen = _family_cats(fam, cats, rng)
     bom = []
     for i, cat in enumerate(chosen):
         prefix = CODE_PREFIX.get(cat, cat[:3].upper())
@@ -151,16 +179,21 @@ async def _spawn_of(s, plant, cfg, cats, lines, idx, rng, profile):
     factor = {
         "full": 1.0, "released": 1.0, "gone": 1.0, "hold": rng.uniform(0.4, 1.0),
         "almost": rng.uniform(0.90, 0.99), "partial": rng.uniform(0.25, 0.85),
+        "hw_wait": 1.0,   # everything in full EXCEPT the hardware (below)
     }[profile]
     age_h = rng.uniform(30, 70) if rng.random() < 0.25 else rng.uniform(2, 20)
     t0 = _now() - timedelta(hours=age_h)
-    positions = _positions_for(cfg, rng, n=1 if rng.random() < 0.8 else 2)
+    positions = _positions_for(cfg, rng, fam, n=1 if rng.random() < 0.8 else 2)
 
     for code, required in bom:
         target = required if factor >= 1.0 else int(round(required * factor))
         # per-component jitter so partial OFs miss SOME components, not all evenly
         if profile in ("partial", "almost", "hold") and rng.random() < 0.5:
             target = min(required, max(0, target + rng.randint(-3, 3)))
+        # hw_wait: complete except the quincaillerie → feeds the board's
+        # "Dispo en attente de Quincaillerie" row
+        if profile == "hw_wait" and code.startswith("QUI"):
+            target = int(round(required * rng.uniform(0.3, 0.7)))
         sent, batch_i = 0, 0
         while sent < target:
             qty = min(target - sent, rng.randint(max(2, required // 3), required))
@@ -272,7 +305,7 @@ async def _cutting_machines(s, plant):
 
 async def _add_bom(s, jo, cats, rng):
     """Attach a small BOM to an OF (so a drained pipeline OF can flow to the buffer)."""
-    for i, cat in enumerate(rng.sample(cats, k=rng.randint(2, min(4, len(cats))))):
+    for i, cat in enumerate(_family_cats(of_family(jo.product_name, []), cats, rng)):
         prefix = CODE_PREFIX.get(cat, cat[:3].upper())
         s.add(JobOrderComponent(
             job_order_id=jo.id, component_code=f"{prefix}-{jo.job_number.rsplit('-', 1)[-1]}{chr(65 + i)}",
@@ -329,7 +362,7 @@ async def _seed_pipeline(s, plant, rng) -> int:
     return n
 
 
-PROFILE_MIX = (["full"] * 5 + ["almost"] * 4 + ["partial"] * 8
+PROFILE_MIX = (["full"] * 5 + ["almost"] * 4 + ["partial"] * 6 + ["hw_wait"] * 2
                + ["hold"] * 2 + ["released"] * 2 + ["gone"] * 1)
 
 
@@ -372,7 +405,7 @@ async def _spawn_live_of(s, plant, cats, lines, rng, number):
     )
     s.add(jo)
     await s.flush()
-    for i, cat in enumerate(rng.sample(cats, k=rng.randint(2, min(4, len(cats))))):
+    for i, cat in enumerate(_family_cats(of_family(jo.product_name, []), cats, rng)):
         prefix = CODE_PREFIX.get(cat, cat[:3].upper())
         s.add(JobOrderComponent(
             job_order_id=jo.id, component_code=f"{prefix}-{number.rsplit('-', 1)[-1]}{chr(65 + i)}",
@@ -471,7 +504,8 @@ async def live(plant_code: str, seed: int) -> None:  # noqa: ARG001 — live var
 
             def pos_for(jo):
                 if jo.job_number not in positions:
-                    positions[jo.job_number] = _positions_for(cfg, rng)[0]
+                    positions[jo.job_number] = _positions_for(
+                        cfg, rng, of_family(jo.product_name, []))[0]
                 return positions[jo.job_number]
 
             roll = rng.random()

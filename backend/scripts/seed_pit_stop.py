@@ -25,11 +25,13 @@ from app.db.session import AsyncSessionLocal
 from app.models.models import Department, Equipment, PitStopCategory, Plant
 
 # Lane geometry defaults (physical reality: 41 conveyors of 44 ft, one level).
+# The FIRST `sg_lanes` form the (smaller) soft-goods area; the rest are case goods.
 SPEC_DEFAULTS = {
     "lanes": 41,
     "lane_length_ft": 44,
     "slots_per_lane": 8,
     "late_after_hours": 24,
+    "sg_lanes": 7,             # soft-goods area ≈ 5× smaller than case goods (34 vs 7)
 }
 
 # Map placement default: the measured empty gap between fabrication (ends
@@ -37,13 +39,20 @@ SPEC_DEFAULTS = {
 # real proportions (44 ft ≈ 290 px long, 41 lanes ≈ 1280 px across).
 PLACEMENT = {"pos_x": 1840.0, "pos_y": -415.0, "pos_w": 320.0, "pos_h": 1280.0}
 
-# Placeholder categories (the real list comes later — user-curated afterwards).
+# Component categories per furniture family (curate colours freely afterwards):
+#   • both → shared by case goods AND soft goods (Panneaux, Quincaillerie)
+#   • cg   → case goods only (Tiroirs / Coussins, present only if the piece has them)
+#   • sg   → soft goods only (none here — rembourrage is done on the line, not buffered)
+# (name, colour, family). Rembourrage was removed: soft goods buffer only their
+# rigid components (panels + hardware) in the pit.
 DEFAULT_CATEGORIES = [
-    ("Panneaux",      "#b98a4e"),
-    ("Quincaillerie", "#8f9aa8"),
-    ("Rembourrage",   "#7c6fd0"),
-    ("Coussins",      "#d98fb6"),
+    ("Panneaux",      "#b98a4e", "both"),
+    ("Quincaillerie", "#8f9aa8", "both"),
+    ("Tiroirs",       "#5aa9a0", "cg"),
+    ("Coussins",      "#d98fb6", "cg"),
 ]
+# Legacy categories to drop when reconciling an already-seeded plant.
+LEGACY_CATEGORIES = ("Rembourrage",)
 
 
 async def _department_name(s, plant_id) -> str:
@@ -108,15 +117,30 @@ async def seed(plant_code: str) -> None:
                 changed = True
             print(f"  = equipment {code} already exists" + (" (spec completed)" if changed else ""))
 
-        existing = (await s.execute(
-            select(PitStopCategory).where(PitStopCategory.plant_id == plant.id)
-        )).scalars().all()
-        if not existing:
-            for i, (name, color) in enumerate(DEFAULT_CATEGORIES):
-                s.add(PitStopCategory(plant_id=plant.id, name=name, color=color, sort_order=i))
-            print(f"  + {len(DEFAULT_CATEGORIES)} default categories (placeholders — curate later)")
-        else:
-            print(f"  = {len(existing)} categories already present")
+        # Reconcile the category registry to the CG/SG model (idempotent): ensure
+        # every target category exists with the right family and order, keeping any
+        # colour the user already curated; drop legacy categories (Rembourrage).
+        existing = {
+            c.name: c for c in (await s.execute(
+                select(PitStopCategory).where(PitStopCategory.plant_id == plant.id)
+            )).scalars().all()
+        }
+        added = updated = removed = 0
+        for i, (name, color, family) in enumerate(DEFAULT_CATEGORIES):
+            cat = existing.get(name)
+            if cat is None:
+                s.add(PitStopCategory(plant_id=plant.id, name=name, color=color,
+                                      family=family, sort_order=i))
+                added += 1
+            elif cat.family != family or cat.sort_order != i:
+                cat.family, cat.sort_order = family, i   # keep the curated colour
+                updated += 1
+        for name in LEGACY_CATEGORIES:
+            cat = existing.get(name)
+            if cat is not None:
+                await s.delete(cat)
+                removed += 1
+        print(f"  = categories reconciled (+{added} new, ~{updated} updated, -{removed} legacy)")
 
         await s.commit()
         token = (eq.specifications or {}).get("ingest_token")

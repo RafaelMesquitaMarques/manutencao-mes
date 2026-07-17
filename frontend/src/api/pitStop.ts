@@ -51,18 +51,32 @@ export interface PitStopOf {
 }
 
 // One availability band of the OTIF PIT table (mirrors the client's report):
-// EU available split CG/SG, OTIF %, CG OF count.
+// EU available split CG/SG (availability-weighted, like their UEdispo),
+// OTIF %, CG OF count.
 export interface PitStopOtifBand {
-  cg_eu: number;                     // Σ equivalent units of the CG OFs in the band
+  cg_eu: number;                     // Σ availability-weighted EU of the CG OFs in the band
   sg_eu: number;                     //   idem soft goods
-  otif_pct: number | null;           // % of DUE OFs (scheduled ≤ today) reaching the band; null = none due
+  otif_pct: number | null;           // band CG EU ÷ total open CG EU in the buffer; null = no CG EU
   cg_ofs: number;                    // number of CG OFs in the band
+}
+
+// One CG/SG pair of the board table (availability-weighted EU).
+export interface PitStopFamilyPair { cg: number; sg: number }
+
+// The client's Feuil1 KPI table — see backend _board for the exact semantics.
+export interface PitStopBoardBlock {
+  eu_total: PitStopFamilyPair;             // pit + on line (repair netted out)
+  eu_pit: PitStopFamilyPair;               // not yet released to a line
+  on_line: PitStopFamilyPair;              // released ("Dispo sur ligne")
+  assigned_unavailable: PitStopFamilyPair; // released but material missing
+  awaiting_hardware: PitStopFamilyPair;    // blocked only by quincaillerie
+  awaiting_repair: PitStopFamilyPair;      // past the repair-age threshold
 }
 
 export interface PitStopKpis {
   total: number;
-  in_full: number;
-  almost: number;                    // ≥90 % but not in full (OTIF indicator)
+  in_full: number;                   // completeness = 100 % (client's DispoPit% semantics)
+  almost: number;                    // strictly > 90 % but below 100 %
   awaiting: number;
   on_hold: number;
   released: number;
@@ -71,9 +85,10 @@ export interface PitStopKpis {
   oldest_age_minutes: number | null;
   avg_age_minutes: number | null;
   otif: {
-    full: PitStopOtifBand;           // OFs 100 % in full
-    ge90: PitStopOtifBand;           // OFs ≥90 % — cumulative (includes full)
+    full: PitStopOtifBand;           // OFs 100 % available
+    ge90: PitStopOtifBand;           // OFs > 90 % (strict) — cumulative (includes full)
   };
+  board?: PitStopBoardBlock;         // optional: older backends don't send it
 }
 
 export interface PitStopConfig {
@@ -81,13 +96,24 @@ export interface PitStopConfig {
   lane_length_ft: number;            // 44 ft
   slots_per_lane: number;
   late_after_hours: number;
+  sg_lanes: number;                  // first N lanes = soft-goods area (rest = case goods)
+}
+
+// A component category tagged with the furniture family it belongs to (drives the
+// legend grouping): 'both' = shared, 'cg' = case goods only, 'sg' = soft goods only.
+export type PitStopFamily = 'cg' | 'sg' | 'both';
+
+export interface PitStopCategory {
+  name: string;                      // JobOrderComponent.category → colour of the stack layer
+  color: string;
+  family: PitStopFamily;
 }
 
 export interface PitStopState {
   plant_id: string;
   equipment_id: string;              // the block_kind='pit_stop' Equipment row
   config: PitStopConfig;
-  categories: { name: string; color: string }[];
+  categories: PitStopCategory[];
   ofs: PitStopOf[];
   kpis: PitStopKpis;
   generated_at: string;

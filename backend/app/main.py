@@ -1248,6 +1248,10 @@ async def _run_migrations() -> None:
         # Pit Stop TV: equivalent-unit factor per product unit (1 EU = 100 s of
         # assembly-line time). Will come from SAP with the OF; simulator seeds it.
         "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS eu_per_unit DOUBLE PRECISION",
+        # Pit Stop CG/SG split: which furniture family a component category belongs
+        # to ('both' shared · 'cg' case goods · 'sg' soft goods). Drives the legend
+        # grouping and the physically split buffer areas. seed_pit_stop reconciles.
+        "ALTER TABLE pit_stop_categories ADD COLUMN IF NOT EXISTS family VARCHAR(10) NOT NULL DEFAULT 'both'",
         # OF numbers are unique PER PLANT, not globally (Mirabel supplies St-Jérôme &
         # Las Vegas — the same number can exist in different plants). Drop the old
         # global unique constraint and scope uniqueness to (plant_id, job_number).

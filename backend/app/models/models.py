@@ -2633,7 +2633,13 @@ class PitStopOfState(Base):
 class PitStopCategory(Base):
     """Per-plant registry of component categories shown on the Pit Stop 3D stacks
     (name + colour). User-curated (the real category list comes later); the seed
-    creates sensible defaults. JobOrderComponent.category references the name."""
+    creates sensible defaults. JobOrderComponent.category references the name.
+
+    `family` records which furniture family the component belongs to and drives
+    the CG/SG split of the buffer: 'both' = shared (Panneaux, Quincaillerie),
+    'cg' = case goods only (Tiroirs, Coussins), 'sg' = soft goods only. The
+    legend groups categories by family and the buffer is physically split into a
+    case-goods area and a (smaller) soft-goods area."""
     __tablename__ = "pit_stop_categories"
     __table_args__ = (UniqueConstraint("plant_id", "name", name="uq_pit_stop_categories_plant_name"),)
 
@@ -2641,5 +2647,6 @@ class PitStopCategory(Base):
     plant_id   = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False, index=True)
     name       = Column(String(100), nullable=False)
     color      = Column(String(20), nullable=False, default="#8b5cf6")
+    family     = Column(String(10), nullable=False, default="both")   # 'cg' | 'sg' | 'both'
     sort_order = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -55,8 +55,19 @@ tables and the read model don't change.
   while its total on-hand > 0.
 - **Completeness** compares CUMULATIVE received (Σ in) against
   `job_order_components.required_qty` — leaving to the line does not make an OF
-  incomplete again. `in full` = every BOM line satisfied; the % is
-  Σ min(received, required) / Σ required.
+  incomplete again. Aligned with the client's OAV report (`DispoPit%`,
+  PDPAssemblageQS, verified 2026-07-16): availability per component CATEGORY =
+  Σ min(received, required) / Σ required inside the group, and the OF's % is the
+  **MINIMUM across categories** (weakest link), with carton/box categories
+  excluded from the min (packaging never gates assembly availability).
+  `in full` = every BOM line satisfied, carton included (drives the release
+  confirmation). OTIF bands: 100 % and STRICTLY > 90 % (cumulative); EU are
+  availability-weighted (× %, their `UEdispo`); OFs older than
+  `repair_after_days` (default 2) leave the bands and the denominator
+  ("EU en attente de réparation"), and OTIF % = band CG EU ÷ that net total.
+  The TV board mirrors the client's Feuil1 table (EU total / EU pit / Dispo sur
+  ligne / Assigné non disponible / Attente quincaillerie / bands / réparation;
+  "assigned to a line" maps to our released state in v1).
 - **Idempotency**: an exactly identical event (same OF, component, direction,
   quantity, position, `occurred_at`) is stored but flagged `duplicate`. If SAP
   can send a unique event id, we will use it as the idempotency key instead —
