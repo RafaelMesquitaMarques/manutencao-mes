@@ -1608,8 +1608,61 @@ export type PitStopCtxValue = {
   state: PitStopState | null;
   onSelectOf?: (jobOrderId: string) => void;
   selectedOfId?: string | null;
+  // OF watches ("spots") located in the buffer: job_order_id → live inactivity.
+  watches?: Map<string, WatchState> | null;
 };
 const PitStopCtx = createContext<PitStopCtxValue>({ state: null });
+
+// ── OF watch ("spot") beacons ─────────────────────────────────────────────────
+// A watched OF gets a light-beam + floating tag wherever it physically is:
+// above its Pit Stop stack (via PitStopCtx) or above the machine it's on/parked
+// at (ofWatchBeacons, precomputed by the page in map-pixel space).
+
+export interface WatchState { alerting: boolean; inactive_minutes: number }
+
+export interface WatchBeaconInfo extends WatchState {
+  id: string;
+  job_number: string;
+  parked: boolean;    // at the machine's output, not loaded on it
+  px: number;         // map-pixel beacon anchor (machine centre)
+  py: number;
+  h: number;          // world height of the tag above the floor
+}
+
+const WATCH_OK_HEX = '#22d3ee';
+const WATCH_ALERT_HEX = '#ef4444';
+
+/** Light beam + floating chip marking a watched OF. `baseY`→`tipY` is the beam;
+ * the tag floats just above the tip. Red + pulse + stalled minutes when the
+ * inactivity threshold is crossed. Html (not troika Text) — fonts fail offline. */
+function WatchTag({ jobNumber, alerting, minutes, baseY, tipY }: {
+  jobNumber: string; alerting: boolean; minutes: number; baseY: number; tipY: number;
+}) {
+  const color = alerting ? WATCH_ALERT_HEX : WATCH_OK_HEX;
+  return (
+    <group>
+      <mesh position={[0, baseY + (tipY - baseY) / 2, 0]}>
+        <cylinderGeometry args={[0.045, 0.045, Math.max(tipY - baseY, 0.1), 6]} />
+        <meshBasicMaterial color={color} transparent opacity={0.45} depthWrite={false} />
+      </mesh>
+      <Html position={[0, tipY + 0.35, 0]} center zIndexRange={[36, 0]} style={{ pointerEvents: 'none' }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap',
+          background: 'rgba(13,20,33,0.94)', border: `1.5px solid ${color}`,
+          borderRadius: 8, padding: '3px 8px', fontFamily: 'system-ui, sans-serif',
+          animation: alerting ? 'kaizoWatchPulse 1.2s ease-in-out infinite' : undefined,
+        }}>
+          <span style={{ width: 8, height: 8, borderRadius: 9999, background: color, boxShadow: `0 0 8px ${color}`, flexShrink: 0 }} />
+          <span style={{ fontSize: 11.5, fontWeight: 800, color: '#e5e7eb', fontFamily: 'ui-monospace, monospace' }}>{jobNumber}</span>
+          {alerting && <span style={{ fontSize: 10.5, fontWeight: 700, color }}>{minutes} min</span>}
+        </div>
+        {alerting && (
+          <style>{`@keyframes kaizoWatchPulse { 0%,100% { box-shadow: 0 0 0 0 ${color}66; } 50% { box-shadow: 0 0 0 7px ${color}00; } }`}</style>
+        )}
+      </Html>
+    </group>
+  );
+}
 
 const PIT_DEFAULTS = { lanes: 41, slots_per_lane: 8, sg_lanes: 7 };
 
@@ -1767,10 +1820,17 @@ function PitStopStack({ s, deckY, onSelectOf, selected }: {
   s: StackLayout; deckY: number; onSelectOf?: (id: string) => void; selected: boolean;
 }) {
   const { t } = useTranslation();
+  const { watches } = useContext(PitStopCtx);
   const [hover, setHover] = useState(false);
   const { of, fw, fd, top } = s;
+  const watch = watches?.get(of.job_order_id) ?? null;
   return (
     <group position={[s.x, 0, s.z]}>
+      {/* OF watch "spot" — beam + tag above the stack (clear of the late cone) */}
+      {watch && (
+        <WatchTag jobNumber={of.job_number} alerting={watch.alerting}
+          minutes={watch.inactive_minutes} baseY={deckY} tipY={top + (s.late ? 1.9 : 1.1)} />
+      )}
       {/* single hover/click volume over the whole stack */}
       <mesh
         position={[0, deckY + (top - deckY) / 2 + 0.05, 0]}
@@ -3451,6 +3511,7 @@ export default function Factory3D({ machines, floorPlanUrl, onSelect, editMode =
   tvThresholds, globalLineStats = null,
   sensors = [], tempUnit = 'C', selectedSensorId = null, onSelectSensor, onSensorCommit, onNearestSensorChange,
   machinePoints = [], pitStop = null, onSelectPitStopOf, selectedPitStopOfId = null,
+  ofWatchBeacons = [], pitStopWatches = null,
   zones = [], selectedZoneId = null, onSelectZone, onZoneCommit,
   snap = true, placement = null, onPlace,
   multiSelection = null, onMultiCommit }: {
@@ -3482,6 +3543,8 @@ export default function Factory3D({ machines, floorPlanUrl, onSelect, editMode =
   pitStop?: PitStopState | null;                    // polled buffer state (null = none/no data yet)
   onSelectPitStopOf?: (jobOrderId: string) => void; // click on an OF stack
   selectedPitStopOfId?: string | null;
+  ofWatchBeacons?: WatchBeaconInfo[];               // watched OFs located at a machine (map px)
+  pitStopWatches?: Map<string, WatchState> | null;  // watched OFs located in the buffer
   zones?: Z3D[];                                    // drawn flat on the floor in edit mode
   selectedZoneId?: string | null;
   onSelectZone?: (id: string) => void;
@@ -3541,7 +3604,7 @@ export default function Factory3D({ machines, floorPlanUrl, onSelect, editMode =
     <Canvas dpr={[1, 1.5]} camera={{ position: cameraPosition, fov: 45 }} style={{ background: '#0a0f1a' }} onPointerMissed={clearSelection}>
       {/* re-provide inside the Canvas — context does not cross the R3F renderer */}
       <TvThresholdsCtx.Provider value={tvThresholds ?? TV_THRESHOLDS_DEFAULT}>
-      <PitStopCtx.Provider value={{ state: pitStop, onSelectOf: onSelectPitStopOf, selectedOfId: selectedPitStopOfId }}>
+      <PitStopCtx.Provider value={{ state: pitStop, onSelectOf: onSelectPitStopOf, selectedOfId: selectedPitStopOfId, watches: pitStopWatches }}>
       <ambientLight intensity={0.4} />
       <SunLight />
       {floorPlanUrl ? (
@@ -3604,6 +3667,13 @@ export default function Factory3D({ machines, floorPlanUrl, onSelect, editMode =
           </mesh>
         );
       })}
+      {/* OF watch "spots" over machines (buffer spots render inside PitStopMesh) */}
+      {!editMode && ofWatchBeacons.map((b) => (
+        <group key={b.id} position={[(b.px - cx) * SCALE, 0, (b.py - cy) * SCALE]}>
+          <WatchTag jobNumber={b.job_number} alerting={b.alerting}
+            minutes={b.inactive_minutes} baseY={0.1} tipY={b.h} />
+        </group>
+      ))}
       {(() => {
         const sel = infoId ? machines.find((m) => m.id === infoId) : null;
         return sel ? <KpiBillboard m={sel} cx={cx} cy={cy} kpi={infoKpi} /> : null;

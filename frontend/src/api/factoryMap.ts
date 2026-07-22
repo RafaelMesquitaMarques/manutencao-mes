@@ -70,6 +70,9 @@ export interface MapMachine {
   open_ticket: boolean;
   open_ticket_id: string | null;
   open_ticket_number: string | null;
+  // Latest predictive-health snapshot (null when the module is off or not
+  // visible at this user's activation-ladder level).
+  predictive: { level: string; score: number } | null;
   pos_x: number | null;
   pos_y: number | null;
   pos_w: number | null;

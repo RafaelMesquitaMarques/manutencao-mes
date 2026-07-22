@@ -5,6 +5,7 @@ row, live status comes from the linked `machine` (kiosk). Also serves labelled z
 and an open-ticket flag per asset for the live "control room" view.
 """
 import asyncio
+import re
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
@@ -37,6 +38,31 @@ from app.core.permissions import require_permission
 from app.services.live_status import live_details_by_equipment
 
 router = APIRouter()
+
+
+async def _predictive_by_equipment(db: AsyncSession, plant_id, user) -> dict:
+    """Latest predictive health level/score per equipment — one DISTINCT ON
+    query, only when the module's activation ladder makes it visible to this
+    user. Empty dict = field stays null everywhere (zero map impact)."""
+    from app.models.models import PredictiveHealthSnapshot
+    from app.services.predictive.config import get_plant_settings, mode_visible_for
+    try:
+        st = await get_plant_settings(db, plant_id)
+        mode = st.mode.value if st and hasattr(st.mode, "value") else (st.mode if st else "off")
+        if not mode or mode == "off" or not mode_visible_for(user.role, mode):
+            return {}
+        rows = (await db.execute(
+            select(PredictiveHealthSnapshot)
+            .where(PredictiveHealthSnapshot.plant_id == plant_id)
+            .distinct(PredictiveHealthSnapshot.equipment_id)
+            .order_by(PredictiveHealthSnapshot.equipment_id, PredictiveHealthSnapshot.ts.desc())
+        )).scalars().all()
+        return {
+            str(r.equipment_id): {"level": r.level, "score": r.score}
+            for r in rows
+        }
+    except Exception:
+        return {}   # never let health decoration break the map
 
 
 class LayoutUpdate(BaseModel):
@@ -224,6 +250,31 @@ async def _queued_ofs_by_machine(db: AsyncSession, machine_ids: list, current_by
         b["items"].sort(key=lambda i: -(i["age_minutes"] if i["age_minutes"] is not None else -1))
         del b["items"][8:]
     return out
+
+
+# Only the CUTTING saws carry a planned queue ("File"): the OF pipeline exists
+# before the first cut; past the saw the routing isn't known yet, so no other
+# machine may show one. Data-driven match (covers SELCO, Schelling 3/4 and FH6
+# as configured today): beam_saw block or a saw/scie/coupe hint in the
+# equipment/machine codes, subtypes or names.
+_CUTTING_RE = re.compile(r"saw|scie|coupe", re.IGNORECASE)
+
+
+def _is_cutting(e, m) -> bool:
+    if (getattr(e, "block_kind", None) or "") == "beam_saw":
+        return True
+    fields = (
+        getattr(e, "subtype", None), getattr(e, "code", None), getattr(e, "name", None),
+        getattr(m, "code", None), getattr(m, "name", None),
+    )
+    return any(f and _CUTTING_RE.search(f) for f in fields)
+
+
+def _cutting_machine_ids(equipment, details) -> list:
+    return [
+        details[str(e.id)].machine.id for e in equipment
+        if details[str(e.id)].machine and _is_cutting(e, details[str(e.id)].machine)
+    ]
 
 
 async def _pipeline_ofs_by_machine(db: AsyncSession, machine_ids: list) -> dict:
@@ -463,7 +514,8 @@ async def get_factory_map(
     queued = await _queued_ofs_by_machine(
         db, [m.id for m in machines_all],
         {str(m.id): m.current_job_number for m in machines_all})
-    pipeline = await _pipeline_ofs_by_machine(db, [m.id for m in machines_all])
+    pipeline = await _pipeline_ofs_by_machine(db, _cutting_machine_ids(equipment, details))
+    predictive = await _predictive_by_equipment(db, plant_id, ctx.user)
 
     items = []
     for e in equipment:
@@ -498,6 +550,7 @@ async def get_factory_map(
             "open_ticket": ticket is not None,
             "open_ticket_id": ticket["id"] if ticket else None,
             "open_ticket_number": ticket["number"] if ticket else None,
+            "predictive": predictive.get(str(e.id)),
             "pos_x": e.pos_x, "pos_y": e.pos_y, "pos_w": e.pos_w, "pos_h": e.pos_h,
             "rotation_deg": e.rotation_deg, "icon_url": e.icon_url,
             "model_url": e.model_url, "height_3d": e.height_3d,
@@ -826,7 +879,7 @@ async def _status_payload(db: AsyncSession, plant_id) -> dict:
     queued = await _queued_ofs_by_machine(
         db, [m.id for m in machines_all],
         {str(m.id): m.current_job_number for m in machines_all})
-    pipeline = await _pipeline_ofs_by_machine(db, [m.id for m in machines_all])
+    pipeline = await _pipeline_ofs_by_machine(db, _cutting_machine_ids(equipment, details))
     out = []
     for e in equipment:
         la = details[str(e.id)]

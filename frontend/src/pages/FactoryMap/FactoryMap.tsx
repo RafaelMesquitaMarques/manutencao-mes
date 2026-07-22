@@ -8,7 +8,7 @@ import '@xyflow/react/dist/style.css';
 import {
   Map as MapIcon, Pencil, Eye, Upload, RefreshCw, Image as ImageIcon,
   Camera, Wrench, RotateCw, Trash2, X, Plus, ExternalLink, Box, Boxes, Maximize2, Minimize2, Move,
-  Search, ChevronDown, ChevronUp, Magnet, RotateCcw,
+  Search, ChevronDown, ChevronUp, Magnet, RotateCcw, MapPin, BellRing,
 } from 'lucide-react';
 import api from '../../api/axios';
 import { useTranslation } from 'react-i18next';
@@ -25,6 +25,10 @@ import { fetchDepartments } from '../../api/departments';
 import { fetchKPISummary } from '../../api/workOrders';
 import { fetchJobOrders } from '../../api/jobOrders';
 import { fetchPitStopState, patchPitStopOf, type PitStopCategory, type PitStopOf, type PitStopState } from '../../api/pitStop';
+import {
+  fetchOfWatches, locateOf, createOfWatch, createOfWatchByNumber, patchOfWatch, deleteOfWatch,
+  WATCH_THRESHOLDS, type OfWatch, type OfLocateResult,
+} from '../../api/ofWatch';
 
 // Furniture-family accents — mirror CG_ACCENT / SG_ACCENT in Factory3D so the 2D
 // legend and the 3D areas read as the same case-goods (amber) / soft-goods (violet) split.
@@ -32,7 +36,7 @@ const PIT_CG_ACCENT = '#f59e0b';
 const PIT_SG_ACCENT = '#8b5cf6';
 import { COMPLETENESS_HEX, OF_LATE_HEX, completenessColor, isDueToday, ofPlateColor, ofStateColor } from '../../utils/pitStopColors';
 import type { KPISummary, JobOrder } from '../../types';
-import Factory3D, { PROP_CATALOG, ORBIT_MARGIN, type M3D, type P3D, type S3D, type Z3D, type MachinePoint, type Commit, type PropCommit, type SensorCommit, type ZoneCommit3D, type FocusTarget, type CameraPose, type PlacementSpec, type MultiSelection } from './Factory3D';
+import Factory3D, { PROP_CATALOG, ORBIT_MARGIN, type M3D, type P3D, type S3D, type Z3D, type MachinePoint, type Commit, type PropCommit, type SensorCommit, type ZoneCommit3D, type FocusTarget, type CameraPose, type PlacementSpec, type MultiSelection, type WatchBeaconInfo, type WatchState } from './Factory3D';
 import { toUnit, tempColor, weatherIcon } from '../../utils/temperature';
 import { useAuthStore } from '../../store/authStore';
 import { usePlantStore } from '../../store/plantStore';
@@ -339,6 +343,20 @@ function MachineNode({ data, selected, width, height }: NodeProps) {
           </span>
         )}
 
+        {/* Predictive-health warning dot — only when the engine sees elevated risk
+            (alert/critical), so healthy machines stay visually unchanged. */}
+        {(m.predictive?.level === 'alert' || m.predictive?.level === 'critical') && (
+          <span
+            title={`${t('predictive.tabHealth')}: ${Math.round(m.predictive.score)}/100`}
+            style={{
+              position: 'absolute', top: 4, right: 4, width: 12, height: 12, borderRadius: '50%',
+              background: m.predictive.level === 'critical' ? '#f87171' : '#fb923c',
+              boxShadow: `0 0 6px 1px ${m.predictive.level === 'critical' ? '#f87171' : '#fb923c'}`,
+              zIndex: 2,
+            }}
+          />
+        )}
+
         {/* Technician pictograms — one per tech actively working (purple). Hidden
             while selected so they don't sit under the edit controls. */}
         {!selected && m.status === 'intervention' && m.technicians && m.technicians.length > 0 && (
@@ -485,7 +503,13 @@ export default function FactoryMap() {
   const [pitStopOfId, setPitStopOfId] = useState<string | null>(null);
   const [pitStopZone, setPitStopZone] = useState(false);
   const [pitStopSearch, setPitStopSearch] = useState('');
-  const [pitStopSearchMiss, setPitStopSearchMiss] = useState(false);
+  const [searchMiss, setSearchMiss] = useState(false);   // true = no OF matches the query
+  // Search hit with nowhere to fly to (no scan trail yet / machine not on the
+  // map): shown as a result card under the search field instead of a miss.
+  const [searchResult, setSearchResult] = useState<OfLocateResult | null>(null);
+  // OF watches ("spots") — polled ~30 s in view mode; beacons + side widget.
+  const [ofWatches, setOfWatches] = useState<OfWatch[] | null>(null);
+  const [watchListOpen, setWatchListOpen] = useState(true);
   const [legendOpen, setLegendOpen] = useState(false);
   const [transformMode, setTransformMode] = useState<'translate' | 'rotate' | 'scale'>('translate');
   const [unplacedSearch, setUnplacedSearch] = useState('');
@@ -500,8 +524,9 @@ export default function FactoryMap() {
   const [detail, setDetail] = useState<MapMachine | null>(null);
   const [kpi, setKpi] = useState<KPISummary | null>(null);
   const [kpiLoading, setKpiLoading] = useState(false);
-  // OF (Ordre de fabrication) panel — opened by clicking a conveyor tied to a machine.
-  const [ofPanel, setOfPanel] = useState<{ machineId: string; name: string; role: string | null } | null>(null);
+  // OF (Ordre de fabrication) panel — opened by clicking a conveyor tied to a
+  // machine (or by the OF search; `highlight` rings the searched OF in the list).
+  const [ofPanel, setOfPanel] = useState<{ machineId: string; name: string; role: string | null; highlight?: string } | null>(null);
   const [ofList, setOfList] = useState<JobOrder[] | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -1173,7 +1198,7 @@ export default function FactoryMap() {
   }, [t]);
 
   // A machine is no longer on screen after a plant / asset-filter change — drop any stale focus.
-  useEffect(() => { setFocus(null); setSelSensor(null); setNearestSensorId(null); }, [plantId, assetFilter]);
+  useEffect(() => { setFocus(null); setSelSensor(null); setNearestSensorId(null); setSearchResult(null); setSearchMiss(false); }, [plantId, assetFilter]);
 
   // A region chip (Overview or a department): click flies to its pinned pose or its
   // auto frame; in edit mode a camera button pins/updates the current pose and (once
@@ -1190,7 +1215,7 @@ export default function FactoryMap() {
     return (
       <span key={regionKey} className={`group inline-flex items-center rounded-md border transition-colors overflow-hidden ${base}`}>
         <button onClick={() => focusRegion(regionKey, box)} title={t('factoryMap.focusDepartment', { name: label })}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs">
+          className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] leading-4">
           <span className="truncate max-w-[140px]">{label}</span>
           {count != null && <span className={`text-[10px] ${primary ? 'text-indigo-200/80' : 'text-gray-500'}`}>{count}</span>}
           {pinned && <Camera size={10} className={primary ? 'text-white/80' : 'text-indigo-300'} />}
@@ -1199,13 +1224,13 @@ export default function FactoryMap() {
           <>
             <button onClick={() => pinRegionView(regionKey, label)}
               title={pinned ? t('factoryMap.updatePinnedView') : t('factoryMap.pinCurrentView')}
-              className={`px-1.5 py-1 border-l ${divider} ${primary ? 'text-white/80 hover:text-white hover:bg-white/10' : 'text-gray-400 hover:text-white hover:bg-gray-700'}`}>
+              className={`px-1.5 py-0.5 border-l ${divider} ${primary ? 'text-white/80 hover:text-white hover:bg-white/10' : 'text-gray-400 hover:text-white hover:bg-gray-700'}`}>
               <Camera size={12} />
             </button>
             {pinned && (
               <button onClick={() => resetRegionView(regionKey)}
                 title={hasAutoFrame || primary ? t('factoryMap.resetView') : t('factoryMap.unlinkView')}
-                className={`px-1.5 py-1 border-l ${divider} ${primary ? 'text-white/70 hover:text-white hover:bg-white/10' : 'text-indigo-300/70 hover:text-red-400 hover:bg-red-500/10'}`}>
+                className={`px-1.5 py-0.5 border-l ${divider} ${primary ? 'text-white/70 hover:text-white hover:bg-white/10' : 'text-indigo-300/70 hover:text-red-400 hover:bg-red-500/10'}`}>
                 <RotateCcw size={12} />
               </button>
             )}
@@ -1378,16 +1403,16 @@ export default function FactoryMap() {
     setPitStopOfId(id || null);
   }, []);
 
-  // Fly the camera to an OF's stack: lane/slot → local px inside the zone rect,
+  // Fly the camera to a buffer cell: lane/slot → local px inside the zone rect,
   // rotated with the block, then a tight FocusTarget box around that point.
-  const focusPitStopOf = useCallback((of: PitStopOf) => {
+  const focusPitStopCell = useCallback((lane: number | null, slot: number | null) => {
     if (!pitStopEq || pitStopEq.pos_x == null || pitStopEq.pos_y == null) return;
     const rect = { x: pitStopEq.pos_x, y: pitStopEq.pos_y, w: pitStopEq.pos_w ?? 320, h: pitStopEq.pos_h ?? 1280 };
     const lanes = pitStop?.config.lanes ?? 41;
     const slots = pitStop?.config.slots_per_lane ?? 8;
-    const p = of.positions.find((pp) => pp.lane != null && pp.slot != null);
-    const lx = p ? ((Math.min(p.slot!, slots) - 0.5) / slots) * rect.w : -20;   // no position → entry edge
-    const ly = p ? ((Math.min(p.lane!, lanes) - 0.5) / lanes) * rect.h : rect.h / 2;
+    const has = lane != null && slot != null;
+    const lx = has ? ((Math.min(slot!, slots) - 0.5) / slots) * rect.w : -20;   // no position → entry edge
+    const ly = has ? ((Math.min(lane!, lanes) - 0.5) / lanes) * rect.h : rect.h / 2;
     const cxr = rect.x + rect.w / 2, cyr = rect.y + rect.h / 2;
     const rad = ((pitStopEq.rotation_deg ?? 0) * Math.PI) / 180;
     const dx = rect.x + lx - cxr, dy = rect.y + ly - cyr;
@@ -1395,18 +1420,190 @@ export default function FactoryMap() {
     const py = cyr + dx * Math.sin(rad) + dy * Math.cos(rad);
     focusNonce.current += 1;
     setFocus({ kind: 'box', minX: px - 90, maxX: px + 90, minY: py - 90, maxY: py + 90, nonce: focusNonce.current });
-    onSelectPitStopOf(of.job_order_id);
-  }, [pitStopEq, pitStop, onSelectPitStopOf]);
+  }, [pitStopEq, pitStop]);
 
+  const focusPitStopOf = useCallback((of: PitStopOf) => {
+    const p = of.positions.find((pp) => pp.lane != null && pp.slot != null);
+    focusPitStopCell(p?.lane ?? null, p?.slot ?? null);
+    onSelectPitStopOf(of.job_order_id);
+  }, [focusPitStopCell, onSelectPitStopOf]);
+
+  // Fly the camera to a placed equipment block (machine hit of the OF search).
+  const focusEquipment = useCallback((eq: MapMachine) => {
+    if (eq.pos_x == null || eq.pos_y == null) return;
+    const w = eq.pos_w ?? 152, h = eq.pos_h ?? 64, m = 140;
+    focusNonce.current += 1;
+    setFocus({ kind: 'box', minX: eq.pos_x - m, maxX: eq.pos_x + w + m, minY: eq.pos_y - m, maxY: eq.pos_y + h + m, nonce: focusNonce.current });
+  }, []);
+
+  // machine_id → its Equipment block on this map (for OF locations + beacons).
+  const equipByMachineId = useMemo(() => {
+    const m = new Map<string, MapMachine>();
+    equipById.forEach((e) => { if (e.machine_id) m.set(e.machine_id, e); });
+    return m;
+  }, [equipById]);
+
+  // ── OF watches ("spots") ──
+  // Slow poll (~30 s), view mode only — inactivity clocks move by the minute.
+  useEffect(() => {
+    if (!plantId || editMode) { setOfWatches(null); return; }
+    let cancelled = false;
+    const tick = () => fetchOfWatches(plantId)
+      .then((w) => { if (!cancelled) setOfWatches(w); })
+      .catch(() => { /* keep the last good list; next tick retries */ });
+    tick();
+    const iv = setInterval(tick, 30000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [plantId, editMode]);
+
+  const refreshOfWatches = useCallback(() => {
+    if (!plantId) return;
+    fetchOfWatches(plantId).then(setOfWatches).catch(() => {});
+  }, [plantId]);
+
+  const watchByJobOrderId = useMemo(() => {
+    const m = new Map<string, OfWatch>();
+    ofWatches?.forEach((w) => m.set(w.job_order_id, w));
+    return m;
+  }, [ofWatches]);
+
+  // By NUMBER too: machine chips (loaded/queued/planned OFs) only carry the number.
+  const watchByJobNumber = useMemo(() => {
+    const m = new Map<string, OfWatch>();
+    ofWatches?.forEach((w) => m.set(w.job_number.toLowerCase(), w));
+    return m;
+  }, [ofWatches]);
+
+  const watchOf = useCallback((jobOrderId: string, threshold?: number) => {
+    if (!plantId) return;
+    createOfWatch(plantId, jobOrderId, threshold).then(refreshOfWatches).catch(() => {});
+  }, [plantId, refreshOfWatches]);
+
+  // Follow an OF straight from a machine chip — before it ever reaches the Pit.
+  // The backend creates the job_orders row if the number has no scan trail yet.
+  const watchOfByNumber = useCallback((jobNumber: string, machineId?: string | null) => {
+    if (!plantId) return;
+    createOfWatchByNumber(plantId, jobNumber, machineId).then(refreshOfWatches).catch(() => {});
+  }, [plantId, refreshOfWatches]);
+
+  const unwatchOf = useCallback((watchId: string) => {
+    deleteOfWatch(watchId).then(refreshOfWatches).catch(() => {});
+  }, [refreshOfWatches]);
+
+  const setWatchThreshold = useCallback((watchId: string, minutes: number) => {
+    patchOfWatch(watchId, minutes).then(refreshOfWatches).catch(() => {});
+  }, [refreshOfWatches]);
+
+  // Fly to wherever a watched OF is right now (row click on the watch widget).
+  const focusWatch = useCallback((w: OfWatch) => {
+    if (w.location.kind === 'pit_stop') {
+      focusPitStopCell(w.location.lane, w.location.slot);
+      if (pitStop?.ofs.some((o) => o.job_order_id === w.job_order_id)) onSelectPitStopOf(w.job_order_id);
+      return;
+    }
+    if (w.location.kind === 'machine' && w.location.machine_id) {
+      const eq = equipByMachineId.get(w.location.machine_id);
+      if (eq) focusEquipment(eq);
+    }
+  }, [focusPitStopCell, focusEquipment, equipByMachineId, pitStop, onSelectPitStopOf]);
+
+  // Beacons for Factory3D: watched OFs sitting at a machine (loaded or parked),
+  // anchored to that machine's block on this map. Buffer spots ride PitStopCtx.
+  const watchBeacons = useMemo<WatchBeaconInfo[]>(() => {
+    if (!ofWatches) return [];
+    const out: WatchBeaconInfo[] = [];
+    for (const w of ofWatches) {
+      if (w.of_status === 'completed' || w.of_status === 'cancelled') continue;
+      if (w.location.kind !== 'machine' || !w.location.machine_id) continue;
+      const eq = equipByMachineId.get(w.location.machine_id);
+      if (!eq || eq.pos_x == null || eq.pos_y == null) continue;
+      out.push({
+        id: w.id, job_number: w.job_number, alerting: w.alerting,
+        inactive_minutes: w.inactive_minutes ?? 0, parked: w.location.parked,
+        px: eq.pos_x + (eq.pos_w ?? 152) / 2, py: eq.pos_y + (eq.pos_h ?? 64) / 2,
+        h: (eq.height_3d ?? 4) + 2.2,
+      });
+    }
+    return out;
+  }, [ofWatches, equipByMachineId]);
+
+  const pitStopWatchMap = useMemo(() => {
+    const m = new Map<string, WatchState>();
+    ofWatches?.forEach((w) => {
+      if (w.location.kind === 'pit_stop' && w.of_status !== 'completed' && w.of_status !== 'cancelled') {
+        m.set(w.job_order_id, { alerting: w.alerting, inactive_minutes: w.inactive_minutes ?? 0 });
+      }
+    });
+    return m;
+  }, [ofWatches]);
+
+  // Human label for where a watched OF is (widget rows + panels + search card).
+  const watchLocationLabel = useCallback((loc: OfWatch['location']) => {
+    if (loc.kind === 'pit_stop') return `${t('pitStop.title')}${loc.position_code ? ` ${loc.position_code}` : ''}`;
+    if (loc.kind === 'machine') {
+      if (loc.planned) return t('ofWatch.plannedAt', { name: loc.machine_name ?? '—' });
+      return loc.parked ? t('ofWatch.parkedAt', { name: loc.machine_name ?? '—' }) : (loc.machine_name ?? '—');
+    }
+    return t('ofWatch.locationUnknown');
+  }, [t]);
+
+  // Whole-map OF search: the buffer first (local, instant), then the OFs shown
+  // on machines (loaded / queued / planned — they may have no scan trail yet),
+  // then the backend locator — wherever the OF physically is. An OF that exists
+  // but has nowhere to fly to (no trace / machine not placed) still "hits": it
+  // opens a result card instead of a miss.
   const submitPitStopSearch = useCallback((e: React.FormEvent) => {
     e.preventDefault();
-    const q = pitStopSearch.trim().toLowerCase();
-    if (!q || !pitStop) return;
-    const of = pitStop.ofs.find((o) => o.job_number.toLowerCase() === q)
-      ?? pitStop.ofs.find((o) => o.job_number.toLowerCase().includes(q));
-    setPitStopSearchMiss(!of);
-    if (of) focusPitStopOf(of);
-  }, [pitStopSearch, pitStop, focusPitStopOf]);
+    const raw = pitStopSearch.trim();
+    const q = raw.toLowerCase();
+    if (!q || !plantId) return;
+    setSearchResult(null);
+    const of = pitStop?.ofs.find((o) => o.job_number.toLowerCase() === q)
+      ?? pitStop?.ofs.find((o) => o.job_number.toLowerCase().includes(q));
+    if (of) { setSearchMiss(false); focusPitStopOf(of); return; }
+    // OFs displayed at a machine right now (exact match first, then contains).
+    const machineHit = (matches: (n: string) => boolean): { eq: MapMachine; num: string } | null => {
+      for (const m of equipById.values()) {
+        if (m.pos_x == null || !m.machine_id) continue;
+        if (m.current_job_number && matches(m.current_job_number.toLowerCase())) return { eq: m, num: m.current_job_number };
+        const qd = m.queued_ofs?.find((o) => matches(o.job_number.toLowerCase()));
+        if (qd) return { eq: m, num: qd.job_number };
+        const pl = m.pipeline_ofs?.find((o) => matches(o.job_number.toLowerCase()));
+        if (pl) return { eq: m, num: pl.job_number };
+      }
+      return null;
+    };
+    const hit = machineHit((n) => n === q) ?? machineHit((n) => n.includes(q));
+    if (hit) {
+      setSearchMiss(false);
+      focusEquipment(hit.eq);
+      setDetail(null); setPitStopOfId(null); setPitStopZone(false);
+      setOfPanel({ machineId: hit.eq.machine_id!, name: hit.eq.name, role: null, highlight: hit.num });
+      return;
+    }
+    locateOf(plantId, raw).then((res) => {
+      if (!res) { setSearchMiss(true); return; }
+      setSearchMiss(false);
+      const loc = res.location;
+      if (loc.kind === 'machine' && loc.machine_id) {
+        const eq = equipByMachineId.get(loc.machine_id);
+        if (eq && eq.pos_x != null) {
+          focusEquipment(eq);
+          setDetail(null); setPitStopOfId(null); setPitStopZone(false);
+          setOfPanel({ machineId: loc.machine_id, name: eq.name, role: null, highlight: res.job_number });
+          return;
+        }
+        setSearchResult(res);   // machine known but not placed on this map
+        return;
+      }
+      if (loc.kind === 'pit_stop') {
+        focusPitStopCell(loc.lane, loc.slot);
+        if (pitStop?.ofs.some((o) => o.job_order_id === res.job_order_id)) onSelectPitStopOf(res.job_order_id);
+        return;
+      }
+      setSearchResult(res);     // exists, but no physical trace on the map yet
+    }).catch(() => setSearchMiss(true));
+  }, [pitStopSearch, pitStop, plantId, equipById, equipByMachineId, focusPitStopOf, focusPitStopCell, focusEquipment, onSelectPitStopOf]);
 
   const equipByIdRef = useRef(equipById);
   useEffect(() => { equipByIdRef.current = equipById; }, [equipById]);
@@ -1994,13 +2191,13 @@ export default function FactoryMap() {
           {/* Saved views — overview + auto per-department frames + user-saved poses */}
           {mode3d && (overviewBox || views.length > 0 || editMode) && (
             <div className="absolute top-3 left-3 z-20 max-w-[62%] flex flex-col items-start gap-2">
-              <div className="flex flex-wrap items-center gap-1.5 max-w-full bg-gray-900/90 border border-gray-700 rounded-lg p-1.5">
+              <div className="flex flex-wrap items-center gap-1 max-w-full bg-gray-900/90 border border-gray-700 rounded-lg p-1">
                 <span className="flex items-center gap-1 pl-1 pr-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
                   <Eye size={12} className="text-indigo-400" /> {t('factoryMap.savedViews')}
                 </span>
                 {overviewBox && renderRegionChip(OVERVIEW_KEY, t('factoryMap.overview'), overviewBox, undefined, true)}
                 {regions.map((r) => renderRegionChip(r.name, r.name, r.box, r.count))}
-                {customViews.length > 0 && <span className="w-px h-4 bg-gray-700 mx-0.5" />}
+                {customViews.length > 0 && <span className="w-px h-3.5 bg-gray-700 mx-0.5" />}
                 {/* free user-saved camera poses (click flies to the exact pose); in edit
                     mode a department picker links a view to a department → it adopts that
                     department's machines and moves into the region chips above. */}
@@ -2008,7 +2205,7 @@ export default function FactoryMap() {
                   <span key={v.id}
                     className="group inline-flex items-center rounded-md bg-indigo-500/10 text-indigo-200 border border-indigo-500/30 hover:border-indigo-400/70 transition-colors overflow-hidden">
                     <button onClick={() => focusView(v)} title={v.name}
-                      className="px-2.5 py-1 text-xs">
+                      className="px-2 py-0.5 text-[11px] leading-4">
                       <span className="truncate max-w-[140px] inline-block align-middle">{v.name}</span>
                     </button>
                     {editMode && (
@@ -2017,13 +2214,13 @@ export default function FactoryMap() {
                           value=""
                           onChange={(e) => { if (e.target.value) linkViewToDepartment(v, e.target.value); }}
                           title={t('factoryMap.linkViewHint')}
-                          className="bg-transparent text-indigo-300/80 text-[10px] border-l border-indigo-500/30 pl-1 pr-0.5 py-1 focus:outline-none hover:text-white cursor-pointer"
+                          className="bg-transparent text-indigo-300/80 text-[10px] border-l border-indigo-500/30 pl-1 pr-0.5 py-0.5 focus:outline-none hover:text-white cursor-pointer"
                         >
                           <option value="">{t('factoryMap.linkToDepartment')}</option>
                           {deptOptions.map((d) => <option key={d} value={d} className="text-gray-200 bg-gray-800">{d}</option>)}
                         </select>
                         <button onClick={() => removeView(v)} title={t('common.delete')}
-                          className="px-1.5 py-1 text-indigo-300/60 hover:text-red-400 hover:bg-red-500/10 border-l border-indigo-500/30">
+                          className="px-1.5 py-0.5 text-indigo-300/60 hover:text-red-400 hover:bg-red-500/10 border-l border-indigo-500/30">
                           <X size={12} />
                         </button>
                       </>
@@ -2032,8 +2229,8 @@ export default function FactoryMap() {
                 ))}
                 {editMode && (viewNameDraft === null ? (
                   <button onClick={() => setViewNameDraft('')} title={t('factoryMap.saveViewHint')}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded-md bg-gray-800 text-gray-200 border border-dashed border-gray-600 hover:border-indigo-500/60 hover:text-white transition-colors">
-                    <Camera size={13} /> {t('factoryMap.saveView')}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] leading-4 rounded-md bg-gray-800 text-gray-200 border border-dashed border-gray-600 hover:border-indigo-500/60 hover:text-white transition-colors">
+                    <Camera size={12} /> {t('factoryMap.saveView')}
                   </button>
                 ) : (
                   <form
@@ -2123,20 +2320,138 @@ export default function FactoryMap() {
               </div>
             );
           })()}
-          {/* Pit Stop — OF search (fly-to) below the fullscreen button */}
-          {mode3d && !editMode && pitStop && (
+          {/* OF search (whole map: buffer + machines + backend locator), the
+              search-result card (an OF found but with nowhere to fly to) and the
+              watch widget — one column under the fullscreen button. */}
+          {mode3d && !editMode && (
+          <div className="absolute top-14 right-3 z-10 flex flex-col items-end gap-2">
             <form onSubmit={submitPitStopSearch}
-              className="absolute top-14 right-3 z-10 flex items-center gap-1.5 bg-gray-900/90 border border-gray-700 rounded-lg pl-2 pr-1 py-1">
-              <Search size={13} className={pitStopSearchMiss ? 'text-red-400' : 'text-gray-500'} />
+              className="flex items-center gap-1.5 bg-gray-900/90 border border-gray-700 rounded-lg pl-2 pr-1 py-1">
+              <Search size={13} className={searchMiss ? 'text-red-400' : 'text-gray-500'} />
               <input
                 value={pitStopSearch}
-                onChange={(e) => { setPitStopSearch(e.target.value); setPitStopSearchMiss(false); }}
+                onChange={(e) => { setPitStopSearch(e.target.value); setSearchMiss(false); setSearchResult(null); }}
                 placeholder={t('pitStop.searchPlaceholder')}
-                title={pitStopSearchMiss ? t('pitStop.searchNotFound') : undefined}
-                className={`w-36 bg-transparent text-xs focus:outline-none placeholder-gray-600 ${pitStopSearchMiss ? 'text-red-300' : 'text-gray-200'}`}
+                title={searchMiss ? t('pitStop.searchNotFound') : undefined}
+                className={`w-36 bg-transparent text-xs focus:outline-none placeholder-gray-600 ${searchMiss ? 'text-red-300' : 'text-gray-200'}`}
               />
-              {pitStopSearchMiss && <span className="text-[10px] text-red-400 pr-1">{t('pitStop.searchNotFound')}</span>}
+              {searchMiss && <span className="text-[10px] text-red-400 pr-1">{t('pitStop.searchNotFound')}</span>}
             </form>
+            {/* Result card: the OF exists (e.g. planned, not yet in the Pit) but has
+                no spot on the map to fly to — show what/where it is + follow it. */}
+            {searchResult && (() => {
+              const res = searchResult;
+              const w = watchByJobOrderId.get(res.job_order_id) ?? null;
+              const done = res.of_status === 'completed' || res.of_status === 'cancelled';
+              return (
+                <div className="w-64 bg-gray-900/95 border border-gray-700 rounded-lg p-2.5 text-xs">
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="font-mono text-gray-100 font-semibold">{res.job_number}</span>
+                    <button onClick={() => setSearchResult(null)} className="text-gray-500 hover:text-gray-300"><X size={13} /></button>
+                  </div>
+                  {res.product_name && <p className="text-gray-400 truncate mt-0.5">{res.product_name}</p>}
+                  <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                    {res.of_status && (
+                      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-gray-800 text-gray-300">
+                        {t(`jobOrders.status_${res.of_status}`)}
+                      </span>
+                    )}
+                    <span className="text-[10px] font-semibold text-amber-300/90">
+                      {res.location.kind === 'unknown' ? t('ofWatch.notOnMap') : watchLocationLabel(res.location)}
+                    </span>
+                  </div>
+                  <div className="space-y-0.5 text-[11px] text-gray-500 mt-1.5">
+                    {res.location.kind !== 'unknown' && <p>{t('ofWatch.notOnMap')}</p>}
+                    {res.scheduled_date && (
+                      <p>{t('pitStop.scheduled')}: <span className="text-gray-300">{res.scheduled_date}</span></p>
+                    )}
+                    {res.last_movement_at && (
+                      <p>{t('ofWatch.lastMovement')}: <span className="text-gray-300">
+                        {new Date(res.last_movement_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}
+                      </span></p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 mt-2">
+                    {!done && (
+                      <button onClick={() => (w ? unwatchOf(w.id) : watchOf(res.job_order_id))}
+                        className={`flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-[11px] border ${w
+                          ? 'text-cyan-300 bg-cyan-500/15 border-cyan-500/40 hover:bg-cyan-500/25'
+                          : 'text-cyan-200 bg-cyan-500/10 border-cyan-500/30 hover:bg-cyan-500/20'}`}>
+                        <MapPin size={12} /> {w ? t('ofWatch.unwatch') : t('ofWatch.watch')}
+                      </button>
+                    )}
+                    <button onClick={() => navigate(`/job-orders/${res.job_order_id}`)}
+                      className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-[11px] text-white bg-indigo-600 hover:bg-indigo-500">
+                      <ExternalLink size={12} /> {t('ofWatch.openOf')}
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          {/* OF watches ("spots") — collapsible widget under the search field */}
+          {(ofWatches?.length ?? 0) > 0 && (() => {
+            const alerting = ofWatches!.filter((w) => w.alerting).length;
+            return (
+              <div className="w-64 bg-gray-900/90 border border-gray-700 rounded-lg text-xs">
+                <button onClick={() => setWatchListOpen((v) => !v)}
+                  className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 text-gray-300 hover:text-white">
+                  <span className="flex items-center gap-1.5 font-semibold">
+                    <MapPin size={13} className="text-cyan-400" /> {t('ofWatch.title')}
+                    <span className="text-gray-500">({ofWatches!.length})</span>
+                    {alerting > 0 && (
+                      <span className="flex items-center gap-1 text-[10px] font-bold px-1.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/30">
+                        <BellRing size={10} /> {alerting}
+                      </span>
+                    )}
+                  </span>
+                  {watchListOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                </button>
+                {watchListOpen && (
+                  <div className="px-1.5 pb-1.5 space-y-1 max-h-[45vh] overflow-y-auto">
+                    {ofWatches!.map((w) => {
+                      const done = w.of_status === 'completed' || w.of_status === 'cancelled';
+                      return (
+                        <div key={w.id}
+                          className={`rounded-lg border px-2 py-1.5 ${w.alerting ? 'border-red-500/50 bg-red-500/5' : 'border-gray-800 bg-gray-900'}`}>
+                          <div className="flex items-center gap-1.5">
+                            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${done ? 'bg-gray-600' : w.alerting ? 'bg-red-500 animate-pulse' : 'bg-cyan-400'}`} />
+                            <button onClick={() => focusWatch(w)} className="flex-1 min-w-0 text-left group">
+                              <span className="font-mono text-gray-200 group-hover:text-white">{w.job_number}</span>
+                              <span className="block text-[10px] text-gray-500 truncate">
+                                {done ? t('ofWatch.completed') : watchLocationLabel(w.location)}
+                              </span>
+                            </button>
+                            {!done && w.inactive_minutes != null && (
+                              <span className={`text-[10px] font-bold flex-shrink-0 ${w.alerting ? 'text-red-400' : 'text-gray-400'}`}
+                                title={t('ofWatch.inactiveFor', { count: w.inactive_minutes })}>
+                                {w.inactive_minutes} min
+                              </span>
+                            )}
+                            <button onClick={() => unwatchOf(w.id)} title={t('ofWatch.unwatch')}
+                              className="text-gray-600 hover:text-red-400 flex-shrink-0"><X size={12} /></button>
+                          </div>
+                          {!done && (
+                            <div className="flex items-center gap-1.5 mt-1 pl-3.5">
+                              <span className="text-[10px] text-gray-500">{t('ofWatch.threshold')}</span>
+                              <select
+                                value={w.threshold_minutes}
+                                onChange={(e) => setWatchThreshold(w.id, parseInt(e.target.value, 10))}
+                                className="bg-gray-800 border border-gray-700 rounded text-[10px] text-gray-200 px-1 py-0.5 focus:outline-none focus:border-cyan-500">
+                                {WATCH_THRESHOLDS.map((m) => (
+                                  <option key={m} value={m}>{t('ofWatch.minutes', { count: m })}</option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+          </div>
           )}
           {/* Pit Stop — collapsible legend (OF states + component categories) */}
           {mode3d && !editMode && pitStop && (
@@ -2222,6 +2537,7 @@ export default function FactoryMap() {
               onNearestSensorChange={setNearestSensorId}
               machinePoints={machinePoints}
               pitStop={pitStop} onSelectPitStopOf={onSelectPitStopOf} selectedPitStopOfId={pitStopOfId}
+              ofWatchBeacons={watchBeacons} pitStopWatches={pitStopWatchMap}
               zones={zones3d} selectedZoneId={selZone3d} onSelectZone={onSelectZone3d} onZoneCommit={onZoneCommit3d}
               snap={snap} placement={editMode ? placementSpec : null} onPlace={onPlace3d}
               multiSelection={multiSel} onMultiCommit={onMultiCommit3d}
@@ -2370,7 +2686,57 @@ export default function FactoryMap() {
                   <Wrench size={13} /> {t('factoryMap.openTicket')} {detail.open_ticket_number ?? ''}
                 </button>
               )}
+              {detail.predictive && (
+                <button
+                  onClick={() => navigate(`/equipment/${detail.id}`)}
+                  title={t('predictive.openDashboard')}
+                  className={`w-full flex items-center justify-between gap-2 mt-1 px-3 py-2 rounded-lg text-xs border transition-colors ${
+                    detail.predictive.level === 'critical'
+                      ? 'text-red-300 bg-red-500/10 border-red-500/30 hover:bg-red-500/20'
+                      : detail.predictive.level === 'alert'
+                        ? 'text-orange-300 bg-orange-500/10 border-orange-500/30 hover:bg-orange-500/20'
+                        : detail.predictive.level === 'watch'
+                          ? 'text-amber-300 bg-amber-500/10 border-amber-500/30 hover:bg-amber-500/20'
+                          : 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/20'
+                  }`}
+                >
+                  <span>{t('predictive.tabHealth')}: {t(`predictive.level.${detail.predictive.level}`)}</span>
+                  <span className="font-semibold">{Math.round(detail.predictive.score)}/100</span>
+                </button>
+              )}
             </div>
+
+            {/* OFs at this machine (loaded / awaiting transfer / planned) — each can
+                be followed ("spot") here, before it ever reaches the Pit Stop. */}
+            {(detail.current_job_number || (detail.queued_ofs?.length ?? 0) > 0 || (detail.pipeline_ofs?.length ?? 0) > 0) && (
+              <div className="mt-4 pt-3 border-t border-gray-800">
+                <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-2">{t('ofWatch.machineOfs')}</p>
+                <div className="space-y-1.5">
+                  {(() => {
+                    const row = (num: string, sub: string | null, key: string) => {
+                      const w = watchByJobNumber.get(num.toLowerCase()) ?? null;
+                      return (
+                        <div key={key} className="flex items-center gap-2 rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-1.5">
+                          <span className="font-mono text-xs text-purple-300 flex-1 min-w-0 truncate">{num}</span>
+                          {sub && <span className="text-[10px] text-gray-500 flex-shrink-0">{sub}</span>}
+                          <button
+                            onClick={() => (w ? unwatchOf(w.id) : watchOfByNumber(num, detail.machine_id))}
+                            title={w ? t('ofWatch.unwatch') : t('ofWatch.watch')}
+                            className={w ? 'text-cyan-400 hover:text-red-400' : 'text-gray-600 hover:text-cyan-400'}>
+                            <MapPin size={14} />
+                          </button>
+                        </div>
+                      );
+                    };
+                    const out: React.ReactNode[] = [];
+                    if (detail.current_job_number) out.push(row(detail.current_job_number, t('ofWatch.currentOf'), 'cur'));
+                    detail.queued_ofs?.forEach((o, i) => out.push(row(o.job_number, t('factoryMap.queuedOfs'), `q${i}`)));
+                    detail.pipeline_ofs?.forEach((o, i) => out.push(row(o.job_number, o.scheduled_date ?? t('factoryMap.pipeline'), `p${i}`)));
+                    return out;
+                  })()}
+                </div>
+              </div>
+            )}
 
             {/* Live maintenance KPIs (last 30 days) — only for items linked to a machine */}
             {detail.machine_id && (
@@ -2439,22 +2805,59 @@ export default function FactoryMap() {
               <button onClick={() => setOfPanel(null)} className="text-gray-500 hover:text-gray-300"><X size={16} /></button>
             </div>
             <p className="text-xs text-gray-500 mb-3">{ofPanel.name}</p>
+            {/* The OF loaded RIGHT NOW may have no job_orders row yet (externally
+                fed) — pin it on top so it can still be followed from here. */}
+            {(() => {
+              const cur = equipByMachineId.get(ofPanel.machineId)?.current_job_number ?? null;
+              if (!cur || ofList?.some((o) => o.job_number === cur)) return null;
+              const w = watchByJobNumber.get(cur.toLowerCase()) ?? null;
+              return (
+                <div className="flex items-center gap-2 rounded-lg bg-gray-900 border border-purple-500/40 px-3 py-2 mb-2">
+                  <span className="font-mono text-xs text-purple-300 flex-1 min-w-0 truncate">{cur}</span>
+                  <span className="text-[10px] text-gray-500 flex-shrink-0">{t('ofWatch.currentOf')}</span>
+                  <button onClick={() => (w ? unwatchOf(w.id) : watchOfByNumber(cur, ofPanel.machineId))}
+                    title={w ? t('ofWatch.unwatch') : t('ofWatch.watch')}
+                    className={w ? 'text-cyan-400 hover:text-red-400' : 'text-gray-600 hover:text-cyan-400'}>
+                    <MapPin size={14} />
+                  </button>
+                </div>
+              );
+            })()}
             {ofList === null ? (
               <p className="text-xs text-gray-600">{t('factoryMap.loading')}</p>
             ) : ofList.length === 0 ? (
               <p className="text-xs text-gray-600">{t('jobOrders.empty')}</p>
             ) : (
               <div className="space-y-2">
-                {ofList.map((of) => (
-                  <button key={of.id} onClick={() => navigate(`/job-orders/${of.id}`)}
-                    className="w-full text-left rounded-lg bg-gray-900 border border-gray-800 hover:border-indigo-600 px-3 py-2 transition-colors">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono text-xs text-purple-300">{of.job_number}</span>
-                      <span className="text-[10px] text-gray-500">{t(`jobOrders.status_${of.status}`)}</span>
+                {ofList.map((of) => {
+                  const watch = watchByJobOrderId.get(of.id) ?? null;
+                  const highlighted = ofPanel.highlight === of.job_number;   // the searched OF
+                  return (
+                    <div key={of.id}
+                      className={`rounded-lg bg-gray-900 border px-3 py-2 transition-colors ${highlighted
+                        ? 'border-cyan-500 ring-1 ring-cyan-500/40'
+                        : 'border-gray-800 hover:border-indigo-600'}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <button onClick={() => navigate(`/job-orders/${of.id}`)} className="flex-1 min-w-0 text-left">
+                          <span className="font-mono text-xs text-purple-300">{of.job_number}</span>
+                        </button>
+                        <span className="text-[10px] text-gray-500">{t(`jobOrders.status_${of.status}`)}</span>
+                        {/* place/remove a "spot" (watch + inactivity alert) on this OF */}
+                        <button
+                          onClick={() => (watch ? unwatchOf(watch.id) : watchOf(of.id))}
+                          title={watch ? t('ofWatch.unwatch') : t('ofWatch.watch')}
+                          className={watch ? 'text-cyan-400 hover:text-red-400' : 'text-gray-600 hover:text-cyan-400'}>
+                          <MapPin size={14} />
+                        </button>
+                      </div>
+                      {of.product_name && (
+                        <button onClick={() => navigate(`/job-orders/${of.id}`)} className="block w-full text-left">
+                          <p className="text-xs text-gray-400 truncate mt-0.5">{of.product_name}</p>
+                        </button>
+                      )}
                     </div>
-                    {of.product_name && <p className="text-xs text-gray-400 truncate mt-0.5">{of.product_name}</p>}
-                  </button>
-                ))}
+                  );
+                })}
               </div>
             )}
             <button onClick={() => navigate('/job-orders')}
@@ -2601,6 +3004,31 @@ export default function FactoryMap() {
                       <p className="text-gray-400">{t('pitStop.holdReason')}: <span className="text-gray-200">{of.hold_reason ?? '—'}</span></p>
                     )}
                   </div>
+                  {/* OF watch ("spot"): follow this OF + inactivity alert threshold */}
+                  {(() => {
+                    const watch = watchByJobOrderId.get(of.job_order_id) ?? null;
+                    return watch ? (
+                      <div className="flex items-center gap-2 mb-3 rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-2.5 py-2">
+                        <MapPin size={14} className="text-cyan-400 flex-shrink-0" />
+                        <select
+                          value={watch.threshold_minutes}
+                          onChange={(e) => setWatchThreshold(watch.id, parseInt(e.target.value, 10))}
+                          title={t('ofWatch.threshold')}
+                          className="flex-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200 px-1.5 py-1 focus:outline-none focus:border-cyan-500">
+                          {WATCH_THRESHOLDS.map((m) => (
+                            <option key={m} value={m}>{t('ofWatch.thresholdOption', { count: m })}</option>
+                          ))}
+                        </select>
+                        <button onClick={() => unwatchOf(watch.id)}
+                          className="text-xs text-gray-400 hover:text-red-400">{t('ofWatch.unwatch')}</button>
+                      </div>
+                    ) : (
+                      <button onClick={() => watchOf(of.job_order_id)}
+                        className="w-full flex items-center justify-center gap-1.5 mb-3 px-3 py-2 rounded-lg text-xs text-cyan-200 bg-cyan-500/10 border border-cyan-500/30 hover:bg-cyan-500/20">
+                        <MapPin size={14} /> {t('ofWatch.watch')}
+                      </button>
+                    );
+                  })()}
                   <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1.5">{t('pitStop.components')}</p>
                   <div className="space-y-1 mb-3">
                     {of.components.map((c) => (
