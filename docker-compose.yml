@@ -81,6 +81,10 @@ services:
       # assumption proves wrong on real hardware (see docs/sushi-sensor-contract.md).
       SUSHI_INGEST_TOKEN: ${SUSHI_INGEST_TOKEN:-}
       SUSHI_BYTE_ORDER: ${SUSHI_BYTE_ORDER:-big}
+      # Cortex INBOUND push (/api/v1/cortex/events — leituras de OF por cobot).
+      # Vazio = endpoint desabilitado (503). Aceita vários tokens separados por
+      # vírgula (rotação sem downtime); cada ambiente define o seu no .env.
+      CORTEX_INGEST_TOKEN: ${CORTEX_INGEST_TOKEN:-}
     volumes:
       - uploads_data:/app/uploads
     depends_on:

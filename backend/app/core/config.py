@@ -55,6 +55,17 @@ class Settings(BaseSettings):
     # integration must send this value in the X-Ingest-Token header; while
     # empty the /api/sushi/uplink endpoint answers 503 (ingest disabled).
     SUSHI_INGEST_TOKEN: str = ""
+
+    # Cortex INBOUND push (/api/v1/cortex/events — cobot OF reads). Cortex sends
+    # the token as `Authorization: Bearer <token>` (or X-Ingest-Token). While
+    # empty the endpoint answers 503 (ingest disabled). Comma-separated values
+    # are all accepted, so a token can be rotated without a coordinated cutover;
+    # each environment (dev/test/prod) sets its own value in its .env.
+    CORTEX_INGEST_TOKEN: str = ""
+
+    @property
+    def cortex_ingest_tokens(self) -> list[str]:
+        return [t.strip() for t in self.CORTEX_INGEST_TOKEN.split(",") if t.strip()]
     # Payload byte order — the Yokogawa manuals list fields MSB-first but never
     # name an endianness. "big" (default) is the assumption to validate against
     # the first real uplink; set "little" if values decode to nonsense.
