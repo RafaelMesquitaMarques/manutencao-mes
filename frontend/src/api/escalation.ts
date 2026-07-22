@@ -24,11 +24,13 @@ export interface EscalationSettings {
   twilio_configured: boolean;
   teams_enabled: boolean;
   teams_webhook_url: string | null;
+  of_teams_webhook_url: string | null;
 }
 
 export interface EscalationContact {
   id: string;
   level: number;
+  category: 'machine' | 'of';
   user_id: string;
   user_name: string;
   user_phone: string | null;
@@ -69,6 +71,7 @@ export async function addEscalationContact(body: {
   user_id: string;
   via_sms?: boolean;
   via_email?: boolean;
+  category?: 'machine' | 'of';
 }): Promise<EscalationContact> {
   const { data } = await api.post('/api/escalation/contacts', body);
   return data;

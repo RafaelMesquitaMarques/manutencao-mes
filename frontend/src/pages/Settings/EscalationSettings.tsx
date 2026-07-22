@@ -22,13 +22,13 @@ const PRIORITIES = ['low', 'medium', 'high', 'critical'] as const;
 // Triggers with a per-channel row in the matrix (reminders follow "escalation")
 const TRIGGERS = [
   'critical_alert', 'escalation', 'ticket_opened',
-  'ticket_completed', 'ticket_assigned', 'claimable_tech',
+  'ticket_completed', 'ticket_assigned', 'claimable_tech', 'of_watch',
 ] as const;
 const CHANNELS = ['sms', 'email', 'teams'] as const;
 type Channel = (typeof CHANNELS)[number];
 const TEMPLATE_KEYS = [
   'critical_alert', 'escalation', 'escalation_reminder', 'ticket_opened',
-  'ticket_completed', 'ticket_assigned', 'claimable_tech',
+  'ticket_completed', 'ticket_assigned', 'claimable_tech', 'of_watch',
 ] as const;
 const LOG_TYPES = ['sms', 'email', 'teams'] as const;
 const LOG_STATUSES = ['sent', 'simulated', 'failed'] as const;
@@ -67,6 +67,7 @@ export default function EscalationSettingsPage() {
   const [testPhone, setTestPhone] = useState('');
   const [testResult, setTestResult] = useState('');
   const [teamsTestResult, setTeamsTestResult] = useState('');
+  const [ofTeamsTestResult, setOfTeamsTestResult] = useState('');
   const [reportPreview, setReportPreview] = useState('');
 
   const load = useCallback(async () => {
@@ -125,9 +126,9 @@ export default function EscalationSettingsPage() {
     }
   };
 
-  const addContact = async (level: number, userId: string) => {
+  const addContact = async (level: number, userId: string, category: 'machine' | 'of' = 'machine') => {
     if (!userId) return;
-    const created = await addEscalationContact({ level, user_id: userId });
+    const created = await addEscalationContact({ level, user_id: userId, category });
     setContacts(prev => [...prev.filter(c => c.id !== created.id), created]);
   };
 
@@ -196,6 +197,18 @@ export default function EscalationSettingsPage() {
       await refreshLog();
     } catch {
       setTeamsTestResult(t('escalation.teamsTestFailed', 'failed — check the webhook URL'));
+    }
+  };
+
+  const handleTestOfTeams = async () => {
+    if (!(settings?.of_teams_webhook_url || '').trim()) return;
+    setOfTeamsTestResult('…');
+    try {
+      const r = await sendTestTeams(settings!.of_teams_webhook_url!);
+      setOfTeamsTestResult(r.status);
+      await refreshLog();
+    } catch {
+      setOfTeamsTestResult(t('escalation.teamsTestFailed', 'failed — check the webhook URL'));
     }
   };
 
@@ -378,6 +391,34 @@ export default function EscalationSettingsPage() {
                 <p className="text-[11px] text-gray-600 mt-2">
                   {t('escalation.teamsUrlHint', 'In the Teams channel: ⋯ → Workflows → "Post to a channel when a webhook request is received" → copy the URL. Anyone holding this URL can post to the channel — treat it as a secret.')}
                 </p>
+
+                <label className="text-[11px] text-gray-500 block mb-1 mt-3">
+                  {t('escalation.ofTeamsUrlLabel', 'OF alerts channel webhook URL (optional)')}
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={settings.of_teams_webhook_url || ''}
+                    onChange={e => patch({ of_teams_webhook_url: e.target.value })}
+                    placeholder="https://…logic.azure.com/workflows/…"
+                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-gray-300 font-mono focus:outline-none focus:border-amber-500"
+                  />
+                  <button onClick={handleTestOfTeams}
+                    disabled={!(settings.of_teams_webhook_url || '').trim()}
+                    className="text-xs px-3 py-1.5 rounded-lg border border-amber-700/50 text-amber-300 hover:bg-amber-900/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap">
+                    {t('escalation.teamsTest', 'Send a test card')}
+                  </button>
+                  {ofTeamsTestResult && <span className="text-[11px] text-gray-400">{ofTeamsTestResult}</span>}
+                </div>
+                {(settings.of_teams_webhook_url || '').trim() !== '' &&
+                  !(settings.of_teams_webhook_url || '').trim().toLowerCase().startsWith('https://') && (
+                  <p className="text-[11px] text-red-400 mt-1">
+                    {t('escalation.teamsUrlInvalid', 'The URL must start with https://')}
+                  </p>
+                )}
+                <p className="text-[11px] text-gray-600 mt-2">
+                  {t('escalation.ofTeamsUrlHint', 'OF (job order) events post to this channel instead of the one above. Empty = they share the main channel.')}
+                </p>
               </div>
             )}
 
@@ -460,7 +501,7 @@ export default function EscalationSettingsPage() {
               </span>
             </div>
             <ContactList
-              contacts={contacts.filter(c => c.level === 0 && c.is_active)}
+              contacts={contacts.filter(c => c.level === 0 && c.is_active && c.category !== 'of')}
               emptyText={t('escalation.ticketGroupEmpty', 'No contacts — these notifications are not sent to anyone yet.')}
               machines={machines}
               onPatch={patchContact}
@@ -468,8 +509,32 @@ export default function EscalationSettingsPage() {
             />
             <AddContactSelect
               users={users}
-              exclude={contacts.filter(c => c.level === 0 && c.is_active).map(c => c.user_id)}
+              exclude={contacts.filter(c => c.level === 0 && c.is_active && c.category !== 'of').map(c => c.user_id)}
               onAdd={id => addContact(0, id)}
+              accent="teal"
+            />
+          </div>
+
+          {/* OF (job order) alerts group — separate audience from machine alerts */}
+          <div className="bg-[#0d1421] border border-amber-500/20 rounded-xl p-5">
+            <h3 className="text-sm font-semibold text-gray-300 mb-1 flex items-center gap-2">
+              <Bell size={14} className="text-amber-400" />
+              {t('escalation.ofGroupTitle', 'OF alerts group')}
+            </h3>
+            <p className="text-[11px] text-gray-600 mb-3">
+              {t('escalation.ofGroupHint', 'These contacts receive the OF (job order) alerts — e.g. a watched OF that stopped moving. The person who placed the watch is always notified too.')}
+            </p>
+            <ContactList
+              contacts={contacts.filter(c => c.category === 'of' && c.is_active)}
+              emptyText={t('escalation.ofGroupEmpty', 'No contacts — only the person who placed each watch is notified.')}
+              machines={machines}
+              onPatch={patchContact}
+              onRemove={removeContact}
+            />
+            <AddContactSelect
+              users={users}
+              exclude={contacts.filter(c => c.category === 'of' && c.is_active).map(c => c.user_id)}
+              onAdd={id => addContact(0, id, 'of')}
               accent="teal"
             />
           </div>
@@ -482,7 +547,7 @@ export default function EscalationSettingsPage() {
             </h3>
             <div>
               {levels.map((level, i) => {
-                const levelContacts = contacts.filter(c => c.level === level && c.is_active);
+                const levelContacts = contacts.filter(c => c.level === level && c.is_active && c.category !== 'of');
                 return (
                   <div key={level} className="relative pl-11 pb-4">
                     {i < levels.length - 1 && (
@@ -555,7 +620,7 @@ export default function EscalationSettingsPage() {
           </h3>
           <p className="text-xs text-gray-600 mb-4">
             {t('escalation.templatesHint', 'Empty = default text. Variables:')}{' '}
-            <code className="text-[11px] text-purple-300">{'{number} {machine} {priority} {description} {level} {technician}'}</code>
+            <code className="text-[11px] text-purple-300">{'{number} {machine} {priority} {description} {level} {technician} {minutes} {location}'}</code>
           </p>
           <div className="space-y-3">
             {TEMPLATE_KEYS.map(key => {

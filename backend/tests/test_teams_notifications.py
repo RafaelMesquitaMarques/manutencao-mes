@@ -65,6 +65,7 @@ def _esc(**over):
     base = dict(
         sms_enabled=False, email_enabled=False,
         teams_enabled=True, teams_webhook_url="https://example.test/hook",
+        of_teams_webhook_url=None,
         channel_matrix=None, sms_templates=None,
     )
     base.update(over)
@@ -172,6 +173,26 @@ def test_teams_channel_on_gating():
     # missing matrix entry = enabled; other triggers untouched
     assert teams_channel_on(_esc(channel_matrix=m), "ticket_completed") != ""
     assert teams_channel_on(_esc(channel_matrix=m)) != ""
+
+
+def test_teams_channel_on_of_routing():
+    """OF events (of=True) use the dedicated OF channel when set, fall back to
+    the machine channel otherwise, and obey the same master switch/matrix."""
+    both = _esc(of_teams_webhook_url="https://example.test/of-hook")
+    assert teams_channel_on(both, "of_watch", of=True) == "https://example.test/of-hook"
+    # machine events never route to the OF channel
+    assert teams_channel_on(both, "ticket_opened") == "https://example.test/hook"
+    # no OF URL → shared machine channel
+    assert teams_channel_on(_esc(), "of_watch", of=True) == "https://example.test/hook"
+    # OF URL alone works even without a machine channel
+    only_of = _esc(teams_webhook_url=None, of_teams_webhook_url="https://example.test/of-hook")
+    assert teams_channel_on(only_of, "of_watch", of=True) == "https://example.test/of-hook"
+    assert teams_channel_on(only_of, "ticket_opened") == ""
+    # master switch and per-trigger matrix still gate the OF channel
+    assert teams_channel_on(_esc(teams_enabled=False, of_teams_webhook_url="https://x"), "of_watch", of=True) == ""
+    m = {"of_watch": {"teams": False}}
+    assert teams_channel_on(both, "of_watch", of=True) != ""
+    assert teams_channel_on(_esc(of_teams_webhook_url="https://x", channel_matrix=m), "of_watch", of=True) == ""
 
 
 def test_teams_link_needs_public_base_url():

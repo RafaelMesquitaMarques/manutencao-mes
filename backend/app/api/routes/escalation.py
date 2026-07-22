@@ -36,7 +36,7 @@ SETTINGS_FIELDS = [
     "technician_self_assign", "shift_report_enabled", "ticket_group_min_priority",
     "reminder_minutes", "pause_during_planned_stop",
     "sms_templates", "channel_matrix",
-    "teams_enabled", "teams_webhook_url",
+    "teams_enabled", "teams_webhook_url", "of_teams_webhook_url",
 ]
 
 VALID_PRIORITIES = {"low", "medium", "high", "critical"}
@@ -67,6 +67,7 @@ def _contact_out(c: EscalationContact, u: User) -> dict:
     return {
         "id": str(c.id),
         "level": c.level,
+        "category": c.category or "machine",
         "user_id": str(c.user_id),
         "user_name": u.name,
         "user_phone": u.phone,
@@ -148,11 +149,12 @@ async def update_settings(
     for f in ("sms_templates", "channel_matrix"):
         if body.get(f) is not None and not isinstance(body[f], dict):
             raise HTTPException(422, f"{f} must be an object")
-    if body.get("teams_webhook_url"):
-        url = str(body["teams_webhook_url"]).strip()
-        if not url.lower().startswith("https://"):
-            raise HTTPException(422, "invalid_teams_webhook_url")
-        body["teams_webhook_url"] = url
+    for f in ("teams_webhook_url", "of_teams_webhook_url"):
+        if body.get(f):
+            url = str(body[f]).strip()
+            if not url.lower().startswith("https://"):
+                raise HTTPException(422, "invalid_teams_webhook_url")
+            body[f] = url
     row = await get_escalation_settings(db, ctx.plant_id)
     for f in SETTINGS_FIELDS:
         if f in body and body[f] is not None:
@@ -166,6 +168,8 @@ class ContactCreate(BaseModel):
     user_id: UUID
     via_sms: bool = True
     via_email: bool = True
+    # 'machine' (default) = escalation levels / ticket group; 'of' = OF alerts group
+    category: str = "machine"
 
 
 @router.post("/contacts", status_code=201)
@@ -178,6 +182,8 @@ async def add_contact(
     # Level 0 = ticket open/close notification group; 1..5 = escalation levels
     if not 0 <= data.level <= 5:
         raise HTTPException(422, "level must be between 0 and 5")
+    if data.category not in ("machine", "of"):
+        raise HTTPException(422, "category must be machine|of")
     user = await db.get(User, data.user_id)
     if not user:
         raise HTTPException(404, "User not found")
@@ -188,10 +194,17 @@ async def add_contact(
     )).first()
     if member is None:
         raise HTTPException(404, "User not found")
+    # NULL category on stored rows = 'machine' (pre-split contacts)
+    cat_cond = (
+        EscalationContact.category == "of"
+        if data.category == "of"
+        else or_(EscalationContact.category.is_(None), EscalationContact.category != "of")
+    )
     existing = (await db.execute(
         select(EscalationContact).where(
             EscalationContact.level == data.level,
             EscalationContact.user_id == data.user_id,
+            cat_cond,
         )
     )).scalar_one_or_none()
     if existing:
@@ -201,7 +214,7 @@ async def add_contact(
         await db.commit()
         return _contact_out(existing, user)
     contact = EscalationContact(
-        level=data.level, user_id=data.user_id,
+        level=data.level, user_id=data.user_id, category=data.category,
         via_sms=data.via_sms, via_email=data.via_email,
     )
     db.add(contact)

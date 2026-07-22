@@ -46,6 +46,7 @@ TEMPLATE_DEFAULTS = {
     "ticket_assigned":     "[MES] Ticket {number} assigné — {machine} ({priority}): {description}",
     "claimable_tech":      "[MES] Ticket à prendre {number} — {machine} ({priority}). Ouvrez Mon travail.",
     "condition_alert":     "[MES] Capteur {severity} — {machine}: {metric} {value} {unit} (seuil {limit}){ticket}",
+    "of_watch":            "[MES] OF {number} sans mouvement depuis {minutes} min — {location}",
 }
 
 
@@ -74,10 +75,14 @@ def channel_enabled(esc, trigger: str, channel: str) -> bool:
     return True if value is None else bool(value)
 
 
-def teams_channel_on(esc, trigger: Optional[str] = None) -> str:
+def teams_channel_on(esc, trigger: Optional[str] = None, of: bool = False) -> str:
     """The webhook URL when the Teams channel should fire for this trigger,
-    else empty string."""
+    else empty string. OF (job-order) events pass of=True: they post to the
+    dedicated OF channel when one is configured, sharing the machine channel
+    otherwise. teams_enabled is the single master switch for both."""
     url = (getattr(esc, "teams_webhook_url", None) or "").strip()
+    if of:
+        url = (getattr(esc, "of_teams_webhook_url", None) or "").strip() or url
     if not (getattr(esc, "teams_enabled", False) and url):
         return ""
     if trigger is not None and not channel_enabled(esc, trigger, "teams"):
@@ -96,6 +101,7 @@ TEAMS_ACCENTS = {
     "escalation": "attention",
     "condition_alert": "warning",
     "ticket_completed": "good",
+    "of_watch": "warning",
 }
 
 
@@ -418,6 +424,8 @@ class NotificationService:
             plant_id = machine.plant_id
         conds = [
             EscalationContact.level == level,
+            # The OF alerts group is a separate audience — never mixed in here
+            or_(EscalationContact.category.is_(None), EscalationContact.category != "of"),
             EscalationContact.is_active == True,  # noqa: E712
             User.active == True,                  # noqa: E712
         ]
@@ -461,6 +469,43 @@ class NotificationService:
             q = q.join(UserPlant, UserPlant.user_id == User.id).where(UserPlant.plant_id == plant_id)
         users = (await self.db.execute(q)).scalars().all()
         return [{"user": u, "via_sms": True, "via_email": True} for u in users]
+
+    async def _of_recipients(
+        self, plant_id, machine: Optional[Machine] = None,
+    ) -> list[dict]:
+        """The OF alerts group (contacts with category='of'), same plant rule as
+        _level_recipients, filtered by scope (against the OF's current machine
+        when it has one) and quiet hours. No role fallback: an empty group means
+        only the watch creator hears about it."""
+        conds = [
+            EscalationContact.category == "of",
+            EscalationContact.is_active == True,  # noqa: E712
+            User.active == True,                  # noqa: E712
+        ]
+        if plant_id is not None:
+            conds.append(or_(
+                EscalationContact.plant_id == plant_id,
+                and_(
+                    EscalationContact.plant_id.is_(None),
+                    exists(select(UserPlant.id).where(
+                        UserPlant.user_id == EscalationContact.user_id,
+                        UserPlant.plant_id == plant_id,
+                    )),
+                ),
+            ))
+        rows = (await self.db.execute(
+            select(EscalationContact, User)
+            .join(User, EscalationContact.user_id == User.id)
+            .where(*conds)
+        )).all()
+        if not rows:
+            return []
+        now_min = await self._local_now_minutes(machine)
+        return [
+            {"user": u, "via_sms": c.via_sms, "via_email": c.via_email}
+            for c, u in rows
+            if self._contact_in_scope(c, machine) and self._contact_on_duty(c, "", now_min)
+        ]
 
     async def _dispatch(
         self,
@@ -791,6 +836,70 @@ class NotificationService:
             recipients, esc, subject, body, sms_text,
             role_label="ticket_closed", ticket_id=ticket.id, trigger="ticket_completed",
         )
+
+    async def notify_of_watch_inactive(
+        self, *, job_order, watch, minutes: int, location: dict, creator: Optional[User],
+    ) -> None:
+        """A watched OF (map "spot") stalled past its threshold. Goes to the OF
+        alerts group (contacts with category='of') plus the person who placed
+        the spot; the Teams card posts to the dedicated OF channel (falling back
+        to the machine channel). Called once per stall episode by
+        check_inactivity."""
+        esc = await get_escalation_settings(self.db, watch.plant_id)
+        kind = location.get("kind")
+        if kind == "pit_stop":
+            where = "Pit Stop" + (f" {location['position_code']}" if location.get("position_code") else "")
+        elif kind == "machine" and location.get("parked"):
+            where = f"sortie de {location.get('machine_name') or '—'}"
+        elif kind == "machine":
+            where = location.get("machine_name") or "—"
+        else:
+            where = "position inconnue"
+        subject = f"[MES] OF {job_order.job_number} immobile — {where}"
+        body = (
+            f"OF suivie: {job_order.job_number}\n"
+            f"Produit: {job_order.product_name or '—'}\n"
+            f"Position: {where}\n"
+            f"Sans mouvement depuis: {minutes} min (seuil {watch.threshold_minutes} min)"
+        )
+        sms_text = render_sms_template(
+            esc, "of_watch",
+            number=job_order.job_number, minutes=str(minutes), location=where,
+        )
+        # Group contacts' scope/quiet-hours apply against the OF's current
+        # machine (when it is sitting at one); the creator always qualifies.
+        machine = None
+        if kind == "machine" and location.get("machine_id"):
+            machine = await self.db.get(Machine, UUID(str(location["machine_id"])))
+        recipients = await self._of_recipients(watch.plant_id, machine=machine)
+        if creator is not None and creator.active and creator.id not in {
+            r["user"].id for r in recipients
+        }:
+            recipients.append({"user": creator, "via_sms": True, "via_email": True})
+        sms_on = esc.sms_enabled and channel_enabled(esc, "of_watch", "sms")
+        email_on = esc.email_enabled and channel_enabled(esc, "of_watch", "email")
+        for r in recipients:
+            user = r["user"]
+            if sms_on and r["via_sms"] and user.phone:
+                await self.send_sms(
+                    recipient=user.phone, message=sms_text,
+                    recipient_role="of_watch", recipient_name=user.name,
+                )
+            if email_on and r["via_email"] and user.email:
+                await self.send_email(
+                    recipient=user.email, subject=subject, body=body,
+                    recipient_role="of_watch", recipient_name=user.name,
+                )
+        teams_url = teams_channel_on(esc, "of_watch", of=True)
+        if teams_url:
+            await self.send_teams(
+                teams_url,
+                title=subject.removeprefix("[MES] "),
+                lines=body.splitlines(),
+                link_url=teams_link(),
+                accent=TEAMS_ACCENTS["of_watch"],
+                recipient_role="of_watch",
+            )
 
     async def notify_ticket_assigned(self, ticket, user: User, machine_name: str) -> None:
         """Notify the technician when a ticket is assigned to them."""

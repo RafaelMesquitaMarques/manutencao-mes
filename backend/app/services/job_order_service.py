@@ -198,6 +198,7 @@ async def complete_unit_at_machine(
     if run is not None:
         run.pieces = (run.pieces or 0) + max(0, count)
         run.rejects = max(0, (run.rejects or 0) + rejects)
+        run.last_piece_at = when or _now()   # movement signal for the OF watch
     return jo, run
 
 
@@ -212,5 +213,6 @@ async def attribute_production(
         return None
     run.pieces = (run.pieces or 0) + max(0, pieces)
     run.rejects = max(0, (run.rejects or 0) + rejects)
+    run.last_piece_at = _now()   # movement signal for the OF watch
     jo = await db.get(JobOrder, run.job_order_id)
     return jo.job_number if jo else None
