@@ -81,6 +81,8 @@ export interface Equipment {
   /** Effective operational status (kiosk machine / tickets / parent) — list endpoint only */
   live_status?: string | null;
   asset_type?: 'production' | 'auxiliary';
+  /** Explicit 3D map shape ('pit_stop', 'assembly_line', …) — map zones, not regular assets */
+  block_kind?: string | null;
   subtype?: string | null;
   function_label?: string | null;
   /** Machine photo — same image the factory-map block uses */
@@ -975,10 +977,29 @@ export interface TicketForMachine {
   work_order_number?:      string;
 }
 
+/** Details of the OF loaded on the machine (its open run) — Cortex/ERP
+ *  enrichment fields are null for a bare kiosk scan. */
+export interface MachineJobInfo {
+  job_number:            string;
+  status:                string;
+  source?:               string | null;   // manual | cortex | smart_label | erp
+  product_code?:         string | null;
+  product_name?:         string | null;
+  target_quantity?:      number | null;
+  completed_quantity?:   number | null;   // reported by the source system
+  produced_here?:        number | null;   // pieces counted on this machine's run
+  unit_of_measure?:      string | null;
+  operation_code?:       string | null;
+  operation_description?: string | null;
+  started_at?:           string | null;
+  updated_at?:           string | null;
+}
+
 export interface MachinePageData extends Machine {
   open_tickets: TicketForMachine[];
   kiosk_layout?: { i: string; x: number; y: number; w: number; h: number }[] | null;
   signal_driven?: boolean;
+  current_job?: MachineJobInfo | null;
 }
 
 export interface StopCreateRequest {

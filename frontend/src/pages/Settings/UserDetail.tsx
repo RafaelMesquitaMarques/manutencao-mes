@@ -28,7 +28,8 @@ const RESOURCES = [
   'dashboards', 'wo_approval', 'schedule', 'pm_calendar', 'maintenance_plans',
   'inventory', 'suppliers', 'purchase_orders', 'machines', 'kpis',
   'costs', 'job_orders', 'machine_reports', 'intelligence', 'settings_machines', 'settings_escalation',
-  'settings_users', 'settings_devices', 'settings_departments', 'calendar', 'pit_stop',
+  'settings_users', 'settings_devices', 'settings_departments', 'calendar', 'pit_stop', 'sops',
+  'predictive',
 ];
 
 const ACTIONS = ['view', 'create', 'update', 'delete'];

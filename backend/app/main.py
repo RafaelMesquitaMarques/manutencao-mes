@@ -19,9 +19,19 @@ from app.api.routes import (
     suppliers as suppliers_module, reports, escalation, factory_map, costs,
     departments as departments_module,
     factory_calendar, adam_devices, cortex_stations, shift_templates,
-    temperature_sensors, pit_stop, sushi, sushi_devices,
+    temperature_sensors, pit_stop, sushi, sushi_devices, home_insights,
+    of_watch, predictive,
 )
 from app.api.routes.machine_operator import router as machine_operator_router
+from app.api.routes.cortex_ingest import (
+    ingest_router as cortex_ingest_router,
+    admin_router as cortex_ingest_admin_router,
+)
+from app.api.routes.sops import (
+    router as sops_router,
+    execution_router as sop_execution_router,
+    kiosk_router as sop_kiosk_router,
+)
 from app.api.routes.intervention_type_settings import router as intervention_types_router
 from app.api.routes.safety_checklist_settings import router as safety_checklist_router
 from app.api.routes.cleaning_checklist_settings import router as cleaning_checklist_router
@@ -51,6 +61,19 @@ async def _escalation_loop() -> None:
                 await EscalationService(db).check_overdue_alerts()
         except Exception as exc:
             print(f"[EscalationService] {exc}")
+
+
+async def _of_watch_loop() -> None:
+    """Fire inactivity alerts for watched OFs (map "spots") every 60 seconds.
+    One alert per stall episode — see of_watch_service.check_inactivity."""
+    from app.services import of_watch_service
+    while True:
+        await asyncio.sleep(60)
+        try:
+            async with AsyncSessionLocal() as db:
+                await of_watch_service.check_inactivity(db)
+        except Exception as exc:
+            print(f"[OFWatch] {exc}")
 
 
 async def _pm_loop() -> None:
@@ -160,6 +183,9 @@ async def _backfill_ticket_alerts() -> None:
 async def _run_migrations() -> None:
     """Add new columns to existing tables (idempotent via IF NOT EXISTS)."""
     stmts = [
+        # Phase: predictive intelligence — failure-mode labeling provenance
+        "ALTER TABLE failure_events ADD COLUMN IF NOT EXISTS label_source VARCHAR(20)",
+        "ALTER TABLE failure_events ADD COLUMN IF NOT EXISTS label_confidence FLOAT",
         # Phase: ticket-WO integration
         "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS ticket_id UUID",
         "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'manual'",
@@ -835,6 +861,10 @@ async def _run_migrations() -> None:
         # Phase: Microsoft Teams channel notifications (Workflows webhook per plant)
         "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS teams_enabled BOOLEAN DEFAULT FALSE",
         "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS teams_webhook_url TEXT",
+        # Phase: OF alerts split from machine alerts — own Teams channel (empty =
+        # shared) + own recipients group (escalation_contacts.category = 'of')
+        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS of_teams_webhook_url TEXT",
+        "ALTER TABLE escalation_contacts ADD COLUMN IF NOT EXISTS category VARCHAR(20)",
         # Phase: WO-level approval — supervisor/director approves completed work
         # (whole intervention OR whole formal work order), not just individual parts.
         # A marker table makes the historical "grandfather" backfill run exactly once,
@@ -1353,6 +1383,35 @@ async def _run_migrations() -> None:
         # create_all makes is_active/sort_order nullable (Python-side default) → the raw
         # seed left them NULL. Coalesce so the list filter (is_active IS TRUE) shows them.
         "UPDATE departments SET is_active = COALESCE(is_active, TRUE), sort_order = COALESCE(sort_order, 0)",
+        # Phase: OF watch (map "spot" + inactivity alerts). Production counts are
+        # movement too — stamp them on the run so a line working the same OF for
+        # an hour never looks stalled (job_order_watches itself comes via create_all).
+        "ALTER TABLE job_order_runs ADD COLUMN IF NOT EXISTS last_piece_at TIMESTAMPTZ",
+        # Phase: Cortex inbound API (/api/v1/cortex — cobot pushes the scanned OF).
+        # ERP/Cortex enrichment shown on the kiosk OF panel; the cortex_events
+        # audit/idempotency table itself comes via create_all.
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS product_code VARCHAR(100)",
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS unit_of_measure VARCHAR(20)",
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS operation_code VARCHAR(50)",
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS operation_description VARCHAR(300)",
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS planned_start_at TIMESTAMPTZ",
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS planned_end_at TIMESTAMPTZ",
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS completed_quantity INT",
+        # Sushi device tag_name doubles as the user-editable component/position
+        # label ("Palier avant") — 20 chars (the 0x42 hardware tag is 10) is too
+        # short for that. Guarded widen: no exclusive lock on steady-state boots.
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'sushi_devices' AND column_name = 'tag_name'
+                  AND character_maximum_length < 60
+            ) THEN
+                ALTER TABLE sushi_devices ALTER COLUMN tag_name TYPE VARCHAR(60);
+            END IF;
+        END $$
+        """,
     ]
     async with engine.begin() as conn:
         for stmt in stmts:
@@ -1582,22 +1641,27 @@ async def lifespan(app: FastAPI):
     await _ensure_timescale()
     await _backfill_ticket_alerts()
     task = asyncio.create_task(_escalation_loop())
+    of_watch_task = asyncio.create_task(_of_watch_loop())
     pm_task = asyncio.create_task(_pm_loop())
     intel_task = asyncio.create_task(_intelligence_cron())
     shift_report_task = asyncio.create_task(_shift_report_loop())
     weather_task = asyncio.create_task(_weather_loop())
     temperature_task = asyncio.create_task(_temperature_loop())
+    from app.services.predictive.runner import predictive_loop
+    predictive_task = asyncio.create_task(predictive_loop())
     # Preload the note-organizer fallback LLM (self-skips when the Anthropic
     # API is the primary path; cold Ollama load measured at ~90s on CPU).
     from app.services.note_organizer import warm_up as _warm_ollama
     ollama_warmup_task = asyncio.create_task(_warm_ollama())
     yield
     task.cancel()
+    of_watch_task.cancel()
     pm_task.cancel()
     intel_task.cancel()
     shift_report_task.cancel()
     weather_task.cancel()
     temperature_task.cancel()
+    predictive_task.cancel()
     ollama_warmup_task.cancel()
     await engine.dispose()
 
@@ -1663,6 +1727,8 @@ app.include_router(maintenance_dashboard.router,  prefix="/api/maintenance",   t
 app.include_router(iot.router,                    prefix="/api/iot",           tags=["IoT / Sensors"])
 app.include_router(users.router,                  prefix="/api/users",         tags=["Users"])
 app.include_router(kpis.router,                   prefix="/api/kpis",          tags=["KPIs"])
+app.include_router(home_insights.router,          prefix="/api/insights",      tags=["Home Insights"])
+app.include_router(predictive.router,             prefix="/api/predictive",    tags=["Predictive"],           dependencies=[Depends(resource_guard("predictive"))])
 app.include_router(costs.router,                  prefix="/api/costs",         tags=["Costs"],                dependencies=[Depends(resource_guard("costs"))])
 app.include_router(factory_calendar.router,       prefix="/api/calendar",      tags=["Factory Calendar"],     dependencies=[Depends(resource_guard("calendar"))])
 app.include_router(adam_devices.router,           prefix="/api/adam-devices",  tags=["ADAM Devices"],         dependencies=[Depends(resource_guard("settings_devices"))])
@@ -1671,6 +1737,8 @@ app.include_router(temperature_sensors.router,    prefix="/api/temperature-senso
 app.include_router(sushi_devices.router,          prefix="/api/sushi-devices", tags=["Sushi Devices"],         dependencies=[Depends(resource_guard("settings_devices"))])
 app.include_router(sushi.condition_router,        prefix="/api/sushi",         tags=["Sushi Condition"],       dependencies=[Depends(resource_guard("equipment"))])
 app.include_router(sushi.ingest_router,           prefix="/api/sushi",         tags=["Sushi Ingest"])  # network-server webhook — X-Ingest-Token, no JWT
+app.include_router(cortex_ingest_router,          prefix="/api/v1/cortex",     tags=["Cortex Ingest"])  # Cortex push (cobot OF reads) — Bearer CORTEX_INGEST_TOKEN, no JWT
+app.include_router(cortex_ingest_admin_router,    prefix="/api/v1/cortex",     tags=["Cortex Ingest"],  dependencies=[Depends(resource_guard("settings_devices"))])
 app.include_router(reports.router,                prefix="/api/reports",       tags=["Reports"])
 app.include_router(escalation.router,             prefix="/api/escalation",    tags=["Escalation"])
 app.include_router(technicians.router,            prefix="/api/technicians",   tags=["Technicians"],          dependencies=[Depends(resource_guard("technicians"))])
@@ -1681,10 +1749,17 @@ app.include_router(robot_cells_router,            prefix="/api/robot-cells",   t
 app.include_router(stop_categories.router,        prefix="/api/stop-categories", tags=["Stop Categories"])
 app.include_router(job_orders.router,             prefix="/api/job-orders",      tags=["Job Orders"])
 app.include_router(pit_stop.router,               prefix="/api/pit-stop",        tags=["Pit Stop"])
+app.include_router(of_watch.router,               prefix="/api/of-watch",        tags=["OF Watch"])
 app.include_router(departments_module.router,     prefix="/api/departments",     tags=["Departments"])
 app.include_router(suppliers_module.supplier_router, prefix="/api/suppliers",       tags=["Suppliers"],            dependencies=[Depends(role_write_guard(UserRole.supervisor, UserRole.maintenance_director, UserRole.plant_manager, UserRole.director))])
 app.include_router(suppliers_module.po_router,       prefix="/api/supplier-orders", tags=["Purchase Orders"],      dependencies=[Depends(role_write_guard(UserRole.supervisor, UserRole.maintenance_director, UserRole.plant_manager, UserRole.director))])
 app.include_router(machine_operator_router, dependencies=[Depends(kiosk_ref_guard("machine_id"))])
+# SOP library: writes need sops:create/update/delete (supervisor+ by default);
+# reads pass with auth. Executions: any authenticated user may follow a SOP.
+# Kiosk SOP routes share the machine-page trust level (per-machine kiosk token).
+app.include_router(sops_router,           dependencies=[Depends(resource_guard("sops"))])
+app.include_router(sop_execution_router)
+app.include_router(sop_kiosk_router,      dependencies=[Depends(kiosk_ref_guard("ref"))])
 app.include_router(intervention_types_router)
 # Checklist config is keyed on /{equipment_id}; guard that the equipment is on a
 # plant the caller can access so machine checklists never cross the plant boundary.

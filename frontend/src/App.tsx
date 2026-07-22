@@ -26,6 +26,7 @@ const JobOrderList = lazy(() => import('./pages/JobOrders/JobOrderList'));
 const JobOrderDetail = lazy(() => import('./pages/JobOrders/JobOrderDetail'));
 const GestionBT = lazy(() => import('./pages/GestionBT/GestionBT'));
 const IntelligenceDashboard = lazy(() => import('./pages/Intelligence/IntelligenceDashboard'));
+const PredictiveDashboard = lazy(() => import('./pages/Predictive/PredictiveDashboard'));
 const EquipmentList = lazy(() => import('./pages/Equipment/EquipmentList'));
 const EquipmentDetail = lazy(() => import('./pages/Equipment/EquipmentDetail'));
 const NewEquipment = lazy(() => import('./pages/Equipment/NewEquipment'));
@@ -68,6 +69,8 @@ const AcceptInvite = lazy(() => import('./pages/AcceptInvite'));
 const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
 const ResetPassword = lazy(() => import('./pages/ResetPassword'));
 const WOApproval = lazy(() => import('./pages/Supervisor/WOApproval'));
+const SopList = lazy(() => import('./pages/Sops/SopList'));
+const SopDetail = lazy(() => import('./pages/Sops/SopDetail'));
 
 // Route-level loading state while a lazy page chunk downloads.
 function PageFallback() {
@@ -156,6 +159,7 @@ const App = () => {
         <Route path="job-orders"            element={<RequireView resource="job_orders"><JobOrderList /></RequireView>} />
         <Route path="job-orders/:id"        element={<RequireView resource="job_orders"><JobOrderDetail /></RequireView>} />
         <Route path="intelligence"          element={<RequireView resource="intelligence"><IntelligenceDashboard /></RequireView>} />
+        <Route path="predictive"            element={<RequireView resource="predictive"><PredictiveDashboard /></RequireView>} />
         <Route path="equipment"             element={<RequireView resource="equipment"><EquipmentList /></RequireView>} />
         <Route path="equipment/new"         element={<NewEquipment />} />
         <Route path="equipment/:id"         element={<EquipmentDetail />} />
@@ -183,6 +187,8 @@ const App = () => {
         <Route path="maintenance/dashboard"      element={<RequireView resource="maintenance"><MaintenanceDashboard /></RequireView>} />
         <Route path="maintenance/supervisor"     element={<Navigate to="/gestion-bt?tab=bt" replace />} />
         <Route path="factory-map"                element={<RequireView resource="factory_map"><FactoryMap /></RequireView>} />
+        <Route path="sops"                       element={<RequireView resource="sops"><SopList /></RequireView>} />
+        <Route path="sops/:id"                   element={<RequireView resource="sops"><SopDetail /></RequireView>} />
         <Route path="dashboards"                 element={<RequireView resource="dashboards"><DashboardList /></RequireView>} />
         <Route path="dashboards/:slug"           element={<RequireView resource="dashboards"><DashboardPage /></RequireView>} />
         <Route path="maintenance/wo-approval" element={<RequireView resource="wo_approval"><WOApproval /></RequireView>} />

@@ -6,17 +6,22 @@ import {
   Settings, Factory, CalendarDays, CalendarCheck, CalendarClock, Bell, Ticket,
   Activity, Briefcase, X, UserCog, Package, Building2, ShoppingCart,
   ChevronsLeft, ChevronsRight, Brain, Map as MapIcon, ClipboardCheck, ListChecks,
-  DollarSign, Cpu, Clock, Boxes, Home, FolderTree, Target, type LucideIcon,
+  DollarSign, Cpu, Clock, Boxes, Home, FolderTree, Target, BookOpen, type LucideIcon,
 } from 'lucide-react';
+import type { ComponentType } from 'react';
+import CrystalBrainIcon from '../icons/CrystalBrainIcon';
 import { useAuthStore } from '../../store/authStore';
 import type { UserRole } from '../../types';
 import { useLiveBadges } from '../../hooks/useLiveBadges';
 
 type NavRole = UserRole | 'all';
 
+/** Lucide icons and hand-rolled ones (e.g. CrystalBrainIcon) share this shape. */
+type NavIcon = LucideIcon | ComponentType<{ size?: number | string; className?: string }>;
+
 interface NavItem {
   to: string;
-  icon: LucideIcon;
+  icon: NavIcon;
   /** Optional image used instead of the lucide icon (e.g. the Ask Ninja logomark). */
   img?: string;
   key: string;
@@ -46,6 +51,7 @@ const CORE_GROUPS: NavGroup[] = [
       { to: '/equipment',   icon: Wrench,           key: 'equipment',   roles: TECH_UP },
       { to: '/factory-map', icon: MapIcon,          key: 'factoryMap',  roles: SUPERVISOR_UP },
       { to: '/dashboards',  icon: LayoutGrid,       key: 'dashboards',  roles: SUPERVISOR_UP },
+      { to: '/sops',        icon: BookOpen,         key: 'sops' },
     ],
   },
   {
@@ -58,6 +64,7 @@ const CORE_GROUPS: NavGroup[] = [
       { to: '/my-work',                 icon: Briefcase,    key: 'myWork' },
       { to: '/tickets',                 icon: Ticket,       key: 'tickets',              roles: TECH_UP },
       { to: '/maintenance/dashboard',      icon: Activity,     key: 'maintenanceDashboard', roles: TECH_UP },
+      { to: '/predictive',              icon: CrystalBrainIcon, key: 'predictive',       roles: TECH_UP },
       { to: '/schedule',                icon: CalendarDays, key: 'schedule',             roles: TECH_UP },
       { to: '/pm-calendar',             icon: CalendarCheck, key: 'pmCalendar',          roles: TECH_UP },
       { to: '/maintenance/plans',       icon: CalendarClock, key: 'maintenancePlans',    roles: TECH_UP },
@@ -106,7 +113,7 @@ const NAV_PERM: Record<string, string> = {
   escalationSettings: 'settings_escalation', gestionBT: 'alerts',
   factoryCalendar: 'calendar', deviceSettings: 'settings_devices',
   shiftSettings: 'technicians', departmentSettings: 'settings_departments',
-  lineObjectives: 'settings_machines',
+  lineObjectives: 'settings_machines', sops: 'sops', predictive: 'predictive',
 };
 
 const Sidebar = ({ onClose }: SidebarProps) => {
@@ -212,7 +219,7 @@ const Sidebar = ({ onClose }: SidebarProps) => {
                       className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-gray-600 cursor-not-allowed select-none ${collapsed ? 'justify-center !px-0' : ''}`}
                     >
                       {img
-                        ? <img src={img} alt="" className="w-[18px] h-[18px] object-contain flex-shrink-0" />
+                        ? <img src={img} alt="" className="w-[18px] h-[18px] scale-125 object-contain flex-shrink-0" />
                         : <Icon size={18} className="flex-shrink-0" />}
                       {!collapsed && (
                         <>
@@ -236,7 +243,7 @@ const Sidebar = ({ onClose }: SidebarProps) => {
                   >
                     <span className="relative flex-shrink-0">
                       {img
-                        ? <img src={img} alt="" className="w-[18px] h-[18px] object-contain" />
+                        ? <img src={img} alt="" className="w-[18px] h-[18px] scale-125 object-contain" />
                         : <Icon size={18} />}
                       {collapsed && count > 0 && (
                         <span

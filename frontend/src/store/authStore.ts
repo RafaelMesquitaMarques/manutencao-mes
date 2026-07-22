@@ -4,13 +4,15 @@ import type { User, UserRole } from '../types';
 import { usePlantStore } from './plantStore';
 
 export const ROLE_PERMISSIONS: Record<string, Set<string>> = {
-  operator: new Set(['dashboard:view', 'machines:view', 'my_work:view']),
+  operator: new Set(['dashboard:view', 'machines:view', 'my_work:view', 'sops:view']),
   technician: new Set([
     'dashboard:view', 'work_orders:view', 'work_orders:update',
     'technicians:view', 'equipment:view', 'my_work:view',
     'alerts:view', 'alerts:create', 'tickets:view', 'tickets:update',
     'maintenance:view', 'machines:view', 'schedule:view', 'pm_calendar:view',
     'maintenance_plans:view', 'inventory:view', 'intelligence:view',
+    'sops:view',
+    'predictive:view', 'predictive:create', 'predictive:update',
   ]),
   supervisor: new Set([
     'dashboard:view', 'work_orders:view', 'work_orders:create', 'work_orders:update',
@@ -23,6 +25,8 @@ export const ROLE_PERMISSIONS: Record<string, Set<string>> = {
     'factory_map:view', 'dashboards:view', 'wo_approval:view',
     'suppliers:view', 'purchase_orders:view', 'machine_reports:view', 'settings_escalation:view', 'job_orders:view',
     'calendar:view', 'pit_stop:update',
+    'sops:view', 'sops:create', 'sops:update',
+    'predictive:view', 'predictive:create', 'predictive:update',
   ]),
   maintenance_director: new Set([
     'dashboard:view',
@@ -42,6 +46,8 @@ export const ROLE_PERMISSIONS: Record<string, Set<string>> = {
     'factory_map:view', 'dashboards:view', 'wo_approval:view',
     'suppliers:view', 'purchase_orders:view', 'machine_reports:view', 'settings_escalation:view', 'job_orders:view',
     'calendar:view', 'calendar:update', 'pit_stop:update',
+    'sops:view', 'sops:create', 'sops:update', 'sops:delete',
+    'predictive:view', 'predictive:create', 'predictive:update', 'predictive:delete',
   ]),
   plant_manager: new Set([
     'dashboard:view',
@@ -61,6 +67,8 @@ export const ROLE_PERMISSIONS: Record<string, Set<string>> = {
     'factory_map:view', 'dashboards:view', 'wo_approval:view',
     'suppliers:view', 'purchase_orders:view', 'machine_reports:view', 'settings_escalation:view', 'job_orders:view',
     'calendar:view', 'calendar:update', 'pit_stop:update',
+    'sops:view', 'sops:create', 'sops:update', 'sops:delete',
+    'predictive:view', 'predictive:create', 'predictive:update', 'predictive:delete',
   ]),
   director: new Set([
     'dashboard:view', 'work_orders:view', 'technicians:view', 'equipment:view',
@@ -70,7 +78,7 @@ export const ROLE_PERMISSIONS: Record<string, Set<string>> = {
     'maintenance_plans:view', 'inventory:view', 'intelligence:view',
     'factory_map:view', 'dashboards:view', 'wo_approval:view',
     'suppliers:view', 'purchase_orders:view', 'machine_reports:view', 'settings_escalation:view', 'job_orders:view',
-    'calendar:view',
+    'calendar:view', 'sops:view', 'predictive:view',
   ]),
   admin: new Set(['*']),
 };
