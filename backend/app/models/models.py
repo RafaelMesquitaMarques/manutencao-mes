@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Integer, BigInteger, Float, Boolean, DateTime, Date,
-    ForeignKey, Text, Enum as SAEnum, JSON, UniqueConstraint
+    ForeignKey, Text, Enum as SAEnum, JSON, UniqueConstraint, Index, text
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -1352,7 +1352,7 @@ class SushiDevice(Base):
     uptime_min      = Column(Integer, nullable=True)            # from HRI
     diag_status     = Column(BigInteger, nullable=True)         # NAMUR NE107 word (0x41), UINT32
     diag_detail     = Column(BigInteger, nullable=True)
-    tag_name        = Column(String(20), nullable=True)         # device tag from INI frame (0x42)
+    tag_name        = Column(String(60), nullable=True)         # component/position label; seeded by INI frame (0x42) when empty
     dev_type        = Column(Integer, nullable=True)            # 0x47: 2=vibration, 3=temp module, 5=pressure module
     dev_rev         = Column(Integer, nullable=True)
     latitude        = Column(Float, nullable=True)              # GPS frames (0x43–0x45)
@@ -1802,6 +1802,9 @@ class EscalationSettings(Base):
     # anyone holding it can post to the channel.
     teams_enabled              = Column(Boolean, default=False)
     teams_webhook_url          = Column(Text, nullable=True)
+    # OF (job-order) events post to their own Teams channel when this is set;
+    # empty = they share teams_webhook_url. Same secret handling as above.
+    of_teams_webhook_url       = Column(Text, nullable=True)
     updated_at                = Column(DateTime(timezone=True), onupdate=func.now())
 
 
@@ -1812,6 +1815,9 @@ class EscalationContact(Base):
     id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # NULL = global/legacy contact (phase 3 scopes contacts to their plant)
     plant_id   = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    # NULL/'machine' = machine/ticket alerts (levels + ticket group);
+    # 'of' = the OF (job-order) alerts group — separate recipients, level unused
+    category   = Column(String(20), nullable=True)
     level      = Column(Integer, nullable=False)
     user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     via_sms    = Column(Boolean, default=True)
@@ -1956,6 +1962,17 @@ class JobOrder(Base):
     job_number      = Column(String(100), nullable=False)
     product_name    = Column(String(300), nullable=True)
     target_quantity = Column(Integer, nullable=True)
+    # ── ERP/Cortex enrichment (all optional; filled by the Cortex push or a future
+    # ERP feed, shown on the kiosk's OF panel). A scan without these stays valid.
+    product_code          = Column(String(100), nullable=True)
+    unit_of_measure       = Column(String(20), nullable=True)
+    operation_code        = Column(String(50), nullable=True)
+    operation_description = Column(String(300), nullable=True)
+    planned_start_at      = Column(DateTime(timezone=True), nullable=True)
+    planned_end_at        = Column(DateTime(timezone=True), nullable=True)
+    # Quantity reported as already completed by the source system (ERP/Cortex) —
+    # distinct from the pieces WE counted on runs (JobOrderRun.pieces).
+    completed_quantity    = Column(Integer, nullable=True)
     # Equivalent-unit factor per product unit (1 EU = 100 s of assembly-line time),
     # the productivity currency on the Pit Stop TV. Will come from SAP with the OF;
     # the simulator seeds it. NULL → treated as 1.0 (1 unit = 1 EU).
@@ -1993,8 +2010,82 @@ class JobOrderRun(Base):
     duration_minutes = Column(Integer, nullable=True)                   # filled when the run closes
     pieces           = Column(Integer, default=0)   # parts produced during this run (attributed from the ADAM feed)
     rejects          = Column(Integer, default=0)
+    # When the last piece was attributed to this run (unit scan / ADAM count) —
+    # production on an assembly line is "movement" for the OF-watch inactivity
+    # check even though re-scanning the same OF never churns the run itself.
+    last_piece_at    = Column(DateTime(timezone=True), nullable=True)
     source           = Column(SAEnum(JobOrderSource, native_enum=False), default=JobOrderSource.manual)
     created_at       = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class JobOrderWatch(Base):
+    """A "spot" pinned on an OF from the factory map: the team follows this OF
+    and gets an alert when it stops moving. Movement = scan events (runs opened/
+    closed, pieces attributed) + Pit Stop ledger movements. ONE watch per OF,
+    shared by the whole plant team (anyone with map access can place/remove it).
+
+    Episode logic: `alerted_movement_at` records the movement basis the last
+    alert fired on — when the OF moves again the basis changes, which re-arms
+    the watch for a future stall. Inactivity is floored at `created_at` so
+    spotting an already-idle OF doesn't fire instantly."""
+    __tablename__ = "job_order_watches"
+    __table_args__ = (UniqueConstraint("job_order_id", name="uq_job_order_watches_of"),)
+
+    id                  = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id            = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False, index=True)
+    job_order_id        = Column(UUID(as_uuid=True), ForeignKey("job_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    threshold_minutes   = Column(Integer, nullable=False, default=30)   # alert after this much stillness
+    created_by_id       = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    alerted_at          = Column(DateTime(timezone=True), nullable=True)
+    alerted_movement_at = Column(DateTime(timezone=True), nullable=True)
+    created_at          = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at          = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+# ─── Cortex inbound integration (push) ─────────────────────────────────────────
+
+class CortexEvent(Base):
+    """Audit + idempotency ledger for the INBOUND Cortex API (/api/v1/cortex):
+    one row per received call — successes, duplicates and rejections alike, with
+    the ORIGINAL payload — so the integration is fully traceable and history is
+    never overwritten. Idempotency: `event_id` may appear many times (each retry
+    is audited) but only ONE row per event_id can be result='success' (partial
+    unique index) — a redelivery after success is recorded as 'duplicate' and
+    NOT reprocessed; a retry after a failure processes normally.
+
+    reading_type distinguishes the flows: 'cobot' = automatic read pushed by
+    Cortex (flow 1, this one); 'manual' is reserved for the future kiosk-scan →
+    Cortex round-trip (flow 2), whose async replies can land on the same
+    endpoint as new event types correlated by event_id/order_number."""
+    __tablename__ = "cortex_events"
+    __table_args__ = (
+        Index("ix_cortex_events_event_id", "event_id"),
+        Index("uq_cortex_events_event_success", "event_id", unique=True,
+              postgresql_where=text("result = 'success'")),
+        Index("ix_cortex_events_machine_received", "machine_id", "received_at"),
+    )
+
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id        = Column(String(200), nullable=True)    # Cortex idempotency key (NULL only on unparseable payloads)
+    event_type      = Column(String(100), nullable=True)
+    # Raw identifiers exactly as Cortex sent them (audited even when they don't resolve)
+    site_code       = Column(String(50), nullable=True)
+    machine_code    = Column(String(100), nullable=True)
+    cobot_code      = Column(String(100), nullable=True)
+    order_number    = Column(String(100), nullable=True)
+    # Resolved records (NULL when the lookup failed — the *_code columns keep the raw value)
+    plant_id        = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    machine_id      = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
+    job_order_id    = Column(UUID(as_uuid=True), ForeignKey("job_orders.id", ondelete="SET NULL"), nullable=True)
+    source_system   = Column(String(50), nullable=False, default="cortex")
+    reading_type    = Column(String(20), nullable=False, default="cobot")   # cobot (automatic) | manual (future flow 2)
+    result          = Column(String(20), nullable=False)    # success | duplicate | error
+    error_code      = Column(String(60), nullable=True)     # e.g. MACHINE_NOT_FOUND (NULL on success)
+    error_message   = Column(String(500), nullable=True)
+    payload         = Column(JSON, nullable=True)           # original body as received (unknown fields included)
+    event_timestamp = Column(DateTime(timezone=True), nullable=True)   # `timestamp` claimed by Cortex
+    received_at     = Column(DateTime(timezone=True), server_default=func.now())
+    processed_at    = Column(DateTime(timezone=True), nullable=True)
 
 
 # ─── Purchase Orders ───────────────────────────────────────────────────────────
@@ -2656,3 +2747,412 @@ class PitStopCategory(Base):
     family     = Column(String(10), nullable=False, default="both")   # 'cg' | 'sg' | 'both'
     sort_order = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ─── SOPs (Standard Operating Procedures) ──────────────────────────────────────
+# Standalone procedure library (distinct from PM templates, which are bound to a
+# recurring PM on one equipment): a SOP is a versioned, categorized document —
+# operation, maintenance, safety… — linked to any number of equipments and
+# consumed from the SOPs page or the machine kiosk (step-by-step player).
+
+class SopCategory(str, enum.Enum):
+    operation   = "operation"     # how to run the machine (operators)
+    maintenance = "maintenance"   # how to service/repair (technicians)
+    safety      = "safety"        # lockout/tagout, PPE…
+    quality     = "quality"       # inspection / quality checks
+    setup       = "setup"         # changeover / setup procedures
+
+
+class SopStatus(str, enum.Enum):
+    draft     = "draft"           # being authored — hidden from kiosk
+    published = "published"       # live: visible on kiosks and executable
+    archived  = "archived"        # retired — kept for history
+
+
+class Sop(Base):
+    __tablename__ = "sops"
+
+    id                = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id          = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True, index=True)
+    sop_number        = Column(String(30), unique=True, nullable=False)   # SOP-YYYY-NNNNN (plant-prefixed when ungrouped)
+    title             = Column(String(300), nullable=False)
+    category          = Column(SAEnum(SopCategory, native_enum=False), nullable=False, default=SopCategory.operation)
+    description       = Column(Text, nullable=True)
+    status            = Column(SAEnum(SopStatus, native_enum=False), nullable=False, default=SopStatus.draft)
+    version           = Column(Integer, nullable=False, default=1)        # bumped on each re-publish
+    estimated_minutes = Column(Float, nullable=True)
+    created_by_id     = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    published_at      = Column(DateTime(timezone=True), nullable=True)
+    created_at        = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at        = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    steps           = relationship("SopStep", back_populates="sop", cascade="all, delete-orphan", order_by="SopStep.sort_order")
+    equipment_links = relationship("SopEquipmentLink", back_populates="sop", cascade="all, delete-orphan")
+    created_by      = relationship("User", foreign_keys=[created_by_id])
+
+
+class SopEquipmentLink(Base):
+    """A SOP applies to N equipments (same procedure for identical machines)."""
+    __tablename__ = "sop_equipment_links"
+    __table_args__ = (UniqueConstraint("sop_id", "equipment_id", name="uq_sop_equipment"),)
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sop_id       = Column(UUID(as_uuid=True), ForeignKey("sops.id", ondelete="CASCADE"), nullable=False, index=True)
+    equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    sop       = relationship("Sop", back_populates="equipment_links")
+    equipment = relationship("Equipment", foreign_keys=[equipment_id])
+
+
+class SopStep(Base):
+    __tablename__ = "sop_steps"
+
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sop_id          = Column(UUID(as_uuid=True), ForeignKey("sops.id", ondelete="CASCADE"), nullable=False, index=True)
+    sort_order      = Column(Integer, nullable=False, default=0)
+    title           = Column(String(300), nullable=True)      # short headline shown in the player ("Lock out power")
+    instruction     = Column(Text, nullable=False)            # what to do
+    expected_result = Column(Text, nullable=True)             # what must be observed when done right
+    warning         = Column(Text, nullable=True)             # safety callout rendered prominently
+    is_required     = Column(Boolean, nullable=False, default=True)
+
+    sop   = relationship("Sop", back_populates="steps")
+    media = relationship("SopStepMedia", back_populates="step", cascade="all, delete-orphan", order_by="SopStepMedia.sort_order")
+
+
+class SopStepMedia(Base):
+    """Photo / video / external link illustrating a SOP step."""
+    __tablename__ = "sop_step_media"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    step_id    = Column(UUID(as_uuid=True), ForeignKey("sop_steps.id", ondelete="CASCADE"), nullable=False, index=True)
+    media_type = Column(String(20), nullable=False)    # image | video | link
+    url        = Column(String(1000), nullable=False)  # served path (/api/media/..) or external URL
+    caption    = Column(String(300), nullable=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    step = relationship("SopStep", back_populates="media")
+
+
+class SopExecution(Base):
+    """One run of a SOP being followed step by step — from the kiosk (operator,
+    no auth) or the SOPs page (authenticated user). Compliance trail: who, where,
+    when, how long, and which steps were ticked."""
+    __tablename__ = "sop_executions"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sop_id        = Column(UUID(as_uuid=True), ForeignKey("sops.id", ondelete="CASCADE"), nullable=False, index=True)
+    plant_id      = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True, index=True)
+    equipment_id  = Column(UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="SET NULL"), nullable=True)
+    machine_id    = Column(UUID(as_uuid=True), ForeignKey("machines.id", ondelete="SET NULL"), nullable=True)  # set when run from a kiosk
+    user_id       = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)   # set when run authenticated
+    operator_name = Column(String(200), nullable=True)   # kiosk: current operator (no auth)
+    sop_version   = Column(Integer, nullable=True)       # version followed at run time
+    source        = Column(String(20), nullable=False, default="app")        # app | kiosk
+    status        = Column(String(20), nullable=False, default="in_progress")  # in_progress | completed | abandoned
+    started_at    = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at  = Column(DateTime(timezone=True), nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    notes         = Column(Text, nullable=True)
+
+    sop   = relationship("Sop", foreign_keys=[sop_id])
+    steps = relationship("SopExecutionStep", back_populates="execution", cascade="all, delete-orphan")
+
+
+class SopExecutionStep(Base):
+    """Tick state of one step within one execution (row created on first tick)."""
+    __tablename__ = "sop_execution_steps"
+    __table_args__ = (UniqueConstraint("execution_id", "step_id", name="uq_sop_execution_step"),)
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    execution_id = Column(UUID(as_uuid=True), ForeignKey("sop_executions.id", ondelete="CASCADE"), nullable=False, index=True)
+    step_id      = Column(UUID(as_uuid=True), ForeignKey("sop_steps.id", ondelete="CASCADE"), nullable=False)
+    checked      = Column(Boolean, nullable=False, default=True)
+    checked_at   = Column(DateTime(timezone=True), nullable=True)
+
+    execution = relationship("SopExecution", back_populates="steps")
+
+
+# ─── Predictive intelligence (docs/predictive-intelligence.md) ─────────────────
+# Layered, explainable machine-health engine. All tables are additive (no ALTER
+# on existing tables) and flag-gated per plant/machine, so the module can be
+# rolled back by flipping mode='off' or dropping predictive_* tables.
+
+class PredictiveMode(str, enum.Enum):
+    off    = "off"       # engine skips the plant/machine entirely
+    silent = "silent"    # evaluate + record snapshots/alerts, notify nobody
+    admin  = "admin"     # visible in UI to supervisors+, no notifications
+    active = "active"    # alerts visible + notification channels
+
+
+class PredictiveAlertStatus(str, enum.Enum):
+    new                   = "new"
+    in_review             = "in_review"
+    inspection_planned    = "inspection_planned"
+    intervention_required = "intervention_required"
+    intervention_done     = "intervention_done"
+    false_positive        = "false_positive"
+    monitoring            = "monitoring"
+    closed                = "closed"
+
+
+class FailureSource(str, enum.Enum):
+    work_order = "work_order"
+    ticket     = "ticket"
+    stop       = "stop"
+    manual     = "manual"
+
+
+class PredictiveSettings(Base):
+    """Per-plant configuration of the predictive engine. All tuning lives here
+    (weights, level cut-offs, windows, persistence, cooldown) so thresholds are
+    adjustable without code changes. `version` increments on every save and is
+    stamped on snapshots/alerts for traceability."""
+    __tablename__ = "predictive_settings"
+    __table_args__ = (UniqueConstraint("plant_id", name="uq_predictive_settings_plant"),)
+
+    id                     = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id               = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False, index=True)
+    mode                   = Column(SAEnum(PredictiveMode, native_enum=False), nullable=False, default=PredictiveMode.off)
+    eval_interval_min      = Column(Integer, nullable=False, default=15)
+    baseline_refresh_hours = Column(Integer, nullable=False, default=24)
+    # {factor_code: weight} — see services/predictive/engine.py DEFAULT_WEIGHTS
+    weights                = Column(JSON, nullable=True)
+    # {"watch":25,"alert":50,"critical":70,"deadband":5}
+    levels                 = Column(JSON, nullable=True)
+    persistence_evals      = Column(Integer, nullable=False, default=2)
+    cooldown_hours         = Column(Float, nullable=False, default=12.0)
+    confidence_floor       = Column(Float, nullable=False, default=0.35)
+    # {"short_h":1,"medium_h":8,"long_h":24,"trend_h":6}
+    windows                = Column(JSON, nullable=True)
+    fingerprint_windows_h  = Column(JSON, nullable=True)   # [1, 4, 24]
+    prefailure_exclude_h   = Column(Integer, nullable=False, default=24)
+    baseline_window_days   = Column(Integer, nullable=False, default=30)
+    baseline_min_samples   = Column(Integer, nullable=False, default=50)
+    baseline_drift_cap_pct = Column(Float, nullable=False, default=25.0)
+    version                = Column(Integer, nullable=False, default=1)
+    updated_by_id          = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at             = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at             = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PredictiveMachineSettings(Base):
+    """Per-equipment override of the plant settings (enable/disable one machine,
+    or run it in a different mode). NULL fields inherit from the plant row."""
+    __tablename__ = "predictive_machine_settings"
+    __table_args__ = (UniqueConstraint("equipment_id", name="uq_predictive_machine_settings_eq"),)
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="CASCADE"), nullable=False, index=True)
+    plant_id     = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True, index=True)
+    enabled      = Column(Boolean, nullable=True)   # NULL = inherit plant mode
+    mode         = Column(SAEnum(PredictiveMode, native_enum=False), nullable=True)
+    overrides    = Column(JSON, nullable=True)      # partial settings overrides (weights/levels/windows)
+    updated_at   = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class MachineBaseline(Base):
+    """Robust per-context operating baseline for one metric of one equipment.
+    context_key separates incompatible operating regimes ('run' / 'idle' / 'all')
+    so a vibration normal at speed is not compared against standstill readings."""
+    __tablename__ = "machine_baselines"
+    __table_args__ = (
+        UniqueConstraint("equipment_id", "metric_key", "context_key", name="uq_machine_baseline"),
+        Index("idx_machine_baselines_eq", "equipment_id"),
+    )
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="CASCADE"), nullable=False)
+    plant_id     = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True, index=True)
+    metric_key   = Column(String(120), nullable=False)   # sensor code or synthetic metric (microstops, stop_minutes, production_rate)
+    context_key  = Column(String(40), nullable=False, default="all")
+    unit         = Column(String(20), nullable=True)
+    n_samples    = Column(Integer, nullable=False, default=0)
+    mean         = Column(Float, nullable=True)
+    std          = Column(Float, nullable=True)
+    median       = Column(Float, nullable=True)
+    mad          = Column(Float, nullable=True)           # median absolute deviation (robust σ ≈ 1.4826·MAD)
+    p05          = Column(Float, nullable=True)
+    p95          = Column(Float, nullable=True)
+    min_value    = Column(Float, nullable=True)
+    max_value    = Column(Float, nullable=True)
+    window_days  = Column(Integer, nullable=False, default=30)
+    valid        = Column(Boolean, nullable=False, default=False)  # enough samples to be used
+    frozen       = Column(Boolean, nullable=False, default=False)  # drift guard tripped — kept, not refreshed
+    version      = Column(Integer, nullable=False, default=1)
+    computed_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PredictiveHealthSnapshot(Base):
+    """One engine evaluation of one equipment — the audit trail and the trend
+    series. factors carries the full explainable breakdown:
+    [{code, weight, value, contribution, observed, expected, unit, params}]."""
+    __tablename__ = "predictive_health_snapshots"
+    __table_args__ = (Index("idx_pred_snapshots_eq_ts", "equipment_id", "ts"),)
+
+    id             = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    equipment_id   = Column(UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="CASCADE"), nullable=False)
+    plant_id       = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True, index=True)
+    ts             = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    score          = Column(Float, nullable=False, default=0.0)     # 0..100
+    level          = Column(String(20), nullable=False, default="normal")  # normal|watch|alert|critical|no_data
+    context_key    = Column(String(40), nullable=True)
+    factors        = Column(JSON, nullable=True)
+    data_quality   = Column(JSON, nullable=True)   # per-sensor quality findings
+    quality_score  = Column(Float, nullable=True)  # 0..1
+    confidence     = Column(Float, nullable=True)  # 0..1
+    mtbf_pct       = Column(Float, nullable=True)  # % of expected MTBF consumed
+    maturity       = Column(String(40), nullable=True)
+    engine_version = Column(String(20), nullable=True)
+    config_version = Column(Integer, nullable=True)
+
+
+class PredictiveAlert(Base):
+    """Explainable predictive alert with a human workflow. reasons is a list of
+    {code, params, observed, expected, unit} rendered via i18n on the frontend —
+    never free prose, so en/fr/es all work and the alert stays auditable."""
+    __tablename__ = "predictive_alerts"
+    __table_args__ = (
+        Index("idx_pred_alerts_eq", "equipment_id"),
+        Index("idx_pred_alerts_plant_status", "plant_id", "status"),
+    )
+
+    id                 = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    equipment_id       = Column(UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="CASCADE"), nullable=False)
+    machine_id         = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
+    plant_id           = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True, index=True)
+    created_at         = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at         = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    level              = Column(String(20), nullable=False, default="alert")   # watch|alert|critical
+    score              = Column(Float, nullable=False, default=0.0)
+    kind               = Column(String(40), nullable=False, default="general") # vibration|temperature|pressure|operational|reliability|pattern|rule|general
+    probable_component = Column(String(200), nullable=True)
+    probable_failure   = Column(String(200), nullable=True)
+    reasons            = Column(JSON, nullable=True)
+    sensors_involved   = Column(JSON, nullable=True)   # [sensor codes]
+    window_hours       = Column(Float, nullable=True)
+    confidence         = Column(Float, nullable=True)
+    recommendation     = Column(String(80), nullable=True)   # i18n action code, e.g. inspect_bearing
+    silent             = Column(Boolean, nullable=False, default=False)  # created while mode was silent/admin
+    status             = Column(SAEnum(PredictiveAlertStatus, native_enum=False), nullable=False, default=PredictiveAlertStatus.new)
+    assigned_to_id     = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    inspection_due     = Column(DateTime(timezone=True), nullable=True)
+    inspection_result  = Column(Text, nullable=True)
+    resolved_at        = Column(DateTime(timezone=True), nullable=True)
+    auto_resolved      = Column(Boolean, nullable=False, default=False)
+    ticket_id          = Column(UUID(as_uuid=True), ForeignKey("maintenance_tickets.id"), nullable=True)
+    work_order_id      = Column(UUID(as_uuid=True), ForeignKey("work_orders.id"), nullable=True)
+    engine_version     = Column(String(20), nullable=True)
+    config_version     = Column(Integer, nullable=True)
+
+    feedback = relationship("PredictiveAlertFeedback", back_populates="alert", cascade="all, delete-orphan")
+
+
+class PredictiveAlertFeedback(Base):
+    """Technician verdict on an alert. Feeds model-quality metrics and future
+    tuning; it never mutates the engine directly (traceable, versioned)."""
+    __tablename__ = "predictive_alert_feedback"
+
+    id                 = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    alert_id           = Column(UUID(as_uuid=True), ForeignKey("predictive_alerts.id", ondelete="CASCADE"), nullable=False, index=True)
+    plant_id           = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    was_correct        = Column(Boolean, nullable=True)    # NULL = inconclusive
+    problem_found      = Column(Boolean, nullable=True)
+    component          = Column(String(200), nullable=True)
+    failure_mode       = Column(String(200), nullable=True)
+    cause              = Column(String(500), nullable=True)
+    timing             = Column(String(20), nullable=True)  # early|on_time|late
+    action_taken       = Column(String(500), nullable=True)
+    part_replaced      = Column(Boolean, nullable=True)
+    prevented_breakdown = Column(Boolean, nullable=True)
+    back_to_normal     = Column(Boolean, nullable=True)
+    comments           = Column(Text, nullable=True)
+    created_by_id      = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at         = Column(DateTime(timezone=True), server_default=func.now())
+
+    alert = relationship("PredictiveAlert", back_populates="feedback")
+
+
+class PredictiveRule(Base):
+    """Configurable rule evaluated by the engine (layer 0). Scope: plant-wide
+    (equipment_id NULL) or one equipment."""
+    __tablename__ = "predictive_rules"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id     = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False, index=True)
+    equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="CASCADE"), nullable=True, index=True)
+    name         = Column(String(200), nullable=False)
+    metric_key   = Column(String(120), nullable=False)
+    aggregation  = Column(String(20), nullable=False, default="avg")   # avg|max|min|last|slope|count
+    window_hours = Column(Float, nullable=False, default=1.0)
+    operator     = Column(String(4), nullable=False, default="gt")     # gt|lt
+    threshold    = Column(Float, nullable=False)
+    severity     = Column(String(20), nullable=False, default="alert") # watch|alert|critical
+    enabled      = Column(Boolean, nullable=False, default=True)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at   = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class FailureEvent(Base):
+    """Unified failure read-model consolidating corrective WOs, maintenance
+    tickets and maintenance-triggering stops (plus manual entries). The engine
+    studies the sensor windows BEFORE each of these to build fingerprints, and
+    MTBF signals are computed from them. Source rows are never modified."""
+    __tablename__ = "failure_events"
+    __table_args__ = (
+        UniqueConstraint("source", "source_id", name="uq_failure_event_source"),
+        Index("idx_failure_events_eq_started", "equipment_id", "started_at"),
+    )
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="CASCADE"), nullable=False)
+    machine_id   = Column(UUID(as_uuid=True), ForeignKey("machines.id"), nullable=True)
+    plant_id     = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True, index=True)
+    source       = Column(SAEnum(FailureSource, native_enum=False), nullable=False)
+    source_id    = Column(UUID(as_uuid=True), nullable=False)
+    started_at   = Column(DateTime(timezone=True), nullable=False)
+    ended_at     = Column(DateTime(timezone=True), nullable=True)
+    failure_type = Column(String(200), nullable=True)
+    component    = Column(String(200), nullable=True)
+    severity     = Column(String(20), nullable=True)
+    confirmed    = Column(Boolean, nullable=False, default=False)  # breakdown confirmed vs suspected
+    notes        = Column(Text, nullable=True)
+    # Failure-mode labeling provenance (scripts/label_failure_history.py):
+    # 'source' = came filled from the WO/ticket; 'ai' = classified from free
+    # text (label_confidence 0–1); 'human' = confirmed/corrected in the UI.
+    label_source     = Column(String(20), nullable=True)
+    label_confidence = Column(Float, nullable=True)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FailurePattern(Base):
+    """Pre-failure fingerprint: the feature vector of a window preceding one
+    failure event. Similarity of the live window against these powers the
+    'pattern seen before N of the last M failures' factor."""
+    __tablename__ = "failure_patterns"
+    __table_args__ = (
+        UniqueConstraint("failure_event_id", "window_hours", name="uq_failure_pattern_window"),
+        Index("idx_failure_patterns_eq", "equipment_id"),
+    )
+
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    failure_event_id = Column(UUID(as_uuid=True), ForeignKey("failure_events.id", ondelete="CASCADE"), nullable=False)
+    equipment_id     = Column(UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="CASCADE"), nullable=False)
+    plant_id         = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    window_hours     = Column(Float, nullable=False)
+    features         = Column(JSON, nullable=False, default={})   # {metric_key: {avg,max,slope,...}}
+    computed_at      = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class PredictiveConfigLog(Base):
+    """Append-only snapshot of settings/rules on every change — who changed
+    what, when; enables config rollback and stamps config_version lineage."""
+    __tablename__ = "predictive_config_log"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id      = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=False, index=True)
+    version       = Column(Integer, nullable=False)
+    payload       = Column(JSON, nullable=False, default={})   # full settings + rules snapshot
+    changed_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at    = Column(DateTime(timezone=True), server_default=func.now())
