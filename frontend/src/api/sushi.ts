@@ -50,6 +50,7 @@ export type SushiDeviceInput = {
   temp_crit_c: number | null;
   press_min_mpa: number | null;
   press_max_mpa: number | null;
+  tag_name: string | null;
 };
 
 export async function fetchSushiDevices(): Promise<SushiDevice[]> {

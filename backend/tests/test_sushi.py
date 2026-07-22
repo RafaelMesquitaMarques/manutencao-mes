@@ -8,9 +8,11 @@ event loop and every write is ALWAYS rolled back. Covers:
   HRI, DIAG, INI, GPS, equipment info) · Data_Status → reading quality ·
   truncated/unknown frames rejected · network-server envelope extraction
   (ChirpStack v4/v3, TTN v3, generic) · sensors auto-provisioned per metric ·
-  threshold alarms fire on CROSSINGS only (no flooding) · pressure band ·
-  simulation/errored readings never alarm · disabled/unlinked devices store
-  nothing · HRI updates health fields · staleness state machine.
+  threshold alarms fire on CROSSINGS only (no flooding) · hysteresis dead-band
+  (hovering alerts once, re-arm below limit−5%, 24h latch expiry, pressure low
+  band) · pressure band · simulation/errored readings never alarm ·
+  disabled/unlinked devices store nothing · HRI updates health fields ·
+  staleness state machine.
 
 Run (inside the backend container):
     pytest tests/test_sushi.py -v
@@ -375,6 +377,77 @@ async def test_pressure_band_alerts(s):
     alerts = [a for a in await _alerts(s, d) if a.type == "sushi_press"]
     assert len(alerts) == 2                      # one below-min crossing, one above-max
     assert {a.severity for a in alerts} == {"warning"}
+
+
+@with_session
+async def test_hovering_at_threshold_creates_one_alert(s):
+    """A signal oscillating around the warn limit re-crosses on nearly every
+    uplink (the field case: baseline ≈ the 2.8 mm/s warn limit → 13 duplicate
+    rows in 24h). The dips never clear the dead-band (warn−5% = 4.275 here),
+    so the whole hover episode may create exactly ONE Alert row."""
+    plant = await _plant(s)
+    eq = await _equipment(s, plant)
+    d = await _device(s, plant, eq)
+    t0 = _now() - timedelta(minutes=80)
+    for i, vel in enumerate([4.4, 4.6, 4.4, 4.6, 4.4, 4.6, 4.4, 4.6]):
+        await ingest_uplink(s, d, vib_xyz(vel=vel, acc=1.0, temp=30.0),
+                            {"time": t0 + timedelta(minutes=10 * i)})
+    alerts = [a for a in await _alerts(s, d) if a.type == "sushi_vel"]
+    assert [a.severity for a in alerts] == ["warning"]
+
+
+@with_session
+async def test_rearm_below_deadband_allows_new_alert(s):
+    """Dropping below limit−5% ends the episode; the next crossing is a new
+    alarm. In-band dips (above the re-arm value) do NOT re-arm."""
+    plant = await _plant(s)
+    eq = await _equipment(s, plant)
+    d = await _device(s, plant, eq)
+    t0 = _now() - timedelta(minutes=50)
+    # 4.6 alerts · 4.4 in-band dip · 4.6 still latched · 4.2 < 4.275 re-arms ·
+    # 4.6 alerts again
+    for i, vel in enumerate([4.6, 4.4, 4.6, 4.2, 4.6]):
+        await ingest_uplink(s, d, vib_xyz(vel=vel, acc=1.0, temp=30.0),
+                            {"time": t0 + timedelta(minutes=10 * i)})
+    alerts = [a for a in await _alerts(s, d) if a.type == "sushi_vel"]
+    assert [a.severity for a in alerts] == ["warning", "warning"]
+
+
+@with_session
+async def test_stale_latch_expires_after_24h(s):
+    """A condition that never recovers must still resurface once a day: an
+    Alert row older than the latch window no longer suppresses re-crossings."""
+    plant = await _plant(s)
+    eq = await _equipment(s, plant)
+    d = await _device(s, plant, eq)
+    now = _now()
+    await ingest_uplink(s, d, vib_xyz(vel=4.6, acc=1.0, temp=30.0),
+                        {"time": now - timedelta(hours=25)})
+    await ingest_uplink(s, d, vib_xyz(vel=4.4, acc=1.0, temp=30.0),
+                        {"time": now - timedelta(minutes=20)})
+    await ingest_uplink(s, d, vib_xyz(vel=4.6, acc=1.0, temp=30.0),
+                        {"time": now - timedelta(minutes=10)})
+    alerts = [a for a in await _alerts(s, d) if a.type == "sushi_vel"]
+    assert [a.severity for a in alerts] == ["warning", "warning"]
+
+
+@with_session
+async def test_pressure_low_band_hysteresis(s):
+    """The low-side latch re-arms ABOVE min+5% (0.525 for min=0.50): hovering
+    just below min alerts once; recovering past the band allows a new alert."""
+    plant = await _plant(s)
+    eq = await _equipment(s, plant)
+    d = await _device(s, plant, eq, model=SushiSensorModel.xs530,
+                      vel_warn_mms=None, vel_crit_mms=None,
+                      press_min_mpa=0.50, press_max_mpa=0.75)
+    t0 = _now() - timedelta(minutes=60)
+    # 0.62 normal · 0.48 alerts (low) · 0.51 above min but inside the band ·
+    # 0.49 re-crosses latched · 0.53 clears 0.525 · 0.47 alerts again
+    for i, mpa in enumerate([0.62, 0.48, 0.51, 0.49, 0.53, 0.47]):
+        await ingest_uplink(s, d, press_frame(mpa), {"time": t0 + timedelta(minutes=10 * i)})
+    alerts = [a for a in await _alerts(s, d) if a.type == "sushi_press"]
+    assert [a.severity for a in alerts] == ["warning", "warning"]
+    assert all(a.limit_value == 0.50 for a in alerts)
 
 
 @with_session

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Cpu, Plus, Loader2, Trash2, X, Check, Pencil, KeyRound, Circle, ScanLine, Thermometer, BatteryMedium } from 'lucide-react';
+import { Cpu, Plus, Loader2, Trash2, X, Check, Pencil, KeyRound, Circle, ScanLine, Thermometer, BatteryMedium, Search } from 'lucide-react';
 import {
   fetchAdamDevices, createAdamDevice, updateAdamDevice, deleteAdamDevice,
   provisionMachineToken,
@@ -46,7 +46,7 @@ const BLANK_SUSHI: SushiDeviceInput = {
   name: '', dev_eui: '', model: 'xs770a', equipment_id: null, enabled: true,
   update_period_min: 60, vel_warn_mms: 4.5, vel_crit_mms: 7.1,
   acc_warn_ms2: null, acc_crit_ms2: null, temp_warn_c: null, temp_crit_c: null,
-  press_min_mpa: null, press_max_mpa: null,
+  press_min_mpa: null, press_max_mpa: null, tag_name: null,
 };
 
 const STATUS_STYLE: Record<AdamDeviceStatus, string> = {
@@ -61,6 +61,42 @@ const SUSHI_HEALTH_STYLE: Record<SushiHealth, string> = {
 
 const inputCls =
   'bg-[#0b1120] border border-white/10 rounded-lg px-3 py-1.5 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500';
+
+// Search + dropdown filters above a device list. Purely client-side — every
+// section's list is already fully loaded. Shows a shown/total counter while
+// any filter is active.
+function FindBar({ query, onQuery, placeholder, selects, shown, total }: {
+  query: string;
+  onQuery: (v: string) => void;
+  placeholder?: string;
+  selects: { value: string; onChange: (v: string) => void; options: { value: string; label: string }[] }[];
+  shown: number;
+  total: number;
+}) {
+  const { t } = useTranslation();
+  const filtering = query.trim() !== '' || selects.some((s) => s.value !== 'all');
+  return (
+    <div className="flex flex-wrap items-center gap-2 mb-4">
+      <div className="relative">
+        <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-600 pointer-events-none" />
+        <input
+          value={query}
+          onChange={(e) => onQuery(e.target.value)}
+          placeholder={placeholder ?? t('devices.searchPlaceholder')}
+          className={`${inputCls} pl-8 w-56`}
+        />
+      </div>
+      {selects.map((s, i) => (
+        <select key={i} value={s.value} onChange={(e) => s.onChange(e.target.value)} className={inputCls}>
+          {s.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      ))}
+      {filtering && (
+        <span className="ml-auto text-xs text-gray-600 tabular-nums">{shown}/{total}</span>
+      )}
+    </div>
+  );
+}
 
 export default function DeviceSettings() {
   const { t, i18n } = useTranslation();
@@ -98,6 +134,18 @@ export default function DeviceSettings() {
   const [showSushiForm, setShowSushiForm] = useState(false);
   const [sushiEditId, setSushiEditId] = useState<string | null>(null);
   const [sushiForm, setSushiForm] = useState<SushiDeviceInput>(BLANK_SUSHI);
+  // Find-a-device controls, one set per section (all client-side).
+  const [sushiQuery, setSushiQuery] = useState('');
+  const [sushiEquipFilter, setSushiEquipFilter] = useState('all');   // 'all' | 'unlinked' | equipment_id
+  const [sushiHealthFilter, setSushiHealthFilter] = useState('all'); // 'all' | SushiHealth
+  const [adamQuery, setAdamQuery] = useState('');
+  const [adamMachineFilter, setAdamMachineFilter] = useState('all'); // 'all' | 'unlinked' | machine_id
+  const [adamStatusFilter, setAdamStatusFilter] = useState('all');   // 'all' | AdamDeviceStatus
+  const [stQuery, setStQuery] = useState('');
+  const [stStatusFilter, setStStatusFilter] = useState('all');
+  const [sensorQuery, setSensorQuery] = useState('');
+  const [sensorDeptFilter, setSensorDeptFilter] = useState('all');   // 'all' | 'none' | department name
+  const [sensorStatusFilter, setSensorStatusFilter] = useState('all');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -247,6 +295,7 @@ export default function DeviceSettings() {
       acc_warn_ms2: d.acc_warn_ms2, acc_crit_ms2: d.acc_crit_ms2,
       temp_warn_c: d.temp_warn_c, temp_crit_c: d.temp_crit_c,
       press_min_mpa: d.press_min_mpa, press_max_mpa: d.press_max_mpa,
+      tag_name: d.tag_name,
     });
     setShowSushiForm(true); setErr('');
   };
@@ -254,6 +303,69 @@ export default function DeviceSettings() {
   const setSushi = <K extends keyof SushiDeviceInput>(k: K, v: SushiDeviceInput[K]) =>
     setSushiForm((f) => ({ ...f, [k]: v }));
   const sushiNum = (v: string): number | null => (v === '' ? null : Number(v));
+
+  // ── Per-section find logic ──
+  const STATUS_FILTER_VALUES = ['online', 'offline', 'error', 'unknown'] as const;
+
+  const adamMachineOptions = [...new Map(
+    devices.filter((d) => d.machine_id).map((d) => [d.machine_id as string, d.machine_name ?? '']),
+  ).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  const adamHasUnlinked = devices.some((d) => !d.machine_id);
+  const adamQ = adamQuery.trim().toLowerCase();
+  const adamShown = devices.filter((d) => {
+    if (adamMachineFilter === 'unlinked') {
+      if (d.machine_id) return false;
+    } else if (adamMachineFilter !== 'all' && d.machine_id !== adamMachineFilter) {
+      return false;
+    }
+    if (adamStatusFilter !== 'all' && d.status !== adamStatusFilter) return false;
+    if (!adamQ) return true;
+    return `${d.name} ${d.machine_name ?? ''} ${d.ip_address} ${d.model}`.toLowerCase().includes(adamQ);
+  });
+
+  const stQ = stQuery.trim().toLowerCase();
+  const stShown = stations.filter((s) => {
+    if (stStatusFilter !== 'all' && s.status !== stStatusFilter) return false;
+    if (!stQ) return true;
+    return `${s.name} ${s.machine_name ?? ''} ${s.station_key}`.toLowerCase().includes(stQ);
+  });
+
+  const sensorDeptOptions = [...new Set(
+    sensors.map((s) => s.department).filter((d): d is string => !!d),
+  )].sort((a, b) => a.localeCompare(b));
+  const sensorHasNoDept = sensors.some((s) => !s.department);
+  const sensorQ = sensorQuery.trim().toLowerCase();
+  const sensorShown = sensors.filter((s) => {
+    if (sensorDeptFilter === 'none') {
+      if (s.department) return false;
+    } else if (sensorDeptFilter !== 'all' && s.department !== sensorDeptFilter) {
+      return false;
+    }
+    if (sensorStatusFilter !== 'all' && s.status !== sensorStatusFilter) return false;
+    if (!sensorQ) return true;
+    return `${s.name} ${s.department ?? ''} ${s.source}`.toLowerCase().includes(sensorQ);
+  });
+
+  // Sushi: text matches name/tag/equipment/model (EUI matches even when typed
+  // with separators), plus equipment and health dropdowns.
+  const sushiEquipOptions = [...new Map(
+    sushiDevices.filter((d) => d.equipment_id)
+      .map((d) => [d.equipment_id as string, d.equipment_name ?? '']),
+  ).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  const sushiHasUnlinked = sushiDevices.some((d) => !d.equipment_id);
+  const sushiQ = sushiQuery.trim().toLowerCase();
+  const sushiQEui = sushiQ.replace(/[^0-9a-f]/g, '');
+  const sushiShown = sushiDevices.filter((d) => {
+    if (sushiEquipFilter === 'unlinked') {
+      if (d.equipment_id) return false;
+    } else if (sushiEquipFilter !== 'all' && d.equipment_id !== sushiEquipFilter) {
+      return false;
+    }
+    if (sushiHealthFilter !== 'all' && d.health !== sushiHealthFilter) return false;
+    if (!sushiQ) return true;
+    const hay = `${d.name} ${d.tag_name ?? ''} ${d.equipment_name ?? ''} ${d.model}`.toLowerCase();
+    return hay.includes(sushiQ) || (sushiQEui.length >= 2 && d.dev_eui.toLowerCase().includes(sushiQEui));
+  });
 
   const handleSushiSave = async () => {
     if (!sushiForm.name.trim() || !sushiForm.dev_eui.trim()) return;
@@ -433,6 +545,31 @@ export default function DeviceSettings() {
         {devices.length === 0 ? (
           <p className="text-gray-600 text-sm">{t('devices.noDevices')}</p>
         ) : (
+          <>
+          <FindBar
+            query={adamQuery} onQuery={setAdamQuery}
+            shown={adamShown.length} total={devices.length}
+            selects={[
+              {
+                value: adamMachineFilter, onChange: setAdamMachineFilter,
+                options: [
+                  { value: 'all', label: t('devices.allMachines') },
+                  ...(adamHasUnlinked ? [{ value: 'unlinked', label: t('devices.unlinked') }] : []),
+                  ...adamMachineOptions.map(([id, name]) => ({ value: id, label: name })),
+                ],
+              },
+              {
+                value: adamStatusFilter, onChange: setAdamStatusFilter,
+                options: [
+                  { value: 'all', label: t('devices.allStatuses') },
+                  ...STATUS_FILTER_VALUES.map((v) => ({ value: v, label: t(`devices.status_${v}`) })),
+                ],
+              },
+            ]}
+          />
+          {adamShown.length === 0 ? (
+            <p className="text-gray-600 text-sm">{t('devices.noMatch')}</p>
+          ) : (
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-gray-500 uppercase tracking-wide border-b border-white/[0.06]">
@@ -445,7 +582,7 @@ export default function DeviceSettings() {
               </tr>
             </thead>
             <tbody>
-              {devices.map((d) => (
+              {adamShown.map((d) => (
                 <tr key={d.id} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
                   <td className="py-2.5 pr-4">
                     <span className="text-gray-200">{d.name}</span>
@@ -499,6 +636,8 @@ export default function DeviceSettings() {
               ))}
             </tbody>
           </table>
+          )}
+          </>
         )}
       </div>
 
@@ -577,6 +716,23 @@ export default function DeviceSettings() {
         {stations.length === 0 ? (
           <p className="text-gray-600 text-sm">{t('devices.noStations')}</p>
         ) : (
+          <>
+          <FindBar
+            query={stQuery} onQuery={setStQuery}
+            shown={stShown.length} total={stations.length}
+            selects={[
+              {
+                value: stStatusFilter, onChange: setStStatusFilter,
+                options: [
+                  { value: 'all', label: t('devices.allStatuses') },
+                  ...STATUS_FILTER_VALUES.map((v) => ({ value: v, label: t(`devices.status_${v}`) })),
+                ],
+              },
+            ]}
+          />
+          {stShown.length === 0 ? (
+            <p className="text-gray-600 text-sm">{t('devices.noMatch')}</p>
+          ) : (
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-gray-500 uppercase tracking-wide border-b border-white/[0.06]">
@@ -589,7 +745,7 @@ export default function DeviceSettings() {
               </tr>
             </thead>
             <tbody>
-              {stations.map((s) => (
+              {stShown.map((s) => (
                 <tr key={s.id} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
                   <td className="py-2.5 pr-4">
                     <span className="text-gray-200">{s.name}</span>
@@ -639,6 +795,8 @@ export default function DeviceSettings() {
               ))}
             </tbody>
           </table>
+          )}
+          </>
         )}
       </div>
 
@@ -736,6 +894,31 @@ export default function DeviceSettings() {
         {sensors.length === 0 ? (
           <p className="text-gray-600 text-sm">{t('devices.noSensors')}</p>
         ) : (
+          <>
+          <FindBar
+            query={sensorQuery} onQuery={setSensorQuery}
+            shown={sensorShown.length} total={sensors.length}
+            selects={[
+              {
+                value: sensorDeptFilter, onChange: setSensorDeptFilter,
+                options: [
+                  { value: 'all', label: t('devices.allDepartments') },
+                  ...(sensorHasNoDept ? [{ value: 'none', label: t('devices.noDepartment') }] : []),
+                  ...sensorDeptOptions.map((d) => ({ value: d, label: d })),
+                ],
+              },
+              {
+                value: sensorStatusFilter, onChange: setSensorStatusFilter,
+                options: [
+                  { value: 'all', label: t('devices.allStatuses') },
+                  ...STATUS_FILTER_VALUES.map((v) => ({ value: v, label: t(`devices.status_${v}`) })),
+                ],
+              },
+            ]}
+          />
+          {sensorShown.length === 0 ? (
+            <p className="text-gray-600 text-sm">{t('devices.noMatch')}</p>
+          ) : (
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-gray-500 uppercase tracking-wide border-b border-white/[0.06]">
@@ -748,7 +931,7 @@ export default function DeviceSettings() {
               </tr>
             </thead>
             <tbody>
-              {sensors.map((s) => (
+              {sensorShown.map((s) => (
                 <tr key={s.id} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
                   <td className="py-2.5 pr-4">
                     <span className="text-gray-200">{s.name}</span>
@@ -786,6 +969,8 @@ export default function DeviceSettings() {
               ))}
             </tbody>
           </table>
+          )}
+          </>
         )}
       </div>
 
@@ -854,6 +1039,14 @@ export default function DeviceSettings() {
                 onChange={(e) => setSushi('update_period_min', Number(e.target.value))}
                 className={`${inputCls} w-full`} />
               <span className="block text-[11px] text-gray-600">{t('devices.sushiUpdatePeriodHint')}</span>
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs text-gray-400">{t('devices.sushiTag')}</span>
+              <input value={sushiForm.tag_name ?? ''} maxLength={60}
+                onChange={(e) => setSushi('tag_name', e.target.value || null)}
+                placeholder={t('devices.sushiTagPlaceholder')}
+                className={`${inputCls} w-full`} />
+              <span className="block text-[11px] text-gray-600">{t('devices.sushiTagHint')}</span>
             </label>
           </div>
 
@@ -942,6 +1135,33 @@ export default function DeviceSettings() {
         {sushiDevices.length === 0 ? (
           <p className="text-gray-600 text-sm">{t('devices.noSushi')}</p>
         ) : (
+          <>
+          <FindBar
+            query={sushiQuery} onQuery={setSushiQuery}
+            placeholder={t('devices.sushiSearchPlaceholder')}
+            shown={sushiShown.length} total={sushiDevices.length}
+            selects={[
+              {
+                value: sushiEquipFilter, onChange: setSushiEquipFilter,
+                options: [
+                  { value: 'all', label: t('devices.sushiAllEquipment') },
+                  ...(sushiHasUnlinked ? [{ value: 'unlinked', label: t('devices.unlinked') }] : []),
+                  ...sushiEquipOptions.map(([id, name]) => ({ value: id, label: name })),
+                ],
+              },
+              {
+                value: sushiHealthFilter, onChange: setSushiHealthFilter,
+                options: [
+                  { value: 'all', label: t('devices.allStatuses') },
+                  ...(['online', 'stale', 'offline', 'unknown'] as const)
+                    .map((h) => ({ value: h, label: t(`devices.sushiHealth_${h}`) })),
+                ],
+              },
+            ]}
+          />
+          {sushiShown.length === 0 ? (
+            <p className="text-gray-600 text-sm">{t('devices.noMatch')}</p>
+          ) : (
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-gray-500 uppercase tracking-wide border-b border-white/[0.06]">
@@ -955,10 +1175,11 @@ export default function DeviceSettings() {
               </tr>
             </thead>
             <tbody>
-              {sushiDevices.map((d) => (
+              {sushiShown.map((d) => (
                 <tr key={d.id} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
                   <td className="py-2.5 pr-4">
                     <span className="text-gray-200">{d.name}</span>
+                    {d.tag_name && <span className="ml-2 text-[11px] text-gray-500">{d.tag_name}</span>}
                     {!d.enabled && <span className="ml-2 text-[10px] text-gray-600 uppercase">{t('devices.disabled')}</span>}
                     <span className="block text-[11px] text-gray-600 font-mono">
                       {d.model.toUpperCase()} · {d.dev_eui}
@@ -1009,6 +1230,8 @@ export default function DeviceSettings() {
               ))}
             </tbody>
           </table>
+          )}
+          </>
         )}
       </div>
 

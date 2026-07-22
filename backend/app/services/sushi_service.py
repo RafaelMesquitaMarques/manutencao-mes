@@ -23,8 +23,12 @@ rebuild — nothing else changes. See docs/sushi-sensor-contract.md.
 Measurements are stored through the platform's existing IoT tables: one
 `Sensor` row per metric (auto-provisioned, code SUSHI-{EUI}-{METRIC}[-AXIS])
 and `SensorReading` rows on the TimescaleDB hypertable. Threshold alarms are
-evaluated here on CROSSINGS (previous value below → new value at/above) so a
-1-minute update period cannot flood the alerts table.
+evaluated here on CROSSINGS (previous value below → new value at/above), with
+a dead-band latch on top (`_alarm_latched`): a signal hovering around a limit
+re-crosses on nearly every uplink, so one alarm episode creates ONE Alert row —
+it re-arms only after the value clears the limit by ALERT_REARM_PCT, or after
+ALERT_LATCH_MAX_HOURS without recovery (a condition that never clears still
+resurfaces once a day instead of flooding the table).
 """
 from __future__ import annotations
 
@@ -389,28 +393,76 @@ def _crossed_low(prev: Optional[float], new: float, threshold: float) -> bool:
     return new <= threshold and (prev is None or prev > threshold)
 
 
+# Hysteresis for Alert-row creation. A crossing only creates a row when the
+# alarm is ARMED: no row yet for this exact alarm, or the signal has since
+# cleared the limit by ALERT_REARM_PCT (dead-band), or the last row is older
+# than ALERT_LATCH_MAX_HOURS (a never-clearing condition resurfaces daily).
+ALERT_REARM_PCT = 5.0
+ALERT_LATCH_MAX_HOURS = 24
+
+
+async def _alarm_latched(
+    s: AsyncSession, sensor_id, alert_type: str, severity: str,
+    limit: float, direction: str, ts: datetime,
+) -> bool:
+    """True when this exact alarm (sensor + type + severity + limit) already
+    has a recent Alert row and no reading since has cleared the dead-band —
+    i.e. the crossing is threshold flutter, not a new episode. Keying on
+    `limit_value` keeps the pressure min/max bands independent and re-arms
+    automatically when a threshold is reconfigured."""
+    last_at = (await s.execute(
+        select(Alert.created_at).where(
+            Alert.sensor_id == sensor_id,
+            Alert.type == alert_type,
+            Alert.severity == severity,
+            Alert.limit_value == limit,
+            Alert.created_at >= ts - timedelta(hours=ALERT_LATCH_MAX_HOURS),
+        ).order_by(Alert.created_at.desc()).limit(1)
+    )).scalar_one_or_none()
+    if last_at is None:
+        return False
+    band = abs(limit) * ALERT_REARM_PCT / 100.0
+    rearmed = (SensorReading.value <= limit - band) if direction == "above" \
+        else (SensorReading.value >= limit + band)
+    recovery = (await s.execute(
+        select(SensorReading.timestamp).where(
+            SensorReading.sensor_id == sensor_id,
+            SensorReading.timestamp > last_at,
+            rearmed,
+        ).limit(1)
+    )).first()
+    return recovery is None
+
+
 async def _threshold_alerts(
     s: AsyncSession, device: SushiDevice, sensor: Sensor,
-    metric: str, prev: Optional[float], value: float,
+    metric: str, prev: Optional[float], value: float, ts: datetime,
 ) -> list[dict]:
-    """Create Alert rows for crossings; returns a summary of what was created
-    so the ingest route can dispatch notifications after commit."""
+    """Create Alert rows for armed crossings (see `_alarm_latched`); returns a
+    summary of what was created so the ingest route can dispatch notifications
+    after commit."""
     unit = METRIC_DEFS[metric][2]
+    alert_type = f"sushi_{metric}"
     created: list[dict] = []
 
-    def _alert(severity: str, limit: float, direction: str) -> None:
+    async def _alert(severity: str, limit: float, direction: str) -> None:
+        if await _alarm_latched(s, sensor.id, alert_type, severity, limit, direction, ts):
+            return
         # id set explicitly — column defaults only fire at flush, and the
-        # summary below needs the id before that.
+        # summary below needs the id before that. created_at pinned to the
+        # reading time so the latch and the recovery scan share one time axis
+        # (and backfilled/simulated alerts land on the historical timeline).
         a = Alert(
             id=uuid_mod.uuid4(),
             sensor_id=sensor.id,
             equipment_id=sensor.equipment_id,
             plant_id=device.plant_id,
-            type=f"sushi_{metric}",
+            type=alert_type,
             severity=severity,
             value_read=value,
             limit_value=limit,
             message=f"{sensor.name}: {value:g} {unit} {direction} {severity} limit {limit:g} {unit}",
+            created_at=ts,
         )
         s.add(a)
         created.append({
@@ -426,14 +478,14 @@ async def _threshold_alerts(
         warn_attr, crit_attr = _HI_THRESHOLDS[metric]
         warn, crit = getattr(device, warn_attr), getattr(device, crit_attr)
         if crit is not None and _crossed(prev, value, crit):
-            _alert("critical", crit, "above")
+            await _alert("critical", crit, "above")
         elif warn is not None and _crossed(prev, value, warn):
-            _alert("warning", warn, "above")
+            await _alert("warning", warn, "above")
     elif metric == "press":
         if device.press_max_mpa is not None and _crossed(prev, value, device.press_max_mpa):
-            _alert("warning", device.press_max_mpa, "above")
+            await _alert("warning", device.press_max_mpa, "above")
         if device.press_min_mpa is not None and _crossed_low(prev, value, device.press_min_mpa):
-            _alert("warning", device.press_min_mpa, "below")
+            await _alert("warning", device.press_min_mpa, "below")
     return created
 
 
@@ -474,7 +526,7 @@ async def ingest_uplink(s: AsyncSession, device: SushiDevice, raw: bytes, meta: 
             ))
             stored += 1
             if quality == "ok" and not decoded.get("simulation"):
-                new_alerts += await _threshold_alerts(s, device, sensor, metric, prev, value)
+                new_alerts += await _threshold_alerts(s, device, sensor, metric, prev, value, ts)
 
     elif kind == "health":
         device.uptime_min = decoded["uptime_min"]
@@ -490,7 +542,10 @@ async def ingest_uplink(s: AsyncSession, device: SushiDevice, raw: bytes, meta: 
         device.diag_detail = decoded["diag_detail"]
 
     elif kind == "init":
-        device.tag_name = decoded["tag_name"]
+        # The hardware tag only seeds an empty label — tag_name doubles as the
+        # user-edited component/position name, which the UI owns once set.
+        if not device.tag_name:
+            device.tag_name = decoded["tag_name"]
 
     elif kind == "gps":
         if decoded.get("latitude") is not None:

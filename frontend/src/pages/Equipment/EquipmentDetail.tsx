@@ -22,11 +22,11 @@ import {
   addStopSubcategory, updateStopSubcategory, deleteStopSubcategory,
   fetchMachineRejectCategories, createMachineRejectCategory, deleteMachineRejectCategory,
   addRejectSubcategory, updateRejectSubcategory, deleteRejectSubcategory,
-  cloneCategories,
+  cloneCategories, cloneOperators,
 } from '../../api/machines';
 import api from '../../api/axios';
 import { fetchDepartments } from '../../api/departments';
-import { fetchEquipmentCondition, type SushiCondition, type SushiSeries } from '../../api/sushi';
+import { fetchEquipmentCondition, type SushiCondition, type SushiConditionDevice, type SushiSeries } from '../../api/sushi';
 import SushiIcon from '../../components/ui/SushiIcon';
 import ReactECharts from 'echarts-for-react';
 import { uploadFile } from '../../api/uploads';
@@ -42,6 +42,8 @@ import { format } from 'date-fns';
 import { IconRenderer, IconPicker, INTERVENTION_ICON_MAP, INTERVENTION_ICONS } from '../../components/ui/IconLibrary';
 import PmStepsEditor from '../../components/pm/PmStepsEditor';
 import { humanHours } from '../../utils/duration';
+import PredictiveHealthTab from '../Predictive/PredictiveHealthTab';
+import { useAuthStore } from '../../store/authStore';
 
 // ─── Status palettes ────────────────────────────────────────────────────────────
 
@@ -69,7 +71,7 @@ const PRIORITY_COLORS: Record<string, string> = {
 
 // ─── Main tab types ──────────────────────────────────────────────────────────────
 
-type TabId = 'overview' | 'workorders' | 'plans' | 'configuration' | 'history' | 'condition';
+type TabId = 'overview' | 'workorders' | 'plans' | 'configuration' | 'history' | 'condition' | 'predictive';
 
 // ─── Config sub-tab types ────────────────────────────────────────────────────────
 
@@ -157,8 +159,11 @@ function CategoryCard({ cat, selected, onSelect, onDelete }: {
 
 type CloneAssetFilter = 'all' | 'production' | 'auxiliary';
 
-function CloneModal({ machines, sourceMachineId, categoryType, onClose }: {
-  machines: Machine[]; sourceMachineId: string; categoryType: 'stop' | 'reject'; onClose: () => void;
+function CloneModal({ machines, sourceMachineId, title, hint, confirmKey, cancelLabel, onClone, onClose }: {
+  machines: Machine[]; sourceMachineId: string; title: string; hint: string;
+  confirmKey?: string;   // i18n key taking {{count}} — defaults to equipment.cloneCount
+  cancelLabel?: string;  // defaults to common.cancel
+  onClone: (targetIds: string[]) => Promise<unknown>; onClose: () => void;
 }) {
   const { t } = useTranslation();
   const [selected, setSelected] = useState<string[]>([]);
@@ -193,10 +198,13 @@ function CloneModal({ machines, sourceMachineId, categoryType, onClose }: {
   const run = async () => {
     if (!selected.length) return;
     setBusy(true);
-    await cloneCategories({ source_machine_id: sourceMachineId, target_machine_ids: selected, category_type: categoryType });
-    setDone(true);
-    setBusy(false);
-    setTimeout(onClose, 1200);
+    try {
+      await onClone(selected);
+      setDone(true);
+      setTimeout(onClose, 1200);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const FILTERS: CloneAssetFilter[] = ['all', 'production', 'auxiliary'];
@@ -209,10 +217,8 @@ function CloneModal({ machines, sourceMachineId, categoryType, onClose }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
       <div className="bg-[#0d1421] border border-white/10 rounded-2xl p-6 w-full max-w-md space-y-4">
-        <h2 className="text-base font-black text-white">
-          {categoryType === 'stop' ? t('equipment.cloneCatsStopTitle') : t('equipment.cloneCatsRejectTitle')}
-        </h2>
-        <p className="text-xs text-gray-500">{t('equipment.cloneCatsHint')}</p>
+        <h2 className="text-base font-black text-white">{title}</h2>
+        <p className="text-xs text-gray-500">{hint}</p>
         <div className="relative">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
           <input
@@ -243,9 +249,9 @@ function CloneModal({ machines, sourceMachineId, categoryType, onClose }: {
         <div className="flex gap-2">
           <button onClick={run} disabled={busy || !selected.length}
             className={`flex-1 py-2.5 rounded-xl text-sm font-black transition-all ${done ? 'bg-green-600' : 'bg-blue-600 hover:bg-blue-500'} text-white disabled:opacity-50`}>
-            {done ? t('equipment.cloned') : busy ? t('equipment.cloning') : t('equipment.cloneCount', { count: selected.length })}
+            {done ? t('equipment.cloned') : busy ? t('equipment.cloning') : t(confirmKey ?? 'equipment.cloneCount', { count: selected.length })}
           </button>
-          <button onClick={onClose} className="px-4 py-2.5 rounded-xl text-sm text-gray-400 border border-white/10 hover:border-white/20">{t('common.cancel')}</button>
+          <button onClick={onClose} className="px-4 py-2.5 rounded-xl text-sm text-gray-400 border border-white/10 hover:border-white/20">{cancelLabel ?? t('common.cancel')}</button>
         </div>
       </div>
     </div>
@@ -447,7 +453,10 @@ function StopCategoriesTab({ slug, allMachines, machineId }: { slug: string; all
         </div>
       )}
 
-      {showClone && <CloneModal machines={allMachines} sourceMachineId={machineId} categoryType="stop" onClose={() => setShowClone(false)} />}
+      {showClone && <CloneModal machines={allMachines} sourceMachineId={machineId}
+        title={t('equipment.cloneCatsStopTitle')} hint={t('equipment.cloneCatsHint')}
+        onClone={(ids) => cloneCategories({ source_machine_id: machineId, target_machine_ids: ids, category_type: 'stop' })}
+        onClose={() => setShowClone(false)} />}
     </div>
   );
 }
@@ -628,18 +637,29 @@ function RejectCategoriesTab({ slug, allMachines, machineId }: { slug: string; a
         </div>
       )}
 
-      {showClone && <CloneModal machines={allMachines} sourceMachineId={machineId} categoryType="reject" onClose={() => setShowClone(false)} />}
+      {showClone && <CloneModal machines={allMachines} sourceMachineId={machineId}
+        title={t('equipment.cloneCatsRejectTitle')} hint={t('equipment.cloneCatsHint')}
+        onClone={(ids) => cloneCategories({ source_machine_id: machineId, target_machine_ids: ids, category_type: 'reject' })}
+        onClose={() => setShowClone(false)} />}
     </div>
   );
 }
 
 // ─── Operators tab ────────────────────────────────────────────────────────────────
 
-function OperatorsTab({ machineRef }: { machineRef: string }) {
+function OperatorsTab({ machineRef, machineId, allMachines }: {
+  machineRef: string; machineId: string; allMachines: Machine[];
+}) {
+  const { t } = useTranslation();
   const [operators, setOperators] = useState<MachineOperatorOut[]>([]);
   const [showAdd, setShowAdd] = useState(false);
+  const [showClone, setShowClone] = useState(false);
+  // Operator just created here — triggers the "also add to other machines?" prompt.
+  const [justAdded, setJustAdded] = useState<MachineOperatorOut | null>(null);
   const [form, setForm] = useState<MachineOperatorCreate>({ name: '', shift: 'all' });
   const [busy, setBusy] = useState(false);
+
+  const hasOtherMachines = allMachines.some((m) => m.id !== machineId);
 
   const load = useCallback(async () => {
     const { data } = await api.get<MachineOperatorOut[]>(`/api/machines/${machineRef}/operators`);
@@ -650,11 +670,15 @@ function OperatorsTab({ machineRef }: { machineRef: string }) {
   const add = async () => {
     if (!form.name.trim()) return;
     setBusy(true);
-    await addMachineOperator(machineRef, form);
-    setForm({ name: '', shift: 'all' });
-    setShowAdd(false);
-    await load();
-    setBusy(false);
+    try {
+      const created = await addMachineOperator(machineRef, form);
+      setForm({ name: '', shift: 'all' });
+      setShowAdd(false);
+      await load();
+      if (hasOtherMachines) setJustAdded(created);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const toggle = async (op: MachineOperatorOut) => {
@@ -663,7 +687,7 @@ function OperatorsTab({ machineRef }: { machineRef: string }) {
   };
 
   const del = async (op: MachineOperatorOut) => {
-    if (!confirm(`Remove ${op.name}?`)) return;
+    if (!confirm(t('equipment.removeOperatorConfirm', { name: op.name }))) return;
     await deleteOperator(op.id);
     await load();
   };
@@ -671,37 +695,44 @@ function OperatorsTab({ machineRef }: { machineRef: string }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-bold text-gray-400 uppercase tracking-widest">Operators</h2>
-        <button onClick={() => setShowAdd(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition-colors">
-          <Plus size={12} /> Add
-        </button>
+        <h2 className="text-sm font-bold text-gray-400 uppercase tracking-widest">{t('equipment.operatorsTitle')}</h2>
+        <div className="flex items-center gap-2">
+          {hasOtherMachines && operators.length > 0 && (
+            <button onClick={() => setShowClone(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-white/[0.05] hover:bg-white/[0.1] text-gray-300 rounded-xl text-xs font-bold border border-white/10 transition-colors">
+              <Copy size={12} /> {t('equipment.cloneTo')}
+            </button>
+          )}
+          <button onClick={() => setShowAdd(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition-colors">
+            <Plus size={12} /> {t('common.add')}
+          </button>
+        </div>
       </div>
 
       {showAdd && (
         <div className="p-4 bg-[#0d1421] rounded-2xl border border-white/[0.06] space-y-3">
           <div className="flex gap-2">
             <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-              placeholder="Full name" className="flex-1 bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+              placeholder={t('equipment.operatorFullName')} className="flex-1 bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
             <input value={form.employee_code || ''} onChange={(e) => setForm((f) => ({ ...f, employee_code: e.target.value }))}
-              placeholder="Employee #" className="w-28 bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+              placeholder={t('equipment.operatorEmployeeCode')} className="w-28 bg-[#0b1120] border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
           </div>
           <div className="flex gap-2 flex-wrap">
             {SHIFTS.map((s) => (
               <button key={s} type="button" onClick={() => setForm((f) => ({ ...f, shift: s }))}
-                className={`px-3 py-1 rounded-xl text-xs font-bold capitalize border transition-all ${form.shift === s ? 'bg-blue-600 text-white border-blue-500' : 'bg-white/[0.04] text-gray-400 border-white/10'}`}>
-                {s}
+                className={`px-3 py-1 rounded-xl text-xs font-bold border transition-all ${form.shift === s ? 'bg-blue-600 text-white border-blue-500' : 'bg-white/[0.04] text-gray-400 border-white/10'}`}>
+                {t(`shift.${s}`)}
               </button>
             ))}
           </div>
           <div className="flex gap-2">
-            <button onClick={add} disabled={busy || !form.name.trim()} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold disabled:opacity-50 flex items-center gap-1.5"><Check size={13} /> Add</button>
+            <button onClick={add} disabled={busy || !form.name.trim()} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold disabled:opacity-50 flex items-center gap-1.5"><Check size={13} /> {t('common.add')}</button>
             <button onClick={() => setShowAdd(false)} className="text-gray-500 px-4 py-2 border border-white/10 rounded-xl text-sm"><X size={13} /></button>
           </div>
         </div>
       )}
 
       <div className="space-y-2">
-        {operators.length === 0 && <p className="text-center py-10 text-gray-700 text-sm">No operators configured.</p>}
+        {operators.length === 0 && <p className="text-center py-10 text-gray-700 text-sm">{t('equipment.noOperators')}</p>}
         {operators.map((op) => (
           <div key={op.id} className={`bg-[#0d1421] rounded-2xl border border-white/[0.06] p-4 flex items-center gap-3 ${!op.is_active ? 'opacity-50' : ''}`}>
             <div className="w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-base font-black text-blue-400">
@@ -709,15 +740,28 @@ function OperatorsTab({ machineRef }: { machineRef: string }) {
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-bold text-white">{op.name}</p>
-              <p className="text-xs text-gray-600 capitalize">{op.employee_code ? `#${op.employee_code} · ` : ''}{op.shift}</p>
+              <p className="text-xs text-gray-600">{op.employee_code ? `#${op.employee_code} · ` : ''}{t(`shift.${op.shift}`)}</p>
             </div>
             <button onClick={() => toggle(op)} className={`px-3 py-1 rounded-xl text-xs font-bold border transition-all ${op.is_active ? 'bg-green-500/10 text-green-400 border-green-500/20' : 'bg-gray-500/10 text-gray-600 border-gray-700'}`}>
-              {op.is_active ? 'Active' : 'Inactive'}
+              {op.is_active ? t('common.active') : t('common.inactive')}
             </button>
             <button onClick={() => del(op)} className="p-1.5 rounded-lg text-gray-700 hover:text-red-400 hover:bg-red-400/10 transition-colors"><Trash2 size={13} /></button>
           </div>
         ))}
       </div>
+
+      {showClone && <CloneModal machines={allMachines} sourceMachineId={machineId}
+        title={t('equipment.cloneOpsTitle')} hint={t('equipment.cloneOpsHint')}
+        onClone={(ids) => cloneOperators({ source_machine_id: machineId, target_machine_ids: ids })}
+        onClose={() => setShowClone(false)} />}
+
+      {justAdded && <CloneModal machines={allMachines} sourceMachineId={machineId}
+        title={t('equipment.addOpToOthersTitle', { name: justAdded.name })}
+        hint={t('equipment.addOpToOthersHint')}
+        confirmKey="equipment.addToCount"
+        cancelLabel={t('equipment.justThisMachine')}
+        onClone={(ids) => cloneOperators({ source_machine_id: machineId, target_machine_ids: ids, operator_ids: [justAdded.id] })}
+        onClose={() => setJustAdded(null)} />}
     </div>
   );
 }
@@ -2058,7 +2102,7 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
         )}
         {configTab === 'stop' && <StopCategoriesTab slug={machineRef} allMachines={allMachines} machineId={machineId} />}
         {configTab === 'reject' && <RejectCategoriesTab slug={machineRef} allMachines={allMachines} machineId={machineId} />}
-        {configTab === 'operators' && <OperatorsTab machineRef={machineRef} />}
+        {configTab === 'operators' && <OperatorsTab machineRef={machineRef} machineId={machineId} allMachines={allMachines} />}
         {configTab === 'shifts' && <WorkShiftsTab machineId={machineId} savedConfig={machine?.shifts_config} />}
         {configTab === 'parameters' && <ParametersTab form={form} set={set} shiftsConfig={machine?.shifts_config} />}
         {configTab === 'indicators' && (
@@ -2085,15 +2129,50 @@ const SUSHI_HEALTH_DOT: Record<string, string> = {
 const METRIC_ORDER = ['vel', 'acc', 'temp', 'press'] as const;
 
 // Chart palette — validated for the app's dark surface (#0d1421) with the
-// dataviz six-checks script. Entity colors are fixed per axis (never cycled);
-// status colors are reserved for threshold state and never used as a series.
+// dataviz six-checks script. Entity colors are fixed (never cycled — charts are
+// capped at 8 series and split when a machine carries more devices); status
+// colors are reserved for threshold state and never used as a series.
 const CHART = {
   base: '#3987e5',
   axis: { XYZ: '#3987e5', X: '#199e70', Y: '#c98500', Z: '#008300' } as Record<string, string>,
+  cat: ['#3987e5', '#008300', '#d55181', '#c98500', '#199e70', '#d95926', '#9085e9', '#e66767'],
   warn: '#fab219',
   crit: '#d03b3b',
   ink: '#8b94a7',
   grid: 'rgba(148, 163, 184, 0.08)',
+};
+const CHART_MAX_SERIES = CHART.cat.length;
+
+// One device's warn/crit/low limits for one metric (press: low/high band).
+type MetricLimits = { warn: number | null; crit: number | null; low: number | null };
+
+function metricLimits(th: SushiConditionDevice['thresholds'] | undefined, metric: string): MetricLimits {
+  if (!th) return { warn: null, crit: null, low: null };
+  switch (metric) {
+    case 'vel': return { warn: th.vel_warn_mms, crit: th.vel_crit_mms, low: null };
+    case 'acc': return { warn: th.acc_warn_ms2, crit: th.acc_crit_ms2, low: null };
+    case 'temp': return { warn: th.temp_warn_c, crit: th.temp_crit_c, low: null };
+    case 'press': return { warn: th.press_max_mpa, crit: null, low: th.press_min_mpa };
+    default: return { warn: null, crit: null, low: null };
+  }
+}
+
+function limitStatus(value: number, lim: MetricLimits): 'ok' | 'warning' | 'critical' {
+  if (lim.crit != null && value >= lim.crit) return 'critical';
+  if (lim.warn != null && value >= lim.warn) return 'warning';
+  if (lim.low != null && value <= lim.low) return 'warning';
+  return 'ok';
+}
+
+const STATUS_RANK = { ok: 0, warning: 1, critical: 2 } as const;
+
+// A series annotated with the device it belongs to (matched via the EUI inside
+// the sensor code) — label and color identify the device across charts.
+type AnnotatedSeries = SushiSeries & {
+  label: string;
+  color: string;
+  limits: MetricLimits;
+  deviceId: string | null;
 };
 
 // Mini arc gauge for the chart-card readout: 180° track split into the alarm
@@ -2153,7 +2232,7 @@ function ConditionGauge({ value, warn, crit, low }: {
 function ConditionChart({ title, unit, series, warn, crit, low }: {
   title: string;
   unit: string;
-  series: SushiSeries[];
+  series: AnnotatedSeries[];
   warn?: number | null;
   crit?: number | null;
   low?: number | null;
@@ -2188,9 +2267,9 @@ function ConditionChart({ title, unit, series, warn, crit, low }: {
   }
 
   const avgSeries = series.map((s, i) => {
-    const color = CHART.axis[s.axis || 'XYZ'] ?? CHART.base;
+    const color = s.color;
     return {
-      name: s.axis || title,
+      name: s.label,
       type: 'line',
       z: 3,
       showSymbol: false,
@@ -2246,9 +2325,10 @@ function ConditionChart({ title, unit, series, warn, crit, low }: {
     } : {}),
     ...(single ? {} : {
       legend: {
-        top: 0, right: 0, icon: 'roundRect',
+        type: 'scroll', top: 0, right: 0, left: 120, icon: 'roundRect',
         itemWidth: 10, itemHeight: 3, itemGap: 10,
         textStyle: { color: CHART.ink, fontSize: 10 },
+        pageIconColor: CHART.ink, pageTextStyle: { color: CHART.ink, fontSize: 10 },
       },
     }),
     tooltip: {
@@ -2273,7 +2353,8 @@ function ConditionChart({ title, unit, series, warn, crit, low }: {
           const range = mn != null && mx != null && mx - mn > 0.005
             ? ` <span style="color:${CHART.ink};font-size:11px">${mn.toFixed(2)} – ${mx.toFixed(2)}</span>`
             : '';
-          return `${x.marker} <b>${avg.toFixed(2)}</b> <span style="color:${CHART.ink}">${unit}</span>${range}`;
+          const who = single ? '' : ` <span style="color:${CHART.ink};font-size:11px">${x.seriesName}</span>`;
+          return `${x.marker} <b>${avg.toFixed(2)}</b> <span style="color:${CHART.ink}">${unit}</span>${range}${who}`;
         }).join('<br/>');
         return `<div style="color:${CHART.ink};font-size:11px;margin-bottom:2px">${time}</div>${body}`;
       },
@@ -2296,16 +2377,23 @@ function ConditionChart({ title, unit, series, warn, crit, low }: {
     series: [...bandSeries, ...avgSeries],
   };
 
-  const latest = series.find((s) => s.latest)?.latest;
-  const status = latest == null ? 'ok'
-    : crit != null && latest.value >= crit ? 'critical'
-    : warn != null && latest.value >= warn ? 'warning'
-    : low != null && latest.value <= low ? 'warning'
-    : 'ok';
+  // The readout (value, gauge, pill, trend) follows the WORST sensor in this
+  // chart, not the first one — with several devices a green first series must
+  // never mask a red sibling. Limits are shared across the chart's series.
+  const lim: MetricLimits = { warn: warn ?? null, crit: crit ?? null, low: low ?? null };
+  const sevScore = (v: number) =>
+    STATUS_RANK[limitStatus(v, lim)] * 1000 + (lim.warn ? v / lim.warn : lim.low ? lim.low / Math.max(v, 0.001) : v);
+  const worst = series.reduce<AnnotatedSeries | null>((acc, s) => {
+    if (!s.latest) return acc;
+    if (!acc?.latest || sevScore(s.latest.value) > sevScore(acc.latest.value)) return s;
+    return acc;
+  }, null);
+  const latest = worst?.latest;
+  const status = latest == null ? 'ok' : limitStatus(latest.value, lim);
 
   // Trend: latest vs ~1 h earlier (or the window start when shorter). For
   // vibration/temperature "up" is the bad direction; pressure is direction-neutral.
-  const pts = series[0]?.points ?? [];
+  const pts = worst?.points ?? [];
   let delta: number | null = null;
   if (latest && pts.length >= 2) {
     const cutoff = new Date(latest.timestamp).getTime() - 3600_000;
@@ -2348,6 +2436,15 @@ function ConditionChart({ title, unit, series, warn, crit, low }: {
           <div className="flex items-center gap-2.5 shrink-0">
             <ConditionGauge value={latest.value} warn={warn} crit={crit} low={low} />
             <div className="text-right leading-none">
+              {!single && worst && (
+                <span
+                  title={t('sushi.worstSensor')}
+                  className="flex items-center justify-end gap-1 text-[10px] text-gray-500 mb-1 max-w-[130px]"
+                >
+                  <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ background: worst.color }} />
+                  <span className="truncate">{worst.label}</span>
+                </span>
+              )}
               <span className="text-[26px] font-bold text-white tabular-nums tracking-tight">
                 {latest.value.toFixed(2)}
               </span>
@@ -2370,19 +2467,188 @@ function ConditionTab({ condition, hours, onHours }: {
   const lang = (i18n.language || 'en').slice(0, 2);
   const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleString(lang) : '—');
 
-  const metricSeries = (metric: string) => condition.series.filter((s) => s.metric === metric && s.points.length > 0);
-  const th = condition.devices[0]?.thresholds;
+  const devices = condition.devices;
+  const byEui = new Map(devices.map((d) => [d.dev_eui.toUpperCase(), d]));
+  const deviceIndex = new Map(devices.map((d, i) => [d.id, i]));
 
-  const metricCards = METRIC_ORDER
-    .map((metric) => ({ metric, series: metricSeries(metric) }))
-    .filter((x) => x.series.length > 0);
+  // Click-to-focus: charts show one device's series with its own thresholds
+  // (single-series affordances come back); null = all devices, the default.
+  // The health table/cards always list everybody — they are the selector.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  useEffect(() => {
+    if (selectedId && !devices.some((d) => d.id === selectedId)) setSelectedId(null);
+  }, [devices, selectedId]);
+  const selectedDevice = selectedId ? devices.find((d) => d.id === selectedId) ?? null : null;
+  const toggleSelect = (id: string) => setSelectedId((cur) => (cur === id ? null : id));
+
+  // ── Annotate each series with its device (EUI lives inside the sensor code),
+  //    then split every metric into charts whose series SHARE their thresholds —
+  //    marklines are only drawn when they are true for every line — and cap each
+  //    chart at the palette size (8) so entity colors are never cycled.
+  const annotate = (s: SushiSeries): AnnotatedSeries => {
+    const dev = byEui.get((s.code.split('-')[1] ?? '').toUpperCase());
+    const base = dev?.tag_name || dev?.name || s.name;
+    return {
+      ...s,
+      label: s.axis ? `${base} · ${s.axis}` : base,
+      color: CHART.base,
+      limits: metricLimits(dev?.thresholds, s.metric),
+      deviceId: dev?.id ?? null,
+    };
+  };
+
+  // Worst condition per device — over ALL series (never the focus filter), so
+  // the health table keeps every status pill while one sensor is focused.
+  const devStatus = new Map<string, 'ok' | 'warning' | 'critical'>();
+  for (const raw of condition.series) {
+    if (!raw.points.length || !raw.latest) continue;
+    const s = annotate(raw);
+    if (!s.deviceId) continue;
+    const st = limitStatus(s.latest!.value, s.limits);
+    if (STATUS_RANK[st] > STATUS_RANK[devStatus.get(s.deviceId) ?? 'ok']) devStatus.set(s.deviceId, st);
+  }
+
+  type ChartGroup = { metric: string; series: AnnotatedSeries[]; lim: MetricLimits; part: [number, number] | null };
+  const charts: ChartGroup[] = [];
+  for (const metric of METRIC_ORDER) {
+    const list = condition.series
+      .filter((s) => s.metric === metric && s.points.length > 0)
+      .map(annotate)
+      .filter((s) => !selectedId || s.deviceId === selectedId);
+    if (!list.length) continue;
+    const byLimits = new Map<string, AnnotatedSeries[]>();
+    for (const s of list) {
+      const k = `${s.limits.warn ?? ''}|${s.limits.crit ?? ''}|${s.limits.low ?? ''}`;
+      const bucket = byLimits.get(k);
+      if (bucket) bucket.push(s);
+      else byLimits.set(k, [s]);
+    }
+    // Stable chart & series order (limits asc, then device registry order, then
+    // axis) — colors and layout must not jump around as statuses change.
+    const grouped = [...byLimits.values()].map((g) =>
+      g.sort((a, b) =>
+        (deviceIndex.get(a.deviceId ?? '') ?? 99) - (deviceIndex.get(b.deviceId ?? '') ?? 99)
+        || (a.axis ?? '').localeCompare(b.axis ?? '')),
+    ).sort((a, b) => (a[0].limits.warn ?? a[0].limits.crit ?? Infinity) - (b[0].limits.warn ?? b[0].limits.crit ?? Infinity));
+    const metricCharts: ChartGroup[] = [];
+    for (const g of grouped) {
+      for (let i = 0; i < g.length; i += CHART_MAX_SERIES) {
+        metricCharts.push({ metric, series: g.slice(i, i + CHART_MAX_SERIES), lim: g[0].limits, part: null });
+      }
+    }
+    if (metricCharts.length > 1) metricCharts.forEach((c, i) => { c.part = [i + 1, metricCharts.length]; });
+    charts.push(...metricCharts);
+  }
+
+  // Colors: one fixed slot per device (registry order) while the fleet fits the
+  // palette; larger fleets fall back to position within the chart (≤8 by
+  // construction, and chart membership is stable). A single-device chart keeps
+  // the classic per-axis colors (XS770A X/Y/Z).
+  for (const c of charts) {
+    const chartDevices = new Set(c.series.map((s) => s.deviceId));
+    c.series.forEach((s, i) => {
+      if (chartDevices.size <= 1) {
+        s.color = CHART.axis[s.axis || 'XYZ'] ?? CHART.base;
+      } else if (devices.length <= CHART_MAX_SERIES && c.series.length === chartDevices.size) {
+        s.color = CHART.cat[(deviceIndex.get(s.deviceId ?? '') ?? i) % CHART_MAX_SERIES];
+      } else {
+        s.color = CHART.cat[i];
+      }
+    });
+  }
+
+  const HEALTH_RANK: Record<string, number> = { offline: 2, stale: 1, online: 0, unknown: 0 };
+  const sortedDevices = [...devices].sort((a, b) =>
+    STATUS_RANK[devStatus.get(b.id) ?? 'ok'] - STATUS_RANK[devStatus.get(a.id) ?? 'ok']
+    || (HEALTH_RANK[b.health] ?? 0) - (HEALTH_RANK[a.health] ?? 0)
+    || a.name.localeCompare(b.name));
+  const compactHealth = devices.length > 2;
 
   return (
     <div className="space-y-4">
-      {/* Device health cards */}
+      {/* Device health — compact worst-first table for fleets, cards for 1-2 */}
+      {compactHealth && (
+        <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wide text-gray-600 border-b border-white/[0.06]">
+                <th className="text-left font-medium px-4 py-2">{t('devices.name')}</th>
+                <th className="text-left font-medium px-3 py-2">{t('devices.status')}</th>
+                <th className="text-right font-medium px-3 py-2">{t('devices.sushiBattery')}</th>
+                <th className="text-right font-medium px-3 py-2">{t('devices.sushiRadio')}</th>
+                <th className="text-right font-medium px-3 py-2">{t('sushi.period')}</th>
+                <th className="text-right font-medium px-4 py-2">{t('devices.sushiLastUplink')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedDevices.map((d) => {
+                const st = devStatus.get(d.id) ?? 'ok';
+                return (
+                  <tr
+                    key={d.id}
+                    onClick={() => toggleSelect(d.id)}
+                    title={t('sushi.focusHint')}
+                    className={`border-b border-white/[0.04] last:border-0 cursor-pointer transition-colors ${
+                      selectedId === d.id ? 'bg-blue-500/[0.08]' : 'hover:bg-white/[0.02]'
+                    }`}
+                  >
+                    <td className="px-4 py-1.5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span title={t(`devices.sushiHealth_${d.health}`)} className={`text-[10px] ${SUSHI_HEALTH_DOT[d.health]}`}>●</span>
+                        <span className="text-gray-200 font-medium truncate">{d.tag_name || d.name}</span>
+                        {d.namur && d.namur !== 'good' && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/25 text-amber-400 whitespace-nowrap">
+                            {t(`devices.namur_${d.namur}`)}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-gray-600 font-mono mt-0.5">
+                        {d.model.toUpperCase()} · {d.dev_eui}{d.tag_name ? ` · ${d.name}` : ''}
+                      </p>
+                    </td>
+                    <td className="px-3 py-1.5">
+                      {st !== 'ok' ? (
+                        <span className={`inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border ${
+                          st === 'critical'
+                            ? 'bg-red-500/10 border-red-500/40 text-red-400 animate-pulse'
+                            : 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                        }`}>
+                          ▲ {t(`sushi.sev_${st}`)}
+                        </span>
+                      ) : (
+                        <span className="text-gray-600">—</span>
+                      )}
+                    </td>
+                    <td className={`px-3 py-1.5 text-right font-semibold tabular-nums ${
+                      d.battery_pct != null && d.battery_pct < 10 ? 'text-red-400'
+                      : d.battery_pct != null && d.battery_pct < 20 ? 'text-amber-400' : 'text-gray-200'
+                    }`}>
+                      {d.battery_pct != null ? `${Math.round(d.battery_pct)}%` : '—'}
+                    </td>
+                    <td className="px-3 py-1.5 text-right text-gray-300 tabular-nums whitespace-nowrap">
+                      {d.rssi_dbm != null ? `${Math.round(d.rssi_dbm)} dBm` : '—'}
+                      {d.snr_db != null ? ` · ${d.snr_db.toFixed(1)}` : ''}
+                    </td>
+                    <td className="px-3 py-1.5 text-right text-gray-300 tabular-nums">{d.update_period_min} min</td>
+                    <td className="px-4 py-1.5 text-right text-gray-400 text-xs whitespace-nowrap">{fmt(d.last_uplink_at)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!compactHealth && (
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {condition.devices.map((d) => (
-          <div key={d.id} className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
+        {sortedDevices.map((d) => (
+          <div
+            key={d.id}
+            onClick={() => toggleSelect(d.id)}
+            title={t('sushi.focusHint')}
+            className={`bg-[#0d1421] border rounded-xl p-4 cursor-pointer transition-colors ${
+              selectedId === d.id ? 'border-blue-500/40 bg-blue-500/[0.05]' : 'border-white/[0.06] hover:border-white/[0.12]'
+            }`}
+          >
             <div className="flex items-start justify-between">
               <div>
                 <div className="flex items-center gap-2">
@@ -2428,9 +2694,10 @@ function ConditionTab({ condition, hours, onHours }: {
           </div>
         ))}
       </div>
+      )}
 
-      {/* Range selector */}
-      <div className="flex items-center gap-1.5">
+      {/* Range selector + focused-sensor chip */}
+      <div className="flex items-center gap-1.5 flex-wrap">
         {[6, 24, 168, 720].map((h) => (
           <button key={h} onClick={() => onHours(h)}
             className={`px-2.5 py-1 text-xs rounded-lg border transition-colors ${
@@ -2441,24 +2708,35 @@ function ConditionTab({ condition, hours, onHours }: {
             {h === 6 ? t('sushi.range6h') : h === 24 ? t('sushi.range24h') : h === 168 ? t('sushi.range7d') : t('sushi.range30d')}
           </button>
         ))}
+        {selectedDevice && (
+          <button
+            onClick={() => setSelectedId(null)}
+            title={t('sushi.showAll')}
+            className="ml-2 inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-blue-500/40 bg-blue-500/10 text-blue-300 hover:bg-blue-500/20 transition-colors"
+          >
+            <span className="truncate max-w-[180px]">{selectedDevice.tag_name || selectedDevice.name}</span>
+            <span aria-hidden="true">×</span>
+          </button>
+        )}
       </div>
 
-      {/* Metric charts */}
-      {metricCards.length === 0 ? (
+      {/* Metric charts — one per shared-threshold group (marklines always true
+          for every line), split further when a group exceeds the palette */}
+      {charts.length === 0 ? (
         <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-8 text-center text-gray-600 text-sm">
           {t('sushi.noData')}
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {metricCards.map(({ metric, series }) => (
+          {charts.map((c, i) => (
             <ConditionChart
-              key={metric}
-              title={t(`sushi.metric_${metric}`)}
-              unit={series[0].unit}
-              series={series}
-              warn={metric === 'vel' ? th?.vel_warn_mms : metric === 'acc' ? th?.acc_warn_ms2 : metric === 'temp' ? th?.temp_warn_c : th?.press_max_mpa}
-              crit={metric === 'vel' ? th?.vel_crit_mms : metric === 'acc' ? th?.acc_crit_ms2 : metric === 'temp' ? th?.temp_crit_c : null}
-              low={metric === 'press' ? th?.press_min_mpa : null}
+              key={`${c.metric}-${i}`}
+              title={t(`sushi.metric_${c.metric}`) + (c.part ? ` (${c.part[0]}/${c.part[1]})` : '')}
+              unit={c.series[0].unit}
+              series={c.series}
+              warn={c.lim.warn}
+              crit={c.lim.crit}
+              low={c.lim.low}
             />
           ))}
         </div>
@@ -2496,6 +2774,7 @@ export default function EquipmentDetail() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
+  const canViewPredictive = useAuthStore((s) => s.can('predictive', 'view'));
   // Restore the list's type tab (e.g. /equipment?type=production) when we came from it.
   const stateBackTo = (location.state as { backTo?: unknown } | null)?.backTo;
   const backTo = typeof stateBackTo === 'string' && stateBackTo.startsWith('/equipment') ? stateBackTo : '/equipment';
@@ -2565,6 +2844,7 @@ export default function EquipmentDetail() {
   const tabs: { id: TabId; label: string }[] = [
     { id: 'overview',       label: t('equipment.tabOverview') },
     ...(hasCondition ? [{ id: 'condition' as TabId, label: t('equipment.tabCondition') }] : []),
+    ...(canViewPredictive ? [{ id: 'predictive' as TabId, label: t('predictive.tabHealth') }] : []),
     { id: 'workorders',     label: `${t('equipment.tabWorkOrders')} (${wos.length})` },
     { id: 'plans',          label: `${t('equipment.tabPlans')} (${plans.length})` },
     ...(isAux ? [] : [{ id: 'history' as TabId, label: 'Historique' }]),
@@ -2648,6 +2928,8 @@ export default function EquipmentDetail() {
       {tab === 'condition' && condition && (
         <ConditionTab condition={condition} hours={condHours} onHours={changeCondHours} />
       )}
+
+      {tab === 'predictive' && id && <PredictiveHealthTab equipmentId={id} />}
 
       {tab === 'overview' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

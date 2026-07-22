@@ -82,6 +82,9 @@ class DeviceIn(BaseModel):
     temp_crit_c: Optional[float] = None
     press_min_mpa: Optional[float] = None
     press_max_mpa: Optional[float] = None
+    # Component/position label shown on the Condition tab ("Palier avant",
+    # "Bearing DE"…). The sensor's own tag frame (0x42) only seeds it when empty.
+    tag_name: Optional[str] = Field(default=None, max_length=60)
 
     @field_validator("dev_eui")
     @classmethod
@@ -90,6 +93,12 @@ class DeviceIn(BaseModel):
         if len(cleaned) != 16:
             raise ValueError("invalid_dev_eui")
         return cleaned.upper()
+
+    @field_validator("tag_name")
+    @classmethod
+    def _strip_tag(cls, v: Optional[str]) -> Optional[str]:
+        v = (v or "").strip()
+        return v or None
 
 
 async def _resolve_plant(equipment_id: Optional[UUID], db: AsyncSession, ctx: PlantContext):

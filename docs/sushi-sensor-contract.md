@@ -156,7 +156,17 @@ that crosses the warning threshold in the last day) and `SIM-SUSHI-PRESS`.
   lines, 6h/24h/7d/30d, recent condition alerts)
 - Alerts: `alerts` table, types `sushi_vel|sushi_acc|sushi_temp|sushi_press`,
   fired **only on threshold crossings** (prev below → new at/above), never on
-  errored/simulated readings.
+  errored/simulated readings. **Hysteresis dead-band on row creation**
+  (`_alarm_latched`): a value hovering around a limit re-crosses on nearly
+  every uplink, but one alarm episode creates ONE row — it re-arms only after
+  the signal clears the limit by 5% (`ALERT_REARM_PCT`, e.g. warn 4.5 → must
+  drop below 4.275; pressure-min symmetric on the high side), or after 24 h
+  without recovery (`ALERT_LATCH_MAX_HOURS` — a never-clearing condition
+  resurfaces daily instead of flooding). The latch is keyed on
+  sensor+type+severity+`limit_value`, so pressure min/max stay independent and
+  reconfiguring a threshold re-arms immediately. `Alert.created_at` is pinned
+  to the reading time (latch + recovery scan share one time axis; backfilled
+  alerts land on the historical timeline).
 - **SMS/email on critical crossings**: the ingest route fire-and-forgets
   `sushi_service.notify_condition_alerts` → `NotificationService.notify_condition_alert`
   → the plant's **level-0 escalation group** (Settings → Escalation), Twilio SMS +
