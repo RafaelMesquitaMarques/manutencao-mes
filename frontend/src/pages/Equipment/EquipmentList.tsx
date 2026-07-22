@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Search, Plus, Cpu, MapPin, Activity, Monitor, Pencil, Power, ArrowUp, ArrowDown, ChevronsUpDown, ChevronDown, Check, X, Image as ImageIcon } from 'lucide-react';
+import { Search, Plus, Cpu, MapPin, Activity, Monitor, Pencil, Power, ArrowUp, ArrowDown, ChevronsUpDown, ChevronDown, Check, X, Image as ImageIcon, Camera, Loader2 } from 'lucide-react';
 import { fetchEquipment } from '../../api/workOrders';
+import { uploadFile } from '../../api/uploads';
 import api from '../../api/axios';
 import { usePermission } from '../../hooks/usePermission';
 import type { Equipment } from '../../types';
@@ -24,6 +25,11 @@ const STATUS_COLORS: Record<string, string> = {
 
 // Effective operational status: live (kiosk/tickets/parent) over the static column
 const effStatus = (e: Equipment): string => e.live_status ?? e.status;
+
+// Map-only zones (Pit Stop buffer) are Equipment rows solely so the 3D map can
+// place/edit them — not catalog assets. Assembly lines stay listed: they have a
+// kiosk and receive maintenance.
+const MAP_ZONE_KINDS = new Set(['pit_stop']);
 
 const CRIT_COLORS: Record<string, string> = {
   critical: 'text-red-400',
@@ -172,6 +178,33 @@ export default function EquipmentList() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
 
+  // card photo upload → equipment.icon_url (same image the factory-map block uses)
+  const photoInputRef = useRef<HTMLInputElement>(null);
+  const photoTargetRef = useRef<string | null>(null);
+  const [photoBusyId, setPhotoBusyId] = useState<string | null>(null);
+
+  const pickPhoto = (id: string) => {
+    photoTargetRef.current = id;
+    photoInputRef.current?.click();
+  };
+
+  const onPhotoSelected = async (file: File) => {
+    const id = photoTargetRef.current;
+    photoTargetRef.current = null;
+    if (!id) return;
+    setPhotoBusyId(id);
+    try {
+      const up = await uploadFile(file);
+      await api.patch(`/api/equipment/${id}`, { icon_url: up.url });
+      setItems((prev) => prev.map((e) => (e.id === id ? { ...e, icon_url: up.url } : e)));
+    } catch (err) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      window.alert(`${t('equipment.photoUploadFailed')}${msg ? `: ${msg}` : ''}`);
+    } finally {
+      setPhotoBusyId(null);
+    }
+  };
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -182,7 +215,7 @@ export default function EquipmentList() {
         all.push(...batch);
         if (batch.length < PAGE) break;
       }
-      setItems(all);
+      setItems(all.filter((e) => !MAP_ZONE_KINDS.has(e.block_kind ?? '')));
     } finally {
       setLoading(false);
     }
@@ -322,6 +355,18 @@ export default function EquipmentList() {
 
   return (
     <div className="p-6 space-y-6">
+      {/* hidden picker for card photo uploads */}
+      <input
+        ref={photoInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          e.target.value = '';
+          if (f) onPhotoSelected(f);
+        }}
+      />
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -485,21 +530,37 @@ export default function EquipmentList() {
                   </div>
                 </div>
                 {/* Machine photo thumbnail (same image the factory-map block uses) */}
-                {eq.icon_url ? (
-                  <img
-                    src={eq.icon_url}
-                    alt={eq.name}
-                    loading="lazy"
-                    className="w-20 h-20 mt-2.5 rounded-lg object-cover border border-white/[0.06]"
-                  />
-                ) : (
-                  <div
-                    title={t('equipment.noPhoto')}
-                    className="w-20 h-20 mt-2.5 rounded-lg border border-dashed border-white/[0.08] bg-white/[0.015] flex items-center justify-center"
-                  >
-                    <ImageIcon size={16} className="text-gray-700" />
-                  </div>
-                )}
+                <div className="relative w-20 h-20 mt-2.5 group/photo">
+                  {eq.icon_url ? (
+                    <img
+                      src={eq.icon_url}
+                      alt={eq.name}
+                      loading="lazy"
+                      className="w-full h-full rounded-lg object-cover border border-white/[0.06]"
+                    />
+                  ) : (
+                    <div
+                      title={t('equipment.noPhoto')}
+                      className="w-full h-full rounded-lg border border-dashed border-white/[0.08] bg-white/[0.015] flex items-center justify-center"
+                    >
+                      <ImageIcon size={16} className="text-gray-700" />
+                    </div>
+                  )}
+                  {canUpdate && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); pickPhoto(eq.id); }}
+                      disabled={photoBusyId === eq.id}
+                      title={eq.icon_url ? t('equipment.changePhoto') : t('equipment.addPhoto')}
+                      className={`absolute inset-0 rounded-lg flex items-center justify-center bg-black/55 transition-opacity ${
+                        photoBusyId === eq.id ? 'opacity-100' : 'opacity-0 group-hover/photo:opacity-100'
+                      }`}
+                    >
+                      {photoBusyId === eq.id
+                        ? <Loader2 size={16} className="text-white animate-spin" />
+                        : <Camera size={16} className="text-white" />}
+                    </button>
+                  )}
+                </div>
               </div>
             );
           })}

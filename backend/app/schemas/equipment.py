@@ -49,6 +49,7 @@ class EquipmentUpdate(BaseModel):
     family: Optional[str] = None
     pm_strategy: Optional[str] = None
     cleaning_priority: Optional[str] = None
+    icon_url: Optional[str] = None
     model_url: Optional[str] = None
     height_3d: Optional[float] = None
     model_scale: Optional[float] = None
@@ -77,6 +78,8 @@ class EquipmentOut(BaseModel):
     live_status: Optional[str] = None
     criticality: str
     asset_type: str = "production"
+    # Explicit 3D shape ('pit_stop', 'assembly_line', …) — lets the UI tell map zones apart
+    block_kind: Optional[str] = None
     subtype: Optional[str] = None
     function_label: Optional[str] = None
     department: Optional[str] = None

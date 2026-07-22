@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, type MouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import {
@@ -28,6 +28,17 @@ const STATUS_BADGE: Record<WorkOrderStatus, string> = {
   completed:   'bg-green-500/15 text-green-400 border-green-500/25',
   cancelled:   'bg-gray-500/15 text-gray-400 border-gray-500/25',
 };
+
+// Native date inputs only open their calendar from the tiny icon; open it from
+// a click anywhere in the field. showPicker() may throw on older browsers —
+// typing in the field still works there.
+function openDatePicker(e: MouseEvent<HTMLInputElement>) {
+  try {
+    e.currentTarget.showPicker();
+  } catch {
+    /* unsupported browser — keep default typing behavior */
+  }
+}
 
 function elapsedStr(startedAt?: string): string {
   if (!startedAt) return '';
@@ -349,7 +360,8 @@ export default function MyWorkPage() {
               type="date"
               value={dateFrom}
               onChange={(e) => setDateFrom(e.target.value)}
-              className="input-field py-1.5 text-xs w-[138px]"
+              onClick={openDatePicker}
+              className="input-field py-1.5 text-xs w-[138px] cursor-pointer"
             />
           </label>
           <label className="flex items-center gap-1.5 text-xs text-gray-500">
@@ -358,7 +370,8 @@ export default function MyWorkPage() {
               type="date"
               value={dateTo}
               onChange={(e) => setDateTo(e.target.value)}
-              className="input-field py-1.5 text-xs w-[138px]"
+              onClick={openDatePicker}
+              className="input-field py-1.5 text-xs w-[138px] cursor-pointer"
             />
           </label>
           {filtersActive && (
