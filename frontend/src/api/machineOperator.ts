@@ -33,6 +33,15 @@ export const completeIntervention = (
   payload: { mechanic_note?: string; intervention_type_id?: string }
 ) => api.post(`/api/machine-operator/${id}/complete`, payload).then((r) => r.data);
 
+// Auth-free kiosk twin of workOrders.organizeNote — tidies a dictated closing
+// note. ai_used=false means the AI was offline and only basic formatting ran.
+export const organizeKioskNote = (
+  id: string,
+  text: string,
+  language: string,
+): Promise<{ text: string; ai_used: boolean }> =>
+  api.post(`/api/machine-operator/${id}/notes/organize`, { text, language }).then((r) => r.data);
+
 export interface ChecklistItem {
   id: string;
   text: string;

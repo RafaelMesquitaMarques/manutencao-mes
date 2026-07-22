@@ -22,7 +22,7 @@ from app.models.models import (
     CleaningChecklist, CleaningChecklistItem, StopCleaningResponse,
 )
 from app.schemas.maintenance import (
-    MachineOut, MachineListResponse, MachinePageData, TicketForMachine,
+    MachineOut, MachineListResponse, MachinePageData, MachineJobInfo, TicketForMachine,
     MachineStatusUpdate, MaintenanceRequestCreate, MESData,
     MachineJobUpdate, MachineOperatorUpdate, MachineConfigUpdate,
     MachineRejectUpdate, MachineStopCreate, MachineStopClose,
@@ -33,7 +33,7 @@ from app.schemas.maintenance import (
     StopSubcategoryOut, StopSubcategoryCreate, StopSubcategoryUpdate,
     RejectCategoryOut, RejectCategoryCreate, RejectCategoryUpdate,
     RejectSubcategoryOut, RejectSubcategoryCreate, RejectSubcategoryUpdate,
-    RejectLogCreate, CloneCategoriesRequest, SortOrderItem,
+    RejectLogCreate, CloneCategoriesRequest, CloneOperatorsRequest, SortOrderItem,
     JobOrderOut, JobOrderCreate,
 )
 from app.core.security import get_current_user
@@ -45,6 +45,7 @@ from app.services.mes_service import MesService, shift_windows
 from app.services.intervention_sync import apply_production_signal
 from app.services.job_order_service import (
     scan_job_order_at_machine, attribute_production, complete_unit_at_machine,
+    get_open_run,
 )
 from app.services import production_pulse
 from app.services.equipment_machine_sync import ensure_machine_for_equipment
@@ -92,7 +93,37 @@ async def _get_machine_scoped(ref: str, db: AsyncSession, ctx: PlantContext) -> 
     return ensure_same_plant(await _get_machine(ref, db), ctx, detail="Machine not found")
 
 
-def _machine_to_page_data(machine: Machine, open_tickets: list) -> MachinePageData:
+async def _current_job_info(db: AsyncSession, machine: Machine) -> Optional[MachineJobInfo]:
+    """Details of the OF loaded on this machine (its open run) for the kiosk's OF
+    panel — number, product/operation (Cortex/ERP enrichment), quantities, source
+    and timing. None when no OF is loaded."""
+    run = await get_open_run(db, machine.id)
+    if run is None:
+        return None
+    jo = await db.get(JobOrder, run.job_order_id)
+    if jo is None:
+        return None
+    status = jo.status.value if hasattr(jo.status, "value") else (str(jo.status) if jo.status else "pending")
+    source = run.source.value if hasattr(run.source, "value") else (str(run.source) if run.source else None)
+    return MachineJobInfo(
+        job_number=jo.job_number,
+        status=status,
+        source=source,
+        product_code=jo.product_code,
+        product_name=jo.product_name,
+        target_quantity=jo.target_quantity,
+        completed_quantity=jo.completed_quantity,
+        produced_here=run.pieces,
+        unit_of_measure=jo.unit_of_measure,
+        operation_code=jo.operation_code,
+        operation_description=jo.operation_description,
+        started_at=run.started_at,
+        updated_at=jo.updated_at or jo.created_at,
+    )
+
+
+def _machine_to_page_data(machine: Machine, open_tickets: list,
+                          current_job: Optional[MachineJobInfo] = None) -> MachinePageData:
     cstatus = machine.current_status.value if hasattr(machine.current_status, "value") else str(machine.current_status or MachineStatus.running)
     # An active maintenance ticket/intervention means the machine is NOT simply "running"
     # — reflect it in the kiosk header (matches the factory-map effective status).
@@ -110,6 +141,7 @@ def _machine_to_page_data(machine: Machine, open_tickets: list) -> MachinePageDa
         current_operator=machine.current_operator,
         current_shift=cshift,
         current_job_number=machine.current_job_number,
+        current_job=current_job,
         last_maintenance_at=machine.last_maintenance_at,
         last_stop_at=machine.last_stop_at,
         last_start_at=machine.last_start_at,
@@ -637,7 +669,8 @@ async def machine_page(ref: str, db: AsyncSession = Depends(get_db)):
             work_order_id=t.work_order_id, work_order_number=wo_number,
         ))
 
-    return _machine_to_page_data(machine, open_tickets)
+    return _machine_to_page_data(machine, open_tickets,
+                                 current_job=await _current_job_info(db, machine))
 
 
 # ── Status update ─────────────────────────────────────────────────────────────
@@ -2470,6 +2503,66 @@ async def clone_categories(
 
     await db.commit()
     return {"status": "ok", "cloned_to": len(data.target_machine_ids)}
+
+
+# ── Clone operators ───────────────────────────────────────────────────────────
+
+@router.post("/clone-operators")
+async def clone_operators(
+    data: CloneOperatorsRequest,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+):
+    """Copy operators from one machine to others — every active operator of the
+    source, or just `operator_ids` (the "also add this new operator to…" flow).
+
+    Unlike category cloning this MERGES: target operators keep their rows (stop
+    history references them), and a source operator is skipped when the target
+    already has an active operator with the same employee code or name."""
+    ensure_same_plant(await db.get(Machine, data.source_machine_id), ctx, detail="Machine not found")
+    targets = [
+        ensure_same_plant(await db.get(Machine, tid), ctx, detail="Machine not found")
+        for tid in data.target_machine_ids
+        if tid != data.source_machine_id
+    ]
+
+    q = select(MachineOperator).where(
+        MachineOperator.machine_id == data.source_machine_id,
+        MachineOperator.is_active == True,  # noqa: E712
+    )
+    if data.operator_ids:
+        q = q.where(MachineOperator.id.in_(data.operator_ids))
+    src_ops = (await db.execute(q.order_by(MachineOperator.name))).scalars().all()
+    if not src_ops:
+        raise HTTPException(404, "No matching active operators on the source machine")
+
+    created = skipped = 0
+    for target in targets:
+        existing = (await db.execute(
+            select(MachineOperator).where(
+                MachineOperator.machine_id == target.id,
+                MachineOperator.is_active == True,  # noqa: E712
+            )
+        )).scalars().all()
+        names = {o.name.strip().lower() for o in existing}
+        codes = {o.employee_code.strip().lower() for o in existing if o.employee_code}
+        for src in src_ops:
+            code = src.employee_code.strip().lower() if src.employee_code else None
+            if src.name.strip().lower() in names or (code and code in codes):
+                skipped += 1
+                continue
+            db.add(MachineOperator(
+                machine_id=target.id, plant_id=target.plant_id, user_id=src.user_id,
+                name=src.name, employee_code=src.employee_code, shift=src.shift,
+                is_active=True,
+            ))
+            names.add(src.name.strip().lower())
+            if code:
+                codes.add(code)
+            created += 1
+
+    await db.commit()
+    return {"status": "ok", "cloned_to": len(targets), "created": created, "skipped": skipped}
 
 
 # ── Machine History ───────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useLayoutEffect, type ReactNo
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
-import { AlertTriangle, CheckCircle2, X, Play, ChevronLeft, ChevronRight, User, Clock, Cog, Maximize2, Minimize2, MessageSquare } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, X, Play, ChevronLeft, ChevronRight, User, Clock, Cog, Maximize2, Minimize2, MessageSquare, BookOpen } from 'lucide-react';
 import {
   fetchMachinePage, fetchTodayStops, fetchMESData, fetchMachineOperators,
   updateMachineStatus, updateMachineJob, updateMachineOperator,
@@ -13,13 +13,14 @@ import {
   type HourlyPoint, type RejectLogItem, type CleaningChecklistData,
 } from '../../api/machines';
 import EventsModal from './EventsModal';
+import KioskSopsModal from './KioskSopsModal';
 import { openTicketField, closeTicket } from '../../api/maintenance';
 import { callMaintenance } from '../../api/machineOperator';
 import { MaintenancePanel } from '../MachineView/MachineOperatorPage';
 import type {
   MachinePageData, MachineStatus, MachineStopOut, StopCategoryOut,
   StopSubcategoryOut, MachineOperatorOut, MESDataExtended,
-  RejectCategoryOut, RejectSubcategoryOut, Machine,
+  RejectCategoryOut, RejectSubcategoryOut, Machine, MachineJobInfo,
 } from '../../types';
 import { IconRenderer } from '../../components/ui/IconLibrary';
 import GridLayout, { WidthProvider, type Layout } from 'react-grid-layout';
@@ -107,6 +108,12 @@ const I18N = {
     cancel: 'Cancel',
     submit: 'Submit',
     enterJobNumber: 'Enter job number...',
+    ofProduct: 'Product', ofOperation: 'Operation',
+    ofPlanned: 'Planned', ofProduced: 'Produced',
+    ofStartedAt: 'Started', ofUpdatedAt: 'Updated',
+    ofSourceCobot: 'Automatic (Cobot)', ofSourceManual: 'Manual', ofSourceLabel: 'Smart label',
+    ofStatusPending: 'Pending', ofStatusInProgress: 'In progress',
+    ofStatusCompleted: 'Completed', ofStatusCancelled: 'Cancelled',
     activeTickets: 'Active Maintenance',
     min: 'min',
     changeOperator: 'Change operator',
@@ -122,7 +129,7 @@ const I18N = {
     changeCauseSelected: 'Change cause ({n})',
     intervention_label: 'Intervention', preventive: 'Preventive', corrective: 'Corrective', technician: 'Technician',
     activeProduction: 'Active production', ongoing: 'ongoing',
-    justification: 'Stop justification', justificationHint: 'Share of stop time with a reason',
+    justification: 'Stop justification',
     cloneLayout: 'Clone to…', cloneTitle: 'Copy this layout to machines', cloneApply: 'Apply', cloneDone: 'Layout copied to {n} machine(s)',
     cleaningTitle: 'Cleaning checklist', cleaningHint: 'Tick each task as you complete it.',
     cleaningDone: 'DONE', cleaningRequired: 'Required',
@@ -175,6 +182,12 @@ const I18N = {
     cancel: 'Annuler',
     submit: 'Valider',
     enterJobNumber: 'Saisir n° de job...',
+    ofProduct: 'Produit', ofOperation: 'Opération',
+    ofPlanned: 'Prévu', ofProduced: 'Réalisé',
+    ofStartedAt: 'Débuté', ofUpdatedAt: 'Mis à jour',
+    ofSourceCobot: 'Automatique (Cobot)', ofSourceManual: 'Manuel', ofSourceLabel: 'Étiquette',
+    ofStatusPending: 'En attente', ofStatusInProgress: 'En cours',
+    ofStatusCompleted: 'Terminé', ofStatusCancelled: 'Annulé',
     activeTickets: 'Maintenance active',
     min: 'min',
     changeOperator: 'Changer d\'opérateur',
@@ -190,7 +203,7 @@ const I18N = {
     changeCauseSelected: 'Changer la cause ({n})',
     intervention_label: 'Intervention', preventive: 'Préventive', corrective: 'Corrective', technician: 'Technicien',
     activeProduction: 'En production', ongoing: 'en cours',
-    justification: 'Justification arrêts', justificationHint: 'Part du temps d\'arrêt avec un motif',
+    justification: 'Justification arrêts',
     cloneLayout: 'Cloner vers…', cloneTitle: 'Copier cette disposition vers', cloneApply: 'Appliquer', cloneDone: 'Disposition copiée sur {n} machine(s)',
     cleaningTitle: 'Checklist de nettoyage', cleaningHint: 'Cochez chaque tâche une fois complétée.',
     cleaningDone: 'TERMINÉ', cleaningRequired: 'Obligatoire',
@@ -243,6 +256,12 @@ const I18N = {
     cancel: 'Cancelar',
     submit: 'Confirmar',
     enterJobNumber: 'Ingresar n° de trabajo...',
+    ofProduct: 'Producto', ofOperation: 'Operación',
+    ofPlanned: 'Planificado', ofProduced: 'Producido',
+    ofStartedAt: 'Iniciado', ofUpdatedAt: 'Actualizado',
+    ofSourceCobot: 'Automático (Cobot)', ofSourceManual: 'Manual', ofSourceLabel: 'Etiqueta',
+    ofStatusPending: 'Pendiente', ofStatusInProgress: 'En curso',
+    ofStatusCompleted: 'Terminado', ofStatusCancelled: 'Cancelado',
     activeTickets: 'Mantenimiento activo',
     min: 'min',
     changeOperator: 'Cambiar operador',
@@ -258,7 +277,7 @@ const I18N = {
     changeCauseSelected: 'Cambiar causa ({n})',
     intervention_label: 'Intervención', preventive: 'Preventiva', corrective: 'Correctiva', technician: 'Técnico',
     activeProduction: 'En producción', ongoing: 'en curso',
-    justification: 'Justificación paradas', justificationHint: 'Parte del tiempo de parada con motivo',
+    justification: 'Justificación paradas',
     cloneLayout: 'Clonar a…', cloneTitle: 'Copiar esta disposición a máquinas', cloneApply: 'Aplicar', cloneDone: 'Disposición copiada a {n} máquina(s)',
     cleaningTitle: 'Lista de limpieza', cleaningHint: 'Marque cada tarea al completarla.',
     cleaningDone: 'LISTO', cleaningRequired: 'Obligatoria',
@@ -790,6 +809,73 @@ export function ProductionChart({
   );
 }
 
+// ── OF (job order) details on the kiosk job panel ─────────────────────────────
+// Shown under the OF number when a run is open — product/operation/quantities
+// come from the Cortex push (or ERP) and stay empty for a bare manual scan.
+
+function OfJobDetails({ cj, lang }: { cj: MachineJobInfo; lang: Lang }) {
+  const t = I18N[lang] || I18N.fr;
+  const locale = lang === 'fr' ? 'fr-CA' : lang === 'es' ? 'es-ES' : 'en-CA';
+  const fmtDT = (iso: string) => new Intl.DateTimeFormat(locale, {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+  }).format(new Date(iso));
+  const sourceLabel = cj.source === 'cortex' ? t.ofSourceCobot
+    : cj.source === 'smart_label' ? t.ofSourceLabel : t.ofSourceManual;
+  const statusLabel = cj.status === 'in_progress' ? t.ofStatusInProgress
+    : cj.status === 'completed' ? t.ofStatusCompleted
+    : cj.status === 'cancelled' ? t.ofStatusCancelled : t.ofStatusPending;
+  const statusCls = cj.status === 'in_progress' ? 'bg-green-500/15 text-green-400'
+    : cj.status === 'completed' ? 'bg-blue-500/15 text-blue-300'
+    : cj.status === 'cancelled' ? 'bg-red-500/15 text-red-400' : 'bg-white/10 text-gray-300';
+  return (
+    <div className="mb-3 text-sm text-gray-300 space-y-1 overflow-hidden">
+      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+        <span className="px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300 font-semibold">{sourceLabel}</span>
+        <span className={`px-2 py-0.5 rounded-full font-semibold ${statusCls}`}>{statusLabel}</span>
+      </div>
+      {(cj.product_name || cj.product_code) && (
+        <p className="truncate">
+          <span className="text-gray-500">{t.ofProduct} · </span>
+          {cj.product_name || cj.product_code}
+          {cj.product_name && cj.product_code ? <span className="text-gray-500"> ({cj.product_code})</span> : null}
+        </p>
+      )}
+      {(cj.operation_code || cj.operation_description) && (
+        <p className="truncate">
+          <span className="text-gray-500">{t.ofOperation} · </span>
+          {[cj.operation_code, cj.operation_description].filter(Boolean).join(' — ')}
+        </p>
+      )}
+      {(cj.target_quantity != null || cj.produced_here != null) && (
+        <p>
+          {cj.target_quantity != null && (
+            <>
+              <span className="text-gray-500">{t.ofPlanned} </span>
+              <span className="font-semibold text-white">
+                {cj.target_quantity}{cj.unit_of_measure ? ` ${cj.unit_of_measure}` : ''}
+              </span>
+            </>
+          )}
+          {cj.target_quantity != null && cj.produced_here != null && <span className="text-gray-600"> · </span>}
+          {cj.produced_here != null && (
+            <>
+              <span className="text-gray-500">{t.ofProduced} </span>
+              <span className="font-semibold text-white">{cj.produced_here}</span>
+            </>
+          )}
+        </p>
+      )}
+      {(cj.started_at || cj.updated_at) && (
+        <p className="text-xs text-gray-500 truncate">
+          {cj.started_at && <>{t.ofStartedAt} {fmtDT(cj.started_at)}</>}
+          {cj.started_at && cj.updated_at && ' · '}
+          {cj.updated_at && <>{t.ofUpdatedAt} {fmtDT(cj.updated_at)}</>}
+        </p>
+      )}
+    </div>
+  );
+}
+
 type ModalStep = 'categories' | 'subcategories' | 'confirm-maintenance' | 'confirm-unplanned';
 type RejectStep = 'categories' | 'subcategories' | 'quantity';
 
@@ -894,6 +980,7 @@ export default function MachinePage() {
   const [reclassCat, setReclassCat]       = useState<StopCategoryOut | null>(null);
   const [reclassBusy, setReclassBusy]     = useState(false);
   const [showEvents, setShowEvents]       = useState(false);
+  const [showSops, setShowSops]           = useState(false);
   const [rejectLogs, setRejectLogs]       = useState<RejectLogItem[]>([]);
   const [bulkStops, setBulkStops]         = useState<MachineStopOut[] | null>(null);
   const [selResetKey, setSelResetKey]     = useState(0);
@@ -912,7 +999,7 @@ export default function MachinePage() {
 
   // Follow the user's selected UI language (header switcher / i18next), falling
   // back to the machine's own page_language, then French.
-  const { i18n } = useTranslation();
+  const { i18n, t: gt } = useTranslation();
   const uiLang = (i18n.language || '').slice(0, 2);
   const lang: Lang = ((['en', 'fr', 'es'].includes(uiLang) ? uiLang : (machine?.page_language as Lang)) || 'fr') as Lang;
   const t = I18N[lang] || I18N.fr;
@@ -1381,8 +1468,16 @@ export default function MachinePage() {
         </div>
       )}
 
-      {/* ── Top toolbar: fullscreen (everyone) + layout editor (supervisor+) ── */}
+      {/* ── Top toolbar: SOPs + fullscreen (everyone) + layout editor (supervisor+) ── */}
       <div className="flex items-center justify-end gap-2 px-4 pt-3">
+        <button
+          onClick={() => setShowSops(true)}
+          title={gt('sops.kiosk.title', { lng: lang })}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold text-indigo-300 border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20"
+        >
+          <BookOpen size={16} />
+          <span>{gt('sops.kiosk.button', { lng: lang })}</span>
+        </button>
         <button
           onClick={toggleFullscreen}
           title={isFullscreen ? t.exitFullscreen : t.enterFullscreen}
@@ -1491,10 +1586,11 @@ export default function MachinePage() {
             {editLayout && <div className="kiosk-drag absolute top-0 left-0 right-0 h-8 z-40 cursor-move select-none touch-none flex items-center justify-center gap-2 rounded-t-2xl text-xs font-bold uppercase tracking-wider text-white bg-blue-500/80 hover:bg-blue-500">⠿ {t.jobNumber}</div>}
             <div className="h-full overflow-hidden bg-[#0d1421] rounded-2xl border border-white/[0.06] p-5 flex flex-col justify-between">
             <p className="text-sm font-semibold text-gray-400 uppercase tracking-widest">{t.jobNumber}</p>
-            <div>
-              <p className="text-3xl font-bold text-white mb-4">
+            <div className="min-h-0 overflow-hidden flex flex-col justify-end">
+              <p className={`text-3xl font-bold text-white truncate ${machine.current_job ? 'mb-2' : 'mb-4'}`}>
                 {machine.current_job_number || <span className="text-gray-500">{t.noJob}</span>}
               </p>
+              {machine.current_job && <OfJobDetails cj={machine.current_job} lang={lang} />}
               <div className="flex gap-2">
                 <input
                   value={jobInput}
@@ -1705,7 +1801,6 @@ export default function MachinePage() {
             <p className="text-[clamp(2rem,26cqmin,5rem)] font-black leading-none" style={{ color: justificationPct >= 90 ? '#22c55e' : justificationPct >= 70 ? '#eab308' : '#ef4444' }}>
               {justificationPct}%
             </p>
-            <p className="text-[clamp(0.55rem,3.5cqmin,0.8rem)] text-gray-500 mt-1">{t.justificationHint}</p>
           </div>
         </div>
 
@@ -2035,6 +2130,16 @@ export default function MachinePage() {
           onEditCause={(stop) => { setReclassTarget(stop); setBulkStops(null); setReclassCat(null); }}
           onBulkEditCause={(stopsSel) => { setBulkStops(stopsSel); setReclassTarget(null); setReclassCat(null); }}
           onSaveComment={saveStopComment}
+        />
+      )}
+
+      {/* ── SOP browser + step-by-step player (operators & technicians) ── */}
+      {showSops && slug && (
+        <KioskSopsModal
+          machineRef={slug}
+          lng={lang}
+          operatorName={machine.current_operator}
+          onClose={() => setShowSops(false)}
         />
       )}
 

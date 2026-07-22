@@ -336,6 +336,17 @@ export const cloneCategories = async (payload: {
   return data;
 };
 
+// Merge semantics: target machines keep their operators; duplicates are skipped.
+// operator_ids narrows the copy (the "add this new operator elsewhere too" flow).
+export const cloneOperators = async (payload: {
+  source_machine_id: string;
+  target_machine_ids: string[];
+  operator_ids?: string[];
+}): Promise<{ status: string; cloned_to: number; created: number; skipped: number }> => {
+  const { data } = await api.post('/api/machines/clone-operators', payload);
+  return data;
+};
+
 export const requestMaintenance = async (
   ref: string,
   payload: MaintenanceRequestCreate,

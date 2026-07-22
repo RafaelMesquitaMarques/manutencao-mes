@@ -97,6 +97,25 @@ class TicketForMachine(BaseModel):
     work_order_number:       Optional[str] = None
 
 
+class MachineJobInfo(BaseModel):
+    """Details of the OF currently loaded on the machine (its open run), shown on
+    the kiosk's OF panel. Enrichment fields are filled when the OF came from
+    Cortex/ERP; a bare kiosk scan leaves them None."""
+    job_number:            str
+    status:                str
+    source:                Optional[str] = None       # run source: manual | cortex | smart_label | erp
+    product_code:          Optional[str] = None
+    product_name:          Optional[str] = None
+    target_quantity:       Optional[int] = None
+    completed_quantity:    Optional[int] = None       # reported by the source system (ERP/Cortex)
+    produced_here:         Optional[int] = None       # pieces counted on this machine's open run
+    unit_of_measure:       Optional[str] = None
+    operation_code:        Optional[str] = None
+    operation_description: Optional[str] = None
+    started_at:            Optional[datetime] = None  # when the open run started on this machine
+    updated_at:            Optional[datetime] = None  # last change on the OF record
+
+
 class MachinePageData(BaseModel):
     id:                      UUID
     name:                    str
@@ -109,6 +128,7 @@ class MachinePageData(BaseModel):
     current_operator:        Optional[str] = None
     current_shift:           Optional[str] = None
     current_job_number:      Optional[str] = None
+    current_job:             Optional[MachineJobInfo] = None   # details of the loaded OF (open run)
     last_maintenance_at:     Optional[datetime] = None
     last_stop_at:            Optional[datetime] = None
     last_start_at:           Optional[datetime] = None
@@ -358,6 +378,12 @@ class CloneCategoriesRequest(BaseModel):
     source_machine_id: UUID
     target_machine_ids: List[UUID]
     category_type:     str  # 'stop' | 'reject'
+
+
+class CloneOperatorsRequest(BaseModel):
+    source_machine_id:  UUID
+    target_machine_ids: List[UUID]
+    operator_ids:       Optional[List[UUID]] = None  # None → every active operator of the source
 
 
 # ── Machine Stops ─────────────────────────────────────────────────────────────

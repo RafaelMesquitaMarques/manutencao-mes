@@ -3,7 +3,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +15,7 @@ from app.models.models import (
     InterventionChecklistResponse, InterventionPart, InterventionTechnician,
     StockItem, Technician, User,
 )
+from app.services.note_organizer import organize_note
 from app.services.ticket_service import _next_ticket_number, _next_alert_number, sync_alert_from_ticket
 
 router = APIRouter(prefix="/api/machine-operator", tags=["Machine Operator"])
@@ -429,6 +430,23 @@ async def get_intervention_types(machine_id: str, db: AsyncSession = Depends(get
             for t in types
         ]
     }
+
+
+class KioskNoteOrganizeBody(BaseModel):
+    # Hard cap: this router is auth-free (kiosk tablets), and the organizer can
+    # hit a paid API — never relay arbitrarily large payloads to it.
+    text: str = Field(max_length=8000)
+    language: str = "fr"
+
+
+@router.post("/{machine_id}/notes/organize")
+async def organize_closing_note(machine_id: str, body: KioskNoteOrganizeBody, db: AsyncSession = Depends(get_db)):
+    """Tidy up the dictated closing note (same organizer as WO notes: Anthropic →
+    Ollama → local cleanup). Scoped under a real machine so the kiosk can only
+    call it from a valid machine screen."""
+    await _resolve(machine_id, db)
+    text, ai_used = await organize_note(body.text, body.language)
+    return {"text": text, "ai_used": ai_used}
 
 
 class CompleteBody(BaseModel):

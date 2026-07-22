@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Clock, Wrench, CheckCircle, Loader2, Mic, MicOff, Shield, Package, X, Plus, Trash2, Search, Users, UserPlus } from 'lucide-react';
+import { AlertTriangle, Clock, Wrench, CheckCircle, Loader2, Mic, MicOff, Shield, Package, X, Plus, Trash2, Search, Users, UserPlus, Sparkles } from 'lucide-react';
 import { INTERVENTION_ICON_MAP } from '../../components/ui/IconLibrary';
 import {
   fetchMachineOperatorState,
@@ -18,6 +18,7 @@ import {
   fetchKioskTechnicians,
   checkInTechnician,
   checkOutTechnician,
+  organizeKioskNote,
 } from '../../api/machineOperator';
 import type {
   MachineOperatorState,
@@ -508,6 +509,7 @@ function TechnicianCheckinCard({ machineId, intervention, onChanged }: {
 // (header/footer/side info) so it can live inside the unified MES kiosk (MachinePage).
 export function MaintenancePanel({ machineId, embedded = false }: { machineId: string; embedded?: boolean }) {
   const machine_id = machineId;
+  const { t } = useTranslation();
   const [state, setState] = useState<MachineOperatorState | null>(null);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
@@ -522,6 +524,8 @@ export function MaintenancePanel({ machineId, embedded = false }: { machineId: s
   type CompletionStep = 'idle' | 'select_type' | 'add_note';
   const [completionStep, setCompletionStep] = useState<CompletionStep>('idle');
   const [mechNote, setMechNote] = useState('');
+  const [organizing, setOrganizing] = useState(false);
+  const [organizeHint, setOrganizeHint] = useState('');
 
   // Safety checklist
   const [checklistItems, setChecklistItems] = useState<ChecklistItem[]>([]);
@@ -575,6 +579,7 @@ export function MaintenancePanel({ machineId, embedded = false }: { machineId: s
       await load();
       setNote('');
       setMechNote('');
+      setOrganizeHint('');
       setSelectedTypeId(null);
       setSelectedTypeName('');
       setSelectedTypeIcon('');
@@ -653,6 +658,27 @@ export function MaintenancePanel({ machineId, embedded = false }: { machineId: s
     recognition.start();
     recognitionRef.current = recognition;
     setIsRecording(true);
+  };
+
+  // AI tidy-up of the dictated closing note — same organizer as WO notes.
+  // Language is pinned to 'fr' to match the hardcoded fr-CA dictation above.
+  const organizeClosingNote = async () => {
+    if (!machine_id || !mechNote.trim() || organizing) return;
+    if (isRecording) {
+      recognitionRef.current?.stop();
+      setIsRecording(false);
+    }
+    setOrganizing(true);
+    setOrganizeHint('');
+    try {
+      const res = await organizeKioskNote(machine_id, mechNote.trim(), 'fr');
+      setMechNote(res.text);
+      if (!res.ai_used) setOrganizeHint(t('workOrders.organizeOffline'));
+    } catch {
+      setOrganizeHint(t('workOrders.organizeFailed'));
+    } finally {
+      setOrganizing(false);
+    }
   };
 
   const intervention = state?.active_intervention ?? null;
@@ -901,7 +927,7 @@ export function MaintenancePanel({ machineId, embedded = false }: { machineId: s
 
                   <div className="flex gap-2 items-start">
                     <textarea value={mechNote} onChange={(e) => setMechNote(e.target.value)}
-                      placeholder="Note de clôture (optionnel)"
+                      placeholder={t('kiosk.closingNotePlaceholder')}
                       className="flex-1 h-20 bg-[#111318] border border-[#21262d] rounded-xl px-4 py-3 text-sm text-gray-300 placeholder-gray-600 resize-none focus:outline-none focus:border-blue-700/60"
                     />
                     <button onClick={toggleRecording} title={isRecording ? 'Arrêter' : 'Dicter'}
@@ -914,7 +940,20 @@ export function MaintenancePanel({ machineId, embedded = false }: { machineId: s
                     </button>
                   </div>
 
-                  <button disabled={acting}
+                  {mechNote.trim() && (
+                    <button type="button" onClick={organizeClosingNote}
+                      disabled={organizing}
+                      title={t('workOrders.organizeHint')}
+                      className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold transition-all active:scale-95 disabled:opacity-60"
+                      style={{ background: '#111318', border: '1px solid #3b82f6', color: '#93c5fd' }}>
+                      {organizing
+                        ? <><Loader2 className="animate-spin" size={16} />{t('workOrders.organizing')}</>
+                        : <><Sparkles size={16} />{t('workOrders.organizeAI')}</>}
+                    </button>
+                  )}
+                  {organizeHint && <p className="text-amber-400/90 text-xs -mt-2">{organizeHint}</p>}
+
+                  <button disabled={acting || organizing}
                     onClick={() => act(() => completeIntervention(machine_id!, {
                       mechanic_note: mechNote || undefined,
                       intervention_type_id: selectedTypeId || undefined,
