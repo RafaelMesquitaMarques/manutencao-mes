@@ -4,10 +4,14 @@ import { useTranslation } from 'react-i18next';
 import type { LucideIcon } from 'lucide-react';
 import './NeuralHud.css';
 
+export type HudTone = 'good' | 'warn' | 'bad';
+
 export interface HudNode {
   to?: string;
   label: string;
   value?: string;
+  /** Traffic-light reading of the value; tints the number (default HUD cyan). */
+  tone?: HudTone;
   icon: LucideIcon;
   img?: string;
 }
@@ -312,7 +316,11 @@ const NeuralHud = ({ nodes, coreTo, coreHint }: NeuralHudProps) => {
                     : <Icon size={11} />}
                   {node.label}
                 </span>
-                {node.value && <span className="nhud-lb-value">{node.value}</span>}
+                {node.value && (
+                  <span className={`nhud-lb-value${node.tone ? ` tone-${node.tone}` : ''}`}>
+                    {node.value}
+                  </span>
+                )}
               </>
             );
             return node.to ? (

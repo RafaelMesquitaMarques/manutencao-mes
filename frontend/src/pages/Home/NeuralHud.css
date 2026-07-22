@@ -95,6 +95,14 @@
 }
 .nhud-lb.on .nhud-lb-value { color: #67e8f9; }
 
+/* Traffic-light tint on the metric value; hover brightens but keeps the verdict. */
+.nhud-lb .nhud-lb-value.tone-good { color: #4ade80; }
+.nhud-lb .nhud-lb-value.tone-warn { color: #fbbf24; }
+.nhud-lb .nhud-lb-value.tone-bad { color: #f87171; }
+.nhud-lb.on .nhud-lb-value.tone-good { color: #86efac; text-shadow: 0 0 8px rgba(74, 222, 128, 0.55); }
+.nhud-lb.on .nhud-lb-value.tone-warn { color: #fcd34d; text-shadow: 0 0 8px rgba(251, 191, 36, 0.55); }
+.nhud-lb.on .nhud-lb-value.tone-bad { color: #fca5a5; text-shadow: 0 0 8px rgba(248, 113, 113, 0.55); }
+
 /* The HUD overflows its card: only nodes and labels may capture the mouse so
    the decorative rings never block clicks on content underneath. */
 .nhud-root { pointer-events: none; }

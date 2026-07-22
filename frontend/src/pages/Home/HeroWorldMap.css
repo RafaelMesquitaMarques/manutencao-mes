@@ -1,0 +1,47 @@
+/* The svg layout box (viewBox 900x735) frames North America — its size and
+   position are what the hero layout aligns to. South America is drawn below
+   y=735 and only shows because of this overflow; being ink-only it never
+   affects layout or scrollbars. */
+.hwm-map {
+  overflow: visible;
+}
+
+/* Plant beacons on the hero world map: the ping ring only animates while the
+   pointer is over the beacon (the map layer itself stays pointer-events: none —
+   each beacon group re-enables hits just for itself). */
+
+@keyframes hwm-ping {
+  0% { transform: scale(0.5); opacity: 0.9; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+
+.hwm-ping {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.hwm-beacon:hover .hwm-ping {
+  animation: hwm-ping 1.1s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.hwm-beacon text {
+  transition: fill-opacity 0.15s;
+}
+.hwm-beacon:hover text {
+  fill-opacity: 1;
+}
+
+/* Beacons of switchable plants open that plant's context on click. */
+.hwm-beacon--click {
+  cursor: pointer;
+}
+
+/* Active plant: soft ring halo breathing slowly — the marker itself stays the
+   same size as the others. */
+@keyframes hwm-breathe {
+  0%, 100% { stroke-opacity: 0.16; }
+  50% { stroke-opacity: 0.34; }
+}
+.hwm-halo {
+  animation: hwm-breathe 2.8s ease-in-out infinite;
+}

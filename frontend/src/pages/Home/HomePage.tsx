@@ -3,8 +3,9 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   ClipboardList, Play, AlertTriangle, CheckCircle2, Gauge, Activity,
-  Factory, Ticket, Bell, Briefcase, ArrowRight, ArrowUpRight, Plus,
-  Map as MapIcon, BarChart3, Wrench, ListChecks, RefreshCw,
+  Factory, Ticket, Bell, Briefcase, ArrowRight, Plus, RefreshCw,
+  TrendingDown, XCircle, HelpCircle, PowerOff, Timer, Hourglass,
+  CalendarClock, Wrench, Package,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
@@ -14,10 +15,12 @@ import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 import {
   fetchDashboardStats, fetchWorkOrders, fetchKPISummary, fetchEquipment,
 } from '../../api/workOrders';
+import { fetchHomeInsights, type HomeInsight, type InsightSeverity } from '../../api/insights';
 import type { DashboardStats, WorkOrder, KPISummary, Equipment, UserRole } from '../../types';
 import Badge from '../../components/ui/Badge';
 import FactoryPreview from './FactoryPreview';
-import NeuralHud, { type HudNode } from './NeuralHud';
+import NeuralHud, { type HudNode, type HudTone } from './NeuralHud';
+import HeroWorldMap from './HeroWorldMap';
 
 // ─── Metric accents (kept on StatDef so the HUD node source stays typed) ────────
 type Accent = 'blue' | 'amber' | 'red' | 'green' | 'indigo' | 'cyan' | 'emerald' | 'purple' | 'orange';
@@ -29,8 +32,49 @@ interface StatDef {
   sub?: string;
   icon: LucideIcon;
   accent: Accent;
+  tone?: HudTone;
   to?: string;
 }
+
+// Traffic-light verdicts for HUD values. Count thresholds are pragmatic
+// defaults; the OEE/availability bands follow the usual TPM benchmarks.
+const fewerIsBetter = (v: number, greenMax: number, amberMax: number): HudTone =>
+  v <= greenMax ? 'good' : v <= amberMax ? 'warn' : 'bad';
+const higherIsBetter = (v: number, greenMin: number, amberMin: number): HudTone =>
+  v >= greenMin ? 'good' : v >= amberMin ? 'warn' : 'bad';
+
+// ─── Live insights (right rail) ─────────────────────────────────────────────────
+const INSIGHT_ICONS: Record<string, LucideIcon> = {
+  production_rate_drop: TrendingDown,
+  reject_rate_high: XCircle,
+  unjustified_stops: HelpCircle,
+  stops_all_justified: CheckCircle2,
+  ongoing_stop: PowerOff,
+  downtime_spike: Timer,
+  slow_response: Hourglass,
+  stale_tickets: Ticket,
+  alert_backlog: Bell,
+  overdue_wos: CalendarClock,
+  pm_compliance_low: Wrench,
+  low_stock: Package,
+  oee_strong_week: Gauge,
+  oee_low_week: Gauge,
+};
+
+const INSIGHT_SEV: Record<InsightSeverity, { chip: string; text: string }> = {
+  critical: { chip: 'bg-red-500/10 border-red-500/25 text-red-400', text: 'text-red-300' },
+  warn: { chip: 'bg-amber-500/10 border-amber-500/25 text-amber-400', text: 'text-amber-200/90' },
+  info: { chip: 'bg-blue-500/10 border-blue-500/25 text-blue-400', text: 'text-gray-300' },
+  good: { chip: 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400', text: 'text-emerald-200/90' },
+};
+
+// "1 h 45 min" — unit symbols, so it reads the same in en/fr/es.
+const fmtDuration = (mins: number) => {
+  if (mins < 60) return `${mins} min`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m > 0 ? `${h} h ${m} min` : `${h} h`;
+};
 
 const HomePage = () => {
   const { t, i18n } = useTranslation();
@@ -46,6 +90,7 @@ const HomePage = () => {
   const [kpi, setKpi] = useState<KPISummary | null>(null);
   const [equip, setEquip] = useState<Equipment[] | null>(null);
   const [recentWOs, setRecentWOs] = useState<WorkOrder[]>([]);
+  const [insights, setInsights] = useState<HomeInsight[] | null>(null);
 
   // Only hit endpoints the user is allowed to read — keeps the page 403-free and
   // tailors the cards to each role (an operator sees far less than a manager).
@@ -56,18 +101,22 @@ const HomePage = () => {
   const showMap = can('factory_map') && !!mapPlantId;
 
   const load = useCallback(async () => {
-    const [s, w, k, e] = await Promise.allSettled([
+    const [s, w, k, e, ins] = await Promise.allSettled([
       showWO ? fetchDashboardStats() : Promise.reject(),
       showWO ? fetchWorkOrders({ limit: '6' }) : Promise.reject(),
       showKpi ? fetchKPISummary(30) : Promise.reject(),
       // Whole production catalog, not the first page — the default limit (50)
       // returns mostly auxiliary assets alphabetically, skewing the roll-up.
       showEquip ? fetchEquipment({ asset_type: 'production', limit: '2000' }) : Promise.reject(),
+      // The backend filters detectors by the caller's permissions, so this one
+      // is safe (and meaningful) for every role.
+      fetchHomeInsights(),
     ]);
     if (s.status === 'fulfilled') setStats(s.value as DashboardStats);
     if (w.status === 'fulfilled') setRecentWOs(w.value as WorkOrder[]);
     if (k.status === 'fulfilled') setKpi(k.value as KPISummary);
     if (e.status === 'fulfilled') setEquip(e.value as Equipment[]);
+    if (ins.status === 'fulfilled') setInsights(ins.value.insights);
   }, [showWO, showKpi, showEquip]);
 
   useEffect(() => { load(); }, [load]);
@@ -100,16 +149,17 @@ const HomePage = () => {
   const cards: StatDef[] = [];
   if (stats) {
     cards.push(
-      { key: 'open',      label: t('dashboard.openWOs'),        value: stats.total_open,     icon: ClipboardList, accent: 'blue',  to: linkIf('work_orders', '/work-orders') },
-      { key: 'progress',  label: t('dashboard.inProgress'),     value: stats.in_progress,    icon: Play,          accent: 'amber', to: linkIf('work_orders', '/work-orders') },
-      { key: 'critical',  label: t('dashboard.critical'),       value: stats.critical,       icon: AlertTriangle, accent: 'red',   to: linkIf('work_orders', '/work-orders') },
-      { key: 'done',      label: t('dashboard.completedToday'), value: stats.completed_today, icon: CheckCircle2,  accent: 'green', to: linkIf('work_orders', '/work-orders') },
+      { key: 'open',      label: t('dashboard.openWOs'),        value: stats.total_open,     icon: ClipboardList, accent: 'blue',  tone: fewerIsBetter(stats.total_open, 20, 60), to: linkIf('work_orders', '/work-orders') },
+      { key: 'progress',  label: t('dashboard.inProgress'),     value: stats.in_progress,    icon: Play,          accent: 'amber', tone: fewerIsBetter(stats.in_progress, 10, 30), to: linkIf('work_orders', '/work-orders') },
+      { key: 'critical',  label: t('dashboard.critical'),       value: stats.critical,       icon: AlertTriangle, accent: 'red',   tone: stats.critical === 0 ? 'good' : 'bad', to: linkIf('work_orders', '/work-orders') },
+      // 0 completed reads as "attention", never as failure — mornings start at 0.
+      { key: 'done',      label: t('dashboard.completedToday'), value: stats.completed_today, icon: CheckCircle2,  accent: 'green', tone: stats.completed_today > 0 ? 'good' : 'warn', to: linkIf('work_orders', '/work-orders') },
     );
   }
   if (kpi) {
     cards.push(
-      { key: 'oee',   label: t('kpis.oee'),          value: pct(kpi.oee_pct),          sub: t('kpis.oeeSub'),          icon: Gauge,    accent: 'indigo', to: linkIf('kpis', '/kpis') },
-      { key: 'avail', label: t('kpis.availability'), value: pct(kpi.availability_pct), sub: t('kpis.availabilitySub'), icon: Activity, accent: 'cyan',   to: linkIf('kpis', '/kpis') },
+      { key: 'oee',   label: t('kpis.oee'),          value: pct(kpi.oee_pct),          sub: t('kpis.oeeSub'),          icon: Gauge,    accent: 'indigo', tone: kpi.oee_pct == null ? undefined : higherIsBetter(kpi.oee_pct, 85, 60), to: linkIf('kpis', '/kpis') },
+      { key: 'avail', label: t('kpis.availability'), value: pct(kpi.availability_pct), sub: t('kpis.availabilitySub'), icon: Activity, accent: 'cyan',   tone: kpi.availability_pct == null ? undefined : higherIsBetter(kpi.availability_pct, 90, 75), to: linkIf('kpis', '/kpis') },
     );
   }
   if (equip && machineList.length > 0) {
@@ -120,12 +170,13 @@ const HomePage = () => {
       sub: down > 0 ? t('home.machinesDown', { count: down }) : undefined,
       icon: Factory,
       accent: 'emerald',
+      tone: down === 0 ? 'good' : running / machineList.length >= 0.8 ? 'warn' : 'bad',
       to: linkIf('equipment', '/equipment'),
     });
   }
-  cards.push({ key: 'mywork', label: t('home.myWork'), value: badges.myWorkCount, icon: Briefcase, accent: 'blue', to: '/my-work' });
-  if (can('alerts')) cards.push({ key: 'alerts',  label: t('home.openAlerts'),  value: badges.alertCount,  icon: Bell,   accent: 'orange', to: '/gestion-bt' });
-  if (can('tickets')) cards.push({ key: 'tickets', label: t('home.openTickets'), value: badges.ticketCount, icon: Ticket, accent: 'purple', to: '/tickets' });
+  cards.push({ key: 'mywork', label: t('home.myWork'), value: badges.myWorkCount, icon: Briefcase, accent: 'blue', tone: fewerIsBetter(badges.myWorkCount, 0, 5), to: '/my-work' });
+  if (can('alerts')) cards.push({ key: 'alerts',  label: t('home.openAlerts'),  value: badges.alertCount,  icon: Bell,   accent: 'orange', tone: fewerIsBetter(badges.alertCount, 0, 3), to: '/gestion-bt' });
+  if (can('tickets')) cards.push({ key: 'tickets', label: t('home.openTickets'), value: badges.ticketCount, icon: Ticket, accent: 'purple', tone: fewerIsBetter(badges.ticketCount, 0, 5), to: '/tickets' });
 
   // ── Neural HUD beside the greeting — the key metrics orbit the cognitive core.
   // Index 0 sits at 12 o'clock, the rest are laid out clockwise.
@@ -133,20 +184,9 @@ const HomePage = () => {
     to: c.to,
     label: c.label,
     value: String(c.value),
+    tone: c.tone,
     icon: c.icon,
   }));
-
-  // ── Quick access (module shortcuts filtered by permission) ───────────────────
-  const shortcuts: { to: string; icon: LucideIcon; img?: string; label: string; show: boolean }[] = [
-    { to: '/work-orders/new', icon: Plus,      label: t('workOrders.newWO'),    show: can('work_orders', 'create') },
-    { to: '/my-work',         icon: Briefcase, label: t('nav.myWork'),          show: true },
-    { to: '/gestion-bt',      icon: ListChecks, label: t('nav.gestionBT'),      show: can('alerts') },
-    { to: '/factory-map',     icon: MapIcon,   label: t('nav.factoryMap'),      show: can('factory_map') },
-    { to: '/kpis',            icon: BarChart3, label: t('nav.kpis'),            show: can('kpis') },
-    { to: '/equipment',       icon: Wrench,    label: t('nav.equipment'),       show: can('equipment') },
-    { to: '/intelligence',    icon: BarChart3, img: '/mirai-icon.png', label: t('nav.intelligence'), show: can('intelligence') },
-  ];
-  const visibleShortcuts = shortcuts.filter((sc) => sc.show);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -157,6 +197,15 @@ const HomePage = () => {
         <div className="absolute inset-0 overflow-hidden rounded-[inherit] pointer-events-none">
           <div className="absolute -top-16 -right-10 w-72 h-72 bg-blue-600/10 rounded-full blur-3xl" />
           <div className="absolute -bottom-24 left-1/4 w-72 h-72 bg-indigo-600/10 rounded-full blur-3xl" />
+        </div>
+        {/* Holographic world map — layered between the card background and the
+            neural HUD (banner < map < radar). Not clipped: it bleeds past the
+            banner edges like the hologram does. */}
+        <div className="hidden xl:block absolute inset-0 pointer-events-none z-[5]">
+          <HeroWorldMap
+            activePlantId={activePlant?.plant_id ?? null}
+            className="absolute right-[-1%] top-1/2 -translate-y-1/2 w-[48%]"
+          />
         </div>
         <div className="relative flex items-start justify-between gap-4">
           <div className="min-w-0 xl:max-w-lg">
@@ -195,7 +244,7 @@ const HomePage = () => {
             </button>
           </div>
         </div>
-        <div className="hidden xl:flex absolute inset-y-0 left-[24%] right-0 z-10 items-center justify-center pointer-events-none">
+        <div className="hidden xl:flex absolute inset-y-0 left-[20%] right-[24%] z-10 items-center justify-center pointer-events-none">
           <div className="w-[460px]">
             <NeuralHud
               nodes={hudNodes}
@@ -278,29 +327,69 @@ const HomePage = () => {
           </div>
         )}
 
-        {/* Quick access — right rail beside the 3D view + recent WOs stack */}
+        {/* Live insights — right rail beside the 3D view + recent WOs stack.
+            The backend flags what is off-normal right now (rate drops, missing
+            stop reasons, slow response…); each row deep-links to its module. */}
         <div className={`glass-card p-5 ${
           showMap && showWO ? 'lg:col-start-3 lg:row-start-1 lg:row-span-2'
           : !showMap && !showWO ? 'lg:col-span-3' : ''
         }`}>
-          <h2 className="text-white font-semibold text-sm mb-4">{t('home.quickAccess')}</h2>
-          <div className={showWO ? 'space-y-1.5' : 'grid sm:grid-cols-2 gap-1.5'}>
-            {visibleShortcuts.map((sc) => (
-              <Link
-                key={sc.to}
-                to={sc.to}
-                className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-gray-300 hover:text-white hover:bg-white/[0.05] transition-colors group"
-              >
-                <span className="w-8 h-8 rounded-lg bg-white/[0.04] border border-white/[0.06] flex items-center justify-center flex-shrink-0 group-hover:bg-blue-500/10 group-hover:border-blue-500/20 transition-colors">
-                  {sc.img
-                    ? <img src={sc.img} alt="" className="w-[18px] h-[18px] object-contain" />
-                    : <sc.icon size={16} className="text-blue-400" />}
-                </span>
-                <span className="flex-1 truncate">{sc.label}</span>
-                <ArrowUpRight size={14} className="text-gray-600 group-hover:text-blue-400 transition-colors" />
-              </Link>
-            ))}
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-white font-semibold text-sm">{t('home.liveInsights')}</h2>
+            <span className="relative flex h-2 w-2" title={t('home.liveInsightsHint')}>
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-50" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
+            </span>
           </div>
+          {insights === null ? (
+            <div className="space-y-1.5">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="flex items-center gap-3 px-3 py-2.5 animate-pulse">
+                  <span className="w-8 h-8 rounded-lg bg-white/[0.05] flex-shrink-0" />
+                  <span className="h-3 rounded bg-white/[0.05] flex-1" />
+                </div>
+              ))}
+            </div>
+          ) : insights.length === 0 ? (
+            <div className="py-10 text-center">
+              <CheckCircle2 size={30} className="mx-auto text-emerald-400/80 mb-3" />
+              <p className="text-gray-400 text-sm">{t('insights.allClear')}</p>
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {insights.map((ins, idx) => {
+                const Icon = INSIGHT_ICONS[ins.kind] ?? Activity;
+                const sev = INSIGHT_SEV[ins.severity] ?? INSIGHT_SEV.info;
+                const params: Record<string, string | number> = { ...ins.params };
+                if (typeof params.minutes === 'number') {
+                  params.duration = fmtDuration(params.minutes);
+                }
+                const text = t(`insights.${ins.kind}`, { ...params, defaultValue: ins.kind });
+                const inner = (
+                  <>
+                    <span className={`w-8 h-8 rounded-lg border flex items-center justify-center flex-shrink-0 ${sev.chip}`}>
+                      <Icon size={16} />
+                    </span>
+                    <span className={`flex-1 text-[13px] leading-snug ${sev.text}`}>{text}</span>
+                  </>
+                );
+                const rowClass = 'flex items-start gap-3 px-3 py-2.5 rounded-lg transition-colors';
+                return ins.link ? (
+                  <Link
+                    key={`${ins.kind}-${ins.machine_id ?? idx}`}
+                    to={ins.link}
+                    className={`${rowClass} hover:bg-white/[0.05]`}
+                  >
+                    {inner}
+                  </Link>
+                ) : (
+                  <div key={`${ins.kind}-${ins.machine_id ?? idx}`} className={rowClass}>
+                    {inner}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>
