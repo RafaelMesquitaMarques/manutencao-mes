@@ -55,11 +55,16 @@ async def close_open_run(db: AsyncSession, machine_id: UUID, when: Optional[date
 
 
 async def _close_other_open_runs_for_job(
-    db: AsyncSession, job_order_id: UUID, current_machine_id: UUID, when: datetime
+    db: AsyncSession, job_order_id: UUID, current_machine_id: UUID, when: datetime,
+    keep_machine_ids: Optional[frozenset] = None,
 ) -> None:
     """An OF can only be in one place: when it's scanned on a machine, close any
     open run it still has on ANOTHER machine (it physically moved). Keeps the
-    invariant "one open run per OF" so WIP location is unambiguous."""
+    invariant "one open run per OF" so WIP location is unambiguous.
+
+    Exception: the Cobot/Tablette push can start the SAME OF on several machines
+    in ONE event (its `Machines` is a list) — those sibling machines are passed
+    as `keep_machine_ids` and stay open; only runs OUTSIDE the event close."""
     r = await db.execute(
         select(JobOrderRun).where(
             JobOrderRun.job_order_id == job_order_id,
@@ -68,6 +73,8 @@ async def _close_other_open_runs_for_job(
         )
     )
     for run in r.scalars().all():
+        if keep_machine_ids and run.machine_id in keep_machine_ids:
+            continue
         _close_run(run, when)
     await db.flush()
 
@@ -119,13 +126,15 @@ async def scan_job_order_at_machine(
     when: Optional[datetime] = None,
     product_name: Optional[str] = None,
     target_quantity: Optional[int] = None,
+    keep_open_machine_ids: Optional[frozenset] = None,
 ) -> Tuple[Optional[JobOrder], Optional[JobOrderRun]]:
     """Scan an OF at a machine (kiosk / Cortex / smart-label). Closes the machine's
     previous run and opens a new one for this OF; marks the OF in_progress and records
     it as the current location. An empty/None number CLEARS the job (closes the open
     run, no new one). `product_name`/`target_quantity` enrich the OF (see
-    `_lookup_or_create`). Does NOT commit. Returns (job_order, open_run) — both None
-    when cleared."""
+    `_lookup_or_create`). `keep_open_machine_ids` lets one multi-machine push keep
+    the OF's runs open on its sibling machines (see _close_other_open_runs_for_job).
+    Does NOT commit. Returns (job_order, open_run) — both None when cleared."""
     number = (job_number or "").strip()
     now = when or _now()
 
@@ -146,7 +155,7 @@ async def scan_job_order_at_machine(
     # A different OF (or none) is loaded → close it and open a fresh run.
     await close_open_run(db, machine.id, now)
     # The OF physically moved here: close its open run on any other machine.
-    await _close_other_open_runs_for_job(db, jo.id, machine.id, now)
+    await _close_other_open_runs_for_job(db, jo.id, machine.id, now, keep_open_machine_ids)
     run = JobOrderRun(
         job_order_id=jo.id,
         machine_id=machine.id,

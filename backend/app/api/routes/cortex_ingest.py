@@ -1,5 +1,14 @@
-"""Cortex INBOUND API — versioned under /api/v1/cortex (flow 1 of the MES↔Cortex
-integration: cobot reads an OF label → Cortex processes it → Cortex CALLS US).
+"""Cobot/Tablette → MES INBOUND API — versioned under /api/v1/cortex (flow 1:
+a cobot reads an OF / an operator enters it on their side → their system CALLS
+US to start the operation on one or more machines).
+
+POST /events auto-detects TWO payload shapes (see cortex_ingest_service):
+  1. the REAL contract their system already sends (C# model — Name, Quantity,
+     SkuNumber, UnitCompletionTime, Machines list; camelCase or PascalCase);
+  2. the richer envelope we proposed (eventId + machineCode +
+     manufacturingOrder) — used by the simulator/tests, open for future types.
+Their delivery is fire-and-forget (no retry on their side), so endpoint uptime
+and our audit trail are what make losses visible.
 
 Two routers, registered separately in main.py:
 
@@ -167,10 +176,12 @@ async def receive_cortex_event(request: Request, db: AsyncSession = Depends(get_
 
     # Live UI: the kiosk/dashboards listen on /api/live/ws and refetch on this
     # hint (the /api/v1 path is outside the middleware's machine-path regex, so
-    # publish explicitly). Nothing changed on a duplicate — no hint needed.
-    if outcome.success and not outcome.duplicate and outcome.machine is not None:
-        m = outcome.machine
-        event_bus.publish_machine(m.page_slug or str(m.id))
+    # publish explicitly). A Cobot/Tablette push may target several machines —
+    # hint each one. Nothing changed on a duplicate — no hint needed.
+    if outcome.success and not outcome.duplicate:
+        targets = outcome.machines_ok or ([outcome.machine] if outcome.machine else [])
+        for m in targets:
+            event_bus.publish_machine(m.page_slug or str(m.id))
 
     return JSONResponse(status_code=outcome.http_status, content=outcome.response_body())
 

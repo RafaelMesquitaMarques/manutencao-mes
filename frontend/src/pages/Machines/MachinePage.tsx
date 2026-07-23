@@ -833,11 +833,14 @@ function OfJobDetails({ cj, lang }: { cj: MachineJobInfo; lang: Lang }) {
         <span className="px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300 font-semibold">{sourceLabel}</span>
         <span className={`px-2 py-0.5 rounded-full font-semibold ${statusCls}`}>{statusLabel}</span>
       </div>
-      {(cj.product_name || cj.product_code) && (
+      {/* Their SKU currently EQUALS the OF number — showing it as "product" would
+          just repeat the big number above, so the line only renders when it adds info. */}
+      {(cj.product_name || (cj.product_code && cj.product_code !== cj.job_number)) && (
         <p className="truncate">
           <span className="text-gray-500">{t.ofProduct} · </span>
           {cj.product_name || cj.product_code}
-          {cj.product_name && cj.product_code ? <span className="text-gray-500"> ({cj.product_code})</span> : null}
+          {cj.product_name && cj.product_code && cj.product_code !== cj.job_number
+            ? <span className="text-gray-500"> ({cj.product_code})</span> : null}
         </p>
       )}
       {(cj.operation_code || cj.operation_description) && (

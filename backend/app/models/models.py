@@ -1973,6 +1973,10 @@ class JobOrder(Base):
     # Quantity reported as already completed by the source system (ERP/Cortex) —
     # distinct from the pieces WE counted on runs (JobOrderRun.pieces).
     completed_quantity    = Column(Integer, nullable=True)
+    # Unit completion time as sent by the Cobot/Tablette push (raw value — the
+    # UNIT is not confirmed yet with the integrator; likely seconds/piece, which
+    # would make it the eu_per_unit feed: 1 EU = 100 s. Don't derive until confirmed).
+    unit_completion_time  = Column(Integer, nullable=True)
     # Equivalent-unit factor per product unit (1 EU = 100 s of assembly-line time),
     # the productivity currency on the Pit Stop TV. Will come from SAP with the OF;
     # the simulator seeds it. NULL → treated as 1.0 (1 unit = 1 EU).

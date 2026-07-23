@@ -5,8 +5,14 @@ status + response envelope, so the integration can be exercised end to end
 
 Run inside the backend container (or anywhere with network access to the API):
 
+    # REAL Cobot/Tablette shape (Name/Quantity/SkuNumber/UnitCompletionTime/Machines);
+    # --machine accepts a comma-separated list (their Machines is a list)
     docker exec mes_backend python -m scripts.simulate_cortex_push \
-        --token dev-token --machine MACHINE-001 --of OF-123456 --site SJ
+        --token dev-token --cobot-format --machine "MACHINE-001,MACHINE-002" --of OF-123456
+
+    # richer proposed envelope
+    docker exec mes_backend python -m scripts.simulate_cortex_push \
+        --token dev-token --machine MACHINE-001 --of OF-123456 --site QS
 
     # connectivity/credentials check only
     docker exec mes_backend python -m scripts.simulate_cortex_push --token t --ping
@@ -76,6 +82,10 @@ def main() -> None:
     ap.add_argument("--duplicate", action="store_true", help="send the same event twice")
     ap.add_argument("--invalid", action="store_true", help="omit orderNumber (INVALID_PAYLOAD path)")
     ap.add_argument("--bad-json", action="store_true", help="send an unparseable body (INVALID_JSON path)")
+    ap.add_argument("--cobot-format", action="store_true",
+                    help="send the REAL Cobot/Tablette shape (Name/Quantity/SkuNumber/"
+                         "UnitCompletionTime/Machines). --machine accepts a comma-separated list")
+    ap.add_argument("--unit-time", type=int, default=95, help="UnitCompletionTime (cobot format)")
     args = ap.parse_args()
 
     base = args.base_url.rstrip("/")
@@ -86,6 +96,25 @@ def main() -> None:
 
     if args.bad_json:
         _print(*_call("POST", f"{base}/api/v1/cortex/events", args.token, "{not json"))
+        return
+
+    if args.cobot_format:
+        # The shape their system actually sends (C# model, camelCase serialization).
+        of = args.of or f"OF-{uuid.uuid4().hex[:6].upper()}"
+        payload = {
+            "name": of,
+            "quantity": args.qty,
+            "skuNumber": of,                       # today the SKU = the production number
+            "unitCompletionTime": args.unit_time,
+            "machines": [m.strip() for m in args.machine.split(",") if m.strip()],
+        }
+        if args.invalid:
+            payload.pop("name")
+        print(f"→ POST {base}/api/v1/cortex/events  (cobot format, of={of})")
+        _print(*_call("POST", f"{base}/api/v1/cortex/events", args.token, payload))
+        if args.duplicate:
+            print("\n→ re-pushing the SAME payload (natural idempotency check)")
+            _print(*_call("POST", f"{base}/api/v1/cortex/events", args.token, payload))
         return
 
     now = datetime.now(timezone.utc)

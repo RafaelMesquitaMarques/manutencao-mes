@@ -1397,6 +1397,9 @@ async def _run_migrations() -> None:
         "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS planned_start_at TIMESTAMPTZ",
         "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS planned_end_at TIMESTAMPTZ",
         "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS completed_quantity INT",
+        # Cobot/Tablette real contract: unit time per piece (raw value, unit TBC
+        # with the integrator team).
+        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS unit_completion_time INT",
         # Sushi device tag_name doubles as the user-editable component/position
         # label ("Palier avant") — 20 chars (the 0x42 hardware tag is 10) is too
         # short for that. Guarded widen: no exclusive lock on steady-state boots.

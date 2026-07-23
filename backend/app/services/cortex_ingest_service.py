@@ -39,9 +39,14 @@ log = logging.getLogger("cortex_ingest")
 EVENT_TYPE_OF_SCANNED = "manufacturing_order_scanned"
 SUPPORTED_EVENT_TYPES = {EVENT_TYPE_OF_SCANNED}
 
-# errorCode → HTTP status. Stable contract with the Cortex team: 4xx = fix the
-# call/data (retrying unchanged will fail again), 409 = the machine is disabled
-# in KAIZO, 5xx = our fault, retry with the SAME eventId.
+# The REAL Cobot/Tablette contract (what their system already sends — C# model:
+# Name, Quantity, SkuNumber, UnitCompletionTime, Machines). Detected by the
+# presence of a `machines` list; keys accepted in camelCase or PascalCase.
+COBOT_EVENT_TYPE = "cobot_push"
+
+# errorCode → HTTP status. Stable contract with the integrator team: 4xx = fix
+# the call/data (retrying unchanged will fail again), 409 = machine disabled or
+# ambiguous name in KAIZO, 5xx = our fault, retrying the same call is safe.
 ERROR_HTTP_STATUS = {
     "INGEST_DISABLED": 503,
     "UNAUTHORIZED": 401,
@@ -52,6 +57,7 @@ ERROR_HTTP_STATUS = {
     "MACHINE_NOT_FOUND": 404,
     "MACHINE_NOT_IN_SITE": 404,
     "MACHINE_INACTIVE": 409,
+    "MACHINE_AMBIGUOUS": 409,
     "INTERNAL_ERROR": 500,
 }
 
@@ -64,7 +70,7 @@ DUPLICATE_MESSAGE = ("Event already processed; duplicate delivery acknowledged "
 
 @dataclass
 class IngestOutcome:
-    """Everything the route needs to answer Cortex and update the live UI."""
+    """Everything the route needs to answer the caller and update the live UI."""
     success: bool
     event_id: Optional[str] = None
     order_number: Optional[str] = None
@@ -74,6 +80,11 @@ class IngestOutcome:
     duplicate: bool = False
     error_code: Optional[str] = None
     message: str = ""
+    # Cobot/Tablette push (Machines is a list): per-machine detail for the
+    # response + every successfully associated Machine (the route publishes a
+    # live-update hint for each).
+    machines_results: Optional[list] = None
+    machines_ok: Optional[list] = None
 
     @property
     def http_status(self) -> int:
@@ -84,19 +95,23 @@ class IngestOutcome:
     def response_body(self) -> dict:
         """The stable response envelope (camelCase, mirroring the request)."""
         if self.success:
-            return {
+            body = {
                 "success": True,
                 "eventId": self.event_id,
                 "orderNumber": self.order_number,
                 "machineCode": self.machine_code,
                 "message": self.message or SUCCESS_MESSAGE,
             }
-        return {
-            "success": False,
-            "eventId": self.event_id,
-            "errorCode": self.error_code,
-            "message": self.message,
-        }
+        else:
+            body = {
+                "success": False,
+                "eventId": self.event_id,
+                "errorCode": self.error_code,
+                "message": self.message,
+            }
+        if self.machines_results is not None:
+            body["machines"] = self.machines_results
+        return body
 
 
 def _now() -> datetime:
@@ -145,9 +160,141 @@ def _parse_int_lenient(value: Any, field: str, event_id: Optional[str]) -> Optio
     return n if n >= 0 else None
 
 
+def _get_ci(d: dict, key: str) -> Any:
+    """Case-insensitive dict lookup — their C# serializer may emit camelCase or
+    PascalCase depending on configuration, accept both."""
+    if key in d:
+        return d[key]
+    lk = key.lower()
+    for k, v in d.items():
+        if isinstance(k, str) and k.lower() == lk:
+            return v
+    return None
+
+
+async def _resolve_machine(db: AsyncSession, ref: str):
+    """Machine lookup for the Cobot/Tablette push: unique code → kiosk slug →
+    machine NAME (they send « le nom de la machine dans le MES »). A name shared
+    by several machines is refused explicitly rather than guessed.
+    Returns (machine|None, error_code|None, message|None)."""
+    m = (await db.execute(select(Machine).where(Machine.code == ref))).scalar_one_or_none()
+    if m is None:
+        m = (await db.execute(select(Machine).where(Machine.page_slug == ref))).scalar_one_or_none()
+    if m is None:
+        matches = (await db.execute(select(Machine).where(Machine.name == ref))).scalars().all()
+        if len(matches) > 1:
+            return None, "MACHINE_AMBIGUOUS", (
+                f"Machine name '{ref}' matches {len(matches)} machines in the MES — "
+                "use the unique machine code instead.")
+        m = matches[0] if matches else None
+    if m is None:
+        return None, "MACHINE_NOT_FOUND", f"The machine informed was not found in the MES: '{ref}'."
+    if m.is_active is False:
+        return m, "MACHINE_INACTIVE", f"Machine '{ref}' is inactive in the MES."
+    return m, None, None
+
+
+async def process_cobot_push(db: AsyncSession, payload: dict) -> IngestOutcome:
+    """The REAL Cobot/Tablette → MES push (their existing contract, C# model:
+    Name = production/OF number · Quantity = total to produce · SkuNumber (same
+    number as the OF today) · UnitCompletionTime (raw, unit TBC) · Machines =
+    list of machine identifiers in the MES.
+
+    No eventId/timestamp on their side (fire-and-forget, no retry): idempotency
+    rests on the natural no-op of re-pushing an OF to a machine already running
+    it. `Machines` may name SEVERAL machines — the OF opens/keeps a run on each
+    one pushed, and its runs on machines OUTSIDE the pushed set close (the OF
+    moved). One audit row per machine. Flushes, never commits."""
+    order_number = _clean_str(_get_ci(payload, "name"), 100)
+    sku = _clean_str(_get_ci(payload, "skuNumber"), 100)
+    quantity = _parse_int_lenient(_get_ci(payload, "quantity"), "quantity", order_number)
+    unit_time = _parse_int_lenient(_get_ci(payload, "unitCompletionTime"),
+                                   "unitCompletionTime", order_number)
+    machines_raw = _get_ci(payload, "machines")
+
+    async def _fail(code: str, message: str) -> IngestOutcome:
+        db.add(CortexEvent(
+            event_type=COBOT_EVENT_TYPE, order_number=order_number,
+            reading_type="cobot", result="error", error_code=code,
+            error_message=message[:500], payload=payload, processed_at=_now(),
+        ))
+        await db.flush()
+        log.warning("cobot push rejected: of=%s → %s (%s)", order_number, code, message)
+        return IngestOutcome(False, None, order_number, error_code=code, message=message)
+
+    if not order_number:
+        return await _fail("INVALID_PAYLOAD", "Name (the production/OF number) is required.")
+    refs: list[str] = []
+    if isinstance(machines_raw, list):
+        refs = [s for s in ((_clean_str(x, 100) or "") for x in machines_raw) if s]
+    if not refs:
+        return await _fail("INVALID_PAYLOAD",
+                           "Machines must be a non-empty list of machine identifiers.")
+
+    resolved = [(ref, *(await _resolve_machine(db, ref))) for ref in refs]
+    keep_ids = frozenset(m.id for _, m, code, _ in resolved if code is None)
+
+    results: list[dict] = []
+    machines_ok: list[Machine] = []
+    job_order: Optional[JobOrder] = None
+    first_error: Optional[tuple] = None
+    for ref, m, code, msg in resolved:
+        if code is not None:
+            first_error = first_error or (code, msg)
+            db.add(CortexEvent(
+                event_type=COBOT_EVENT_TYPE, machine_code=ref, order_number=order_number,
+                machine_id=m.id if m else None, plant_id=m.plant_id if m else None,
+                reading_type="cobot", result="error", error_code=code,
+                error_message=(msg or "")[:500], payload=payload, processed_at=_now(),
+            ))
+            results.append({"machine": ref, "success": False, "errorCode": code})
+            log.warning("cobot push: of=%s machine '%s' → %s", order_number, ref, code)
+            continue
+        jo, _run = await scan_job_order_at_machine(
+            db, m, order_number, source=JobOrderSource.cortex,
+            target_quantity=quantity, keep_open_machine_ids=keep_ids,
+        )
+        if sku:
+            jo.product_code = sku
+        if quantity is not None:
+            jo.target_quantity = quantity
+        if unit_time is not None:
+            jo.unit_completion_time = unit_time
+        job_order = jo
+        machines_ok.append(m)
+        db.add(CortexEvent(
+            event_type=COBOT_EVENT_TYPE, machine_code=ref, order_number=order_number,
+            machine_id=m.id, plant_id=m.plant_id, job_order_id=jo.id,
+            reading_type="cobot", result="success", payload=payload, processed_at=_now(),
+        ))
+        results.append({"machine": ref, "success": True})
+
+    await db.flush()
+    if not machines_ok:
+        code, msg = first_error
+        return IngestOutcome(False, None, order_number,
+                             machine_code=refs[0] if len(refs) == 1 else None,
+                             error_code=code, message=msg or "", machines_results=results)
+    log.info("cobot push ok: of=%s on %d/%d machine(s)", order_number, len(machines_ok), len(refs))
+    return IngestOutcome(
+        True, None, order_number,
+        machine_code=refs[0] if len(refs) == 1 else None,
+        machine=machines_ok[0], job_order=job_order,
+        machines_results=results, machines_ok=machines_ok,
+        message=SUCCESS_MESSAGE if len(machines_ok) == len(refs) else
+        f"Manufacturing order associated to {len(machines_ok)} of {len(refs)} machine(s).",
+    )
+
+
 async def process_event(db: AsyncSession, payload: Any) -> IngestOutcome:
-    """Process one parsed inbound Cortex body. Flushes (audit row included) but
-    never commits; the caller commits. See the module docstring for semantics."""
+    """Process one parsed inbound body. Flushes (audit rows included) but never
+    commits; the caller commits. Two accepted shapes, auto-detected:
+
+    1. The REAL Cobot/Tablette push (has a `machines` list) → process_cobot_push.
+    2. The richer envelope we proposed (eventId + machineCode + manufacturingOrder)
+       — kept for the simulator, tests and future event types."""
+    if isinstance(payload, dict) and _get_ci(payload, "machines") is not None:
+        return await process_cobot_push(db, payload)
     raw_payload = payload if isinstance(payload, (dict, list)) else {"raw": str(payload)[:2000]}
     body = payload if isinstance(payload, dict) else {}
 

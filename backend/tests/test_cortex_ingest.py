@@ -376,6 +376,125 @@ async def test_events_for_two_machines_land_independently(s):
     assert (await get_open_run(s, m2.id)).job_order_id == out2.job_order.id
 
 
+# ─── REAL Cobot/Tablette contract (Name/Quantity/SkuNumber/UnitCompletionTime/
+# Machines list; no eventId/timestamp; camelCase OR PascalCase keys) ───────────
+
+def _cobot_payload(machines, of=None, qty=60, unit_time=95, pascal=False):
+    of = of or f"OF-{uuid.uuid4().hex[:10]}"
+    if pascal:
+        return {"Name": of, "Quantity": qty, "SkuNumber": of,
+                "UnitCompletionTime": unit_time, "Machines": machines}
+    return {"name": of, "quantity": qty, "skuNumber": of,
+            "unitCompletionTime": unit_time, "machines": machines}
+
+
+@with_session
+async def test_cobot_push_single_machine(s):
+    m = await _machine(s)
+    p = _cobot_payload([m.code])
+    out = await process_event(s, p)
+    assert out.success
+    body = out.response_body()
+    assert body["orderNumber"] == p["name"]
+    assert body["machines"] == [{"machine": m.code, "success": True}]
+    jo = out.job_order
+    assert jo.job_number == p["name"]
+    assert jo.product_code == p["skuNumber"]     # SKU = same number today
+    assert jo.target_quantity == 60
+    assert jo.unit_completion_time == 95
+    assert m.current_job_number == p["name"]
+    run = await get_open_run(s, m.id)
+    assert run is not None and run.source == JobOrderSource.cortex
+    evs = (await s.execute(select(CortexEvent).where(
+        CortexEvent.order_number == p["name"]))).scalars().all()
+    assert len(evs) == 1 and evs[0].result == "success"
+    assert evs[0].event_type == "cobot_push" and evs[0].event_id is None
+
+
+@with_session
+async def test_cobot_push_pascal_case_keys(s):
+    m = await _machine(s)
+    out = await process_event(s, _cobot_payload([m.code], pascal=True))
+    assert out.success and out.job_order.unit_completion_time == 95
+
+
+@with_session
+async def test_cobot_push_machine_by_name(s):
+    m = await _machine(s)
+    out = await process_event(s, _cobot_payload([m.name]))   # « nom de la machine dans le MES »
+    assert out.success
+    assert (await get_open_run(s, m.id)) is not None
+
+
+@with_session
+async def test_cobot_push_multi_machines_all_open(s):
+    """One push naming N machines opens the OF on ALL of them (their Machines is
+    a list); the OF's run on a machine OUTSIDE the push closes (it moved)."""
+    m1 = await _machine(s)
+    m2 = await _machine(s)
+    m3 = await _machine(s)
+    of = f"OF-{uuid.uuid4().hex[:10]}"
+    await process_event(s, _cobot_payload([m3.code], of=of))      # first lands on m3
+    out = await process_event(s, _cobot_payload([m1.code, m2.code], of=of))
+    assert out.success
+    assert (await get_open_run(s, m1.id)) is not None
+    assert (await get_open_run(s, m2.id)) is not None
+    assert (await get_open_run(s, m3.id)) is None                 # moved away → closed
+    runs = (await s.execute(select(JobOrderRun).where(
+        JobOrderRun.job_order_id == out.job_order.id))).scalars().all()
+    assert len(runs) == 3 and sum(1 for r in runs if r.ended_at is None) == 2
+
+
+@with_session
+async def test_cobot_push_partial_and_ambiguous(s):
+    """Unknown machine and ambiguous name fail per-machine; the valid one still
+    lands; response details each entry."""
+    shared = f"Presse {uuid.uuid4().hex[:6]}"
+    await _machine(s)   # noise
+    a = await _machine(s)
+    dup1 = Machine(name=shared, code=f"CTX-{uuid.uuid4().hex[:10].upper()}", department="X")
+    dup2 = Machine(name=shared, code=f"CTX-{uuid.uuid4().hex[:10].upper()}", department="X")
+    s.add_all([dup1, dup2])
+    await s.flush()
+    out = await process_event(s, _cobot_payload([a.code, "GHOST-MACHINE", shared]))
+    assert out.success                                   # ≥1 machine associated
+    by_machine = {r["machine"]: r for r in out.machines_results}
+    assert by_machine[a.code]["success"] is True
+    assert by_machine["GHOST-MACHINE"]["errorCode"] == "MACHINE_NOT_FOUND"
+    assert by_machine[shared]["errorCode"] == "MACHINE_AMBIGUOUS"
+    assert "1 of 3" in out.message
+    assert (await get_open_run(s, a.id)) is not None
+
+
+@with_session
+async def test_cobot_push_all_failed_status(s):
+    out = await process_event(s, _cobot_payload(["GHOST-A", "GHOST-B"]))
+    assert not out.success and out.error_code == "MACHINE_NOT_FOUND"
+    assert out.http_status == 404
+    assert len(out.machines_results) == 2
+
+
+@with_session
+async def test_cobot_push_missing_fields(s):
+    m = await _machine(s)
+    out = await process_event(s, {"quantity": 5, "machines": [m.code]})   # no Name
+    assert not out.success and out.error_code == "INVALID_PAYLOAD"
+    out = await process_event(s, {"name": "OF-X", "machines": []})        # empty list
+    assert not out.success and out.error_code == "INVALID_PAYLOAD"
+
+
+@with_session
+async def test_cobot_push_repeat_is_noop(s):
+    m = await _machine(s)
+    p = _cobot_payload([m.code])
+    out1 = await process_event(s, p)
+    out2 = await process_event(s, p)      # re-push, no eventId on their side
+    assert out1.success and out2.success
+    runs = (await s.execute(select(JobOrderRun).where(
+        JobOrderRun.job_order_id == out1.job_order.id))).scalars().all()
+    assert len(runs) == 1                 # natural idempotency: same OF → no churn
+
+
 # ─── Internal failure ──────────────────────────────────────────────────────────
 
 @with_session
