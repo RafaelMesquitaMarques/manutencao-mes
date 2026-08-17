@@ -1249,6 +1249,16 @@ export interface PurchaseOrderItem {
   notes:             string | null;
 }
 
+export interface POAttachment {
+  id:               string;
+  order_id:         string;
+  original_name:    string;
+  content_type:     string | null;
+  size_bytes:       number;
+  uploaded_by_name: string | null;
+  created_at:       string | null;
+}
+
 export interface PurchaseOrder {
   id:            string;
   order_number:  string;
@@ -1261,12 +1271,16 @@ export interface PurchaseOrder {
   received_date: string | null;
   total_amount:  number | null;
   currency:      string;
+  cost_center:   string | null;
+  scope:         'opex' | 'capex';
   notes:         string | null;
   created_by_id: string | null;
   created_at:    string;
   updated_at:    string | null;
   item_count:    number;
+  attachment_count?: number;
   items?:        PurchaseOrderItem[];
+  attachments?:  POAttachment[];
 }
 
 export interface SupplierDashboard {

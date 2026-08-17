@@ -5,21 +5,24 @@ Supplier management + Purchase Orders
 from __future__ import annotations
 
 import math
+import os
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, and_
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.core.security import get_current_user
 from app.core.plant_context import PlantContext, get_plant_context
 from app.core.plant_scope import ensure_same_plant, plant_condition, plant_scoped
 from app.models.models import (
-    Supplier, StockItem, PurchaseOrder, PurchaseOrderItem,
+    Supplier, StockItem, PurchaseOrder, PurchaseOrderItem, PurchaseOrderAttachment,
     InventoryMovement, User, PurchaseOrderStatus, CostCenter,
 )
 
@@ -85,6 +88,18 @@ def _poi_out(i: PurchaseOrderItem) -> dict:
     }
 
 
+def _po_attachment_out(a: PurchaseOrderAttachment) -> dict:
+    return {
+        "id":               str(a.id),
+        "order_id":         str(a.order_id),
+        "original_name":    a.original_name,
+        "content_type":     a.content_type,
+        "size_bytes":       a.size_bytes or 0,
+        "uploaded_by_name": a.uploaded_by_name,
+        "created_at":       a.created_at.isoformat() if a.created_at else None,
+    }
+
+
 def _po_out(po: PurchaseOrder, include_items: bool = False) -> dict:
     d: dict[str, Any] = {
         "id":            str(po.id),
@@ -105,9 +120,13 @@ def _po_out(po: PurchaseOrder, include_items: bool = False) -> dict:
         "created_at":    po.created_at.isoformat() if po.created_at else None,
         "updated_at":    po.updated_at.isoformat() if po.updated_at else None,
         "item_count":    len(po.items) if po.items is not None else 0,
+        "attachment_count": len(po.attachments) if po.attachments is not None else 0,
     }
     if include_items:
         d["items"] = [_poi_out(i) for i in (po.items or [])]
+        d["attachments"] = [_po_attachment_out(a) for a in sorted(
+            po.attachments or [], key=lambda a: a.created_at or datetime.min.replace(tzinfo=timezone.utc)
+        )]
     return d
 
 
@@ -363,7 +382,7 @@ async def supplier_orders(
     q = (
         select(PurchaseOrder)
         .where(PurchaseOrder.supplier_id == supplier_id)
-        .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items))
+        .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items), selectinload(PurchaseOrder.attachments))
     )
     total = (await db.execute(select(func.count()).select_from(
         select(PurchaseOrder).where(PurchaseOrder.supplier_id == supplier_id).subquery()
@@ -387,7 +406,7 @@ async def list_purchase_orders(
 ):
     # POs are PLANT-scoped (the buying plant), unlike suppliers (group pool).
     q = plant_scoped(
-        select(PurchaseOrder).options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items)),
+        select(PurchaseOrder).options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items), selectinload(PurchaseOrder.attachments)),
         PurchaseOrder, ctx,
     )
     if status:
@@ -464,7 +483,7 @@ async def create_purchase_order(
     result = await db.scalar(
         select(PurchaseOrder)
         .where(PurchaseOrder.id == po.id)
-        .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items))
+        .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items), selectinload(PurchaseOrder.attachments))
     )
     return _po_out(result, include_items=True)
 
@@ -475,7 +494,7 @@ async def _scoped_po(order_id, db: AsyncSession, ctx: PlantContext) -> PurchaseO
     po = await db.scalar(
         select(PurchaseOrder)
         .where(PurchaseOrder.id == order_id)
-        .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items))
+        .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items), selectinload(PurchaseOrder.attachments))
     )
     return ensure_same_plant(po, ctx, detail="Purchase order not found")
 
@@ -500,9 +519,28 @@ async def update_purchase_order(
 ):
     po = await _scoped_po(order_id, db, ctx)
     if po.status == PurchaseOrderStatus.received:
-        raise HTTPException(400, "Cannot edit a received order")
+        raise HTTPException(400, "po_received_locked")
     if "status" in body:
-        po.status = PurchaseOrderStatus(body["status"])
+        try:
+            new_status = PurchaseOrderStatus(body["status"])
+        except ValueError:
+            raise HTTPException(400, "po_status_invalid")
+        # Receiving books stock movements and costs — it must go through /receive.
+        if new_status == PurchaseOrderStatus.received:
+            raise HTTPException(400, "po_use_receive_endpoint")
+        po.status = new_status
+    if "supplier_id" in body:
+        new_supplier_id = uuid.UUID(body["supplier_id"])
+        if new_supplier_id != po.supplier_id:
+            if po.status != PurchaseOrderStatus.draft:
+                raise HTTPException(400, "po_supplier_change_draft_only")
+            ensure_same_plant(
+                await db.get(Supplier, new_supplier_id), ctx,
+                grouped=True, detail="Supplier not found",
+            )
+            po.supplier_id = new_supplier_id
+    if "order_date" in body and body["order_date"]:
+        po.order_date = date.fromisoformat(body["order_date"])
     if "expected_date" in body:
         po.expected_date = date.fromisoformat(body["expected_date"]) if body["expected_date"] else None
     if "cost_center" in body:
@@ -518,7 +556,7 @@ async def update_purchase_order(
     result = await db.scalar(
         select(PurchaseOrder)
         .where(PurchaseOrder.id == order_id)
-        .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items))
+        .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items), selectinload(PurchaseOrder.attachments))
     )
     return _po_out(result, include_items=True)
 
@@ -533,7 +571,7 @@ async def add_po_item(
 ):
     po = await _scoped_po(order_id, db, ctx)
     if po.status == PurchaseOrderStatus.received:
-        raise HTTPException(400, "Cannot add items to a received order")
+        raise HTTPException(400, "po_received_locked")
     qty  = float(body.get("quantity", 1))
     cost = float(body.get("unit_cost", 0))
     poi  = PurchaseOrderItem(
@@ -546,14 +584,210 @@ async def add_po_item(
         notes=body.get("notes"),
     )
     db.add(poi)
-    # Recompute order total
     await db.flush()
-    items_q = await db.execute(select(PurchaseOrderItem).where(PurchaseOrderItem.order_id == order_id))
-    all_items = items_q.scalars().all()
-    po.total_amount = round(sum(i.total_cost for i in all_items), 2)
+    po.total_amount = await _recompute_po_total(db, order_id)
     await db.commit()
     await db.refresh(poi)
     return _poi_out(poi)
+
+
+async def _recompute_po_total(db: AsyncSession, order_id) -> float:
+    items = (await db.execute(
+        select(PurchaseOrderItem).where(PurchaseOrderItem.order_id == order_id)
+    )).scalars().all()
+    return round(sum(i.total_cost or 0 for i in items), 2)
+
+
+async def _scoped_po_item(order_id, item_id, db: AsyncSession, ctx: PlantContext) -> tuple[PurchaseOrder, PurchaseOrderItem]:
+    po = await _scoped_po(order_id, db, ctx)
+    if po.status == PurchaseOrderStatus.received:
+        raise HTTPException(400, "po_received_locked")
+    poi = next((i for i in (po.items or []) if i.id == item_id), None)
+    if poi is None:
+        raise HTTPException(404, "po_item_not_found")
+    return po, poi
+
+
+@po_router.patch("/{order_id}/items/{item_id}")
+async def update_po_item(
+    order_id: uuid.UUID,
+    item_id: uuid.UUID,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    current_user: User = Depends(get_current_user),
+):
+    po, poi = await _scoped_po_item(order_id, item_id, db, ctx)
+    if "description" in body:
+        poi.description = body["description"] or ""
+    if "stock_item_id" in body:
+        poi.stock_item_id = uuid.UUID(body["stock_item_id"]) if body["stock_item_id"] else None
+    if "quantity" in body:
+        poi.quantity = float(body["quantity"])
+    if "unit_cost" in body:
+        poi.unit_cost = float(body["unit_cost"])
+    if "notes" in body:
+        poi.notes = body["notes"] or None
+    poi.total_cost = round((poi.quantity or 0) * (poi.unit_cost or 0), 4)
+    await db.flush()
+    po.total_amount = await _recompute_po_total(db, order_id)
+    await db.commit()
+    await db.refresh(poi)
+    return _poi_out(poi)
+
+
+@po_router.delete("/{order_id}/items/{item_id}", status_code=204)
+async def delete_po_item(
+    order_id: uuid.UUID,
+    item_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    current_user: User = Depends(get_current_user),
+):
+    po, poi = await _scoped_po_item(order_id, item_id, db, ctx)
+    await db.delete(poi)
+    await db.flush()
+    po.total_amount = await _recompute_po_total(db, order_id)
+    await db.commit()
+
+
+# ─── PO ATTACHMENTS (quotes / estimates / invoices) ──────────────────────────
+
+_PO_ATTACHMENT_EXT = {
+    ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic",
+    ".doc", ".docx", ".xls", ".xlsx", ".csv", ".txt",
+    ".ppt", ".pptx", ".eml", ".msg",
+}
+_ATTACH_SUBDIR = "po_attachments"
+_ATTACH_CHUNK = 1024 * 1024  # 1 MB
+
+
+def _attachment_path(stored_name: str) -> str:
+    return os.path.join(settings.UPLOAD_DIR, _ATTACH_SUBDIR, stored_name)
+
+
+async def _scoped_attachment(order_id, attachment_id, db: AsyncSession, ctx: PlantContext) -> PurchaseOrderAttachment:
+    await _scoped_po(order_id, db, ctx)   # 404 outside the caller's plant
+    att = (await db.execute(
+        select(PurchaseOrderAttachment).where(
+            PurchaseOrderAttachment.id == attachment_id,
+            PurchaseOrderAttachment.order_id == order_id,
+        )
+    )).scalar_one_or_none()
+    if att is None:
+        raise HTTPException(404, "po_attachment_not_found")
+    return att
+
+
+@po_router.get("/{order_id}/attachments")
+async def list_po_attachments(
+    order_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    current_user: User = Depends(get_current_user),
+):
+    await _scoped_po(order_id, db, ctx)
+    rows = (await db.execute(
+        select(PurchaseOrderAttachment)
+        .where(PurchaseOrderAttachment.order_id == order_id)
+        .order_by(PurchaseOrderAttachment.created_at)
+    )).scalars().all()
+    return [_po_attachment_out(a) for a in rows]
+
+
+@po_router.post("/{order_id}/attachments", status_code=201)
+async def upload_po_attachment(
+    order_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    current_user: User = Depends(get_current_user),
+):
+    """Attach a quote / estimate / invoice to the order. Allowed in any status —
+    quotes arrive before confirmation, invoices after receipt. Files are stored
+    under UPLOAD_DIR/po_attachments and downloaded through the authenticated
+    /download endpoint (NOT the public /api/media mount)."""
+    await _scoped_po(order_id, db, ctx)
+
+    original = os.path.basename(file.filename or "").strip() or "document"
+    ext = os.path.splitext(original)[1].lower()
+    if ext not in _PO_ATTACHMENT_EXT:
+        raise HTTPException(400, "po_attachment_type_not_allowed")
+
+    os.makedirs(os.path.join(settings.UPLOAD_DIR, _ATTACH_SUBDIR), exist_ok=True)
+    stored = f"{uuid.uuid4().hex}{ext}"
+    dest = _attachment_path(stored)
+    max_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
+
+    size = 0
+    try:
+        with open(dest, "wb") as out:
+            while True:
+                chunk = await file.read(_ATTACH_CHUNK)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_bytes:
+                    raise HTTPException(413, "po_attachment_too_large")
+                out.write(chunk)
+    except HTTPException:
+        if os.path.exists(dest):
+            os.remove(dest)
+        raise
+    finally:
+        await file.close()
+
+    att = PurchaseOrderAttachment(
+        order_id=order_id,
+        stored_name=stored,
+        original_name=original[:300],
+        content_type=(file.content_type or None),
+        size_bytes=size,
+        uploaded_by_id=current_user.id,
+        uploaded_by_name=current_user.name,
+    )
+    db.add(att)
+    await db.commit()
+    await db.refresh(att)
+    return _po_attachment_out(att)
+
+
+@po_router.get("/{order_id}/attachments/{attachment_id}/download")
+async def download_po_attachment(
+    order_id: uuid.UUID,
+    attachment_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    current_user: User = Depends(get_current_user),
+):
+    att = await _scoped_attachment(order_id, attachment_id, db, ctx)
+    path = _attachment_path(att.stored_name)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "po_attachment_file_missing")
+    return FileResponse(
+        path,
+        media_type=att.content_type or "application/octet-stream",
+        filename=att.original_name,
+    )
+
+
+@po_router.delete("/{order_id}/attachments/{attachment_id}", status_code=204)
+async def delete_po_attachment(
+    order_id: uuid.UUID,
+    attachment_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+    current_user: User = Depends(get_current_user),
+):
+    att = await _scoped_attachment(order_id, attachment_id, db, ctx)
+    path = _attachment_path(att.stored_name)
+    await db.delete(att)
+    await db.commit()
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass   # row is gone; an orphaned file is harmless
 
 
 @po_router.patch("/{order_id}/receive")
@@ -627,7 +861,7 @@ async def receive_purchase_order(
     result = await db.scalar(
         select(PurchaseOrder)
         .where(PurchaseOrder.id == order_id)
-        .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items))
+        .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items), selectinload(PurchaseOrder.attachments))
     )
     return _po_out(result, include_items=True)
 
@@ -838,7 +1072,7 @@ async def replenishment_generate(
     result = (await db.execute(
         select(PurchaseOrder)
         .where(PurchaseOrder.id.in_(created_pos))
-        .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items))
+        .options(selectinload(PurchaseOrder.supplier), selectinload(PurchaseOrder.items), selectinload(PurchaseOrder.attachments))
         .order_by(PurchaseOrder.order_number)
     )).scalars().all()
 

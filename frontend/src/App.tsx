@@ -48,6 +48,7 @@ const SupplierDetail = lazy(() => import('./pages/Suppliers/SupplierDetail'));
 const NewSupplier = lazy(() => import('./pages/Suppliers/NewSupplier'));
 const PurchaseOrderList = lazy(() => import('./pages/PurchaseOrders/PurchaseOrderList'));
 const NewPurchaseOrder = lazy(() => import('./pages/PurchaseOrders/NewPurchaseOrder'));
+const PurchaseOrderDetail = lazy(() => import('./pages/PurchaseOrders/PurchaseOrderDetail'));
 const MaintenanceDashboard = lazy(() => import('./pages/MaintenanceDashboard/MaintenanceDashboard'));
 const MachinePage = lazy(() => import('./pages/Machines/MachinePage'));
 const FactoryMap = lazy(() => import('./pages/FactoryMap/FactoryMap'));
@@ -183,7 +184,8 @@ const App = () => {
         <Route path="suppliers/new"        element={<NewSupplier />} />
         <Route path="suppliers/:id"        element={<SupplierDetail />} />
         <Route path="supplier-orders"      element={<RequireView resource="purchase_orders"><PurchaseOrderList /></RequireView>} />
-        <Route path="supplier-orders/new"  element={<NewPurchaseOrder />} />
+        <Route path="supplier-orders/new"  element={<RequireView resource="purchase_orders"><NewPurchaseOrder /></RequireView>} />
+        <Route path="supplier-orders/:id"  element={<RequireView resource="purchase_orders"><PurchaseOrderDetail /></RequireView>} />
         <Route path="maintenance/dashboard"      element={<RequireView resource="maintenance"><MaintenanceDashboard /></RequireView>} />
         <Route path="maintenance/supervisor"     element={<Navigate to="/gestion-bt?tab=bt" replace />} />
         <Route path="factory-map"                element={<RequireView resource="factory_map"><FactoryMap /></RequireView>} />

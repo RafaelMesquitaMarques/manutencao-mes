@@ -2117,9 +2117,10 @@ class PurchaseOrder(Base):
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
     updated_at    = Column(DateTime(timezone=True), onupdate=func.now())
 
-    supplier   = relationship("Supplier", back_populates="purchase_orders")
-    created_by = relationship("User", foreign_keys=[created_by_id])
-    items      = relationship("PurchaseOrderItem", back_populates="order", cascade="all, delete-orphan")
+    supplier    = relationship("Supplier", back_populates="purchase_orders")
+    created_by  = relationship("User", foreign_keys=[created_by_id])
+    items       = relationship("PurchaseOrderItem", back_populates="order", cascade="all, delete-orphan")
+    attachments = relationship("PurchaseOrderAttachment", back_populates="order", cascade="all, delete-orphan")
 
 
 class PurchaseOrderItem(Base):
@@ -2138,6 +2139,25 @@ class PurchaseOrderItem(Base):
 
     order      = relationship("PurchaseOrder", back_populates="items")
     stock_item = relationship("StockItem")
+
+
+class PurchaseOrderAttachment(Base):
+    """Quote / estimate / invoice documents attached to a purchase order.
+    Files live on disk under UPLOAD_DIR/po_attachments (uploads_data volume);
+    downloads go through an authenticated endpoint that restores original_name."""
+    __tablename__ = "purchase_order_attachments"
+
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id         = Column(UUID(as_uuid=True), ForeignKey("purchase_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    stored_name      = Column(String(300), nullable=False)   # uuid-based name on disk
+    original_name    = Column(String(300), nullable=False)   # shown in UI / download filename
+    content_type     = Column(String(150), nullable=True)
+    size_bytes       = Column(Integer, nullable=False, default=0)
+    uploaded_by_id   = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    uploaded_by_name = Column(String(200), nullable=True)    # denormalized for display
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
+
+    order = relationship("PurchaseOrder", back_populates="attachments")
 
 
 # ─── Inventory Movements ───────────────────────────────────────────────────────

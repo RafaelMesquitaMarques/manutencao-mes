@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, RefreshCw, Package, Zap, AlertTriangle } from 'lucide-react';
+import { Plus, RefreshCw, Package, Paperclip, Zap, AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   fetchPurchaseOrders, fetchPurchaseOrder, fetchSupplierList, receivePurchaseOrder,
@@ -118,15 +118,15 @@ export default function PurchaseOrderList() {
       <div className="flex items-center gap-3 px-6 py-3 border-b border-gray-800 flex-wrap">
         <select value={filters.status} onChange={e => set('status', e.target.value)} className={selectCls}>
           <option value="">{t('purchaseOrders.allStatuses', 'All statuses')}</option>
-          {ALL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+          {ALL_STATUSES.map(s => <option key={s} value={s}>{t(`poStatus.${s}`, s)}</option>)}
         </select>
         <select value={filters.supplier_id} onChange={e => set('supplier_id', e.target.value)} className={selectCls}>
           <option value="">{t('suppliers.allSuppliers', 'All suppliers')}</option>
           {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
         </select>
-        <input type="date" value={filters.date_from} onChange={e => set('date_from', e.target.value)} className={inputCls} title="From date" />
+        <input type="date" value={filters.date_from} onChange={e => set('date_from', e.target.value)} className={inputCls} title={t('purchaseOrders.fromDate', 'From date')} />
         <span className="text-gray-600 text-sm">→</span>
-        <input type="date" value={filters.date_to} onChange={e => set('date_to', e.target.value)} className={inputCls} title="To date" />
+        <input type="date" value={filters.date_to} onChange={e => set('date_to', e.target.value)} className={inputCls} title={t('purchaseOrders.toDate', 'To date')} />
         <button onClick={() => setFilters({ status: '', supplier_id: '', date_from: '', date_to: '' })} className="text-xs text-gray-500 hover:text-gray-300 px-2 py-2">
           {t('common.clearFilters', 'Clear')}
         </button>
@@ -162,6 +162,11 @@ export default function PurchaseOrderList() {
                     <button onClick={() => navigate(`/supplier-orders/${po.id}`)} className="font-mono text-xs text-blue-300 hover:text-blue-200 hover:underline">
                       {po.order_number}
                     </button>
+                    {(po.attachment_count ?? 0) > 0 && (
+                      <span className="inline-flex items-center gap-0.5 ml-2 text-[10px] text-gray-500 align-middle" title={t('purchaseOrders.attachments')}>
+                        <Paperclip size={10} /> {po.attachment_count}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <div className="text-gray-200 text-sm">{po.supplier_name || '—'}</div>
@@ -169,7 +174,7 @@ export default function PurchaseOrderList() {
                   </td>
                   <td className="px-4 py-3 text-center">
                     <span className={`px-2.5 py-0.5 rounded border text-xs font-medium ${STATUS_STYLE[po.status] ?? STATUS_STYLE.draft}`}>
-                      {po.status}
+                      {t(`poStatus.${po.status}`, po.status)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-gray-400 text-xs">{po.order_date}</td>
@@ -222,10 +227,12 @@ export default function PurchaseOrderList() {
                   <div key={item.id} className="flex items-center gap-3 bg-gray-800/50 rounded-lg p-3">
                     <div className="flex-1 min-w-0">
                       <p className="text-sm text-gray-200 truncate">{item.description}</p>
-                      <p className="text-xs text-gray-500">Ordered: {item.quantity} | Already received: {item.received_quantity}</p>
+                      <p className="text-xs text-gray-500">
+                        {t('purchaseOrders.orderedQty', 'Ordered')}: {item.quantity} · {t('purchaseOrders.receivedQty', 'Received')}: {item.received_quantity}
+                      </p>
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <label className="text-xs text-gray-500">Qty:</label>
+                      <label className="text-xs text-gray-500">{t('purchaseOrders.qty', 'Qty')}:</label>
                       <input
                         type="number"
                         min="0"

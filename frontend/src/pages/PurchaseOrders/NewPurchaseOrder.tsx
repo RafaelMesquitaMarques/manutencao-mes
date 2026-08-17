@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Plus, Trash2, Save } from 'lucide-react';
+import { ArrowLeft, Paperclip, Plus, Trash2, Save } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { createPurchaseOrder, fetchSupplierList, fetchPOCostCenters, type POCostCenter } from '../../api/suppliers';
+import { createPurchaseOrder, uploadPOAttachment, fetchSupplierList, fetchPOCostCenters, type POCostCenter } from '../../api/suppliers';
 import { fetchStockItems } from '../../api/inventory';
 import type { Supplier, StockItem } from '../../types';
+import { PO_ATTACHMENT_ACCEPT, formatBytes, FileTypeIcon } from './attachmentUtils';
 
 const inputCls  = 'w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500';
 const selectCls = 'w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500';
@@ -57,6 +58,9 @@ export default function NewPurchaseOrder() {
   });
   const [costCenters, setCostCenters] = useState<POCostCenter[]>([]);
   const [lines, setLines] = useState<LineItem[]>([newLine()]);
+  const [files, setFiles] = useState<File[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     Promise.all([
@@ -117,11 +121,32 @@ export default function NewPurchaseOrder() {
             notes:         l.notes || undefined,
           })),
       });
+      // Upload staged quote/estimate documents to the freshly created PO
+      if (files.length > 0) {
+        let failed = 0;
+        for (let i = 0; i < files.length; i++) {
+          setUploadProgress({ done: i, total: files.length });
+          try {
+            await uploadPOAttachment(po.id, files[i]);
+          } catch {
+            failed++;
+          }
+        }
+        setUploadProgress(null);
+        if (failed > 0) window.alert(t('purchaseOrders.attachmentUploadFailed'));
+      }
       navigate(`/supplier-orders/${po.id}`);
     } finally {
       setSaving(false);
     }
   };
+
+  const addFiles = (list: FileList | null) => {
+    if (!list) return;
+    setFiles(fs => [...fs, ...Array.from(list)]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+  const removeFile = (idx: number) => setFiles(fs => fs.filter((_, i) => i !== idx));
 
   // Pre-select supplier if passed via query params
   const preItemId = searchParams.get('item_id');
@@ -171,7 +196,7 @@ export default function NewPurchaseOrder() {
               </FormField>
               <FormField label={t('purchaseOrders.status', 'Initial status')}>
                 <select value={form.status} onChange={e => setF('status', e.target.value)} className={selectCls}>
-                  {ALL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                  {ALL_STATUSES.map(s => <option key={s} value={s}>{t(`poStatus.${s}`, s)}</option>)}
                 </select>
               </FormField>
             </div>
@@ -194,7 +219,7 @@ export default function NewPurchaseOrder() {
                 </select>
               </FormField>
               <FormField label={t('common.notes', 'Notes')}>
-                <input value={form.notes} onChange={e => setF('notes', e.target.value)} placeholder="Internal notes…" className={inputCls} />
+                <input value={form.notes} onChange={e => setF('notes', e.target.value)} placeholder={t('purchaseOrders.notesPlaceholder', 'Internal notes…')} className={inputCls} />
               </FormField>
             </div>
           </div>
@@ -226,7 +251,7 @@ export default function NewPurchaseOrder() {
                       onChange={e => updateLine(line._key, 'stock_item_id', e.target.value)}
                       className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-blue-500"
                     >
-                      <option value="">— Optional —</option>
+                      <option value="">— {t('purchaseOrders.optionalStockItem', 'Stock item (optional)')} —</option>
                       {stockItems.map(s => <option key={s.id} value={s.id}>{s.code} — {(s.description || s.name || '').slice(0, 30)}</option>)}
                     </select>
                   </div>
@@ -235,7 +260,7 @@ export default function NewPurchaseOrder() {
                       required
                       value={line.description}
                       onChange={e => updateLine(line._key, 'description', e.target.value)}
-                      placeholder="Description *"
+                      placeholder={`${t('common.description', 'Description')} *`}
                       className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-blue-500"
                     />
                   </div>
@@ -276,12 +301,60 @@ export default function NewPurchaseOrder() {
             </div>
           </div>
 
+          {/* Attachments — quotes / estimates staged locally, uploaded after create */}
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+                <Paperclip size={14} className="text-gray-500" />
+                {t('purchaseOrders.attachments')}
+                {files.length > 0 && <span className="text-xs text-gray-500 font-normal">({files.length})</span>}
+              </h2>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-blue-300 bg-blue-900/30 border border-blue-800 hover:bg-blue-900/50 rounded-lg"
+              >
+                <Plus size={12} /> {t('purchaseOrders.addFiles')}
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mb-4">{t('purchaseOrders.attachmentsHint')}</p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept={PO_ATTACHMENT_ACCEPT}
+              className="hidden"
+              onChange={e => addFiles(e.target.files)}
+            />
+            {files.length === 0 ? (
+              <p className="text-sm text-gray-600 text-center py-4">{t('purchaseOrders.noAttachments')}</p>
+            ) : (
+              <div className="space-y-1.5">
+                {files.map((f, idx) => (
+                  <div key={`${f.name}-${idx}`} className="flex items-center gap-3 bg-gray-800/30 border border-gray-700/50 rounded-lg px-3 py-2">
+                    <FileTypeIcon name={f.name} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-gray-200 truncate" title={f.name}>{f.name}</p>
+                      <p className="text-[11px] text-gray-500">{formatBytes(f.size)}</p>
+                    </div>
+                    <button type="button" onClick={() => removeFile(idx)} className="p-1.5 text-gray-600 hover:text-red-400 hover:bg-gray-800 rounded">
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="flex justify-end gap-3 pb-4">
             <button type="button" onClick={() => navigate('/supplier-orders')} className="px-4 py-2 text-sm text-gray-300 bg-gray-800 border border-gray-700 hover:bg-gray-700 rounded-lg">
               {t('common.cancel')}
             </button>
             <button type="submit" disabled={saving || !form.supplier_id} className="flex items-center gap-2 px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded-lg disabled:opacity-50">
-              <Save size={14} /> {saving ? t('common.saving', 'Saving…') : t('purchaseOrders.createOrder', 'Create Order')}
+              <Save size={14} />
+              {uploadProgress
+                ? t('purchaseOrders.uploading', { done: uploadProgress.done + 1, total: uploadProgress.total })
+                : saving ? t('common.saving', 'Saving…') : t('purchaseOrders.createOrder', 'Create Order')}
             </button>
           </div>
         </form>

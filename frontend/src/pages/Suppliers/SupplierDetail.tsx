@@ -306,11 +306,11 @@ export default function SupplierDetail() {
                 <thead>
                   <tr className="border-b border-gray-800 text-xs text-gray-500 uppercase tracking-wider">
                     <th className="px-3 py-3 text-left">PO #</th>
-                    <th className="px-3 py-3 text-left">Date</th>
-                    <th className="px-3 py-3 text-center">Status</th>
-                    <th className="px-3 py-3 text-center">Items</th>
-                    <th className="px-3 py-3 text-right">Total</th>
-                    <th className="px-3 py-3 text-left">Expected</th>
+                    <th className="px-3 py-3 text-left">{t('common.date', 'Date')}</th>
+                    <th className="px-3 py-3 text-center">{t('purchaseOrders.status', 'Status')}</th>
+                    <th className="px-3 py-3 text-center">{t('purchaseOrders.items', 'Items')}</th>
+                    <th className="px-3 py-3 text-right">{t('purchaseOrders.total', 'Total')}</th>
+                    <th className="px-3 py-3 text-left">{t('purchaseOrders.expectedDate', 'Expected')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -319,7 +319,7 @@ export default function SupplierDetail() {
                       <td className="px-3 py-2.5 font-mono text-xs text-blue-300">{po.order_number}</td>
                       <td className="px-3 py-2.5 text-gray-400 text-xs">{po.order_date}</td>
                       <td className="px-3 py-2.5 text-center">
-                        <span className={`px-2 py-0.5 rounded border text-xs font-medium ${PO_STATUS_STYLE[po.status] ?? 'bg-gray-800 text-gray-300 border-gray-600'}`}>{po.status}</span>
+                        <span className={`px-2 py-0.5 rounded border text-xs font-medium ${PO_STATUS_STYLE[po.status] ?? 'bg-gray-800 text-gray-300 border-gray-600'}`}>{t(`poStatus.${po.status}`, po.status)}</span>
                       </td>
                       <td className="px-3 py-2.5 text-center text-gray-400">{po.item_count}</td>
                       <td className="px-3 py-2.5 text-right text-gray-200 font-mono text-xs">{po.total_amount != null ? `$${po.total_amount.toFixed(2)}` : '—'}</td>

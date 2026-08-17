@@ -1,5 +1,5 @@
 import api from './axios';
-import type { Supplier, SupplierDashboard, PurchaseOrder, PurchaseOrderItem, StockItem } from '../types';
+import type { Supplier, SupplierDashboard, PurchaseOrder, PurchaseOrderItem, POAttachment, StockItem } from '../types';
 
 // ── Suppliers ────────────────────────────────────────────────────────────────
 
@@ -122,9 +122,62 @@ export async function addPOItem(orderId: string, item: {
   return data;
 }
 
+export async function updatePOItem(orderId: string, itemId: string, body: {
+  stock_item_id?: string | null;
+  description?: string;
+  quantity?: number;
+  unit_cost?: number;
+  notes?: string | null;
+}): Promise<PurchaseOrderItem> {
+  const { data } = await api.patch(`/api/supplier-orders/${orderId}/items/${itemId}`, body);
+  return data;
+}
+
+export async function deletePOItem(orderId: string, itemId: string): Promise<void> {
+  await api.delete(`/api/supplier-orders/${orderId}/items/${itemId}`);
+}
+
 export async function receivePurchaseOrder(orderId: string, items: { id: string; received_quantity: number }[]): Promise<PurchaseOrder> {
   const { data } = await api.patch(`/api/supplier-orders/${orderId}/receive`, { items });
   return data;
+}
+
+// ── PO attachments (quotes / estimates / invoices) ───────────────────────────
+
+export async function fetchPOAttachments(orderId: string): Promise<POAttachment[]> {
+  const { data } = await api.get(`/api/supplier-orders/${orderId}/attachments`);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function uploadPOAttachment(orderId: string, file: File): Promise<POAttachment> {
+  const fd = new FormData();
+  fd.append('file', file);
+  // The api instance defaults Content-Type to application/json; multipart must
+  // be explicit so the browser sets the boundary (same pattern as api/uploads.ts).
+  const { data } = await api.post(`/api/supplier-orders/${orderId}/attachments`, fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data;
+}
+
+export async function deletePOAttachment(orderId: string, attachmentId: string): Promise<void> {
+  await api.delete(`/api/supplier-orders/${orderId}/attachments/${attachmentId}`);
+}
+
+/** Download through the authenticated endpoint, restoring the original filename. */
+export async function downloadPOAttachment(orderId: string, attachment: Pick<POAttachment, 'id' | 'original_name'>): Promise<void> {
+  const { data } = await api.get(
+    `/api/supplier-orders/${orderId}/attachments/${attachment.id}/download`,
+    { responseType: 'blob' },
+  );
+  const url = URL.createObjectURL(data);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = attachment.original_name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // ── Auto-replenishment ───────────────────────────────────────────────────────
