@@ -1,0 +1,53 @@
+/* Holographic orb for the Ask Ninja voice-conversation mode. All motion is
+   CSS-driven; the state class (listening/thinking/speaking) retunes it. */
+
+@keyframes vorb-spin { to { transform: rotate(360deg); } }
+@keyframes vorb-spin-rev { to { transform: rotate(-360deg); } }
+@keyframes vorb-breathe {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.04); opacity: 1; }
+}
+@keyframes vorb-sonar {
+  0% { transform: scale(0.96); opacity: 0.7; }
+  100% { transform: scale(1.25); opacity: 0; }
+}
+@keyframes vorb-talk {
+  0%, 100% { transform: scale(1); }
+  30% { transform: scale(1.07); }
+  60% { transform: scale(0.98); }
+}
+
+.vorb { position: relative; width: 132px; height: 132px; }
+.vorb svg { display: block; overflow: visible; }
+
+.vorb-r1, .vorb-r2, .vorb-r3, .vorb-core, .vorb-pulse {
+  transform-origin: 66px 66px;
+}
+.vorb-r1 { animation: vorb-spin 26s linear infinite; }
+.vorb-r2 { animation: vorb-spin-rev 14s linear infinite; }
+.vorb-r3 { animation: vorb-spin 60s linear infinite; }
+.vorb-core { animation: vorb-breathe 3.2s ease-in-out infinite; mix-blend-mode: screen; }
+.vorb-pulse { opacity: 0; }
+
+/* Listening — emerald sonar ring expanding from the core. */
+.vorb-listening .vorb-pulse {
+  stroke: #34d399;
+  animation: vorb-sonar 1.9s ease-out infinite;
+}
+.vorb-listening .vorb-core { animation-duration: 2.4s; }
+
+/* Thinking — rings spin up, core dims slightly. */
+.vorb-thinking .vorb-r2 { animation-duration: 3.5s; }
+.vorb-thinking .vorb-r1 { animation-duration: 8s; }
+.vorb-thinking .vorb-core { opacity: 0.8; }
+
+/* Speaking — the core "talks" and the pulse ring beats cyan. */
+.vorb-speaking .vorb-core { animation: vorb-talk 0.9s ease-in-out infinite; }
+.vorb-speaking .vorb-pulse {
+  stroke: #22d3ee;
+  animation: vorb-sonar 1.1s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vorb-r1, .vorb-r2, .vorb-r3, .vorb-core, .vorb-pulse { animation: none; }
+}

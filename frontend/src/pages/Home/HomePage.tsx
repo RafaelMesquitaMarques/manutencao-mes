@@ -21,6 +21,8 @@ import Badge from '../../components/ui/Badge';
 import FactoryPreview from './FactoryPreview';
 import NeuralHud, { type HudNode, type HudTone } from './NeuralHud';
 import HeroWorldMap from './HeroWorldMap';
+import AskNinjaChat from '../../components/AskNinja/AskNinjaChat';
+import { useWakeWord } from '../../hooks/useWakeWord';
 
 // ─── Metric accents (kept on StatDef so the HUD node source stays typed) ────────
 type Accent = 'blue' | 'amber' | 'red' | 'green' | 'indigo' | 'cyan' | 'emerald' | 'purple' | 'orange';
@@ -91,6 +93,41 @@ const HomePage = () => {
   const [equip, setEquip] = useState<Equipment[] | null>(null);
   const [recentWOs, setRecentWOs] = useState<WorkOrder[]>([]);
   const [insights, setInsights] = useState<HomeInsight[] | null>(null);
+  // Jarvis mode — clicking the ninja core opens the Ask Ninja overlay right
+  // here, ON TOP of the hologram (which hides): one ninja on screen at a time.
+  const [askOpen, setAskOpen] = useState(false);
+  const askLang = (i18n.language || 'en').split('-')[0];
+
+  // "Hey Ninja" wake word: hands-free open + auto-dictation. Paused while the
+  // panel is open so it never fights the chat's own dictation mic.
+  const [wakeEnabled, setWakeEnabled] = useState(() => localStorage.getItem('kaizo_hey_ninja') === '1');
+  const [wokeByVoice, setWokeByVoice] = useState(false);
+  const onWake = useCallback(() => {
+    setWokeByVoice(true);
+    setAskOpen(true);
+  }, []);
+  const wake = useWakeWord(wakeEnabled && !askOpen && can('intelligence'), askLang, onWake);
+  const toggleWake = useCallback(() => {
+    if (wakeEnabled) {
+      localStorage.setItem('kaizo_hey_ninja', '0');
+      setWakeEnabled(false);
+      return;
+    }
+    // Turning ON: request the mic NOW, inside the click (user gesture) — a
+    // recognizer auto-started on page load asks without a gesture and Chrome
+    // quietly denies it, which is exactly "no mic icon, nothing happens".
+    const arm = () => {
+      localStorage.setItem('kaizo_hey_ninja', '1');
+      setWakeEnabled(true); // if denied, the hook surfaces the blocked chip
+    };
+    if (navigator.mediaDevices?.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then((stream) => { stream.getTracks().forEach((t) => t.stop()); arm(); })
+        .catch(arm);
+    } else {
+      arm();
+    }
+  }, [wakeEnabled]);
 
   // Only hit endpoints the user is allowed to read — keeps the page 403-free and
   // tailors the cards to each role (an operator sees far less than a manager).
@@ -245,12 +282,49 @@ const HomePage = () => {
           </div>
         </div>
         <div className="hidden xl:flex absolute inset-y-0 left-[20%] right-[24%] z-10 items-center justify-center pointer-events-none">
-          <div className="w-[460px]">
-            <NeuralHud
-              nodes={hudNodes}
-              coreTo={can('intelligence') ? '/intelligence' : undefined}
-              coreHint={t('hud.askNinja')}
-            />
+          <div className="relative w-[460px]">
+            {/* A core click is always a deliberate manual action — it also
+                clears the voice-entry flag so a later open never auto-starts
+                the mic. The hologram hides while the overlay covers it
+                (visibility also kills its labels' click targets); inline style
+                on purpose — utility opacity/visibility froze mid-transition in
+                the preview pane's suspended animation timeline. */}
+            <div
+              className="transition-opacity duration-300"
+              style={askOpen ? { opacity: 0, visibility: 'hidden' } : undefined}
+            >
+              <NeuralHud
+                nodes={hudNodes}
+                onCoreClick={can('intelligence') ? () => { setAskOpen((o) => !o); setWokeByVoice(false); } : undefined}
+                coreHint={t('hud.askNinja')}
+                coreActive={askOpen}
+              />
+            </div>
+            {can('intelligence') && askOpen && (
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[440px] z-40 pointer-events-auto animate-fade-in">
+                <AskNinjaChat
+                  variant="hud"
+                  language={askLang}
+                  onClose={() => { setAskOpen(false); setWokeByVoice(false); }}
+                  autoFocus={!wokeByVoice}
+                  autoVoice={wokeByVoice}
+                  wakeEnabled={wakeEnabled}
+                  onToggleWake={wake.supported ? toggleWake : undefined}
+                />
+              </div>
+            )}
+            {can('intelligence') && wakeEnabled && !askOpen && (
+              <div className={`absolute top-full left-1/2 -translate-x-1/2 mt-1 pointer-events-none flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-widest whitespace-nowrap ${
+                wake.blocked ? 'text-red-400/90' : 'text-cyan-400/70'
+              }`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${
+                  wake.blocked ? 'bg-red-400' : wake.listening ? 'bg-emerald-400 animate-pulse' : 'bg-gray-500'
+                }`} />
+                {wake.blocked === 'permission' ? t('hud.micBlocked')
+                  : wake.blocked === 'insecure' ? t('hud.needsHttps')
+                  : t('hud.wakeStandby')}
+              </div>
+            )}
           </div>
         </div>
       </div>

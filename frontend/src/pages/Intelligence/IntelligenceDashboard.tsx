@@ -1,18 +1,20 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Sparkles, RefreshCw, AlertTriangle, Package, CheckCircle2,
-  ClipboardCheck, Clock, ChevronDown, Cpu, Lightbulb, Send, Loader2,
+  ClipboardCheck, Clock, ChevronDown, Cpu, Lightbulb,
 } from 'lucide-react';
 import {
   fetchLatestInsight, generateInsight, fetchRiskScores, fetchSparePartsRisk,
-  acknowledgeRecommendation, askIntelligence, type ChatMessage,
+  acknowledgeRecommendation,
 } from '../../api/intelligence';
 import { useAuthStore } from '../../store/authStore';
 import type {
   AIInsight, MachineRiskScore, SparePartRiskItem, IntelRiskLevel, InsightType,
 } from '../../types';
 import Spinner from '../../components/ui/Spinner';
+import AskNinjaChat from '../../components/AskNinja/AskNinjaChat';
+import Markdown from '../../components/ui/MiniMarkdown';
 
 const RISK_STYLE: Record<IntelRiskLevel, { bg: string; text: string; border: string; dot: string }> = {
   critical: { bg: 'bg-red-500/10',    text: 'text-red-400',    border: 'border-red-500/30',    dot: 'bg-red-500' },
@@ -28,46 +30,6 @@ const INSIGHT_TYPES: InsightType[] = [
 
 const PERIODS = [7, 30, 90];
 
-/** Minimal markdown renderer for the AI insight text (##/###, **bold**, - lists). */
-function Markdown({ text }: { text: string }) {
-  const blocks = useMemo(() => {
-    const lines = text.split('\n');
-    const out: React.ReactNode[] = [];
-    let list: string[] = [];
-    const flushList = (key: string) => {
-      if (list.length) {
-        out.push(
-          <ul key={key} className="list-disc pl-5 space-y-1 my-2 text-gray-300 text-sm">
-            {list.map((li, i) => <li key={i}>{inline(li)}</li>)}
-          </ul>,
-        );
-        list = [];
-      }
-    };
-    const inline = (s: string): React.ReactNode => {
-      // **bold** segments
-      const parts = s.split(/(\*\*[^*]+\*\*)/g);
-      return parts.map((p, i) =>
-        p.startsWith('**') && p.endsWith('**')
-          ? <strong key={i} className="text-white font-semibold">{p.slice(2, -2)}</strong>
-          : <span key={i}>{p}</span>,
-      );
-    };
-    lines.forEach((raw, idx) => {
-      const line = raw.trimEnd();
-      if (/^###\s+/.test(line)) { flushList(`l${idx}`); out.push(<h4 key={idx} className="text-sm font-semibold text-gray-200 mt-4 mb-1">{inline(line.replace(/^###\s+/, ''))}</h4>); }
-      else if (/^##\s+/.test(line)) { flushList(`l${idx}`); out.push(<h3 key={idx} className="text-base font-bold text-white mt-5 mb-2 flex items-center gap-2"><span className="w-1 h-4 bg-blue-500 rounded-full" />{inline(line.replace(/^##\s+/, ''))}</h3>); }
-      else if (/^#\s+/.test(line)) { flushList(`l${idx}`); out.push(<h2 key={idx} className="text-lg font-bold text-white mb-2">{inline(line.replace(/^#\s+/, ''))}</h2>); }
-      else if (/^[-*]\s+/.test(line)) { list.push(line.replace(/^[-*]\s+/, '')); }
-      else if (line === '' || line === '---') { flushList(`l${idx}`); }
-      else { flushList(`l${idx}`); out.push(<p key={idx} className="text-sm text-gray-300 leading-relaxed my-1.5">{inline(line)}</p>); }
-    });
-    flushList('last');
-    return out;
-  }, [text]);
-  return <div className="max-w-none">{blocks}</div>;
-}
-
 function RiskBadge({ level }: { level: IntelRiskLevel }) {
   const s = RISK_STYLE[level];
   return (
@@ -75,121 +37,6 @@ function RiskBadge({ level }: { level: IntelRiskLevel }) {
       <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
       {level}
     </span>
-  );
-}
-
-/** Conversational Q&A over the platform's live data (tool-use agent). */
-function IntelligenceChat({ language }: { language: string }) {
-  const { t } = useTranslation();
-  // Suggested prompts — translated, so they follow the platform language.
-  const exampleQs = [
-    t('intelligence.example1', 'Compare IMA 04 with IMA 05'),
-    t('intelligence.example2', 'Which machine broke down the most in the last 7 days?'),
-    t('intelligence.example3', 'Which machine has the best availability rate?'),
-  ];
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, busy]);
-
-  const send = async (text: string) => {
-    const q = text.trim();
-    if (!q || busy) return;
-    setError(null);
-    const next: ChatMessage[] = [...messages, { role: 'user', content: q }];
-    setMessages(next);
-    setInput('');
-    setBusy(true);
-    try {
-      const res = await askIntelligence(next, language);
-      setMessages((m) => [...m, { role: 'assistant', content: res.answer }]);
-    } catch (e: unknown) {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(detail ?? t('intelligence.askError', 'Request failed. Please try again.'));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="glass-card p-5">
-      <div className="flex items-center justify-between gap-2 mb-3">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-violet-500/15 flex items-center justify-center flex-shrink-0">
-            <Sparkles size={16} className="text-violet-300" />
-          </div>
-          <div>
-            <h2 className="text-white font-semibold text-sm">{t('intelligence.askTitle', 'Ask the data')}</h2>
-            <p className="text-gray-500 text-[11px]">{t('intelligence.askHint', 'Natural-language questions about machines, KPIs, tickets, parts…')}</p>
-          </div>
-        </div>
-        {messages.length > 0 && (
-          <button onClick={() => { setMessages([]); setError(null); }} disabled={busy}
-            className="text-[11px] text-gray-500 hover:text-gray-300 transition-colors disabled:opacity-40">
-            {t('intelligence.clearChat', 'Clear')}
-          </button>
-        )}
-      </div>
-
-      {messages.length > 0 && (
-        <div ref={scrollRef} className="max-h-[26rem] overflow-y-auto space-y-3 mb-3 pr-1">
-          {messages.map((m, i) => (
-            m.role === 'user' ? (
-              <div key={i} className="flex justify-end">
-                <div className="max-w-[85%] bg-blue-600/20 border border-blue-500/25 rounded-2xl rounded-br-sm px-3.5 py-2 text-sm text-blue-50 whitespace-pre-wrap">{m.content}</div>
-              </div>
-            ) : (
-              <div key={i} className="flex justify-start">
-                <div className="max-w-[90%] bg-white/[0.03] border border-white/[0.06] rounded-2xl rounded-bl-sm px-3.5 py-2">
-                  <Markdown text={m.content} />
-                </div>
-              </div>
-            )
-          ))}
-          {busy && (
-            <div className="flex justify-start">
-              <div className="flex items-center gap-2 bg-white/[0.03] border border-white/[0.06] rounded-2xl rounded-bl-sm px-3.5 py-2 text-gray-400 text-sm">
-                <Loader2 size={14} className="animate-spin" /> {t('intelligence.thinking', 'Analyzing the data…')}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {messages.length === 0 && (
-        <div className="flex flex-wrap gap-2 mb-3">
-          {exampleQs.map((ex) => (
-            <button key={ex} onClick={() => send(ex)} disabled={busy}
-              className="text-xs text-gray-300 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] rounded-full px-3 py-1.5 transition-colors disabled:opacity-40">
-              {ex}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {error && <p className="text-red-400 text-xs mb-2">{error}</p>}
-
-      <div className="flex items-end gap-2">
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input); } }}
-          rows={1}
-          placeholder={t('intelligence.askPlaceholder', 'e.g. Compare IMA 04 with IMA 05')}
-          disabled={busy}
-          className="flex-1 resize-none bg-[#0d1421] border border-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-violet-500/50 max-h-32"
-        />
-        <button onClick={() => send(input)} disabled={busy || !input.trim()}
-          className="flex items-center justify-center w-10 h-10 rounded-xl bg-violet-600 hover:bg-violet-500 text-white disabled:opacity-40 flex-shrink-0">
-          {busy ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-        </button>
-      </div>
-    </div>
   );
 }
 
@@ -301,7 +148,7 @@ export default function IntelligenceDashboard() {
       </div>
 
       {/* Conversational Q&A over live data */}
-      <IntelligenceChat language={genLang} />
+      <AskNinjaChat language={genLang} />
 
       {loading ? (
         <div className="flex items-center justify-center h-64"><Spinner size="lg" /></div>

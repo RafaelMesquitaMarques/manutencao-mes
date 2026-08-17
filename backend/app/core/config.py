@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     # If unset, the module runs in calculator-only mode (structured fallback text).
     anthropic_api_key: Optional[str] = None
 
+    # ElevenLabs premium text-to-speech for the Ask Ninja voice (optional).
+    # If unset, the frontend silently sticks to the browser's built-in voices.
+    elevenlabs_api_key: Optional[str] = None
+    # Premade "Adam" — present on every ElevenLabs account; multilingual via Flash.
+    elevenlabs_voice_id: str = "pNInz6obpgDQGcFmaJgB"
+
     # Local, token-free LLM (Ollama) used to tidy up / organize dictated notes.
     # Runs on-prem with no per-token cost. If the server is unreachable, the note
     # organizer degrades to a light local text cleanup (no AI). Set OLLAMA_BASE_URL

@@ -264,12 +264,23 @@ class ChatMessageIn(BaseModel):
 class ChatAskRequest(BaseModel):
     messages: list[ChatMessageIn] = Field(..., min_length=1, max_length=40)
     language: str = "en"
+    # 'voice' = answer will be spoken aloud: the agent switches to a short,
+    # conversational style and offers details instead of dumping them.
+    mode: str = Field(default="text", pattern="^(text|voice)$")
 
 
 class ChatAskResponse(BaseModel):
     answer: str
     used_tools: list[str] = []
     ai_generated: bool = True
+
+
+class TtsRequest(BaseModel):
+    """One sentence-sized chunk for the premium (ElevenLabs) ninja voice."""
+    text: str = Field(..., min_length=1, max_length=2500)
+    language: str = "en"
+    # A voice from the account's list (see /tts/voices); default voice if omitted.
+    voice_id: Optional[str] = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9]+$")
 
 
 # ---------------------------------------------------------------------------

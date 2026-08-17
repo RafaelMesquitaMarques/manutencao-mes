@@ -20,8 +20,12 @@ interface NeuralHudProps {
   nodes: HudNode[];
   /** Route opened when the core is clicked (omit when the user lacks access). */
   coreTo?: string;
-  /** Hover bubble text shown over the core; only rendered when coreTo is set. */
+  /** Called instead of navigating when the core is clicked (e.g. chat overlay). */
+  onCoreClick?: () => void;
+  /** Hover bubble text shown over the core; rendered when the core is interactive. */
   coreHint?: string;
+  /** Keeps the core lit and hides the hint bubble while the chat overlay is open. */
+  coreActive?: boolean;
 }
 
 // Design-space constants: the stage is laid out at a fixed size and scaled to
@@ -72,7 +76,7 @@ const labelPlacement = (deg: number, x: number, y: number) => {
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-const NeuralHud = ({ nodes, coreTo, coreHint }: NeuralHudProps) => {
+const NeuralHud = ({ nodes, coreTo, onCoreClick, coreHint, coreActive }: NeuralHudProps) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [hovered, setHovered] = useState<number | null>(null);
@@ -177,6 +181,12 @@ const NeuralHud = ({ nodes, coreTo, coreHint }: NeuralHudProps) => {
   }, []);
 
   const hoverP = hovered != null && positions[hovered] ? positions[hovered].p : null;
+  const coreInteractive = Boolean(onCoreClick || coreTo);
+  const coreLit = coreHover || Boolean(coreActive);
+  const activateCore = () => {
+    if (onCoreClick) onCoreClick();
+    else if (coreTo) navigate(coreTo);
+  };
 
   return (
     <div
@@ -250,8 +260,8 @@ const NeuralHud = ({ nodes, coreTo, coreHint }: NeuralHudProps) => {
 
             <polygon points="216,314 264,314 284,186 196,186" fill="url(#nhud-beam-grad)" />
             <g ref={packetsRef} />
-            <circle className={`nhud-a8 nhud-corering${coreHover ? ' on' : ''}`} cx="240" cy="240" r="86" fill="none" stroke="rgba(34,211,238,.3)" strokeDasharray="10 6" />
-            <g className={`nhud-core${coreHover ? ' on' : ''}`}>
+            <circle className={`nhud-a8 nhud-corering${coreLit ? ' on' : ''}`} cx="240" cy="240" r="86" fill="none" stroke="rgba(34,211,238,.3)" strokeDasharray="10 6" />
+            <g className={`nhud-core${coreLit ? ' on' : ''}`}>
               <image
                 href="/core-hud.png"
                 x="162"
@@ -280,21 +290,21 @@ const NeuralHud = ({ nodes, coreTo, coreHint }: NeuralHudProps) => {
 
           </svg>
 
-          {coreTo && (
+          {coreInteractive && (
             <div
               className="nhud-core-hit"
-              role="link"
+              role={onCoreClick ? 'button' : 'link'}
               tabIndex={0}
               aria-label={coreHint}
               onMouseEnter={() => setCoreHover(true)}
               onMouseLeave={() => setCoreHover(false)}
-              onClick={() => navigate(coreTo)}
-              onKeyDown={(e) => { if (e.key === 'Enter') navigate(coreTo); }}
+              onClick={activateCore}
+              onKeyDown={(e) => { if (e.key === 'Enter') activateCore(); }}
             />
           )}
 
-          {coreTo && coreHint && (
-            <div className={`nhud-bubble${coreHover ? ' show' : ''}`} aria-hidden={!coreHover}>
+          {coreInteractive && coreHint && (
+            <div className={`nhud-bubble${coreHover && !coreActive ? ' show' : ''}`} aria-hidden={!coreHover || coreActive}>
               {coreHint}
             </div>
           )}

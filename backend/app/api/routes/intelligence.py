@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 import logging
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -50,10 +51,11 @@ from app.schemas.intelligence import (
     AcknowledgeRecommendationRequest,
     ChatAskRequest,
     ChatAskResponse,
+    TtsRequest,
 )
 from app.services.intelligence_calculator import build_findings
 from app.services.intelligence_ai import generate_insight_text
-from app.services.intelligence_chat import answer_question
+from app.services.intelligence_chat import answer_question, answer_question_stream
 
 logger = logging.getLogger(__name__)
 
@@ -135,8 +137,155 @@ async def ask_intelligence(
         messages=[m.model_dump() for m in body.messages],
         ctx=ctx,
         language=body.language,
+        mode=body.mode,
     )
     return ChatAskResponse(**result)
+
+
+@router.post("/ask/stream")
+async def ask_intelligence_stream(
+    body:         ChatAskRequest,
+    current_user: User         = Depends(get_current_user),
+    ctx:          PlantContext = Depends(get_plant_context),
+):
+    """SSE variant of /ask: same tool-use agent, but the final answer streams
+    token-by-token (events: status/tool/delta/round/done/error). The generator
+    opens its own DB session — see answer_question_stream."""
+    from fastapi.responses import StreamingResponse
+
+    _check_maintenance_access(current_user)
+    gen = answer_question_stream(
+        current_user=current_user,
+        messages=[m.model_dump() for m in body.messages],
+        ctx=ctx,
+        language=body.language,
+        mode=body.mode,
+    )
+    return StreamingResponse(
+        gen,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            # nginx honours this header: never buffer the event stream.
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Premium ninja voice (ElevenLabs proxy) — optional, key stays server-side
+# ---------------------------------------------------------------------------
+
+ELEVENLABS_TTS_MODEL = "eleven_flash_v2_5"  # 0.5 credit/char, ~75ms latency
+
+# Short recurring phrases (conversation fillers, the greeting) are spoken over
+# and over — cache their audio so each one costs ElevenLabs credits ONCE per
+# voice+language. Long answer sentences rarely repeat and would churn the
+# cache, so only short texts are eligible.
+_TTS_AUDIO_CACHE: OrderedDict = OrderedDict()
+_TTS_AUDIO_CACHE_MAX = 128
+_TTS_CACHEABLE_CHARS = 120
+
+
+@router.get("/tts/status")
+async def tts_status(current_user: User = Depends(get_current_user)):
+    """Whether the premium voice is configured — the frontend only offers the
+    ElevenLabs option in the voice picker when this says so."""
+    from app.core.config import settings
+    return {"available": bool(settings.elevenlabs_api_key)}
+
+
+# The account's voice list barely changes — cache it briefly so opening the
+# picker repeatedly doesn't hammer the ElevenLabs API.
+_ELEVEN_VOICES_CACHE: dict = {"at": 0.0, "items": []}
+
+
+@router.get("/tts/voices")
+async def tts_voices(current_user: User = Depends(get_current_user)):
+    """Voices available on the configured ElevenLabs account (premade + any the
+    user added from the Voice Library). Empty list when unconfigured/unreachable
+    — the frontend then falls back to a single generic premium option."""
+    import time
+    from app.core.config import settings
+
+    if not settings.elevenlabs_api_key:
+        return {"voices": []}
+    if _ELEVEN_VOICES_CACHE["items"] and time.time() - _ELEVEN_VOICES_CACHE["at"] < 300:
+        return {"voices": _ELEVEN_VOICES_CACHE["items"]}
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                "https://api.elevenlabs.io/v1/voices",
+                headers={"xi-api-key": settings.elevenlabs_api_key},
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("ElevenLabs voices unreachable: %s", exc)
+        return {"voices": []}
+    if r.status_code != 200:
+        logger.warning("ElevenLabs voices error %s: %s", r.status_code, r.text[:200])
+        return {"voices": []}
+    items = [
+        {"voice_id": v.get("voice_id"), "name": v.get("name") or v.get("voice_id")}
+        for v in (r.json().get("voices") or [])
+        if v.get("voice_id")
+    ]
+    _ELEVEN_VOICES_CACHE["at"] = time.time()
+    _ELEVEN_VOICES_CACHE["items"] = items
+    return {"voices": items}
+
+
+@router.post("/tts")
+async def tts_speak(
+    body:         TtsRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Convert one sentence-sized chunk to speech via ElevenLabs and return the
+    MP3. Proxied so the API key never reaches the browser; the schema caps the
+    text length so a runaway client can't drain the character quota."""
+    from fastapi.responses import Response
+    from app.core.config import settings
+
+    _check_maintenance_access(current_user)
+    if not settings.elevenlabs_api_key:
+        # Stable code — the frontend treats it as "fall back to browser voices".
+        raise HTTPException(status_code=503, detail="tts_not_configured")
+
+    import httpx
+
+    payload: dict = {"text": body.text.strip(), "model_id": ELEVENLABS_TTS_MODEL}
+    lang = (body.language or "")[:2].lower()
+    if lang in ("en", "fr", "es"):
+        payload["language_code"] = lang
+
+    voice_id = body.voice_id or settings.elevenlabs_voice_id
+    text = body.text.strip()
+    cache_key = (voice_id, lang, text) if len(text) <= _TTS_CACHEABLE_CHARS else None
+    if cache_key and cache_key in _TTS_AUDIO_CACHE:
+        _TTS_AUDIO_CACHE.move_to_end(cache_key)
+        return Response(content=_TTS_AUDIO_CACHE[cache_key], media_type="audio/mpeg")
+
+    url = (
+        f"https://api.elevenlabs.io/v1/text-to-speech/"
+        f"{voice_id}?output_format=mp3_44100_64"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(url, headers={"xi-api-key": settings.elevenlabs_api_key}, json=payload)
+    except httpx.HTTPError as exc:
+        logger.warning("ElevenLabs TTS unreachable: %s", exc)
+        raise HTTPException(status_code=502, detail="tts_failed")
+    if r.status_code != 200:
+        # Quota exhausted, bad voice id, invalid key… — log it, degrade client-side.
+        logger.warning("ElevenLabs TTS error %s: %s", r.status_code, r.text[:300])
+        raise HTTPException(status_code=502, detail="tts_failed")
+    if cache_key:
+        _TTS_AUDIO_CACHE[cache_key] = r.content
+        if len(_TTS_AUDIO_CACHE) > _TTS_AUDIO_CACHE_MAX:
+            _TTS_AUDIO_CACHE.popitem(last=False)
+    return Response(content=r.content, media_type="audio/mpeg")
 
 
 # ---------------------------------------------------------------------------

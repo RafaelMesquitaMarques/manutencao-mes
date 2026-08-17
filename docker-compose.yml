@@ -70,6 +70,9 @@ services:
       # the "I'm on it" ack link in escalation SMS. Empty = no link.
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Premium Ask Ninja voice (optional). Empty = browser voices only.
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ELEVENLABS_VOICE_ID: ${ELEVENLABS_VOICE_ID:-pNInz6obpgDQGcFmaJgB}
       # Note organizing: primary = Anthropic API (fast) when ANTHROPIC_API_KEY is
       # set; the Ollama vars point at the token-free offline fallback. Empty
       # OLLAMA_BASE_URL disables that fallback (local formatting when the API fails).

@@ -12,6 +12,7 @@ instead of failing.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -43,10 +44,16 @@ TOOLS = [
     {
         "name": "list_assets",
         "description": (
-            "List the plant's equipment/machines (the catalog). Call this FIRST to map a "
-            "machine name the user typed (e.g. 'IMA 4', 'IMA5', 'la STEFANI') to the real "
-            "name/code/id, and to know which assets actually exist. Returns id, name, code, "
-            "asset_type (production|auxiliary), criticality and status."
+            "List the plant's equipment/machines with their LIVE operational status — the exact "
+            "status the factory map shows right now (running | stopped | unjustified | planned_stop "
+            "| intervention | maintenance | idle). Use it FIRST to map a machine name the user typed "
+            "(e.g. 'IMA 4', 'IMA5', 'la STEFANI') to the real name/code/id, AND for any "
+            "'right now' state question: how many machines are running / stopped / in maintenance, "
+            "which machine is down, who operates it, WHICH TECHNICIAN is working on a machine. Returns "
+            "per asset: id, name, code, asset_type (production|auxiliary), criticality, live status, "
+            "current operator, open-ticket number, technicians actively working (name + since), and "
+            "parent_machine for child assets (cobots/conveyors inherit the parent's status), plus "
+            "status_summary (counts by status) and a status_legend."
         ),
         "input_schema": {
             "type": "object",
@@ -213,12 +220,14 @@ _TABLE_HINTS = {
     "purchase_order_items": "Purchase-order line items (part, quantity, unit price).",
     "stock_items": "Spare-parts inventory (quantity, min_quantity, unit_cost, average_cost, warehouse, location, category, supplier).",
     "inventory_movements": "Stock in/out movements (quantity, type, date).",
-    "machines": "Production machines (MES/OEE); current_status, shifts_config, target_count.",
-    "equipment": "Asset catalog (machines + auxiliaries); criticality, status, asset_type.",
+    "machines": "Production machines (MES/OEE); current_status is the LIVE state (running|stopped|maintenance|idle|planned_stop|unjustified|intervention). For 'status right now' questions prefer the list_assets tool — it adds the factory-map rules (open ticket → maintenance, parent inheritance).",
+    "equipment": "Asset catalog (machines + auxiliaries); criticality, asset_type. Its status column is the STATIC catalog lifecycle, NOT the live state — use list_assets for live status.",
     "machine_stops": "Stop events with justification (started_at, duration_minutes, stop_category_id, comments, shift).",
-    "machine_production_logs": "Per machine·shift·day production + OEE (actual_count, target_count, reject_count, availability_pct, performance_pct, quality_pct, oee_pct).",
-    "machine_production_hourly": "Per machine·hour produced counts (raw ADAM feed).",
-    "machine_production_daily": "Daily produced/rejected per machine (TimescaleDB rollup view of machine_production_hourly).",
+    "machine_production_logs": "Per machine·shift·day production + OEE (actual_count, target_count, reject_count, availability_pct, performance_pct, quality_pct, oee_pct). FABRICATION machines only — assembly-line output is NOT here, it lives in job_order_runs.",
+    "machine_production_hourly": "Per machine·hour produced counts (raw ADAM feed). Fabrication machines only — not assembly lines.",
+    "machine_production_daily": "Daily produced/rejected per machine (TimescaleDB rollup view of machine_production_hourly). Fabrication machines only — not assembly lines.",
+    "job_orders": "Manufacturing orders (OF): number, product, quantity, status, dates. WIP = OFs with an open run in job_order_runs.",
+    "job_order_runs": "THE production ledger for ASSEMBLY LINES ('Ligne d'assemblage', rembourrage, coussins) and OF tracking: one row per OF×machine run with pieces (units produced during the run), rejects, started_at/ended_at (NULL ended_at = OF is on that machine now), last_piece_at. Assembly-line production by line/day = SUM(pieces) GROUP BY machine_id (join machines for the name), filtered on started_at or last_piece_at.",
     "maintenance_tickets": "Breakdown/maintenance tickets (status, priority, machine_id, times, technician).",
     "maintenance_alerts": "Operator-raised alerts on machines.",
     "work_orders": "Work orders (type corrective/preventive/improvement, status, costs, downtime, dates).",
@@ -328,7 +337,7 @@ def _clamp(value: Any, default: int, hi: int) -> int:
     return max(1, min(v, hi))
 
 
-def _system_prompt(language: str = "en") -> str:
+def _system_prompt(language: str = "en", mode: str = "text") -> str:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     # The platform ships only EN/FR/ES — answer in the user's selected language,
     # regardless of the language they happened to type the question in.
@@ -349,13 +358,25 @@ How to work:
 - ALWAYS ground every number in a tool result. Call tools to fetch real data — never invent or estimate values.
 - Pick the tool by topic:
   • Maintenance KPIs and risk have fast, purpose-built tools — PREFER them:
+    - Live machine state RIGHT NOW ("how many machines are running / stopped now", "which machine is
+      down", current operator, "who is the technician working on X") → list_assets: its `status` is the
+      live factory-map status (running | stopped | unjustified | planned_stop | intervention |
+      maintenance | idle), `technicians` names who is actively working (purple assets), and
+      `status_summary` has the counts. "In maintenance" questions cover BOTH maintenance (amber) and
+      intervention (purple) statuses; cobots/conveyors inherit their parent_machine's status and the
+      ticket/technicians live on the parent. NEVER answer "now" state questions from equipment.status
+      in SQL — that column is the static catalog, not the live state.
     - Rankings / "best/worst" across machines → compare_machines.
     - One or two specific machines (deep dive) → machine_report (map names via list_assets first).
     - Counts over a specific window (e.g. "yesterday") → maintenance_overview with start_date/end_date.
     - Risk / spare-parts-at-risk / "what should we worry about" → intelligence_findings.
   • Purchasing ("which supplier do we buy most from", total spend, open POs) → purchasing_overview.
   • Inventory status ("how many parts out of stock", stock value, by category) → inventory_overview.
-  • ANYTHING ELSE — cost or budget breakdowns, production totals, notifications, supplier/part details,
+  • PRODUCTION OUTPUT — two different sources, pick by machine type:
+    - Fabrication machines (IMA, SCM, Homag…) → machine_production_logs / machine_production_daily via SQL.
+    - ASSEMBLY LINES ("ligne d'assemblage", ASM, rembourrage, coussins) → SUM(job_order_runs.pieces)
+      via SQL — assembly output NEVER appears in machine_production_*; a zero there does not mean zero production.
+  • ANYTHING ELSE — cost or budget breakdowns, notifications, supplier/part details,
     or any ad-hoc cross-domain question — use the database directly:
     call describe_schema (no args) to see the tables, then describe_schema(tables=[...]) for their columns,
     then query_database with a read-only SQL SELECT (use SUM/COUNT/AVG + GROUP BY; add LIMIT).
@@ -367,7 +388,18 @@ Style:
 - Be concise and direct. Lead with the answer, then a few supporting numbers. Use short bullet lists ("- ") when comparing.
 - Keep machine names, codes and ticket numbers verbatim — never translate them.
 - State the period you used (e.g. "over the last 30 days"). If data is missing or insufficient, say "insufficient data" rather than guessing.
-- You only analyze and report. You never create, modify, or delete anything."""
+- You only analyze and report. You never create, modify, or delete anything.""" + (
+        """
+
+VOICE CONVERSATION MODE — your answer is READ ALOUD by text-to-speech in a live, hands-free conversation:
+- Answer in ONE to THREE short sentences. Lead with the direct answer and only the one to three numbers that matter most.
+- Plain spoken prose ONLY: no markdown, no bullet points, no headers, no tables, no code. It must sound natural said out loud.
+- Round numbers the way people speak them (say "about 87 percent", not "87.34%"). Keep machine names and codes verbatim.
+- If meaningfully more depth exists (rankings, breakdowns, causes, history), END with a very short offer to go deeper, in the user's language (e.g. "Veux-tu les détails ?").
+- When the user asks for more detail, expand — still spoken style, at most ~6 sentences, and offer to continue if there is even more.
+- Prefer the FEWEST tool calls that answer the question — response speed matters in a live conversation."""
+        if mode == "voice" else ""
+    )
 
 
 # ── Tool resolution + execution ──────────────────────────────────────────────
@@ -409,23 +441,62 @@ async def _resolve_equipment_id(db: AsyncSession, raw: str, ctx: PlantContext) -
 
 
 async def _list_assets(db: AsyncSession, asset_type: Optional[str], ctx: PlantContext) -> dict:
+    # Live (factory-map) status, not the static equipment.status catalog column —
+    # same single source of truth the map uses, so the two never disagree.
+    from app.services.live_status import live_details_by_equipment
+
     q = select(Equipment).where(Equipment.active == True, plant_condition(Equipment, ctx))  # noqa: E712
     if asset_type in ("production", "auxiliary"):
         q = q.where(func.coalesce(Equipment.asset_type, "production") == asset_type)
     rows = (await db.execute(q.order_by(Equipment.name))).scalars().all()
+    live = await live_details_by_equipment(db, rows)
+
+    # Parent names so child assets (cobots/conveyors) can say whose status they
+    # inherit — the ticket/technicians always live on the parent machine.
+    name_by_id = {e.id: e.name for e in rows}
+    missing_parents = {e.parent_equipment_id for e in rows
+                       if e.parent_equipment_id and e.parent_equipment_id not in name_by_id}
+    if missing_parents:
+        for pe in (await db.execute(select(Equipment).where(Equipment.id.in_(missing_parents)))).scalars().all():
+            name_by_id[pe.id] = pe.name
+
+    assets = []
+    summary: dict[str, int] = {}
+    for e in rows:
+        la = live.get(str(e.id))
+        status = la.status if la else (e.status.value if hasattr(e.status, "value") else str(e.status))
+        summary[status] = summary.get(status, 0) + 1
+        assets.append({
+            "id": str(e.id),
+            "name": e.name,
+            "code": e.code,
+            "asset_type": e.asset_type or "production",
+            "criticality": e.criticality,
+            "status": status,
+            "operator": la.operator if la else None,
+            "open_ticket": (la.open_ticket or {}).get("number") if la else None,
+            "technicians": (la.technicians or None) if la else None,
+            "parent_machine": name_by_id.get(e.parent_equipment_id) if e.parent_equipment_id else None,
+        })
     return {
-        "count": len(rows),
-        "assets": [
-            {
-                "id": str(e.id),
-                "name": e.name,
-                "code": e.code,
-                "asset_type": e.asset_type or "production",
-                "criticality": e.criticality,
-                "status": e.status.value if hasattr(e.status, "value") else str(e.status),
-            }
-            for e in rows
-        ],
+        "count": len(assets),
+        "status_summary": summary,
+        "status_legend": {
+            "running": "producing normally (green on the factory map)",
+            "stopped": "unplanned stop, reason entered (red)",
+            "unjustified": "stopped, no reason entered yet (pink)",
+            "planned_stop": "scheduled/planned stop (blue)",
+            "intervention": "technician actively working on it (purple) — `technicians` says who and since when",
+            "maintenance": "in maintenance or open maintenance call (amber)",
+            "idle": "idle / not in production (gray)",
+        },
+        "notes": (
+            "Assets with a parent_machine (cobots, conveyors) INHERIT the parent's status — the open "
+            "ticket and technicians are recorded on the parent machine, not on the child. When the user "
+            "asks what is 'in maintenance' / 'being repaired', include BOTH maintenance (amber) and "
+            "intervention (purple = maintenance actively happening) assets."
+        ),
+        "assets": assets,
     }
 
 
@@ -573,10 +644,177 @@ async def _run_tool(db: AsyncSession, user: User, ctx: PlantContext, name: str, 
         return {"error": f"Unknown tool '{name}'."}
     except Exception as exc:  # surface tool failures to the model, don't crash the turn
         logger.exception("intelligence chat tool '%s' failed", name)
+        # A DB error leaves the shared session's transaction in a failed state;
+        # without a rollback every later tool call in this conversation dies on
+        # PendingRollbackError. Best-effort — harmless for non-DB failures.
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         return {"error": f"Tool '{name}' failed: {exc}"}
 
 
 # ── Agentic loop ──────────────────────────────────────────────────────────────
+
+def _sse(event: str, data: dict) -> str:
+    """One Server-Sent-Events frame (single-line JSON payload)."""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+
+
+async def answer_question_stream(
+    current_user: User,
+    messages: list[dict],
+    ctx: PlantContext,
+    language: str = "en",
+    mode: str = "text",
+):
+    """SSE generator variant of answer_question. Same tool-use loop, but the
+    final answer's text is pushed to the client as it is generated.
+
+    Events:
+      status {"phase": "thinking"|"answering"}  — model state, for a live chip
+      tool   {"name": ...}                      — a tool call started
+      delta  {"text": ...}                      — text tokens of the CURRENT turn
+      round  {}                                 — turn ended in tool_use: text
+                                                  streamed so far was preliminary
+                                                  and must be discarded
+      done   {"answer", "used_tools", "ai_generated"} — authoritative final result
+      error  {"detail": ...}
+
+    Opens its own DB session: FastAPI (>=0.106) closes Depends(get_db) sessions
+    BEFORE a StreamingResponse body starts iterating, so a dependency-injected
+    session would already be closed by the time tools run here."""
+    if not settings.anthropic_api_key:
+        yield _sse("done", {
+            "answer": "The AI assistant is not configured (no API key). Ask an administrator to set ANTHROPIC_API_KEY.",
+            "used_tools": [], "ai_generated": False,
+        })
+        return
+
+    try:
+        from anthropic import AsyncAnthropic
+    except Exception:
+        logger.error("anthropic SDK not installed")
+        yield _sse("done", {"answer": "The AI library is not installed on the server.", "used_tools": [], "ai_generated": False})
+        return
+
+    convo: list[dict] = [
+        {"role": m["role"], "content": m["content"]}
+        for m in messages
+        if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()
+    ]
+    if not convo or convo[0]["role"] != "user":
+        yield _sse("done", {"answer": "Ask a question to get started.", "used_tools": [], "ai_generated": False})
+        return
+
+    client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+    system = _system_prompt(language, mode)
+    used: list[str] = []
+
+    # Producer/consumer split: the agent loop pushes frames into a queue and the
+    # generator drains it with a timeout, emitting an SSE comment ping during
+    # dead air (long thinking blocks, slow tools). Without it, intermediaries
+    # with idle timeouts (cloudflared ~100s, strict proxies) cut the stream
+    # mid-question and the client falls back — doubling the wait.
+    queue: asyncio.Queue = asyncio.Queue()
+    end_of_stream = object()
+
+    async def produce() -> None:
+        emit = queue.put
+        try:
+            from app.db.session import AsyncSessionLocal
+
+            async with AsyncSessionLocal() as db:
+                for _ in range(MAX_TOOL_ROUNDS):
+                    async with client.messages.stream(
+                        model=MODEL,
+                        max_tokens=MAX_TOKENS,
+                        thinking={"type": "adaptive"},
+                        system=system,
+                        tools=TOOLS,
+                        messages=convo,
+                    ) as stream:
+                        async for event in stream:
+                            etype = getattr(event, "type", "")
+                            if etype == "content_block_start":
+                                block = getattr(event, "content_block", None)
+                                btype = getattr(block, "type", "")
+                                if btype == "thinking":
+                                    await emit(_sse("status", {"phase": "thinking"}))
+                                elif btype == "tool_use":
+                                    # Display event only — `used` is appended at
+                                    # execution time (parity with answer_question):
+                                    # a max_tokens-truncated block never runs.
+                                    await emit(_sse("tool", {"name": block.name}))
+                                elif btype == "text":
+                                    await emit(_sse("status", {"phase": "answering"}))
+                            elif etype == "content_block_delta":
+                                delta = getattr(event, "delta", None)
+                                if getattr(delta, "type", "") == "text_delta" and delta.text:
+                                    await emit(_sse("delta", {"text": delta.text}))
+                        resp = await stream.get_final_message()
+
+                    if resp.stop_reason == "tool_use":
+                        # Whatever text streamed this turn was pre-tool commentary,
+                        # not the answer — tell the client to void it.
+                        await emit(_sse("round", {}))
+                        convo.append({"role": "assistant", "content": resp.content})
+                        results = []
+                        for block in resp.content:
+                            if getattr(block, "type", None) == "tool_use":
+                                used.append(block.name)
+                                out = await _run_tool(db, current_user, ctx, block.name, dict(block.input or {}))
+                                payload = json.dumps(out, default=str)
+                                if len(payload) > MAX_TOOL_RESULT_CHARS:
+                                    payload = payload[:MAX_TOOL_RESULT_CHARS] + ' …", "_truncated": true}'
+                                results.append({"type": "tool_result", "tool_use_id": block.id, "content": payload})
+                        convo.append({"role": "user", "content": results})
+                        continue
+
+                    answer = "\n".join(b.text for b in resp.content if getattr(b, "type", None) == "text").strip()
+                    await emit(_sse("done", {
+                        "answer": answer or "I couldn't produce an answer for that.",
+                        "used_tools": sorted(set(used)),
+                        "ai_generated": True,
+                    }))
+                    return
+
+                await emit(_sse("done", {
+                    "answer": "I gathered a lot of data but couldn't finish — try a more specific question.",
+                    "used_tools": sorted(set(used)),
+                    "ai_generated": True,
+                }))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("intelligence chat stream failed")
+            await emit(_sse("error", {"detail": f"The assistant hit an error: {exc}"}))
+        finally:
+            await queue.put(end_of_stream)
+
+    task = asyncio.create_task(produce())
+    try:
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=10)
+            except asyncio.TimeoutError:
+                # Dead air (long thinking / slow tool) — keep the pipe warm.
+                yield ": ping\n\n"
+                continue
+            if item is end_of_stream:
+                break
+            yield item
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        try:
+            await client.close()
+        except Exception:
+            pass
+
 
 async def answer_question(
     db: AsyncSession,
@@ -584,6 +822,7 @@ async def answer_question(
     messages: list[dict],
     ctx: PlantContext,
     language: str = "en",
+    mode: str = "text",
 ) -> dict:
     """Run the tool-use loop and return {answer, used_tools, ai_generated}."""
     if not settings.anthropic_api_key:
@@ -608,7 +847,7 @@ async def answer_question(
         return {"answer": "Ask a question to get started.", "used_tools": [], "ai_generated": False}
 
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-    system = _system_prompt(language)
+    system = _system_prompt(language, mode)
     used: list[str] = []
 
     try:
