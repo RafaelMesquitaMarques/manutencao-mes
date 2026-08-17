@@ -17,6 +17,7 @@ import {
   type SapImportResult, type CostSite, type CostBySupplier, type SupplierSpend,
 } from '../../api/costs';
 import { usePermission } from '../../hooks/usePermission';
+import { usePlantStore } from '../../store/plantStore';
 import Spinner from '../../components/ui/Spinner';
 
 // English fallbacks for expense types (localized via t('costType.*')).
@@ -83,10 +84,18 @@ export default function CostsDashboard() {
   const lang = (i18n.language || 'en').slice(0, 2);
   const canEdit = usePermission('costs', 'update');
 
+  // The QS/QM site toggle only exists inside the Quebec cost universe. Any
+  // other active plant (e.g. Las Vegas) is scoped server-side by plant_id, so
+  // the toggle is hidden and the site param never sent. On a Quebec plant the
+  // toggle defaults to the active plant's own site ("All" = QS+QM combined).
+  const { memberships, activePlantId } = usePlantStore();
+  const activeCode = memberships.find((m) => m.plant_id === activePlantId)?.code;
+  const quebec = activeCode === 'QS' || activeCode === 'QM';
+
   const thisYear = new Date().getFullYear();
   const [tab, setTab] = useState<Tab>('pnl');
   const [year, setYear] = useState(thisYear);
-  const [site, setSite] = useState<CostSite | null>(null);
+  const [site, setSite] = useState<CostSite | null>(quebec ? (activeCode as CostSite) : null);
   const [pnl, setPnl] = useState<CostPnL | null>(null);
   const [loading, setLoading] = useState(true);
   const [importOpen, setImportOpen] = useState(false);
@@ -175,18 +184,21 @@ export default function CostsDashboard() {
               <Upload size={14} /> {t('costs.importSap')}
             </button>
           )}
-          {/* Site filter (QS = Saint-Jérôme, QM = Mirabel) — narrows every tab. */}
-          <div className="flex items-center gap-1 bg-[#0d1421] border border-white/[0.06] rounded-lg p-1"
-            title={t('costs.siteFilterHint')}>
-            <MapPin size={13} className="text-gray-500 ml-1.5" />
-            {SITE_OPTIONS.map((s) => (
-              <button key={s ?? 'all'} onClick={() => setSite(s)}
-                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
-                  site === s ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
-                {siteLabel(s)}
-              </button>
-            ))}
-          </div>
+          {/* Site filter (QS = Saint-Jérôme, QM = Mirabel) — narrows every tab.
+              Quebec plants only; other plants are scoped by the plant selector. */}
+          {quebec && (
+            <div className="flex items-center gap-1 bg-[#0d1421] border border-white/[0.06] rounded-lg p-1"
+              title={t('costs.siteFilterHint')}>
+              <MapPin size={13} className="text-gray-500 ml-1.5" />
+              {SITE_OPTIONS.map((s) => (
+                <button key={s ?? 'all'} onClick={() => setSite(s)}
+                  className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                    site === s ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
+                  {siteLabel(s)}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex gap-1 bg-[#0d1421] border border-white/[0.06] rounded-lg p-1">
             {YEARS.map((y) => (
               <button key={y} onClick={() => setYear(y)}
@@ -361,6 +373,10 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
   const mIdx = months.map((m) => m - 1);
   const xLabels = months.map((m) => monthLabel(m));
   const pick = (arr: number[]) => mIdx.map((i) => arr[i] ?? 0);
+  // A one-month period leaves every line series with a single point, and ECharts
+  // paints nothing for a symbol-less one-point line — show the dots in that case.
+  const lineSymbol = months.length === 1 ? 'circle' : 'none';
+  const lineSymbolSize = months.length === 1 ? 7 : 4;
 
   const rows = useMemo(() => {
     if (!pnl) return [];
@@ -419,13 +435,13 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
   // Open-PO commitments per slot (known future costs feeding the forecast).
   const pickedCommitted = pick(totCommittedArr);
   const committedPeriod = sumMonths(totCommittedArr, months);
-  // A future month is forecast to land at whichever is higher: its budget (the
-  // plan) or its open commitments (POs already emitted).
-  const slotToGo = (m: number) => Math.max(totBudgetArr[m - 1] ?? 0, totCommittedArr[m - 1] ?? 0);
+  // A future month is forecast to land at its budget (the plan) PLUS its open
+  // commitments (POs already emitted) — an emitted PO raises the forecast.
+  const slotToGo = (m: number) => (totBudgetArr[m - 1] ?? 0) + (totCommittedArr[m - 1] ?? 0);
 
   // ── Period forecast (EAC): complete months at actuals, the current month
-  // projected (run rate / SAP posting, plus its own commitments), remaining
-  // months at max(budget, commitments). Keeps the S-curve and bridge in sync. ──
+  // projected (run rate / SAP posting) plus its own commitments, remaining
+  // months at budget + commitments. Keeps the S-curve and bridge in sync. ──
   const cm = pnl?.current_month ?? null;
   const cmElapsed = cm ? Math.min(cm.today, cm.days_in_month) : 0;
   const cmMtd = cm ? (cm.daily[scope] ?? []).slice(0, cmElapsed).reduce((s, v) => s + v, 0) : 0;
@@ -437,9 +453,10 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
   const cmMtdEff = sapOfficial ? curSlotActual : cmMtd;
   const cmProjectedBase = sapOfficial
     ? Math.max(curSlotActual, curMonth > 0 ? (totBudgetArr[curMonth - 1] ?? 0) : 0)
-    : cmProjected;
-  // Fold the current month's own open commitments into its projection.
-  const cmProjectedEff = Math.max(cmProjectedBase, curSlotActual + curSlotCommitted);
+    : Math.max(cmProjected, curSlotActual);
+  // The current month's open commitments come ON TOP of its projection — an
+  // emitted PO raises the forecast instead of being absorbed by budget headroom.
+  const cmProjectedEff = cmProjectedBase + curSlotCommitted;
   const hasCurMonth = isCurrentYear && months.includes(curMonth);
 
   const pickedBudget = pick(totBudgetArr);
@@ -447,11 +464,20 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
   const pickedPrev = pick(prevActualArr);
   const pastMonths = isCurrentYear ? months.filter((m) => m < curMonth) : months;
   const actualPast = pastMonths.reduce((s, m) => s + (totActualArr[m - 1] ?? 0), 0);
+  // An open PO expected in a month that already passed hasn't landed yet — it
+  // stays in the forecast, carried into the present rather than dropped.
+  const overdueCommitted = isCurrentYear
+    ? pastMonths.reduce((s, m) => s + (totCommittedArr[m - 1] ?? 0), 0) : 0;
   const budgetToGo = isCurrentYear
     ? months.filter((m) => m > curMonth).reduce((s, m) => s + slotToGo(m), 0) : 0;
   const periodBudget = totBudget;
-  const eac = actualPast + (hasCurMonth ? cmProjectedEff : 0) + budgetToGo;
-  const elapsedFrac = pastMonths.length + (hasCurMonth && cm ? cmElapsed / cm.days_in_month : 0);
+  const eac = actualPast + overdueCommitted + (hasCurMonth ? cmProjectedEff : 0) + budgetToGo;
+  // SAP posts monthly: count the current month in the run-rate denominator only
+  // once its ledger actually posted — an unposted month would drag the rate
+  // down with a zero numerator against a daily elapsed fraction.
+  const elapsedFrac = sapOfficial
+    ? pastMonths.length + (hasCurMonth && curSlotActual > 0 ? 1 : 0)
+    : pastMonths.length + (hasCurMonth && cm ? cmElapsed / cm.days_in_month : 0);
   const runRate = elapsedFrac > 0
     ? ((actualPast + (hasCurMonth ? cmMtdEff : 0)) / elapsedFrac) * months.length : 0;
   const vac = periodBudget - eac;
@@ -470,17 +496,29 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
     let lastIdx = -1;
     months.forEach((m, j) => { if (m < curMonth) lastIdx = j; });
     const hasCur = months.includes(curMonth);
-    if (lastIdx >= months.length - 1) return null;              // period fully in the past
+    if (lastIdx >= months.length - 1) {
+      // Period fully in the past: nothing to project — unless open POs from
+      // those months are still outstanding; carry them to the period's end so
+      // the forecast line still closes on the EAC.
+      if (overdueCommitted <= 0) return null;
+      const past: (number | null)[] = months.map(() => null);
+      const last = months.length - 1;
+      if (last > 0) past[last - 1] = cumActualFull[last - 1] ?? 0;
+      past[last] = (cumActualFull[last] ?? 0) + overdueCommitted;
+      return past;
+    }
     if (lastIdx < 0 && !hasCur) return null;                    // period fully in the future
     const data: (number | null)[] = months.map(() => null);
     let acc = lastIdx >= 0 ? (cumActualFull[lastIdx] ?? 0) : 0;
     if (lastIdx >= 0) data[lastIdx] = acc;
     for (let j = lastIdx + 1; j < months.length; j++) {
-      acc += months[j] === curMonth ? cmProjectedEff : Math.max(pickedBudget[j] ?? 0, pickedCommitted[j] ?? 0);
+      acc += months[j] === curMonth
+        ? cmProjectedEff + overdueCommitted
+        : (pickedBudget[j] ?? 0) + (pickedCommitted[j] ?? 0);
       data[j] = acc;
     }
     return data;
-  }, [isCurrentYear, curMonth, months, cmProjectedEff, cumActualFull, pickedBudget, pickedCommitted]);
+  }, [isCurrentYear, curMonth, months, cmProjectedEff, overdueCommitted, cumActualFull, pickedBudget, pickedCommitted]);
 
   // ── Current-month landing (daily cumulative + run-rate projection) ──
   const landing = useMemo(() => {
@@ -490,16 +528,23 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
     const elapsed = Math.min(cm.today, cm.days_in_month);
     const mtd = cum[elapsed - 1] ?? 0;
     const rate = elapsed > 0 ? mtd / elapsed : 0;
-    const projected = mtd + rate * (cm.days_in_month - elapsed);
+    // Spread the slot's open commitments over the remaining days so the dotted
+    // projection closes on the committed-inclusive landing shown in the header.
+    const committed = curMonth > 0 ? (totCommittedArr[curMonth - 1] ?? 0) : 0;
+    const projected = mtd + rate * (cm.days_in_month - elapsed) + committed;
     // Budget of the current month's SLOT (curMonth), not its calendar index.
     const monthBudget = curMonth > 0 ? (totBudgetArr[curMonth - 1] ?? 0) : 0;
     return {
       mtd, projected, monthBudget,
       actualData: cum.map((v, i) => (i < elapsed ? v : null)),
-      forecastData: cum.map((_, i) => (i < elapsed - 1 ? null : mtd + rate * (i + 1 - elapsed))),
+      forecastData: cum.map((_, i) => {
+        if (i < elapsed - 1) return null;
+        const frac = cm.days_in_month > elapsed ? (i + 1 - elapsed) / (cm.days_in_month - elapsed) : 1;
+        return mtd + rate * (i + 1 - elapsed) + committed * Math.max(0, frac);
+      }),
       budgetData: Array.from({ length: cm.days_in_month }, (_, i) => monthBudget * ((i + 1) / cm.days_in_month)),
     };
-  }, [cm, scope, totBudgetArr, curMonth]);
+  }, [cm, scope, totBudgetArr, totCommittedArr, curMonth]);
 
   // Bridge view — landing of the SELECTED PERIOD by expense type: elapsed months
   // at actuals, the current month projected at run rate, upcoming months at budget.
@@ -521,19 +566,23 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
           if (v) byType[k] = (byType[k] ?? 0) + v;
         })));
       const curActual = curMonth > 0 ? (totActualArr[curMonth - 1] ?? 0) : 0;
-      // Top the current month up to whichever is higher, its budget or its own
-      // commitments; roll remaining months at max(budget, commitments).
-      const curTarget = curMonth > 0 ? Math.max(totBudgetArr[curMonth - 1] ?? 0, curActual + curSlotCommitted) : 0;
-      const curTopUp = hasCur ? Math.max(0, curTarget - curActual) : 0;
-      const futureBudget = months.filter((m) => m > curMonth)
-        .reduce((s, m) => s + slotToGo(m), 0) + curTopUp;
+      // The current month tops up to its budget (or its posted actual if
+      // higher); open commitments — overdue, current and future — all come ON
+      // TOP as their own block, so the landing matches the EAC.
+      const curTopUp = hasCur
+        ? Math.max(0, Math.max(totBudgetArr[curMonth - 1] ?? 0, curActual) - curActual) : 0;
+      const futureMonthsSap = months.filter((m) => m > curMonth);
+      const committed = (hasCur ? curSlotCommitted : 0)
+        + months.filter((m) => m < curMonth).reduce((s, m) => s + (totCommittedArr[m - 1] ?? 0), 0)
+        + futureMonthsSap.reduce((s, m) => s + (totCommittedArr[m - 1] ?? 0), 0);
+      const futureBudget = futureMonthsSap.reduce((s, m) => s + (totBudgetArr[m - 1] ?? 0), 0) + curTopUp;
       const entries = Object.entries(byType)
         .filter(([, v]) => Math.round(v) !== 0)
         .map(([type, value]) => ({ type, value }))
         .sort((a, b) => b.value - a.value);
-      const landingTotal = entries.reduce((s, e) => s + e.value, 0) + futureBudget;
+      const landingTotal = entries.reduce((s, e) => s + e.value, 0) + committed + futureBudget;
       const budget = sumMonths(totBudgetArr, months);
-      return { entries, futureBudget, landingTotal, budget, variance: budget - landingTotal, hasCur };
+      return { entries, committed, futureBudget, landingTotal, budget, variance: budget - landingTotal, hasCur };
     }
 
     // Platform-tracked: elapsed months at actuals, the current month projected at
@@ -547,37 +596,65 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
       if (v) byType[k] = (byType[k] ?? 0) + v;
     }));
     if (hasCur) {
+      // Scale the by-type MTD to the month's base projection (run rate, lifted
+      // to the booked slot total when that's higher) so booked-over-run-rate
+      // spend stays attributed to expense types, not the grey budget block.
+      const typeFactor = cmProjected > 0 ? factor * (cmProjectedBase / cmProjected) : factor;
       Object.entries(cm.mtd_by_type?.[scope] ?? {}).forEach(([k, mtd]) => {
-        byType[k] = (byType[k] ?? 0) + mtd * factor;
+        byType[k] = (byType[k] ?? 0) + mtd * typeFactor;
       });
     }
     const entries = Object.entries(byType)
       .filter(([, v]) => Math.round(v) !== 0)
       .map(([type, value]) => ({ type, value }))
       .sort((a, b) => b.value - a.value);
-    const futureBudget = futureMonths.reduce((s, m) => s + slotToGo(m), 0);
-    const landingTotal = entries.reduce((s, e) => s + e.value, 0) + futureBudget;
+    // The run-rate projection can't see open POs — the EAC adds the month's
+    // commitments on top (cmProjectedEff); mirror that here as a dedicated
+    // committed block (overdue + current + upcoming commitments) so the bridge
+    // closes on the EAC.
+    const curEntriesBase = hasCur && cmProjected > 0 ? cmProjectedBase : 0;
+    const curLift = hasCur ? Math.max(0, cmProjectedEff - curEntriesBase) : 0;
+    const curLiftCommitted = Math.min(curLift, curSlotCommitted);
+    const overdueOpen = pastMonths.reduce((s, m) => s + (totCommittedArr[m - 1] ?? 0), 0);
+    const futureCommitted = futureMonths.reduce((s, m) => s + (totCommittedArr[m - 1] ?? 0), 0);
+    const committed = curLiftCommitted + overdueOpen + futureCommitted;
+    const futureBudget = futureMonths.reduce((s, m) => s + slotToGo(m), 0) - futureCommitted
+      + (curLift - curLiftCommitted);
+    const landingTotal = entries.reduce((s, e) => s + e.value, 0) + committed + futureBudget;
     const budget = sumMonths(totBudgetArr, months);
-    return { entries, futureBudget, landingTotal, budget, variance: budget - landingTotal, hasCur };
-  }, [cm, months, pnl, scope, totBudgetArr, totActualArr, totCommittedArr, curSlotCommitted, curMonth, sapOfficial]);
+    return { entries, committed, futureBudget, landingTotal, budget, variance: budget - landingTotal, hasCur };
+  }, [cm, months, pnl, scope, totBudgetArr, totActualArr, totCommittedArr, curSlotCommitted,
+    cmProjectedEff, cmProjectedBase, cmProjected, curMonth, sapOfficial]);
 
   const bridgeOption = useMemo(() => {
     if (!periodLanding) return null;
-    const { entries, futureBudget, budget } = periodLanding;
+    const { entries, committed, futureBudget, budget } = periodLanding;
     // Reference bar (period budget), then a contribution walk from zero — one
     // floating block per expense type (down for credits), a grey block for
     // upcoming months at budget — closing on the anchored landing bar.
     const labels = [t('costs.budget'), ...entries.map((e) => typeLabel(e.type))];
     const base: number[] = [0];
-    const visible: { value: number; itemStyle: object }[] = [
+    // `value` is the bar height (always positive so the float block renders);
+    // `signed` keeps the real amount for labels/tooltips so credits read as
+    // negative instead of masquerading as charges.
+    const visible: { value: number; signed?: number; itemStyle: object }[] = [
       { value: Math.round(budget), itemStyle: { color: '#a855f7', borderRadius: [4, 4, 0, 0] } },
     ];
     let cum = 0;
     entries.forEach((e) => {
       base.push(Math.min(cum, cum + e.value));
-      visible.push({ value: Math.round(Math.abs(e.value)), itemStyle: { color: colorFor(e.type), borderRadius: [4, 4, 0, 0] } });
+      visible.push({ value: Math.round(Math.abs(e.value)), signed: Math.round(e.value),
+        itemStyle: { color: colorFor(e.type), borderRadius: [4, 4, 0, 0] } });
       cum += e.value;
     });
+    if (committed > 0) {
+      // Open-PO commitments folded into the forecast — shown as their own block
+      // so an emitted PO is visible in the landing walk.
+      labels.push(t('costs.committed'));
+      base.push(cum);
+      visible.push({ value: Math.round(committed), itemStyle: { color: '#06b6d4', borderRadius: [4, 4, 0, 0] } });
+      cum += committed;
+    }
     if (futureBudget > 0) {
       // SAP: this block is the current-month top-up + remaining months at budget;
       // platform-tracked: strictly the upcoming months at budget.
@@ -593,7 +670,8 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'item',
-        formatter: (p: { name: string; value: number }) => `${p.name}: ${money(p.value)}`,
+        formatter: (p: { name: string; value: number; data?: { signed?: number } }) =>
+          `${p.name}: ${signedMoney(p.data?.signed ?? p.value)}`,
       },
       grid: { left: '3%', right: '4%', top: '10%', bottom: '6%', containLabel: true },
       xAxis: { type: 'category', data: labels, axisLabel: { color: '#94a3b8', rotate: 28, fontSize: 10 } },
@@ -603,7 +681,11 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
           emphasis: { itemStyle: { color: 'transparent' } }, tooltip: { show: false }, data: base },
         { type: 'bar', stack: 'bridge', barMaxWidth: 34, data: visible,
           label: { show: true, position: 'top', color: '#94a3b8', fontSize: 10,
-            formatter: (p: { value: number }) => `$${Math.abs(p.value) >= 1000 ? `${Math.round(p.value / 100) / 10}k` : Math.round(p.value)}` } },
+            formatter: (p: { value: number; data?: { signed?: number } }) => {
+              const v = p.data?.signed ?? p.value;
+              const a = Math.abs(v);
+              return `${v < 0 ? '-' : ''}$${a >= 1000 ? `${Math.round(a / 100) / 10}k` : Math.round(a)}`;
+            } } },
       ],
     };
   }, [periodLanding, t, typeLabel, sapOfficial]);
@@ -634,12 +716,12 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
     xAxis: { type: 'category', data: xLabels, axisLabel: { color: '#94a3b8' } },
     yAxis: { type: 'value', axisLabel: { color: '#94a3b8', formatter: (v: number) => `$${v >= 1000 ? `${v / 1000}k` : v}` }, splitLine: { lineStyle: { color: '#1e293b' } } },
     series: [
-      { name: t('costs.cumBudget'), type: 'line', symbol: 'none', data: cumBudget,
+      { name: t('costs.cumBudget'), type: 'line', symbol: lineSymbol, symbolSize: lineSymbolSize, data: cumBudget,
         lineStyle: { color: '#a855f7', width: 2, type: 'dashed' }, itemStyle: { color: '#a855f7' } },
       { name: t('costs.cumActual'), type: 'line', symbol: 'circle', symbolSize: 5, data: cumActual,
         lineStyle: { color: '#3b82f6', width: 2.5 }, itemStyle: { color: '#3b82f6' },
         areaStyle: { color: 'rgba(59,130,246,0.12)' } },
-      ...(forecastData ? [{ name: t('costs.forecastLine'), type: 'line', symbol: 'none', data: forecastData,
+      ...(forecastData ? [{ name: t('costs.forecastLine'), type: 'line', symbol: lineSymbol, symbolSize: lineSymbolSize, data: forecastData,
         lineStyle: { color: '#94a3b8', width: 2, type: 'dotted' }, itemStyle: { color: '#94a3b8' } }] : []),
     ],
   };
@@ -656,9 +738,9 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
     series: [
       { name: t('costs.actual'), type: 'bar', barMaxWidth: 28,
         data: pickedActual.map((v: number, j: number) => ({ value: v, itemStyle: { color: pickedBudget[j] > 0 && v > pickedBudget[j] ? '#ef4444' : '#3b82f6', borderRadius: [4, 4, 0, 0] } })) },
-      { name: t('costs.budget'), type: 'line', step: 'middle', symbol: 'none', data: pickedBudget,
+      { name: t('costs.budget'), type: 'line', step: 'middle', symbol: lineSymbol, symbolSize: lineSymbolSize, data: pickedBudget,
         lineStyle: { color: '#a855f7', width: 2, type: 'dashed' }, itemStyle: { color: '#a855f7' } },
-      ...(hasPrev ? [{ name: String(pnl?.prev_year ?? year - 1), type: 'line', smooth: true, symbol: 'none',
+      ...(hasPrev ? [{ name: String(pnl?.prev_year ?? year - 1), type: 'line', smooth: true, symbol: lineSymbol, symbolSize: lineSymbolSize,
         data: pickedPrev, lineStyle: { color: '#64748b', width: 1.5 }, itemStyle: { color: '#64748b' } }] : []),
     ],
   };
@@ -689,7 +771,7 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
         itemStyle: { color: WO_TYPE_COLORS[wt] ?? '#64748b' },
         tooltip: { valueFormatter: (v: number | null) => (v == null ? '—' : money(v)) },
       })),
-      { name: t('costs.unplannedShare'), type: 'line', yAxisIndex: 1, symbol: 'none', smooth: true,
+      { name: t('costs.unplannedShare'), type: 'line', yAxisIndex: 1, symbol: lineSymbol, symbolSize: lineSymbolSize, smooth: true,
         data: unplannedShareLine,
         lineStyle: { color: '#f87171', width: 1.5, type: 'dashed' }, itemStyle: { color: '#f87171' },
         tooltip: { valueFormatter: (v: number | null) => (v == null ? '—' : `${v}%`) } },
@@ -801,7 +883,7 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
               </div>
             )}
           </div>
-          <ReactECharts option={sCurveOption} style={{ height: 300 }} theme="dark" />
+          <ReactECharts option={sCurveOption} style={{ height: 300 }} theme="dark" notMerge />
         </div>
         <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
           <div className="flex items-center gap-2 mb-1">
@@ -809,7 +891,7 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
             <h3 className="text-sm font-semibold text-gray-300">{t('costs.monthlyChart')}</h3>
           </div>
           <p className="text-xs text-gray-600 mb-2">{t('costs.monthlyChartSub')}</p>
-          <ReactECharts option={monthlyOption} style={{ height: 300 }} theme="dark" />
+          <ReactECharts option={monthlyOption} style={{ height: 300 }} theme="dark" notMerge />
         </div>
         {/* Landing bridge. Platform-tracked years also offer a daily-curve view;
             SAP years project from posted monthly actuals, so bridge only. */}
@@ -844,7 +926,8 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
                 <div className="flex gap-1 bg-[#0b1120] border border-white/[0.06] rounded-lg p-1">
                   <button onClick={() => setLandingView('bridge')} title={t('costs.landingBridge')}
                     className={`p-1.5 rounded transition-colors ${
-                      landingView !== 'curve' || !periodLanding.hasCur ? 'bg-blue-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>
+                      landingView !== 'curve' || !periodLanding.hasCur || sapOfficial
+                        ? 'bg-blue-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>
                     <BarChart3 size={13} />
                   </button>
                   {periodLanding.hasCur && !sapOfficial && (
@@ -982,7 +1065,7 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
             {woTypes.length === 0 ? (
               <div className="flex items-center justify-center h-[280px] text-gray-600 text-sm">{t('common.noData')}</div>
             ) : (
-              <ReactECharts option={planOption} style={{ height: 300 }} theme="dark" />
+              <ReactECharts option={planOption} style={{ height: 300 }} theme="dark" notMerge />
             )}
           </div>
         )}

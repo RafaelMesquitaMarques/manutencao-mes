@@ -30,7 +30,9 @@ from app.core.plant_context import resolve_plant_context          # noqa: E402
 from app.models.models import (                                   # noqa: E402
     MaintenanceBudget, Plant, User, UserPlant, UserRole,
 )
-from app.api.routes.costs import _resolve_site, _budgets_for, _site_ids  # noqa: E402
+from app.api.routes.costs import (  # noqa: E402
+    Scope, _budgets_for, _resolve_scope, _resolve_site, _row_scope_ok, _site_ids,
+)
 
 _LOOP = asyncio.new_event_loop()
 _ENGINE = {}
@@ -115,3 +117,49 @@ async def test_budgets_fall_back_to_shared(db):
     await db.flush()
     # QS has no budget of its own → falls back to the shared row.
     assert (await _budgets_for(db, _YEAR, site_ids["QS"])).get(2) == 150.0
+
+
+# ─── Active-plant scoping (Scope) — Las Vegas gets its own view ───────────────
+# _resolve_scope keys the page on the ACTIVE plant: Quebec plants keep the
+# QS/QM site universe; any other plant (NL) is scoped strictly by plant_id and
+# never sees the Quebec ledger — nor its shared budget row.
+
+@with_session
+async def test_resolve_scope_las_vegas_is_plant_scoped(db):
+    p = await _plants(db)
+    ctx_nl = await _ctx(db, p["NL"])
+    scope = await _resolve_scope(db, ctx_nl, None)
+    assert scope.is_plant and scope.plant_id == p["NL"].id and scope.site is None
+
+
+@with_session
+async def test_resolve_scope_quebec_keeps_site_logic(db):
+    p = await _plants(db)
+    ctx_qs = await _ctx(db, p["QS"])
+    scope = await _resolve_scope(db, ctx_qs, None)
+    assert not scope.is_plant and scope.site == "QS"
+
+
+@with_session
+async def test_row_scope_ok_plant_mode_is_strict(db):
+    p = await _plants(db)
+    site_ids = await _site_ids(db)
+    nl = Scope(plant_id=p["NL"].id)
+    assert _row_scope_ok(p["NL"].id, "Maintenance", nl, site_ids)
+    assert not _row_scope_ok(None, "Maintenance", nl, site_ids)           # legacy rows are Quebec's
+    assert not _row_scope_ok(site_ids["QS"], "Maintenance", nl, site_ids)
+    # Quebec mode unchanged: name rule still places unstamped rows.
+    qc = Scope(site="QS")
+    assert _row_scope_ok(None, "Maintenance", qc, site_ids)
+    assert not _row_scope_ok(None, "Warehouse Mirabel", qc, site_ids)
+
+
+@with_session
+async def test_nl_budget_never_falls_back_to_shared(db):
+    p = await _plants(db)
+    db.add(MaintenanceBudget(id=uuid.uuid4(), year=_YEAR, month=3, amount=300.0, plant_id=None))
+    await db.flush()
+    assert (await _budgets_for(db, _YEAR, p["NL"].id, fallback_shared=False)).get(3) is None
+    db.add(MaintenanceBudget(id=uuid.uuid4(), year=_YEAR, month=3, amount=42.0, plant_id=p["NL"].id))
+    await db.flush()
+    assert (await _budgets_for(db, _YEAR, p["NL"].id, fallback_shared=False)).get(3) == 42.0

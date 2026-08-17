@@ -106,8 +106,14 @@ def main() -> int:
     check(status == 200 and out["total"] == 0, "NL context shows no QC machines")
     status, out = req("GET", "/api/inventory/items?limit=1", at, plant=nl)
     check(status == 200 and out["total"] == 0, "NL context shows no QC stock (isolated pool)")
-    status, _ = req("GET", "/api/intelligence/latest?language=en", at, plant=nl)
-    check(status == 404, "NL context sees no legacy QC insights")
+    # NL generates its own insights since the intelligence ladder went active
+    # there — the invariant is plant purity, not absence.
+    status, out = req("GET", "/api/intelligence/latest?language=en", at, plant=nl)
+    check(status == 404 or (status == 200 and (out or {}).get("plant_id") == nl),
+          "NL context sees only NL insights (never QC ones)")
+    status, out = req("GET", "/api/costs/pnl?year=2026", at, plant=nl)
+    check(status == 200 and (out or {}).get("source") == "internal" and not (out or {}).get("fiscal"),
+          "NL cost page is plant-scoped (never inherits the SAP/QC ledger)")
 
     # 7. Admin regression: both QC contexts respond and differ
     _, a_qs = req("GET", "/api/wo/dashboard", at, plant=qs)

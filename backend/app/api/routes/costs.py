@@ -8,6 +8,7 @@ are gated by the `costs` resource guard at router registration.
 import io
 import re
 from calendar import monthrange
+from dataclasses import dataclass
 from datetime import date
 from typing import List, Optional
 from uuid import UUID
@@ -128,8 +129,9 @@ async def _resolve_site(db: AsyncSession, ctx: PlantContext, site: Optional[str]
     """Constrain the QS/QM site filter to the caller's plant memberships.
     Members of both Quebec plants (and corporate) keep the free choice,
     including the combined view (None). Single-site users are locked to their
-    plant's site; requesting the other one is refused. Phase 3 replaces the
-    name-rule site entirely with the plant_id columns."""
+    plant's site; requesting the other one is refused. Only reached when the
+    ACTIVE plant is a Quebec one — any other plant takes the strict plant_id
+    scope in _resolve_scope instead."""
     codes = set((await db.execute(
         select(Plant.code).where(Plant.id.in_(list(ctx.allowed_plant_ids)))
     )).scalars().all())
@@ -169,6 +171,42 @@ def _row_site_ok(row_plant_id, cost_center: Optional[str], site: Optional[str], 
     return _site_ok(cost_center, site)
 
 
+@dataclass(frozen=True)
+class Scope:
+    """Resolved cost scope for one request. The Quebec plants (QS/QM) share one
+    cost universe — the SAP fiscal ledger, the shared budget rows — refined by
+    `site` (None = the combined QS+QM view). Any OTHER active plant (e.g. Las
+    Vegas) is scoped strictly by its own plant_id: only rows stamped with that
+    plant count, and the Quebec ledger (including legacy NULL-plant rows, which
+    all predate multi-plant and belong to Quebec) never leaks in."""
+    site: Optional[str] = None
+    plant_id: Optional[UUID] = None
+
+    @property
+    def is_plant(self) -> bool:
+        return self.plant_id is not None
+
+
+async def _resolve_scope(db: AsyncSession, ctx: PlantContext, site: Optional[str]) -> Scope:
+    """Scope the page to the ACTIVE plant (X-Plant-Id), not just memberships.
+    Active plant QS/QM → the Quebec universe, with the site filter constrained
+    by memberships (_resolve_site, unchanged). Any other active plant → strict
+    plant scoping (its own platform-tracked costs; `site` is ignored)."""
+    code = (await db.execute(select(Plant.code).where(Plant.id == ctx.plant_id))).scalar_one_or_none()
+    if code not in SITES:
+        return Scope(plant_id=ctx.plant_id)
+    return Scope(site=await _resolve_site(db, ctx, site))
+
+
+def _row_scope_ok(row_plant_id, cost_center: Optional[str], scope: Scope, site_ids: dict) -> bool:
+    """Whether one cost line belongs to the request's scope. Plant scope: only
+    rows stamped with exactly that plant (legacy NULL-plant rows are Quebec's).
+    Quebec scope: the existing plant-id-then-name-rule repartition."""
+    if scope.is_plant:
+        return row_plant_id == scope.plant_id
+    return _row_site_ok(row_plant_id, cost_center, scope.site, site_ids)
+
+
 class BudgetItem(BaseModel):
     month: int = Field(ge=1, le=12)
     amount: float = Field(ge=0)
@@ -179,17 +217,17 @@ class BudgetSave(BaseModel):
     items: List[BudgetItem]
 
 
-async def _monthly_actuals(db: AsyncSession, year: int, site: Optional[str] = None) -> dict[int, float]:
+async def _monthly_actuals(db: AsyncSession, year: int, scope: Scope) -> dict[int, float]:
     """Actual maintenance cost per month of `year`: WO cost transactions plus WO
-    parts plus approved intervention parts. Scoped to `site` with the SAME
-    repartition basis as _cc_actuals (attribute by the row's plant_id; fall back
-    to the cost-center name rule; a row outside QS/QM never counts)."""
+    parts plus approved intervention parts. Scoped with the SAME repartition
+    basis as _cc_actuals (_row_scope_ok: strict plant_id for a non-Quebec plant;
+    plant_id-then-name-rule inside the Quebec universe)."""
     site_ids = await _site_ids(db)
     mapping = await _dept_map(db)
     totals: dict[int, float] = {m: 0.0 for m in range(1, 13)}
 
     def add(cc, dept, m: int, amount: float, plant_id) -> None:
-        if _row_site_ok(plant_id, _resolve_cc_explicit(cc, dept, mapping), site, site_ids):
+        if _row_scope_ok(plant_id, _resolve_cc_explicit(cc, dept, mapping), scope, site_ids):
             totals[m] += amount
 
     rows = (await db.execute(
@@ -234,20 +272,23 @@ async def _monthly_actuals(db: AsyncSession, year: int, site: Optional[str] = No
     return totals
 
 
-def _site_plant_id(site: Optional[str], site_ids: dict):
-    """The plant a budget is stored under: a single site → that plant; the
-    combined QS+QM view (site None) → the shared row (plant_id NULL)."""
-    return site_ids.get(site) if site else None
+def _budget_plant_id(scope: Scope, site_ids: dict):
+    """The plant a budget is stored under: a non-Quebec plant → itself; a single
+    Quebec site → that plant; the combined QS+QM view → the shared row (NULL)."""
+    if scope.is_plant:
+        return scope.plant_id
+    return site_ids.get(scope.site) if scope.site else None
 
 
-async def _budgets_for(db: AsyncSession, year: int, plant_id=None) -> dict[int, float]:
+async def _budgets_for(db: AsyncSession, year: int, plant_id=None, fallback_shared: bool = True) -> dict[int, float]:
     """Budget for a plant (or the shared NULL row when plant_id is None). A
-    single-site view with no plant-specific budget falls back to the shared row."""
+    Quebec single-site view with no plant-specific budget falls back to the
+    shared row; a non-Quebec plant never does (the shared row is Quebec's)."""
     cond = MaintenanceBudget.plant_id.is_(None) if plant_id is None else MaintenanceBudget.plant_id == plant_id
     rows = (await db.execute(
         select(MaintenanceBudget).where(MaintenanceBudget.year == year, cond)
     )).scalars().all()
-    if not rows and plant_id is not None:
+    if not rows and plant_id is not None and fallback_shared:
         rows = (await db.execute(
             select(MaintenanceBudget).where(MaintenanceBudget.year == year, MaintenanceBudget.plant_id.is_(None))
         )).scalars().all()
@@ -263,15 +304,17 @@ async def cost_summary(
     current_user: User = Depends(get_current_user),
 ):
     """Budget vs actual for one year, month by month. `ytd_*` stop at the current
-    month for the current year (full year otherwise). Scoped to the caller's
-    plant/site — a plant outside the QS/QM cost universe (e.g. NL) is refused."""
-    site = await _resolve_site(db, ctx, site)
+    month for the current year (full year otherwise). Scoped to the ACTIVE
+    plant — Quebec plants see the QS/QM universe, any other plant (e.g. Las
+    Vegas) sees strictly its own plant-stamped costs and budget."""
+    scope = await _resolve_scope(db, ctx, site)
     today = date.today()
     if year is None:
         year = today.year
     site_ids = await _site_ids(db)
-    actuals = await _monthly_actuals(db, year, site)
-    budgets = await _budgets_for(db, year, _site_plant_id(site, site_ids))
+    actuals = await _monthly_actuals(db, year, scope)
+    budgets = await _budgets_for(db, year, _budget_plant_id(scope, site_ids),
+                                 fallback_shared=not scope.is_plant)
 
     last_month = today.month if year == today.year else (12 if year < today.year else 0)
     months = [
@@ -297,9 +340,10 @@ async def get_budgets(
     ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    site = await _resolve_site(db, ctx, site)
+    scope = await _resolve_scope(db, ctx, site)
     site_ids = await _site_ids(db)
-    budgets = await _budgets_for(db, year, _site_plant_id(site, site_ids))
+    budgets = await _budgets_for(db, year, _budget_plant_id(scope, site_ids),
+                                 fallback_shared=not scope.is_plant)
     return [{"month": m, "amount": budgets.get(m, 0.0)} for m in range(1, 13)]
 
 
@@ -311,11 +355,12 @@ async def save_budgets(
     ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    """Upsert the monthly budget amounts for a year, under the caller's site
-    (single site → that plant; combined QS+QM view → the shared row)."""
-    site = await _resolve_site(db, ctx, site)
+    """Upsert the monthly budget amounts for a year, under the caller's scope
+    (non-Quebec plant → its own rows; single Quebec site → that plant; combined
+    QS+QM view → the shared row)."""
+    scope = await _resolve_scope(db, ctx, site)
     site_ids = await _site_ids(db)
-    plant_id = _site_plant_id(site, site_ids)
+    plant_id = _budget_plant_id(scope, site_ids)
     cond = MaintenanceBudget.plant_id.is_(None) if plant_id is None else MaintenanceBudget.plant_id == plant_id
     existing = {
         b.month: b for b in (await db.execute(
@@ -329,7 +374,7 @@ async def save_budgets(
         else:
             db.add(MaintenanceBudget(year=data.year, month=item.month, amount=item.amount, plant_id=plant_id))
     await db.commit()
-    budgets = await _budgets_for(db, data.year)
+    budgets = await _budgets_for(db, data.year, plant_id, fallback_shared=not scope.is_plant)
     return [{"month": m, "amount": budgets.get(m, 0.0)} for m in range(1, 13)]
 
 
@@ -372,7 +417,7 @@ def _scope_of(wo_type) -> str:
     return "capex" if wt in CAPEX_WO_TYPES else "opex"
 
 
-async def _cc_actuals(db: AsyncSession, mmap: MonthsMap, site: Optional[str] = None) -> dict[str, dict]:
+async def _cc_actuals(db: AsyncSession, mmap: MonthsMap, scope: Scope) -> dict[str, dict]:
     """Per cost center and scope (opex | capex): actuals per months-map slot [12]
     and a by-expense-type breakdown, each type also [12] (so the client can
     slice by period). Costs group by the equipment department, mapped to a cost
@@ -384,12 +429,12 @@ async def _cc_actuals(db: AsyncSession, mmap: MonthsMap, site: Optional[str] = N
     years = _map_years(mmap)
     out: dict[str, dict] = {}
 
-    def add(cc: str, scope: str, y: int, m: int, amount: float, ttype: str, plant_id=None) -> None:
+    def add(cc: str, kind: str, y: int, m: int, amount: float, ttype: str, plant_id=None) -> None:
         i = slots.get((y, m))
-        if i is None or ttype == "labor" or not _row_site_ok(plant_id, cc, site, site_ids):
+        if i is None or ttype == "labor" or not _row_scope_ok(plant_id, cc, scope, site_ids):
             return
         cc_b = out.setdefault(cc, {k: {"monthly": [0.0] * 12, "by_type": {}} for k in KINDS})
-        b = cc_b[scope]
+        b = cc_b[kind]
         b["monthly"][i] += amount
         b["by_type"].setdefault(ttype, [0.0] * 12)[i] += amount
 
@@ -446,7 +491,7 @@ async def _cc_actuals(db: AsyncSession, mmap: MonthsMap, site: Optional[str] = N
     return out
 
 
-async def _wo_type_actuals(db: AsyncSession, mmap: MonthsMap, site: Optional[str] = None) -> dict[str, dict[str, list]]:
+async def _wo_type_actuals(db: AsyncSession, mmap: MonthsMap, scope: Scope) -> dict[str, dict[str, list]]:
     """Plant-wide actuals grouped by work-order type (corrective, preventive, …),
     each carrying a by-expense-type breakdown per months-map slot [12].
     Intervention parts count as corrective — kiosk interventions are reactive by
@@ -462,7 +507,7 @@ async def _wo_type_actuals(db: AsyncSession, mmap: MonthsMap, site: Optional[str
 
     def add(wo_type: str, expense: str, cc: str, y: int, m: int, amount: float, plant_id=None) -> None:
         i = slots.get((y, m))
-        if i is None or expense == "labor" or not _row_site_ok(plant_id, cc, site, site_ids):
+        if i is None or expense == "labor" or not _row_scope_ok(plant_id, cc, scope, site_ids):
             return
         out.setdefault(wo_type, {}).setdefault(expense, [0.0] * 12)[i] += amount
 
@@ -519,7 +564,7 @@ async def _wo_type_actuals(db: AsyncSession, mmap: MonthsMap, site: Optional[str
     return out
 
 
-async def _daily_actuals(db: AsyncSession, year: int, month: int, site: Optional[str] = None) -> dict[str, dict]:
+async def _daily_actuals(db: AsyncSession, year: int, month: int, scope: Scope) -> dict[str, dict]:
     """Plant-wide actuals per day of (year, month), split by scope (opex | capex),
     each with an expense-type breakdown (also daily). Same rules as the P&L:
     internal labor excluded, scope from the WO type, intervention parts are
@@ -531,7 +576,7 @@ async def _daily_actuals(db: AsyncSession, year: int, month: int, site: Optional
     out: dict[str, dict] = {k: {"daily": [0.0] * ndays, "by_type": {}} for k in KINDS}
 
     def add(wo_type, expense: str, cc: str, day: int, amount: float, plant_id=None) -> None:
-        if expense == "labor" or not (1 <= day <= ndays) or not _row_site_ok(plant_id, cc, site, site_ids):
+        if expense == "labor" or not (1 <= day <= ndays) or not _row_scope_ok(plant_id, cc, scope, site_ids):
             return
         b = out[_scope_of(wo_type)]
         b["daily"][day - 1] += amount
@@ -588,7 +633,7 @@ async def _daily_actuals(db: AsyncSession, year: int, month: int, site: Optional
     return out
 
 
-async def _cc_budgets_map(db: AsyncSession, mmap: MonthsMap, site: Optional[str] = None) -> dict[str, dict[str, list]]:
+async def _cc_budgets_map(db: AsyncSession, mmap: MonthsMap, scope: Scope) -> dict[str, dict[str, list]]:
     """Per cost center: budget per months-map slot [12] per kind (opex | capex)."""
     site_ids = await _site_ids(db)
     slots = _slot_index(mmap)
@@ -597,7 +642,7 @@ async def _cc_budgets_map(db: AsyncSession, mmap: MonthsMap, site: Optional[str]
         select(CostCenterBudget).where(CostCenterBudget.year.in_(_map_years(mmap)))
     )).scalars().all():
         i = slots.get((b.year, b.month))
-        if i is None or not _row_site_ok(b.plant_id, b.cost_center, site, site_ids):
+        if i is None or not _row_scope_ok(b.plant_id, b.cost_center, scope, site_ids):
             continue
         kind = b.kind if b.kind in KINDS else "opex"
         arrs = out.setdefault(b.cost_center, {k: [0.0] * 12 for k in KINDS})
@@ -605,22 +650,25 @@ async def _cc_budgets_map(db: AsyncSession, mmap: MonthsMap, site: Optional[str]
     return out
 
 
-async def _sap_data(db: AsyncSession, fiscal_year: int, site: Optional[str] = None) -> Optional[dict]:
+async def _sap_data(db: AsyncSession, fiscal_year: int, scope: Scope) -> Optional[dict]:
     """SAP GL lines for a fiscal year, rolled up per cost center: budget/actual
     per fiscal slot [12] plus a by-account breakdown of the actuals and the
-    analyst comments. None when the fiscal year was never imported. When `site`
-    is set, only that site's cost centers are kept."""
+    analyst comments. None when the fiscal year was never imported — or when the
+    scope is a non-Quebec plant with no SAP lines of its own (the Quebec ledger
+    never leaks; such plants stay on the internal calendar-year series)."""
     site_ids = await _site_ids(db)
     lines = (await db.execute(
         select(SapCostLine).where(SapCostLine.fiscal_year == fiscal_year)
     )).scalars().all()
+    if scope.is_plant:
+        lines = [ln for ln in lines if ln.plant_id == scope.plant_id]
     if not lines:
         return None
     ccs: dict[str, dict] = {}
     tot_budget = [0.0] * 12
     tot_actual = [0.0] * 12
     for ln in lines:
-        if not (1 <= ln.pos <= 12) or not _row_site_ok(ln.plant_id, ln.cost_center, site, site_ids):
+        if not (1 <= ln.pos <= 12) or not _row_scope_ok(ln.plant_id, ln.cost_center, scope, site_ids):
             continue
         i = ln.pos - 1
         # Display labels carry the SAP codes ("63008000 R&M - Equipment").
@@ -648,7 +696,7 @@ async def _sap_data(db: AsyncSession, fiscal_year: int, site: Optional[str] = No
 OPEN_PO_STATUSES = ("sent", "confirmed")
 
 
-async def _commitments(db: AsyncSession, mmap: MonthsMap, site: Optional[str] = None) -> dict:
+async def _commitments(db: AsyncSession, mmap: MonthsMap, scope: Scope) -> dict:
     """Open-PO commitments per cost center and scope: amount per months-map slot
     [12]. Placed by the PO's expected delivery month (order_date as fallback);
     only sent/confirmed POs with a cost center count. Powers the forecast."""
@@ -664,9 +712,9 @@ async def _commitments(db: AsyncSession, mmap: MonthsMap, site: Optional[str] = 
                PurchaseOrder.total_amount, PurchaseOrder.status, PurchaseOrder.plant_id)
         .where(PurchaseOrder.cost_center.isnot(None))
     )).all()
-    for cc, scope, expected, order_date, amount, status, plant_id in rows:
+    for cc, po_scope, expected, order_date, amount, status, plant_id in rows:
         st = status.value if hasattr(status, "value") else status
-        if st not in OPEN_PO_STATUSES or not cc or not _row_site_ok(plant_id, cc, site, site_ids):
+        if st not in OPEN_PO_STATUSES or not cc or not _row_scope_ok(plant_id, cc, scope, site_ids):
             continue
         when = expected or order_date
         if not when:
@@ -674,7 +722,7 @@ async def _commitments(db: AsyncSession, mmap: MonthsMap, site: Optional[str] = 
         i = slots.get((when.year, when.month))
         if i is None:
             continue
-        sc = "capex" if scope == "capex" else "opex"
+        sc = "capex" if po_scope == "capex" else "opex"
         arrs = per_cc.setdefault(cc.strip(), {k: [0.0] * 12 for k in KINDS})
         arrs[sc][i] += float(amount or 0)
         totals[sc][i] += float(amount or 0)
@@ -703,7 +751,7 @@ async def cost_pnl(
     db: AsyncSession = Depends(get_db),
     ctx: PlantContext = Depends(get_plant_context),
 ):
-    site = await _resolve_site(db, ctx, site)
+    scope = await _resolve_scope(db, ctx, site)
     """Budget vs actual by cost center for a year — the cost-control statement,
     split into OPEX and CAPEX scopes (CAPEX = improvement work orders; internal
     labor excluded from both — it lives in the informative by-machine view).
@@ -721,16 +769,17 @@ async def cost_pnl(
     if year is None:
         year = date.today().year
     await _ensure_seeded(db)
-    sap = await _sap_data(db, year, site)
-    # Fiscal mode is a property of the year, not the site: _sap_data only returns
-    # None when the year has no SAP lines at all (the site filter narrows the
-    # rolled-up cost centers, never whether the year is fiscal).
+    sap = await _sap_data(db, year, scope)
+    # Fiscal mode is a property of the year within the scope's universe: inside
+    # Quebec the site filter narrows the rolled-up cost centers, never whether
+    # the year is fiscal; a non-Quebec plant is fiscal only if it has SAP lines
+    # of its own (none today → calendar mode, internal source).
     fiscal = sap is not None
     mmap = _months_map(year, fiscal)
-    actuals = await _cc_actuals(db, mmap, site)
-    budgets = await _cc_budgets_map(db, mmap, site)
-    by_wo_type = await _wo_type_actuals(db, mmap, site)
-    commitments = await _commitments(db, mmap, site)
+    actuals = await _cc_actuals(db, mmap, scope)
+    budgets = await _cc_budgets_map(db, mmap, scope)
+    by_wo_type = await _wo_type_actuals(db, mmap, scope)
+    commitments = await _commitments(db, mmap, scope)
 
     cc_codes = await _cc_code_map(db)
 
@@ -811,7 +860,7 @@ async def cost_pnl(
     # Previous-year totals per scope, for the YoY comparison — previous fiscal
     # year from SAP when imported, platform-tracked otherwise.
     prev_mmap = _months_map(year - 1, fiscal)
-    prev_wo_type = await _wo_type_actuals(db, prev_mmap, site)
+    prev_wo_type = await _wo_type_actuals(db, prev_mmap, scope)
     prev_actual = {k: [0.0] * 12 for k in KINDS}
     for wt, expenses in prev_wo_type.items():
         scope = _scope_of(wt)
@@ -819,7 +868,7 @@ async def cost_pnl(
             for i in range(12):
                 prev_actual[scope][i] += arr[i]
     if fiscal:
-        prev_sap = await _sap_data(db, year - 1, site)
+        prev_sap = await _sap_data(db, year - 1, scope)
         prev_actual["opex"] = prev_sap["tot_actual"] if prev_sap else [0.0] * 12
 
     # Current-month daily actuals (only meaningful when today falls inside the
@@ -827,12 +876,15 @@ async def cost_pnl(
     today = date.today()
     current_month = None
     if (today.year, today.month) in _slot_index(mmap):
-        daily = await _daily_actuals(db, today.year, today.month, site)
+        daily = await _daily_actuals(db, today.year, today.month, scope)
         # Per-type totals cut at today — the monthly by_type arrays can't be used
         # for the landing bridge because they include future-dated lines.
+        # Keep net-negative types (credit memos): dropping them would make the
+        # by-type MTD sum diverge from the daily series the client projects from.
         mtd_by_type = {
             k: {ty: round(sum(arr[:today.day]), 2)
-                for ty, arr in daily[k]["by_type"].items() if sum(arr[:today.day]) > 0}
+                for ty, arr in daily[k]["by_type"].items()
+                if round(sum(arr[:today.day]), 2) != 0}
             for k in KINDS
         }
         current_month = {
@@ -866,7 +918,7 @@ async def cost_pnl(
     }
 
 
-async def _machine_actuals(db: AsyncSession, mmap: MonthsMap, site: Optional[str] = None) -> dict:
+async def _machine_actuals(db: AsyncSession, mmap: MonthsMap, scope: Scope) -> dict:
     """Per machine (equipment): actuals per months-map slot [12] and a
     by-expense-type breakdown. Same sources as the P&L, grouped by the work
     order's / intervention's equipment. Costs with no equipment fall under the
@@ -888,7 +940,7 @@ async def _machine_actuals(db: AsyncSession, mmap: MonthsMap, site: Optional[str
 
     def add(eid, name, code, cc, y, m, amount, ttype, plant_id=None):
         i = slots.get((y, m))
-        if i is None or not _row_site_ok(plant_id, cc, site, site_ids):
+        if i is None or not _row_scope_ok(plant_id, cc, scope, site_ids):
             return
         key = str(eid) if eid else "none"
         b = bucket(key, name, code)
@@ -979,13 +1031,13 @@ async def cost_by_machine(
     db: AsyncSession = Depends(get_db),
     ctx: PlantContext = Depends(get_plant_context),
 ):
-    site = await _resolve_site(db, ctx, site)
+    scope = await _resolve_scope(db, ctx, site)
     """Actual cost per machine for a year — monthly arrays + by-type breakdown.
     With `fiscal`, slots follow the SAP fiscal year (Dec of year-1 … Nov).
     The client slices the month range and sorts. Highest spenders first."""
     if year is None:
         year = date.today().year
-    data = await _machine_actuals(db, _months_map(year, fiscal), site)
+    data = await _machine_actuals(db, _months_map(year, fiscal), scope)
     machines = [{
         "equipment_id": b["equipment_id"],
         "name": b["name"] or "—",
@@ -1013,7 +1065,7 @@ async def cost_transactions(
     db: AsyncSession = Depends(get_db),
     ctx: PlantContext = Depends(get_plant_context),
 ):
-    site = await _resolve_site(db, ctx, site)
+    plant_scope = await _resolve_scope(db, ctx, site)
     """Individual cost lines behind the aggregates — the audit trail. Same three
     sources as the P&L, filterable by month range, cost center, machine or site.
     `scope` mirrors the Budget-vs-Actual view: opex/capex by WO type, internal
@@ -1036,7 +1088,7 @@ async def cost_transactions(
         cc = _resolve_cc_explicit(explicit, dept, mapping)
         if cost_center and cc != cost_center:
             return None
-        if not _row_site_ok(plant_id, cc, site, site_ids):
+        if not _row_scope_ok(plant_id, cc, plant_scope, site_ids):
             return None
         if equipment_id and (eq_id is None or eq_id != equipment_id):
             return None
@@ -1179,7 +1231,7 @@ async def cost_by_supplier(
     db: AsyncSession = Depends(get_db),
     ctx: PlantContext = Depends(get_plant_context),
 ):
-    site = await _resolve_site(db, ctx, site)
+    scope = await _resolve_scope(db, ctx, site)
     """Spend per supplier for a year — the supplier expense report. Aggregates
     purchase orders (by supplier, with their cost center and OPEX/CAPEX scope)
     and work-order parts that name a supplier. `status='received'` counts only
@@ -1214,22 +1266,23 @@ async def cost_by_supplier(
         .select_from(PurchaseOrder)
         .join(Supplier, PurchaseOrder.supplier_id == Supplier.id, isouter=True)
     )).all()
-    for onum, st, scope, cc, amount, odate, edate, rdate, po_plant, sname in rows:
+    for onum, st, po_scope, cc, amount, odate, edate, rdate, po_plant, sname in rows:
         st = st.value if hasattr(st, "value") else st
         if st not in counted:
             continue
         when = rdate or edate or odate
         if not when or (when.year, when.month) not in window:
             continue
-        # Stamped PO → attribute by plant_id; legacy no-plant PO → original name
-        # rule, where a PO without a cost center can't be placed at a site.
-        if po_plant is not None:
-            if not _row_site_ok(po_plant, cc, site, site_ids):
+        # Stamped PO (or a plant-scoped view) → attribute by plant_id; legacy
+        # no-plant PO under a Quebec site filter → original name rule, where a
+        # PO without a cost center can't be placed at a site.
+        if scope.is_plant or po_plant is not None:
+            if not _row_scope_ok(po_plant, cc, scope, site_ids):
                 continue
-        elif site and (not cc or _site_of(cc) != site):
+        elif scope.site and (not cc or _site_of(cc) != scope.site):
             continue
         amt = float(amount or 0)
-        sc = "capex" if scope == "capex" else "opex"
+        sc = "capex" if po_scope == "capex" else "opex"
         s = row((sname or "").strip() or "—")
         s["po_total"] += amt
         s["po_count"] += 1
@@ -1257,7 +1310,7 @@ async def cost_by_supplier(
         if not created or (created.year, created.month) not in window:
             continue
         cc = _resolve_cc_explicit(wcc, dept, mapping)
-        if not _row_site_ok(wo_plant, cc, site, site_ids):
+        if not _row_scope_ok(wo_plant, cc, scope, site_ids):
             continue
         amt = float(total or 0)
         sc = _scope_of(wtype)
@@ -1284,7 +1337,7 @@ async def cost_by_supplier(
         })
     suppliers.sort(key=lambda r: -r["total"])
     return {
-        "year": year, "currency": "CAD", "site": site, "status": status,
+        "year": year, "currency": "CAD", "site": scope.site, "status": status,
         "total_amount": round(sum(r["total"] for r in suppliers), 2),
         "supplier_count": len(suppliers),
         "suppliers": suppliers,
@@ -1452,7 +1505,7 @@ async def get_cc_budgets(
     db: AsyncSession = Depends(get_db),
     ctx: PlantContext = Depends(get_plant_context),
 ):
-    site = await _resolve_site(db, ctx, site)
+    scope = await _resolve_scope(db, ctx, site)
     """Editable monthly budget grid per cost center. When the year was imported
     from SAP, the OPEX budget is the SAP ledger — return it read-only (fiscal
     Dec–Nov, with codes) instead of the manual grid, so it matches the Budget-vs-
@@ -1460,7 +1513,7 @@ async def get_cc_budgets(
     narrows the grid to one plant (QS / QM)."""
     codes = await _cc_code_map(db)
     if kind == "opex":
-        sap = await _sap_data(db, year, site)
+        sap = await _sap_data(db, year, scope)
         if sap:
             mmap = _months_map(year, True)
             rows = [{
@@ -1470,7 +1523,7 @@ async def get_cc_budgets(
             } for cc, d in sorted(sap["cost_centers"].items(), key=lambda kv: kv[0].lower())]
             return {"rows": rows, "read_only": True, "source": "sap",
                     "month_map": [{"year": y, "month": m} for y, m in mmap]}
-    rows = _cc_budget_rows(await _cc_budgets_map(db, _months_map(year, False), site), kind, codes)
+    rows = _cc_budget_rows(await _cc_budgets_map(db, _months_map(year, False), scope), kind, codes)
     return {"rows": rows, "read_only": False, "source": "internal", "month_map": None}
 
 
@@ -1478,18 +1531,25 @@ async def get_cc_budgets(
 async def save_cc_budgets(
     data: CCBudgetSave,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
     """Upsert monthly budget amounts per cost center for a year, per kind
     (opex | capex envelope). OPEX of a SAP-imported year is read-only (it comes
-    from the ledger) — reject the write."""
-    if data.kind == "opex" and await _sap_data(db, data.year):
+    from the ledger) — reject the write. A non-Quebec plant (e.g. Las Vegas)
+    keeps its own rows, stamped with its plant_id; Quebec rows stay on the
+    legacy NULL-plant + cost-center-name repartition."""
+    scope = await _resolve_scope(db, ctx, None)
+    if data.kind == "opex" and await _sap_data(db, data.year, scope):
         raise HTTPException(status_code=400, detail="opex_budget_from_sap")
+    plant_cond = (CostCenterBudget.plant_id == scope.plant_id) if scope.is_plant \
+        else CostCenterBudget.plant_id.is_(None)
     existing = {
         (b.cost_center, b.month): b
         for b in (await db.execute(
             select(CostCenterBudget).where(CostCenterBudget.year == data.year,
-                                           CostCenterBudget.kind == data.kind)
+                                           CostCenterBudget.kind == data.kind,
+                                           plant_cond)
         )).scalars().all()
     }
     for item in data.items:
@@ -1501,9 +1561,9 @@ async def save_cc_budgets(
             row.amount = item.amount
         else:
             db.add(CostCenterBudget(year=data.year, month=item.month, kind=data.kind,
-                                    cost_center=cc, amount=item.amount))
+                                    cost_center=cc, amount=item.amount, plant_id=scope.plant_id))
     await db.commit()
-    rows = _cc_budget_rows(await _cc_budgets_map(db, _months_map(data.year, False)), data.kind,
+    rows = _cc_budget_rows(await _cc_budgets_map(db, _months_map(data.year, False), scope), data.kind,
                            await _cc_code_map(db))
     return {"rows": rows, "read_only": False, "source": "internal", "month_map": None}
 

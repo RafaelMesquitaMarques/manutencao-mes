@@ -7,6 +7,12 @@
       "runtimeArgs": ["--prefix", "frontend", "run", "dev"],
       "port": 3000,
       "autoPort": true
+    },
+    {
+      "name": "tirage",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8321", "--directory", "C:/tirage"],
+      "port": 8321
     }
   ]
 }
