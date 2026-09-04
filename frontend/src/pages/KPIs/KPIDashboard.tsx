@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactECharts from 'echarts-for-react';
 import { Activity, Clock, CheckSquare, Gauge, Timer, Target, Zap, ShieldCheck } from 'lucide-react';
@@ -6,10 +6,13 @@ import {
   fetchKPISummary, fetchBacklog, fetchMTTR,
   fetchDowntimePareto, fetchOEETrend, fetchOEEByMachine, fetchEquipment,
 } from '../../api/workOrders';
+import { fetchDepartments } from '../../api/departments';
 import type {
   KPISummary, BacklogData, MTTRItem, Equipment,
   DowntimeParetoItem, DowntimeParetoSub, OEETrendPoint, OEEByMachineItem,
 } from '../../types';
+import { MultiSelect } from './reportUI';
+import type { MultiOption } from './reportUI';
 import { humanHours } from '../../utils/duration';
 
 const PERIOD_OPTIONS = [30, 90, 180];
@@ -35,7 +38,11 @@ export default function KPIDashboard() {
   const [customEnd, setCustomEnd] = useState('');
   const rangeActive = !!(customStart && customEnd && customStart <= customEnd);
   const [machines, setMachines] = useState<Equipment[]>([]);
-  const [machineId, setMachineId] = useState<string>('');
+  const [deptRegistry, setDeptRegistry] = useState<string[]>([]);
+  // Both filters combine as an AND server-side: departments narrow the scope,
+  // picked machines narrow it further. Empty = the whole plant.
+  const [machineIds, setMachineIds] = useState<string[]>([]);
+  const [departments, setDepartments] = useState<string[]>([]);
   const [summary, setSummary] = useState<KPISummary | null>(null);
   const [backlog, setBacklog] = useState<BacklogData | null>(null);
   const [mttr, setMttr] = useState<MTTRItem[]>([]);
@@ -51,19 +58,83 @@ export default function KPIDashboard() {
     fetchEquipment({ asset_type: 'production', limit: '200' })
       .then((items) => setMachines(items.filter((e) => e.active).sort((a, b) => a.name.localeCompare(b.name))))
       .catch(() => setMachines([]));
+    // Managed department registry (curated order); merged below with whatever the
+    // machines actually carry, so nothing on screen is unselectable.
+    fetchDepartments()
+      .then((ds) => setDeptRegistry(ds.map((d) => d.name)))
+      .catch(() => setDeptRegistry([]));
   }, []);
+
+  const deptOptions: MultiOption[] = useMemo(() => {
+    const counts = new Map<string, number>();
+    machines.forEach((m) => {
+      const d = m.department?.trim();
+      if (d) counts.set(d, (counts.get(d) ?? 0) + 1);
+    });
+    const extra = [...counts.keys()]
+      .filter((d) => !deptRegistry.includes(d))
+      .sort((a, b) => a.localeCompare(b));
+    return [...deptRegistry, ...extra].map((d) => ({
+      value: d,
+      label: d,
+      count: counts.get(d) || undefined,
+    }));
+  }, [machines, deptRegistry]);
+
+  // The machine picker follows the department filter: pick the areas first, then
+  // narrow to single machines inside them.
+  const shownMachines = useMemo(
+    () => (departments.length === 0
+      ? machines
+      : machines.filter((m) => m.department && departments.includes(m.department))),
+    [machines, departments],
+  );
+
+  const machineOptions: MultiOption[] = useMemo(
+    () => shownMachines.map((m) => ({
+      value: m.id,
+      label: m.name,
+      hint: [m.code, m.department].filter(Boolean).join(' · ') || undefined,
+    })),
+    [shownMachines],
+  );
+
+  // Drop machine picks that fall outside a newly chosen department, so the
+  // request always describes one coherent slice.
+  useEffect(() => {
+    const allowed = new Set(shownMachines.map((m) => m.id));
+    setMachineIds((prev) => {
+      const next = prev.filter((id) => allowed.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [shownMachines]);
+
+  const scope = useMemo(() => ({ machines: machineIds, departments }), [machineIds, departments]);
+
+  // What the numbers cover right now — a filter this consequential shouldn't be
+  // readable only from the two dropdown captions.
+  const scopeLabel = useMemo(() => {
+    if (departments.length === 0 && machineIds.length === 0) return '';
+    // A department also holds non-production assets (buildings, rolling stock)
+    // whose work orders still count, so one with no machine isn't empty — it
+    // simply gets no machine part.
+    const picked = machineIds.length ? machines.filter((m) => machineIds.includes(m.id)) : shownMachines;
+    const machinePart = picked.length === 1
+      ? picked[0].name
+      : picked.length > 1 ? t('kpis.scopeMachines', { n: picked.length }) : '';
+    return [departments.join(', '), machinePart].filter(Boolean).join(' · ');
+  }, [departments, machineIds, machines, shownMachines, t]);
 
   useEffect(() => {
     setLoading(true);
-    const mid = machineId || undefined;
     const range = rangeActive ? { start: customStart, end: customEnd } : undefined;
     Promise.allSettled([
-      fetchKPISummary(period, mid, range),
-      fetchBacklog(mid),
-      fetchMTTR(period, mid, range),
-      fetchDowntimePareto(period, mid, range),
-      fetchOEETrend(period, mid, range),
-      fetchOEEByMachine(period, range),
+      fetchKPISummary(period, scope, range),
+      fetchBacklog(scope),
+      fetchMTTR(period, scope, range),
+      fetchDowntimePareto(period, scope, range),
+      fetchOEETrend(period, scope, range),
+      fetchOEEByMachine(period, range, scope),
     ]).then(([s, b, m, p, tr, bm]) => {
       if (s.status === 'fulfilled') setSummary(s.value);
       if (b.status === 'fulfilled') setBacklog(b.value);
@@ -73,7 +144,7 @@ export default function KPIDashboard() {
       if (bm.status === 'fulfilled') setByMachine(bm.value);
       setLoading(false);
     });
-  }, [period, machineId, rangeActive, customStart, customEnd]);
+  }, [period, scope, rangeActive, customStart, customEnd]);
 
   const backlogOption = {
     backgroundColor: 'transparent',
@@ -99,13 +170,19 @@ export default function KPIDashboard() {
 
   const mttrOption = {
     backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: '{b}: {c} hrs' },
+    tooltip: {
+      trigger: 'axis', axisPointer: { type: 'shadow' },
+      formatter: (ps: { dataIndex: number; value: number }[]) => {
+        const m = mttr[ps[0].dataIndex];
+        return `${m.equipment}${m.code && m.code !== m.equipment ? ` (${m.code})` : ''}: ${ps[0].value}h`;
+      },
+    },
     grid: { left: '5%', right: '8%', top: '8%', bottom: '8%', containLabel: true },
     xAxis: { type: 'value', axisLabel: { color: '#94a3b8', formatter: '{value}h' }, splitLine: { lineStyle: { color: '#1e293b' } } },
     yAxis: {
       type: 'category',
-      data: mttr.map((m) => m.code),
-      axisLabel: { color: '#94a3b8' },
+      data: mttr.map((m) => m.equipment || m.code),
+      axisLabel: { color: '#94a3b8', width: 180, overflow: 'truncate' },
     },
     series: [{
       type: 'bar',
@@ -258,10 +335,16 @@ export default function KPIDashboard() {
   const bmRev = [...bmFiltered].reverse();
   const byMachineOption = {
     backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: '{b}: {c}%' },
+    tooltip: {
+      trigger: 'axis', axisPointer: { type: 'shadow' },
+      formatter: (ps: { dataIndex: number; value: number }[]) => {
+        const m = bmRev[ps[0].dataIndex];
+        return `${m.name}${m.code && m.code !== m.name ? ` (${m.code})` : ''}: ${ps[0].value}%`;
+      },
+    },
     grid: { left: '3%', right: '8%', top: '2%', bottom: '2%', containLabel: true },
     xAxis: { type: 'value', min: 0, max: 100, axisLabel: { color: '#94a3b8', formatter: '{value}%' }, splitLine: { lineStyle: { color: '#1e293b' } } },
-    yAxis: { type: 'category', data: bmRev.map((m) => m.code || m.name), axisLabel: { color: '#94a3b8' } },
+    yAxis: { type: 'category', data: bmRev.map((m) => m.name || m.code), axisLabel: { color: '#94a3b8', width: 180, overflow: 'truncate' } },
     series: [{
       type: 'bar',
       data: bmRev.map((m) => ({ value: m.oee_pct, itemStyle: { color: oeeColor(m.oee_pct), borderRadius: [0, 4, 4, 0] } })),
@@ -271,25 +354,37 @@ export default function KPIDashboard() {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Header — stacks on phones: two pickers plus presets plus a date range
+          never fit beside the title on a narrow screen. */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">{t('kpis.title')}</h1>
           <p className="text-gray-500 text-sm mt-0.5">{t('kpis.subtitle')}</p>
+          {scopeLabel && <p className="text-xs text-blue-400/90 mt-1">{scopeLabel}</p>}
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <select
-            value={machineId}
-            onChange={(e) => setMachineId(e.target.value)}
-            className="bg-[#0d1421] border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500"
-          >
-            <option value="">{t('kpis.allMachines')}</option>
-            {machines.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}{m.code ? ` (${m.code})` : ''}
-              </option>
-            ))}
-          </select>
+        <div className="flex flex-wrap items-center gap-3 sm:justify-end">
+          <MultiSelect
+            options={deptOptions}
+            selected={departments}
+            onChange={setDepartments}
+            placeholder={t('kpis.filterDepartments')}
+            searchPlaceholder={t('kpis.searchDepartment')}
+            emptyLabel={t('kpis.noMatch')}
+            allLabel={t('kpis.selectAll')}
+            noneLabel={t('kpis.selectNone')}
+            width="w-full sm:w-44"
+          />
+          <MultiSelect
+            options={machineOptions}
+            selected={machineIds}
+            onChange={setMachineIds}
+            placeholder={t('kpis.filterMachines')}
+            searchPlaceholder={t('kpis.searchMachine')}
+            emptyLabel={t('kpis.noMatch')}
+            allLabel={t('kpis.selectAll')}
+            noneLabel={t('kpis.selectNone')}
+            width="w-full sm:w-52"
+          />
           <div className="flex gap-1 bg-[#0d1421] border border-white/[0.06] rounded-lg p-1">
             {PERIOD_OPTIONS.map((days) => (
               <button
@@ -424,8 +519,8 @@ export default function KPIDashboard() {
         {subRows.length === 0 ? <Empty /> : <ReactECharts option={subOption} style={{ height: 420 }} theme="dark" />}
       </div>
 
-      {/* OEE by machine — plant-wide only (redundant when one machine is selected) */}
-      {!machineId && (
+      {/* OEE by machine — a one-bar chart adds nothing, so hide it on a single machine */}
+      {machineIds.length !== 1 && (
         <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
           <h3 className="text-sm font-semibold text-gray-300 mb-1">{t('kpis.oeeByMachine')}</h3>
           <p className="text-xs text-gray-600 mb-3">{t('kpis.oeeByMachineSub')}</p>

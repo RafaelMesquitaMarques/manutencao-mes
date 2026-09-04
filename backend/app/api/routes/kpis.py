@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, true
+from sqlalchemy import select, func, and_, or_, true, false
 from datetime import datetime, timedelta, timezone, date, time
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -16,6 +16,7 @@ from app.models.models import (
 from app.core.security import get_current_user
 from app.core.plant_context import PlantContext, get_plant_context
 from app.core.plant_scope import ensure_same_plant, plant_condition
+from app.services.mes_service import shift_length_minutes
 from app.services.work_calendar import working_dates
 
 router = APIRouter()
@@ -24,15 +25,17 @@ router = APIRouter()
 _DEFAULT_TZ = "America/Toronto"
 
 
-async def _range_tz(db: AsyncSession, machine_id: Optional[UUID]) -> ZoneInfo:
-    """Timezone to interpret a calendar range in — the machine's plant (or the
-    first plant), so a picked day means that local day, not a UTC day."""
+async def _range_tz(db: AsyncSession, machine_ids: Optional[List[UUID]] = None) -> ZoneInfo:
+    """Timezone to interpret a calendar range in — the picked machines' plant (or
+    the first plant), so a picked day means that local day, not a UTC day."""
     tzname = None
-    if machine_id:
-        m = await db.get(Machine, machine_id)
-        if m and m.plant_id:
-            p = await db.get(Plant, m.plant_id)
+    for mid in (machine_ids or []):
+        row = await db.get(Machine, mid) or await db.get(Equipment, mid)
+        if row is not None and getattr(row, "plant_id", None):
+            p = await db.get(Plant, row.plant_id)
             tzname = p.timezone if p else None
+            if tzname:
+                break
     if not tzname:
         tzname = (await db.execute(select(Plant.timezone).limit(1))).scalar()
     try:
@@ -57,46 +60,112 @@ def _window(period_days: int, start: Optional[date], end: Optional[date], tz: Zo
     return since, now, since.date(), now.date(), period_days
 
 
-async def _machine_eq_ids(db: AsyncSession, machine_id: Optional[UUID], ctx: PlantContext) -> Optional[set]:
-    """Equipment ids linked to a machine: explicit Machine.equipment_id plus
-    the shared UUID for machines auto-provisioned from equipment. A machine or
-    equipment id owned by a plant the caller cannot see 404s like a bogus id —
-    the KPI endpoints must not be usable as a cross-plant probe."""
-    if machine_id is None:
+class _Scope:
+    """The assets one KPI request covers, resolved once from its filters.
+
+    Both id sets matter: work orders and interventions point at EITHER an
+    equipment or a machine row, while stops and production logs are always
+    machine-side. Only about one machine in eight shares its UUID with its
+    equipment row, so a pick made in the Equipment-driven picker has to be
+    translated to the machine side too — otherwise its stops and OEE read empty.
+    """
+
+    __slots__ = ("machines", "equipment", "any")
+
+    def __init__(self, machines: set, equipment: set):
+        self.machines = machines
+        self.equipment = equipment
+        self.any = machines | equipment
+
+
+async def _resolve_scope(
+    db: AsyncSession,
+    machine_ids: Optional[List[UUID]],
+    departments: Optional[List[str]],
+    ctx: PlantContext,
+) -> Optional[_Scope]:
+    """Resolve the machine/department filters into a scope — None = whole plant.
+
+    `machine_ids` may carry machine ids, equipment ids or a mix (the KPI picker is
+    driven by the Equipment catalog); `departments` are the plain names stored on
+    Equipment/Machine, either side matching (a machine often carries none of its
+    own). The two filters are ANDed, like the productivity report: departments
+    narrow, explicitly picked machines narrow further.
+
+    An id owned by a plant the caller cannot see 404s like a bogus id — the KPI
+    endpoints must not be usable as a cross-plant probe. Filters that resolve to
+    nothing give an empty scope (no rows), never a silent plant-wide fallback.
+    """
+    picked = [m for m in (machine_ids or []) if m is not None]
+    depts = [d.strip() for d in (departments or []) if d and d.strip()]
+    if not picked and not depts:
         return None
-    eq_ids = {machine_id}
-    machine = await db.get(Machine, machine_id)
-    if machine:
-        ensure_same_plant(machine, ctx, detail="Machine not found")
-        if machine.equipment_id:
-            eq_ids.add(machine.equipment_id)
-    else:
-        eq = await db.get(Equipment, machine_id)
-        if eq:
-            ensure_same_plant(eq, ctx, detail="Machine not found")
-    return eq_ids
+
+    for mid in picked:
+        row = await db.get(Machine, mid) or await db.get(Equipment, mid)
+        if row is not None:
+            ensure_same_plant(row, ctx, detail="Machine not found")
+
+    m_q = (
+        select(Machine.id, Machine.equipment_id)
+        .outerjoin(Equipment, Machine.equipment_id == Equipment.id)
+        .where(plant_condition(Machine, ctx))
+    )
+    if picked:
+        m_q = m_q.where(or_(Machine.id.in_(picked), Machine.equipment_id.in_(picked)))
+    if depts:
+        m_q = m_q.where(or_(Machine.department.in_(depts), Equipment.department.in_(depts)))
+    machines, equipment = set(), set()
+    for mid, eq_id in (await db.execute(m_q)).all():
+        machines.add(mid)
+        if eq_id:
+            equipment.add(eq_id)
+
+    # The same filters from the equipment side, so an asset with no machine row
+    # still contributes its work orders, parts and costs.
+    e_q = (
+        select(Equipment.id)
+        .outerjoin(Machine, Machine.equipment_id == Equipment.id)
+        .where(plant_condition(Equipment, ctx))
+    )
+    if picked:
+        e_q = e_q.where(or_(Equipment.id.in_(picked), Machine.id.in_(picked)))
+    if depts:
+        e_q = e_q.where(or_(Equipment.department.in_(depts), Machine.department.in_(depts)))
+    equipment.update((await db.execute(e_q)).scalars().all())
+    return _Scope(machines, equipment)
 
 
-async def _machine_cond(db: AsyncSession, machine_id: Optional[UUID], ctx: PlantContext):
-    """WorkOrder filter: one visible machine, or the whole active plant."""
-    if machine_id is None:
+def _scope_mids(scope: Optional[_Scope]) -> Optional[List[UUID]]:
+    """Machine ids for the calendar/OEE helpers (None = every machine)."""
+    return None if scope is None else list(scope.machines)
+
+
+def _machine_cond(scope: Optional[_Scope], ctx: PlantContext):
+    """WorkOrder filter: the resolved scope, or the whole active plant."""
+    if scope is None:
         return plant_condition(WorkOrder, ctx)
-    eq_ids = await _machine_eq_ids(db, machine_id, ctx)
-    return or_(
-        WorkOrder.machine_id == machine_id,
-        WorkOrder.equipment_id.in_(list(eq_ids)),
-    )
+    if not scope.any:
+        return false()
+    ids = list(scope.any)
+    return or_(WorkOrder.machine_id.in_(ids), WorkOrder.equipment_id.in_(ids))
 
 
-async def _machine_int_cond(db: AsyncSession, machine_id: Optional[UUID], ctx: PlantContext):
-    """MachineIntervention filter: one visible machine, or the whole active plant."""
-    if machine_id is None:
+def _machine_int_cond(scope: Optional[_Scope], ctx: PlantContext):
+    """MachineIntervention filter: the resolved scope, or the whole active plant."""
+    if scope is None:
         return plant_condition(MachineIntervention, ctx)
-    eq_ids = await _machine_eq_ids(db, machine_id, ctx)
-    return or_(
-        MachineIntervention.machine_id == machine_id,
-        MachineIntervention.equipment_id.in_(list(eq_ids)),
-    )
+    if not scope.any:
+        return false()
+    ids = list(scope.any)
+    return or_(MachineIntervention.machine_id.in_(ids), MachineIntervention.equipment_id.in_(ids))
+
+
+def _machine_side_cond(model, scope: Optional[_Scope], ctx: PlantContext):
+    """Machine-side filter (stops, production logs) for the resolved scope."""
+    if scope is None:
+        return plant_condition(model, ctx)
+    return model.machine_id.in_(list(scope.machines)) if scope.machines else false()
 
 
 async def _parts_cost(db: AsyncSession, since, m_cond, i_cond, until=None) -> float:
@@ -121,28 +190,6 @@ async def _parts_cost(db: AsyncSession, since, m_cond, i_cond, until=None) -> fl
         )
     )).scalar() or 0.0
     return float(wo_parts) + float(int_parts)
-
-
-def _shift_minutes(shifts_config, shift_value: str) -> float:
-    """Length of one shift window (minutes) from a machine's shifts_config.
-    Handles overnight shifts (end < start). Falls back to 480 (8 h) when the
-    config is missing or unparseable."""
-    default = 480.0
-    cfg = shifts_config.get(shift_value) if isinstance(shifts_config, dict) else None
-    if not cfg:
-        return default
-    start, end = cfg.get("start"), cfg.get("end")
-    if not start or not end:
-        return default
-    try:
-        sh, sm = (int(x) for x in start.split(":"))
-        eh, em = (int(x) for x in end.split(":"))
-        mins = (eh * 60 + em) - (sh * 60 + sm)
-        if mins <= 0:
-            mins += 24 * 60            # overnight shift (e.g. 23:30 → 07:00)
-        return float(mins)
-    except (ValueError, AttributeError):
-        return default
 
 
 async def _oee_metrics(db: AsyncSession, machine_ids, since, until, start_date, end_date,
@@ -189,7 +236,7 @@ async def _oee_metrics(db: AsyncSession, machine_ids, since, until, start_date, 
     total_target = total_actual = total_reject = 0
     for l in logs:
         sv = l.shift.value if hasattr(l.shift, "value") else str(l.shift)
-        scheduled_min += _shift_minutes(cfgs.get(l.machine_id), sv)
+        scheduled_min += shift_length_minutes(cfgs.get(l.machine_id), sv)
         total_target += l.target_count or 0
         total_actual += l.actual_count or 0
         total_reject += l.reject_count or 0
@@ -241,7 +288,8 @@ async def _oee_metrics(db: AsyncSession, machine_ids, since, until, start_date, 
 @router.get("/summary")
 async def get_kpi_summary(
     period_days: int = Query(30, ge=1, le=365),
-    machine_id: Optional[UUID] = Query(None),
+    machine_id: Optional[List[UUID]] = Query(None, description="repeatable; machine or equipment ids"),
+    department: Optional[List[str]] = Query(None, description="repeatable; department names"),
     start: Optional[date] = Query(None),
     end: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
@@ -249,7 +297,8 @@ async def get_kpi_summary(
 ):
     tz = await _range_tz(db, machine_id)
     since, until, start_date, end_date, window_days = _window(period_days, start, end, tz)
-    m_cond = await _machine_cond(db, machine_id, ctx)
+    scope = await _resolve_scope(db, machine_id, department, ctx)
+    m_cond = _machine_cond(scope, ctx)
 
     # MTTR: corrective WO repair hours plus machine intervention durations,
     # skipping interventions whose ticket already produced a counted WO
@@ -268,7 +317,7 @@ async def get_kpi_summary(
     repair_samples = [float(r.repair_hours) for r in wo_repair_rows]
     counted_tickets = {r.ticket_id for r in wo_repair_rows if r.ticket_id}
 
-    i_cond = await _machine_int_cond(db, machine_id, ctx)
+    i_cond = _machine_int_cond(scope, ctx)
     int_rows = (await db.execute(
         select(
             MachineIntervention.intervention_duration_minutes,
@@ -357,7 +406,7 @@ async def get_kpi_summary(
                  WorkOrder.opened_at >= since, WorkOrder.opened_at <= until)
         )
     )).scalar() or 0.0
-    stop_cond = (MachineStop.machine_id == machine_id) if machine_id else plant_condition(MachineStop, ctx)
+    stop_cond = _machine_side_cond(MachineStop, scope, ctx)
     stop_minutes = (await db.execute(
         select(func.sum(MachineStop.duration_minutes)).where(
             and_(stop_cond, MachineStop.started_at >= since, MachineStop.started_at <= until,
@@ -374,29 +423,28 @@ async def get_kpi_summary(
         )
     )).scalar() or 0
 
-    if machine_id:
-        scope_machines = 1
+    if scope is not None:
+        scope_machines = len(scope.machines) or 1
     else:
         scope_machines = (await db.execute(
             select(func.count(Machine.id)).where(plant_condition(Machine, ctx))
         )).scalar() or 1
     # Capacity counts working-calendar days only (Mon-Fri minus holidays, plus
     # weekends/holidays that were actually worked or when count_weekends is on).
-    work_days = len(await working_dates(db, start_date, end_date,
-                                        [machine_id] if machine_id else None,
+    work_days = len(await working_dates(db, start_date, end_date, _scope_mids(scope),
                                         plant_id=ctx.plant_id))
     capacity_hours = max(scope_machines, 1) * max(work_days, 1) * 24.0
     operating_hours = max(capacity_hours - downtime_hours, 0.0)
     mtbf_hours = round(operating_hours / failures, 1) if failures > 0 else round(operating_hours, 1)
 
-    # ── OEE (TPM planned-time basis) — one machine or plant-wide ─────────────
-    oee = await _oee_metrics(db, [machine_id] if machine_id else None, since, until, start_date, end_date, ctx)
+    # ── OEE (TPM planned-time basis) — the picked machines, or plant-wide ────
+    oee = await _oee_metrics(db, _scope_mids(scope), since, until, start_date, end_date, ctx)
 
-    # Live status/operator for a single machine.
+    # Live status/operator — only meaningful when the scope is a single machine.
     current_status = None
     operator = None
-    if machine_id:
-        machine = await db.get(Machine, machine_id)
+    if scope is not None and len(scope.machines) == 1:
+        machine = await db.get(Machine, next(iter(scope.machines)))
         if machine:
             current_status = (
                 machine.current_status.value
@@ -427,12 +475,13 @@ async def get_kpi_summary(
 
 @router.get("/backlog")
 async def get_backlog(
-    machine_id: Optional[UUID] = Query(None),
+    machine_id: Optional[List[UUID]] = Query(None, description="repeatable; machine or equipment ids"),
+    department: Optional[List[str]] = Query(None, description="repeatable; department names"),
     db: AsyncSession = Depends(get_db),
     ctx: PlantContext = Depends(get_plant_context),
 ):
     now = datetime.now(timezone.utc)
-    m_cond = await _machine_cond(db, machine_id, ctx)
+    m_cond = _machine_cond(await _resolve_scope(db, machine_id, department, ctx), ctx)
     result = await db.execute(
         select(WorkOrder.id, WorkOrder.opened_at).where(
             and_(
@@ -466,7 +515,8 @@ async def get_backlog(
 @router.get("/mttr")
 async def get_mttr_by_equipment(
     period_days: int = Query(90, ge=1, le=365),
-    machine_id: Optional[UUID] = Query(None),
+    machine_id: Optional[List[UUID]] = Query(None, description="repeatable; machine or equipment ids"),
+    department: Optional[List[str]] = Query(None, description="repeatable; department names"),
     start: Optional[date] = Query(None),
     end: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
@@ -474,7 +524,8 @@ async def get_mttr_by_equipment(
 ):
     tz = await _range_tz(db, machine_id)
     since, until, _sd, _ed, _wd = _window(period_days, start, end, tz)
-    m_cond = await _machine_cond(db, machine_id, ctx)
+    scope = await _resolve_scope(db, machine_id, department, ctx)
+    m_cond = _machine_cond(scope, ctx)
 
     # WO-based repairs grouped by equipment
     wo_rows = (await db.execute(
@@ -501,7 +552,7 @@ async def get_mttr_by_equipment(
             counted_tickets.add(r.ticket_id)
 
     # Machine interventions grouped by machine, merged by display name
-    i_cond = await _machine_int_cond(db, machine_id, ctx)
+    i_cond = _machine_int_cond(scope, ctx)
     int_rows = (await db.execute(
         select(
             MachineIntervention.machine_id,
@@ -555,7 +606,8 @@ async def get_mttr_by_equipment(
 @router.get("/cost")
 async def get_cost_by_type(
     period_days: int = Query(30, ge=1, le=365),
-    machine_id: Optional[UUID] = Query(None),
+    machine_id: Optional[List[UUID]] = Query(None, description="repeatable; machine or equipment ids"),
+    department: Optional[List[str]] = Query(None, description="repeatable; department names"),
     start: Optional[date] = Query(None),
     end: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
@@ -563,7 +615,8 @@ async def get_cost_by_type(
 ):
     tz = await _range_tz(db, machine_id)
     since, until, start_date, end_date, _wd = _window(period_days, start, end, tz)
-    m_cond = await _machine_cond(db, machine_id, ctx)
+    scope = await _resolve_scope(db, machine_id, department, ctx)
+    m_cond = _machine_cond(scope, ctx)
     result = await db.execute(
         select(WOCost.transaction_type, func.sum(WOCost.amount).label("total"))
         .join(WorkOrder, WOCost.work_order_id == WorkOrder.id)
@@ -573,7 +626,7 @@ async def get_cost_by_type(
     rows = result.all()
     out = [{"type": row.transaction_type, "total": round(float(row.total), 2)} for row in rows]
 
-    i_cond = await _machine_int_cond(db, machine_id, ctx)
+    i_cond = _machine_int_cond(scope, ctx)
     parts_total = await _parts_cost(db, since, m_cond, i_cond, until)
     if parts_total:
         out.append({"type": "parts_used", "total": round(parts_total, 2)})
@@ -583,7 +636,8 @@ async def get_cost_by_type(
 @router.get("/downtime-pareto")
 async def get_downtime_pareto(
     period_days: int = Query(30, ge=1, le=365),
-    machine_id: Optional[UUID] = Query(None),
+    machine_id: Optional[List[UUID]] = Query(None, description="repeatable; machine or equipment ids"),
+    department: Optional[List[str]] = Query(None, description="repeatable; department names"),
     start: Optional[date] = Query(None),
     end: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
@@ -596,13 +650,10 @@ async def get_downtime_pareto(
     Uncategorized stops fall under a null category."""
     tz = await _range_tz(db, machine_id)
     since, until, _sd, _ed, _wd = _window(period_days, start, end, tz)
+    scope = await _resolve_scope(db, machine_id, department, ctx)
     cond = [MachineStop.started_at >= since, MachineStop.started_at <= until,
-            MachineStop.duration_minutes.isnot(None)]
-    if machine_id:
-        await _machine_eq_ids(db, machine_id, ctx)   # 404 on wrong-plant probes
-        cond.append(MachineStop.machine_id == machine_id)
-    else:
-        cond.append(plant_condition(MachineStop, ctx))
+            MachineStop.duration_minutes.isnot(None),
+            _machine_side_cond(MachineStop, scope, ctx)]
     # One row per (category × subcategory); fold into nested groups below.
     rows = (await db.execute(
         select(
@@ -664,7 +715,8 @@ async def get_downtime_pareto(
 @router.get("/oee-trend")
 async def get_oee_trend(
     period_days: int = Query(30, ge=1, le=365),
-    machine_id: Optional[UUID] = Query(None),
+    machine_id: Optional[List[UUID]] = Query(None, description="repeatable; machine or equipment ids"),
+    department: Optional[List[str]] = Query(None, description="repeatable; department names"),
     start: Optional[date] = Query(None),
     end: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
@@ -675,15 +727,11 @@ async def get_oee_trend(
     days (idle weekends/holidays) don't produce a bucket."""
     tz = await _range_tz(db, machine_id)
     since, until, start_date, end_date, _wd = _window(period_days, start, end, tz)
-    wdays = await working_dates(db, start_date, end_date,
-                                [machine_id] if machine_id else None,
+    scope = await _resolve_scope(db, machine_id, department, ctx)
+    wdays = await working_dates(db, start_date, end_date, _scope_mids(scope),
                                 plant_id=ctx.plant_id)
-    log_cond = [MachineProductionLog.date >= start_date, MachineProductionLog.date <= end_date]
-    if machine_id:
-        await _machine_eq_ids(db, machine_id, ctx)   # 404 on wrong-plant probes
-        log_cond.append(MachineProductionLog.machine_id == machine_id)
-    else:
-        log_cond.append(plant_condition(MachineProductionLog, ctx))
+    log_cond = [MachineProductionLog.date >= start_date, MachineProductionLog.date <= end_date,
+                _machine_side_cond(MachineProductionLog, scope, ctx)]
     logs = (await db.execute(
         select(
             MachineProductionLog.date, MachineProductionLog.machine_id,
@@ -701,11 +749,8 @@ async def get_oee_trend(
 
     d_expr = func.date(MachineStop.started_at)
     stop_cond = [MachineStop.started_at >= since, MachineStop.started_at <= until,
-                 MachineStop.duration_minutes.isnot(None)]
-    if machine_id:
-        stop_cond.append(MachineStop.machine_id == machine_id)
-    else:
-        stop_cond.append(plant_condition(MachineStop, ctx))
+                 MachineStop.duration_minutes.isnot(None),
+                 _machine_side_cond(MachineStop, scope, ctx)]
     stop_rows = (await db.execute(
         select(d_expr.label("d"), StopCategory.type, func.sum(MachineStop.duration_minutes))
         .select_from(MachineStop)
@@ -725,7 +770,7 @@ async def get_oee_trend(
     for l in logs:
         a = agg.setdefault(str(l.date), {"sched": 0.0, "target": 0, "actual": 0, "reject": 0})
         sv = l.shift.value if hasattr(l.shift, "value") else str(l.shift)
-        a["sched"] += _shift_minutes(cfgs.get(l.machine_id), sv)
+        a["sched"] += shift_length_minutes(cfgs.get(l.machine_id), sv)
         a["target"] += l.target_count or 0
         a["actual"] += l.actual_count or 0
         a["reject"] += l.reject_count or 0
@@ -749,18 +794,23 @@ async def get_oee_trend(
 @router.get("/oee-by-machine")
 async def get_oee_by_machine(
     period_days: int = Query(30, ge=1, le=365),
+    machine_id: Optional[List[UUID]] = Query(None, description="repeatable; machine or equipment ids"),
+    department: Optional[List[str]] = Query(None, description="repeatable; department names"),
     start: Optional[date] = Query(None),
     end: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
     ctx: PlantContext = Depends(get_plant_context),
 ):
-    """Per-machine OEE for the period — worst first, so problem machines surface."""
-    tz = await _range_tz(db, None)
+    """Per-machine OEE for the period — worst first, so problem machines surface.
+    Honours the same machine/department filters, so the ranking stays inside the
+    slice the rest of the page describes (one machine → a one-bar chart)."""
+    tz = await _range_tz(db, machine_id)
     since, until, start_date, end_date, _wd = _window(period_days, start, end, tz)
+    scope = await _resolve_scope(db, machine_id, department, ctx)
     mids = [r[0] for r in (await db.execute(
         select(MachineProductionLog.machine_id)
         .where(MachineProductionLog.date >= start_date, MachineProductionLog.date <= end_date,
-               plant_condition(MachineProductionLog, ctx))
+               _machine_side_cond(MachineProductionLog, scope, ctx))
         .group_by(MachineProductionLog.machine_id)
     )).all()]
     if not mids:

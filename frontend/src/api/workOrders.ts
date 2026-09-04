@@ -376,53 +376,83 @@ export const setWOActionProof = async (
 
 // A custom calendar range (both ends, ISO YYYY-MM-DD) overrides period_days server-side.
 export type KpiRange = { start?: string; end?: string };
-const rangeParams = (r?: KpiRange) => (r?.start && r?.end ? { start: r.start, end: r.end } : {});
 
-export const fetchKPISummary = async (period_days = 30, machine_id?: string, range?: KpiRange): Promise<KPISummary> => {
+/**
+ * Machine/department narrowing shared by every KPI endpoint. `machines` carries
+ * machine OR equipment ids (the KPI picker is driven by the Equipment catalog and
+ * the backend resolves both sides); the two filters combine as an AND, so
+ * departments narrow and picked machines narrow further. A bare id string is
+ * still accepted for the single-machine callers (factory map…).
+ */
+export type KpiScope = { machines?: string[]; departments?: string[] };
+
+/**
+ * FastAPI reads list params as REPEATED keys (`machine_id=a&machine_id=b`), while
+ * axios would serialize an array as `machine_id[]=a` — so the query is built by
+ * hand, same as the productivity report.
+ */
+const kpiParams = (
+  scope?: KpiScope | string,
+  range?: KpiRange,
+  period_days?: number,
+): URLSearchParams => {
+  const p = new URLSearchParams();
+  if (period_days != null) p.set('period_days', String(period_days));
+  const s: KpiScope = typeof scope === 'string' ? { machines: [scope] } : (scope ?? {});
+  (s.machines ?? []).forEach((id) => p.append('machine_id', id));
+  (s.departments ?? []).forEach((d) => p.append('department', d));
+  if (range?.start && range?.end) {
+    p.set('start', range.start);
+    p.set('end', range.end);
+  }
+  return p;
+};
+
+export const fetchKPISummary = async (period_days = 30, scope?: KpiScope | string, range?: KpiRange): Promise<KPISummary> => {
   const { data } = await api.get<KPISummary>('/api/kpis/summary', {
-    params: { period_days, ...(machine_id ? { machine_id } : {}), ...rangeParams(range) },
+    params: kpiParams(scope, range, period_days),
   });
   return data;
 };
 
-export const fetchBacklog = async (machine_id?: string): Promise<BacklogData> => {
+export const fetchBacklog = async (scope?: KpiScope | string): Promise<BacklogData> => {
   const { data } = await api.get<BacklogData>('/api/kpis/backlog', {
-    params: machine_id ? { machine_id } : {},
+    params: kpiParams(scope),
   });
   return data;
 };
 
-export const fetchMTTR = async (period_days = 90, machine_id?: string, range?: KpiRange): Promise<MTTRItem[]> => {
+export const fetchMTTR = async (period_days = 90, scope?: KpiScope | string, range?: KpiRange): Promise<MTTRItem[]> => {
   const { data } = await api.get<MTTRItem[]>('/api/kpis/mttr', {
-    params: { period_days, ...(machine_id ? { machine_id } : {}), ...rangeParams(range) },
+    params: kpiParams(scope, range, period_days),
   });
   return Array.isArray(data) ? data : [];
 };
 
-export const fetchCostByType = async (period_days = 30, machine_id?: string): Promise<CostItem[]> => {
+export const fetchCostByType = async (period_days = 30, scope?: KpiScope | string): Promise<CostItem[]> => {
   const { data } = await api.get<CostItem[]>('/api/kpis/cost', {
-    params: { period_days, ...(machine_id ? { machine_id } : {}) },
+    params: kpiParams(scope, undefined, period_days),
   });
   return Array.isArray(data) ? data : [];
 };
 
-export const fetchDowntimePareto = async (period_days = 30, machine_id?: string, range?: KpiRange): Promise<DowntimeParetoItem[]> => {
+export const fetchDowntimePareto = async (period_days = 30, scope?: KpiScope | string, range?: KpiRange): Promise<DowntimeParetoItem[]> => {
   const { data } = await api.get<DowntimeParetoItem[]>('/api/kpis/downtime-pareto', {
-    params: { period_days, ...(machine_id ? { machine_id } : {}), ...rangeParams(range) },
+    params: kpiParams(scope, range, period_days),
   });
   return Array.isArray(data) ? data : [];
 };
 
-export const fetchOEETrend = async (period_days = 30, machine_id?: string, range?: KpiRange): Promise<OEETrendPoint[]> => {
+export const fetchOEETrend = async (period_days = 30, scope?: KpiScope | string, range?: KpiRange): Promise<OEETrendPoint[]> => {
   const { data } = await api.get<OEETrendPoint[]>('/api/kpis/oee-trend', {
-    params: { period_days, ...(machine_id ? { machine_id } : {}), ...rangeParams(range) },
+    params: kpiParams(scope, range, period_days),
   });
   return Array.isArray(data) ? data : [];
 };
 
-export const fetchOEEByMachine = async (period_days = 30, range?: KpiRange): Promise<OEEByMachineItem[]> => {
+export const fetchOEEByMachine = async (period_days = 30, range?: KpiRange, scope?: KpiScope | string): Promise<OEEByMachineItem[]> => {
   const { data } = await api.get<OEEByMachineItem[]>('/api/kpis/oee-by-machine', {
-    params: { period_days, ...rangeParams(range) },
+    params: kpiParams(scope, range, period_days),
   });
   return Array.isArray(data) ? data : [];
 };
