@@ -176,6 +176,13 @@ const Sidebar = ({ onClose }: SidebarProps) => {
             alt=""
             className={`object-contain ${collapsed ? 'h-9 w-auto' : 'h-11 w-auto'}`}
           />
+          {!collapsed && (
+            <img
+              src="/ninja-wordmark.png"
+              alt="Ninja"
+              className="h-9 w-auto object-contain"
+            />
+          )}
         </NavLink>
         {isDrawer ? (
           <button
