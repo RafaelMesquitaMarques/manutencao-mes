@@ -1415,6 +1415,9 @@ async def _run_migrations() -> None:
             END IF;
         END $$
         """,
+        # Cleaning checklist now links to a stop SUBcategory (e.g. Planned Stop →
+        # Nettoyage); stop_category_id stays as the legacy pre-subcategory link.
+        "ALTER TABLE cleaning_checklists ADD COLUMN IF NOT EXISTS stop_subcategory_id UUID REFERENCES stop_subcategories(id)",
     ]
     async with engine.begin() as conn:
         for stmt in stmts:

@@ -17,7 +17,7 @@ def _checklist_out(checklist: CleaningChecklist) -> dict:
     return {
         "id": str(checklist.id),
         "equipment_id": str(checklist.equipment_id) if checklist.equipment_id else None,
-        "stop_category_id": str(checklist.stop_category_id) if checklist.stop_category_id else None,
+        "stop_subcategory_id": str(checklist.stop_subcategory_id) if checklist.stop_subcategory_id else None,
         "name": checklist.name,
         "is_active": checklist.is_active,
     }
@@ -62,7 +62,7 @@ async def get_checklist_for_equipment(
 
 class ChecklistPatch(BaseModel):
     name: Optional[str] = None
-    stop_category_id: Optional[str] = None   # "" clears the link
+    stop_subcategory_id: Optional[str] = None   # "" clears the link
     is_active: Optional[bool] = None
     plant_id: Optional[str] = None
 
@@ -75,7 +75,7 @@ async def upsert_checklist(
     current_user: User = Depends(get_current_user),
 ):
     """Update checklist metadata (creates the checklist row if missing, so the
-    category link can be set before any item exists)."""
+    subcategory link can be set before any item exists)."""
     checklist = await _get_or_none(equipment_id, db)
     if not checklist:
         checklist = CleaningChecklist(equipment_id=equipment_id, name="Cleaning checklist", is_active=True)
@@ -86,14 +86,17 @@ async def upsert_checklist(
         checklist.name = body.name
     if body.is_active is not None:
         checklist.is_active = body.is_active
-    if body.stop_category_id is not None:
-        if body.stop_category_id == "":
-            checklist.stop_category_id = None
+    if body.stop_subcategory_id is not None:
+        if body.stop_subcategory_id == "":
+            checklist.stop_subcategory_id = None
         else:
             try:
-                checklist.stop_category_id = UUID(body.stop_category_id)
+                checklist.stop_subcategory_id = UUID(body.stop_subcategory_id)
             except ValueError:
-                raise HTTPException(400, "Invalid stop_category_id")
+                raise HTTPException(400, "Invalid stop_subcategory_id")
+        # Either way the legacy category link is superseded — clear it so the
+        # kiosk can never double-trigger from a stale category.
+        checklist.stop_category_id = None
     if body.plant_id:
         try:
             checklist.plant_id = UUID(body.plant_id)

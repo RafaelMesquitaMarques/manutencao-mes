@@ -123,7 +123,7 @@ export const reclassifyStop = async (
 // ── Cleaning checklist (kiosk) ────────────────────────────────────────────────
 
 export interface CleaningChecklistData {
-  checklist: { id: string; name: string; stop_category_id: string | null } | null;
+  checklist: { id: string; name: string; stop_subcategory_id: string | null } | null;
   items: { id: string; text: string; sort_order: number; is_required: boolean }[];
 }
 

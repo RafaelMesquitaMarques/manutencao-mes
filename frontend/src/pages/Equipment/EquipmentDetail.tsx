@@ -169,6 +169,7 @@ function CloneModal({ machines, sourceMachineId, title, hint, confirmKey, cancel
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [error, setError] = useState(false);
   const [query, setQuery] = useState('');
   const [assetFilter, setAssetFilter] = useState<CloneAssetFilter>('all');
   const [assetTypes, setAssetTypes] = useState<Record<string, 'production' | 'auxiliary'>>({});
@@ -198,10 +199,13 @@ function CloneModal({ machines, sourceMachineId, title, hint, confirmKey, cancel
   const run = async () => {
     if (!selected.length) return;
     setBusy(true);
+    setError(false);
     try {
       await onClone(selected);
       setDone(true);
       setTimeout(onClose, 1200);
+    } catch {
+      setError(true);
     } finally {
       setBusy(false);
     }
@@ -246,6 +250,7 @@ function CloneModal({ machines, sourceMachineId, title, hint, confirmKey, cancel
             <p className="text-center py-4 text-gray-600 text-sm">{t('equipment.cloneNoMachines')}</p>
           )}
         </div>
+        {error && <p className="text-xs text-red-400">{t('equipment.cloneError')}</p>}
         <div className="flex gap-2">
           <button onClick={run} disabled={busy || !selected.length}
             className={`flex-1 py-2.5 rounded-xl text-sm font-black transition-all ${done ? 'bg-green-600' : 'bg-blue-600 hover:bg-blue-500'} text-white disabled:opacity-50`}>
@@ -1636,7 +1641,7 @@ function SafetyChecklistConfigTab({ equipmentId }: { equipmentId: string }) {
 function CleaningChecklistConfigTab({ equipmentId, slug }: { equipmentId: string; slug: string }) {
   const { t } = useTranslation();
   const [items, setItems] = useState<SCItem[]>([]);
-  const [checklist, setChecklist] = useState<{ id: string; stop_category_id: string | null } | null>(null);
+  const [checklist, setChecklist] = useState<{ id: string; stop_subcategory_id: string | null } | null>(null);
   const [cats, setCats] = useState<StopCategoryOut[]>([]);
   const [loading, setLoading] = useState(true);
   const [newText, setNewText] = useState('');
@@ -1656,9 +1661,9 @@ function CleaningChecklistConfigTab({ equipmentId, slug }: { equipmentId: string
   useEffect(() => { load(); }, [load]);
   useEffect(() => { fetchMachineStopCategories(slug).then(setCats).catch(() => {}); }, [slug]);
 
-  const linkCategory = async (catId: string) => {
+  const linkSubcategory = async (subId: string) => {
     try {
-      await api.patch(`/api/settings/cleaning-checklists/${equipmentId}`, { stop_category_id: catId });
+      await api.patch(`/api/settings/cleaning-checklists/${equipmentId}`, { stop_subcategory_id: subId });
       await load();
     } catch { /* ignore */ }
   };
@@ -1707,20 +1712,24 @@ function CleaningChecklistConfigTab({ equipmentId, slug }: { equipmentId: string
       </div>
       <p className="text-xs text-gray-600">{t('equipment.cleaningChecklistDesc')}</p>
 
-      {/* Linked stop reason — which kiosk stop button opens this checklist */}
+      {/* Linked stop reason — which kiosk stop subcategory opens this checklist */}
       <div className="p-3 rounded-lg space-y-1.5" style={{ background: '#0d1117', border: '1px solid #21262d' }}>
         <label className="block text-xs text-gray-500">{t('equipment.cleaningLinkedReason')}</label>
         <select
-          value={checklist?.stop_category_id ?? ''}
-          onChange={(e) => linkCategory(e.target.value)}
+          value={checklist?.stop_subcategory_id ?? ''}
+          onChange={(e) => linkSubcategory(e.target.value)}
           className="w-full bg-[#0b1120] border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-200 outline-none focus:border-blue-500/50"
         >
           <option value="">{t('equipment.cleaningNoReason')}</option>
-          {cats.map((c) => (
-            <option key={c.id} value={c.id}>{c.name}</option>
+          {cats.filter((c) => (c.subcategories || []).length > 0).map((c) => (
+            <optgroup key={c.id} label={c.name}>
+              {(c.subcategories || []).map((s) => (
+                <option key={s.id} value={s.id}>{c.name} — {s.name}</option>
+              ))}
+            </optgroup>
           ))}
         </select>
-        {!checklist?.stop_category_id ? (
+        {!checklist?.stop_subcategory_id ? (
           <p className="text-xs text-amber-400/80">{t('equipment.cleaningNotLinkedWarning')}</p>
         ) : (
           <p className="text-xs text-gray-600">{t('equipment.cleaningLinkedReasonHint')}</p>

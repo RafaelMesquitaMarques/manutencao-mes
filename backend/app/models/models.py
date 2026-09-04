@@ -2324,14 +2324,16 @@ class InterventionChecklistResponse(Base):
 
 class CleaningChecklist(Base):
     """Operator cleaning task list, shown on the kiosk when a stop is declared
-    with the linked stop category (e.g. "Nettoyage"). One per equipment."""
+    with the linked stop subcategory (e.g. Planned Stop → "Nettoyage").
+    One per equipment. stop_category_id is the pre-subcategory legacy link."""
     __tablename__ = "cleaning_checklists"
-    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    plant_id         = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
-    equipment_id     = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True)
-    stop_category_id = Column(UUID(as_uuid=True), ForeignKey("stop_categories.id"), nullable=True)
-    name             = Column(String(200), default="Cleaning checklist")
-    is_active        = Column(Boolean, default=True)
+    id                  = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id            = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    equipment_id        = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True)
+    stop_category_id    = Column(UUID(as_uuid=True), ForeignKey("stop_categories.id"), nullable=True)
+    stop_subcategory_id = Column(UUID(as_uuid=True), ForeignKey("stop_subcategories.id"), nullable=True)
+    name                = Column(String(200), default="Cleaning checklist")
+    is_active           = Column(Boolean, default=True)
 
 
 class CleaningChecklistItem(Base):
