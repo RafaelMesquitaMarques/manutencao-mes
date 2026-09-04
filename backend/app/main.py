@@ -1663,10 +1663,6 @@ async def lifespan(app: FastAPI):
     temperature_task = asyncio.create_task(_temperature_loop())
     from app.services.predictive.runner import predictive_loop
     predictive_task = asyncio.create_task(predictive_loop())
-    # Preload the note-organizer fallback LLM (self-skips when the Anthropic
-    # API is the primary path; cold Ollama load measured at ~90s on CPU).
-    from app.services.note_organizer import warm_up as _warm_ollama
-    ollama_warmup_task = asyncio.create_task(_warm_ollama())
     yield
     task.cancel()
     of_watch_task.cancel()
@@ -1676,7 +1672,6 @@ async def lifespan(app: FastAPI):
     weather_task.cancel()
     temperature_task.cancel()
     predictive_task.cancel()
-    ollama_warmup_task.cancel()
     await engine.dispose()
 
 

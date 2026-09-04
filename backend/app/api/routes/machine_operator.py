@@ -441,9 +441,9 @@ class KioskNoteOrganizeBody(BaseModel):
 
 @router.post("/{machine_id}/notes/organize")
 async def organize_closing_note(machine_id: str, body: KioskNoteOrganizeBody, db: AsyncSession = Depends(get_db)):
-    """Tidy up the dictated closing note (same organizer as WO notes: Anthropic →
-    Ollama → local cleanup). Scoped under a real machine so the kiosk can only
-    call it from a valid machine screen."""
+    """Tidy up the dictated closing note (same organizer as WO notes: Anthropic
+    → local cleanup). Scoped under a real machine so the kiosk can only call it
+    from a valid machine screen."""
     await _resolve(machine_id, db)
     text, ai_used = await organize_note(body.text, body.language)
     return {"text": text, "ai_used": ai_used}

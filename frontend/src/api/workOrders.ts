@@ -145,8 +145,8 @@ export const checkoutWOIntervention = async (id: string): Promise<WOCheckinState
   return data;
 };
 
-// Token-free note tidy-up via the local LLM (Ollama). ai_used=false means the
-// model was offline and a light local cleanup ran instead.
+// AI note tidy-up (Anthropic API). ai_used=false means the API was
+// unavailable and a light local cleanup ran instead.
 export const organizeNote = async (
   text: string,
   language: string,

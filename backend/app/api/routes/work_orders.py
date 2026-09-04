@@ -52,9 +52,9 @@ async def organize_technician_note(
     body: NoteOrganizeRequest,
     current_user: User = Depends(get_current_user),
 ):
-    """Tidy up / organize a dictated technician note using the token-free local
-    LLM (Ollama). Degrades to a light local cleanup when the model is offline —
-    always returns usable text; `ai_used` says which path ran."""
+    """Tidy up / organize a dictated technician note with the Anthropic API.
+    Degrades to a light local cleanup when the API is unavailable — always
+    returns usable text; `ai_used` says which path ran."""
     text, ai_used = await organize_note(body.text, body.language)
     return NoteOrganizeResponse(text=text, ai_used=ai_used)
 
