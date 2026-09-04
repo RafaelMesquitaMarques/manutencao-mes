@@ -1669,6 +1669,16 @@ class MachineProductionLog(Base):
     date             = Column(Date, nullable=False)
     shift            = Column(SAEnum(AlertShift, native_enum=False), nullable=False)
     job_number       = Column(String(100), nullable=True)
+    # Operator credited with this shift's output. A production log row IS one
+    # machine·date·shift, which is also the grain at which an operator owns a
+    # machine — so the shift's pieces/rejects are that operator's productivity.
+    # Stamped from Machine.current_operator when the row is created (or when it
+    # is still unattributed); never rewritten afterwards, so a mid-shift handover
+    # does not silently re-credit the whole shift. `operator_name` is the SNAPSHOT
+    # to group by: the same person has a distinct MachineOperator row per machine,
+    # so operator_id would split one human across the machines they run.
+    operator_id      = Column(UUID(as_uuid=True), ForeignKey("machine_operators.id"), nullable=True)
+    operator_name    = Column(String(200), nullable=True)
     target_count     = Column(Integer, default=0)
     actual_count     = Column(Integer, default=0)
     reject_count     = Column(Integer, default=0)

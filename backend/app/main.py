@@ -1418,6 +1418,14 @@ async def _run_migrations() -> None:
         # Cleaning checklist now links to a stop SUBcategory (e.g. Planned Stop →
         # Nettoyage); stop_category_id stays as the legacy pre-subcategory link.
         "ALTER TABLE cleaning_checklists ADD COLUMN IF NOT EXISTS stop_subcategory_id UUID REFERENCES stop_subcategories(id)",
+        # Phase: productivity reporting — pieces per OPERATOR. Nothing linked output
+        # to a person before this: the shift log had no operator column and
+        # job_order_runs.operator_id was never written. The shift log is the right
+        # grain (one machine·date·shift = one operator's turn on that machine);
+        # operator_name is the snapshot we group by (see MachineProductionLog).
+        "ALTER TABLE machine_production_logs ADD COLUMN IF NOT EXISTS operator_id UUID REFERENCES machine_operators(id) ON DELETE SET NULL",
+        "ALTER TABLE machine_production_logs ADD COLUMN IF NOT EXISTS operator_name VARCHAR(200)",
+        "CREATE INDEX IF NOT EXISTS idx_prodlogs_operator ON machine_production_logs (operator_name, date DESC)",
     ]
     async with engine.begin() as conn:
         for stmt in stmts:

@@ -19,6 +19,7 @@ Everything it writes is TAGGED so it can be removed cleanly:
 Run inside the backend container:
     docker exec mes_backend python -m scripts.simulate_production --days 2
     docker exec mes_backend python -m scripts.simulate_production --clean   # wipe sim data
+    docker exec mes_backend python -m scripts.simulate_production --backfill-operators
 
 Re-running is idempotent: generate() wipes the previous sim data first.
 """
@@ -131,6 +132,12 @@ async def generate(db, days: int):
     for m in machines:
         a_rng, p_rng, q_rng = ARCH[arch[m.id]]
         m.current_operator = random.choice(OPERATORS)
+        # A crew per shift, stable for the whole window — that is what makes the
+        # "pieces per operator" breakdown mean something (one machine·date·shift
+        # log = one operator's turn). Names only: MachineOperator rows are curated
+        # per machine by the plant, the log stores the name snapshot it groups by.
+        crew = random.sample(OPERATORS, k=3)
+        shift_crew = {sh: crew[i] for i, (sh, _) in enumerate(SHIFTS)}
         # Give machines a day/evening/night shift so the timeline + pieces-per-hour
         # chart show proper shift windows (e.g. "Quart de jour 07:00–15:30").
         if not m.shifts_config:
@@ -148,6 +155,7 @@ async def generate(db, days: int):
                 oee = round(avail / 100 * perf / 100 * qual / 100 * 100, 1)
                 db.add(MachineProductionLog(
                     machine_id=m.id, date=d, shift=shift, job_number=f"{SIMJOB}{(m.code or 'M')[:10]}",
+                    operator_name=shift_crew[shift],
                     target_count=target_shift, actual_count=actual, reject_count=reject,
                     availability_pct=avail, performance_pct=perf, quality_pct=qual, oee_pct=oee,
                 ))
@@ -229,14 +237,49 @@ async def generate(db, days: int):
     print(f"  showcase problem machines (click these): {', '.join(m.name for m in problem)}")
 
 
+async def backfill_operators(db) -> None:
+    """Credit already-simulated shift logs to an operator, WITHOUT regenerating
+    anything else — the productivity report's "pieces per operator" breakdown has
+    no source for history written before the log carried an operator column.
+
+    Only fills rows where operator_name IS NULL, and only simulated ones (job_number
+    "SIM-…"), so real shop-floor records are never invented. Deterministic: the crew
+    is drawn per machine from its own id, so re-running is a no-op."""
+    logs = (await db.execute(
+        select(MachineProductionLog).where(
+            MachineProductionLog.operator_name.is_(None),
+            MachineProductionLog.job_number.like(f"{SIMJOB}%"),
+        )
+    )).scalars().all()
+    if not logs:
+        print("✓ Nothing to backfill (every simulated shift log already has an operator).")
+        return
+    crews: dict = {}
+    for log in logs:
+        crew = crews.get(log.machine_id)
+        if crew is None:
+            rng = random.Random(log.machine_id.int)
+            picks = rng.sample(OPERATORS, k=3)
+            crew = {sh: picks[i] for i, (sh, _) in enumerate(SHIFTS)}
+            crews[log.machine_id] = crew
+        log.operator_name = crew.get(log.shift, crew[SHIFTS[0][0]])
+    await db.commit()
+    print(f"✓ Credited {len(logs)} simulated shift log(s) to an operator "
+          f"across {len(crews)} machine(s).")
+
+
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=2, help="days of history (default 2)")
     ap.add_argument("--clean", action="store_true", help="remove all simulated data and exit")
+    ap.add_argument("--backfill-operators", action="store_true",
+                    help="only credit existing simulated shift logs to an operator")
     args = ap.parse_args()
     async with AsyncSessionLocal() as db:
         if args.clean:
             await clean(db); print("✓ Simulation data removed."); return
+        if args.backfill_operators:
+            await backfill_operators(db); return
         await generate(db, args.days)
 
 
