@@ -2191,7 +2191,12 @@ class InventoryMovement(Base):
     id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     stock_item_id    = Column(UUID(as_uuid=True), ForeignKey("stock_items.id"), nullable=False)
     work_order_id    = Column(UUID(as_uuid=True), nullable=True)  # soft ref
-    movement_type    = Column(String(20), nullable=False)  # deduction | addition | adjustment
+    movement_type    = Column(String(20), nullable=False)  # deduction | addition | return | adjustment
+    # WHY the count moved, which movement_type alone cannot say: a purchase
+    # receipt and a reversal are both entries, but only the receipt is money
+    # actually paid for these units. The weighted-average purchase cost counts
+    # source='purchase' and nothing else — see StockItem.average_cost.
+    source           = Column(String(20))   # purchase | reversal | None (unknown)
     quantity         = Column(Float, nullable=False)
     quantity_before  = Column(Float, nullable=False)
     quantity_after   = Column(Float, nullable=False)

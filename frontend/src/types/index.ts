@@ -1460,7 +1460,10 @@ export interface InventoryMovement {
   id:              string;
   stock_item_id:   string;
   work_order_id?:  string;
-  movement_type:   'deduction' | 'addition' | 'adjustment';
+  // 'return' = units coming back from a part line that did not keep them.
+  movement_type:   'deduction' | 'addition' | 'return' | 'adjustment';
+  // Why the count moved. Only 'purchase' is money actually paid for these units.
+  source?:         'purchase' | 'reversal' | null;
   quantity:        number;
   quantity_before: number;
   quantity_after:  number;

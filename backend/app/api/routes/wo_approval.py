@@ -101,7 +101,7 @@ async def _restock(db: AsyncSession, part, *, user_id, notes: str) -> None:
     settled = float(part.stock_deducted or 0.0)
     if not part.stock_item_id or settled <= 0:
         return
-    await InventoryService(db).add_stock(
+    await InventoryService(db).return_stock(
         part.stock_item_id, settled, user_id=user_id, notes=notes,
     )
     part.stock_deducted = 0.0
@@ -690,7 +690,7 @@ async def update_wo_part(
             # may have been capped by the count on hand.
             give_back = min(-delta, float(part.stock_deducted or 0.0))
             if give_back > 0:
-                await inv.add_stock(
+                await inv.return_stock(
                     part.stock_item_id, give_back,
                     user_id=current_user.id,
                     notes=f"Quantity reduced on WO {wo.wo_number} (approval edit)",

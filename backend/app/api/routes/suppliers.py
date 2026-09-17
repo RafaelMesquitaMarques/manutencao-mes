@@ -825,6 +825,10 @@ async def receive_purchase_order(
                 movement = InventoryMovement(
                     stock_item_id=poi.stock_item_id,
                     movement_type="addition",
+                    # The one place units are actually BOUGHT. Nothing else may
+                    # claim source='purchase' — the weighted average below reads
+                    # this marking and nothing else.
+                    source="purchase",
                     quantity=delta,
                     quantity_before=qty_before,
                     quantity_after=stock.quantity,
@@ -839,15 +843,25 @@ async def receive_purchase_order(
     po.received_date = date.today()
     po.total_amount  = round(sum(i.received_quantity * i.unit_cost for i in po.items), 2)
 
-    # Recompute the weighted-average cost from every received movement (incl. the
+    # Recompute the weighted-average cost from every PURCHASE RECEIPT (incl. the
     # new ones) — same formula as the startup backfill, so the two never drift.
+    #
+    # It filters on source, not on movement_type: an entry is not automatically a
+    # purchase. Units also come back from a rejected or shortened part line, and
+    # those are stamped with the catalog price they were consumed at, not with
+    # money paid. Counting them here would weight the average with units that
+    # were never bought and silently re-price future consumption, since
+    # average_cost is price source #2 in part_pricing.unit_cost_of.
+    #
+    # A whitelist is the safe direction: an entry of unknown provenance is left
+    # out of the average instead of quietly poisoning it.
     if affected_stock_ids:
         await db.flush()
         for sid in affected_stock_ids:
             rows = (await db.execute(
                 select(InventoryMovement.unit_cost, InventoryMovement.quantity).where(
                     InventoryMovement.stock_item_id == sid,
-                    InventoryMovement.movement_type == "addition",
+                    InventoryMovement.source == "purchase",
                 )
             )).all()
             pairs = [(uc, q) for uc, q in rows if uc is not None and (q or 0) > 0]
