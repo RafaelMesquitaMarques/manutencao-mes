@@ -901,6 +901,17 @@ class LaborRecord(Base):
     effective_hours   = Column(Float, nullable=True)
     overtime_approved = Column(Boolean, nullable=False, default=False)
     deducted_minutes  = Column(Float, nullable=True)
+    # ── Kiosk provenance (see services/kiosk_wo_bridge.py) ───────────────────
+    # A repair declared on the floor is clocked by the kiosk check-in ledger, not
+    # by the office Start button. These link the record back to the intervention
+    # (and to the exact check-in window) so the mirror is idempotent and the UI
+    # can tell floor-measured time from an office entry.
+    # ON DELETE SET NULL: provenance must never stop an intervention (or the
+    # simulator's cleanup) from being deleted — the labor stays, it just loses
+    # the link back.
+    intervention_id            = Column(UUID(as_uuid=True), ForeignKey("machine_interventions.id", ondelete="SET NULL"), nullable=True)
+    intervention_technician_id = Column(UUID(as_uuid=True), ForeignKey("intervention_technicians.id", ondelete="SET NULL"), nullable=True)
+
     work_order = relationship("WorkOrder", back_populates="labor_records")
     technician = relationship("Technician", back_populates="labor_records")
 

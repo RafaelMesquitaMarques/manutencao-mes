@@ -120,14 +120,17 @@ async def _close_linked_wo(ticket: MaintenanceTicket, db: AsyncSession) -> None:
             rec.hours_worked = round((now - started).total_seconds() / 3600, 4)
         await labor_time_service.apply_to_record(db, rec, work_order=wo)
 
-    # Repair time fallback from the WO's own start
-    if wo.status == WorkOrderStatus.completed and not wo.repair_hours and wo.started_at:
-        started = wo.started_at if wo.started_at.tzinfo else wo.started_at.replace(tzinfo=timezone.utc)
-        end = wo.completed_at if wo.completed_at.tzinfo else wo.completed_at.replace(tzinfo=timezone.utc)
-        minutes = int((end - started).total_seconds() / 60)
-        if minutes > 0:
-            wo.total_minutes = minutes
-            wo.repair_hours = round(minutes / 60.0, 4)
+    # Repair time + cost from the ledgers. This used to key off wo.started_at
+    # alone, which a kiosk-born WO never had (it was created `open` and jumped
+    # straight to completed) — so repair_hours/MTTR and total_cost stayed NULL
+    # for every floor repair. wo_totals falls back to the intervention's own
+    # measured duration and rolls the cost up too.
+    if wo.status == WorkOrderStatus.completed:
+        from app.services import wo_totals
+        # keep_existing_time: this is a side effect of a ticket closing, so it
+        # fills a blank repair time but never rewrites one that already stands
+        # (the old code guarded on `not wo.repair_hours` for the same reason).
+        await wo_totals.recompute(db, wo, keep_existing_time=True, now=now)
 
     # Close the machine's active intervention as well
     from app.services.intervention_sync import on_wo_finished

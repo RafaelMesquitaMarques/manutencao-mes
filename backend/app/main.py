@@ -1427,6 +1427,29 @@ async def _run_migrations() -> None:
         "ALTER TABLE machine_production_logs ADD COLUMN IF NOT EXISTS operator_id UUID REFERENCES machine_operators(id) ON DELETE SET NULL",
         "ALTER TABLE machine_production_logs ADD COLUMN IF NOT EXISTS operator_name VARCHAR(200)",
         "CREATE INDEX IF NOT EXISTS idx_prodlogs_operator ON machine_production_logs (operator_name, date DESC)",
+        # Phase: kiosk → work order bridge. A repair declared on the floor is
+        # clocked by the kiosk check-in ledger and its parts live on the
+        # intervention; nothing of that ever reached the WO, so Labor was empty,
+        # repair_hours/MTTR unstamped and cost 0 for every kiosk-driven repair.
+        # These columns carry the provenance of the mirrored rows.
+        # ON DELETE SET NULL on both: an intervention (or a simulator run) must
+        # stay deletable, and the labor itself outlives its provenance link.
+        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS intervention_id UUID REFERENCES machine_interventions(id) ON DELETE SET NULL",
+        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS intervention_technician_id UUID REFERENCES intervention_technicians(id) ON DELETE SET NULL",
+        "CREATE INDEX IF NOT EXISTS idx_labor_intervention_tech ON labor_records (intervention_technician_id)",
+        "CREATE INDEX IF NOT EXISTS idx_labor_intervention ON labor_records (intervention_id)",
+        # Part pricing falls back to the purchase history when no catalog price was
+        # ever set (the inventory XML carries none), so keep those columns filled.
+        """
+        UPDATE intervention_parts ip
+        SET unit_cost = COALESCE(s.unit_cost, s.average_cost, s.last_purchase_cost),
+            total_cost = COALESCE(s.unit_cost, s.average_cost, s.last_purchase_cost)
+                         * COALESCE(ip.quantity_used, 1)
+        FROM stock_items s
+        WHERE ip.stock_item_id = s.id
+          AND ip.unit_cost IS NULL
+          AND COALESCE(s.unit_cost, s.average_cost, s.last_purchase_cost) IS NOT NULL
+        """,
     ]
     async with engine.begin() as conn:
         for stmt in stmts:

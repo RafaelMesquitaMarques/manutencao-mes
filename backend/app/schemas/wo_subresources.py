@@ -32,6 +32,9 @@ class LaborOut(BaseModel):
     notes: Optional[str] = None
     started_at: Optional[datetime] = None
     stopped_at: Optional[datetime] = None
+    # Set when the record mirrors a kiosk check-in window (time measured on the
+    # floor) instead of an office entry — the UI labels those as such.
+    intervention_id: Optional[UUID] = None
     created_at: datetime
 
 

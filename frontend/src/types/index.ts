@@ -234,6 +234,7 @@ export interface LaborRecord {
   notes?: string;
   started_at?: string;
   stopped_at?: string;
+  intervention_id?: string | null;      // set → time measured by the kiosk check-in ledger
   created_at: string;
 }
 
