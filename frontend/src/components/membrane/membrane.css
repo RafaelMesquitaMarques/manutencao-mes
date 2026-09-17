@@ -1,0 +1,18 @@
+/* Living membrane behind the ninja core (Home HUD + Ask Ninja voice orb).
+   `screen` on the group means it can only ever LIGHTEN whatever is painted
+   beneath it, so the host's rings stay legible and in front; `screen` on the
+   children is what lets the light pools accumulate into dense knots where they
+   overlap instead of averaging out. The mask is static, so it costs one
+   rasterisation rather than a per-frame filter, and there is no CSS animation
+   here at all — all motion is rAF on raw DOM, so prefers-reduced-motion is
+   handled in JS and leaves the synchronously drawn first frame as a finished
+   still. */
+.mem-layer {
+  mix-blend-mode: screen;
+  isolation: isolate;
+  pointer-events: none;
+}
+.mem-layer path,
+.mem-layer ellipse { mix-blend-mode: screen; }
+.mem-body,
+.mem-mid { shape-rendering: geometricPrecision; }

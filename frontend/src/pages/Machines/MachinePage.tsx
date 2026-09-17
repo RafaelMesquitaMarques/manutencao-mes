@@ -925,7 +925,7 @@ export default function MachinePage() {
   const [confirmedTicket, setConfirmedTicket] = useState<string | null>(null);
 
   // Kiosk layout editor (supervisor+): drag/resize panels, saved per machine
-  const canEditLayout = useRole('supervisor', 'plant_manager', 'director', 'admin');
+  const canEditLayout = useRole('supervisor', 'maintenance_director', 'plant_manager', 'director', 'admin');
   const [editLayout, setEditLayout] = useState(false);
   const [layout, setLayout] = useState<Layout[]>(DEFAULT_KIOSK_LAYOUT);
 
@@ -968,9 +968,9 @@ export default function MachinePage() {
   const [modalBusy, setModalBusy]           = useState(false);
   const [stopTime, setStopTime]             = useState<string>('');
 
-  // Cleaning checklist — operator task list tied to one stop category (e.g.
-  // "Nettoyage"). Opens right after a stop with that category is declared (or a
-  // detected stop is justified with it); every tick is saved against the stop.
+  // Cleaning checklist — operator task list tied to one stop subcategory (e.g.
+  // Planned Stop → "Nettoyage"). Opens right after a stop with that subcategory is
+  // declared (or a detected stop is justified with it); every tick is saved against the stop.
   const [cleaningData, setCleaningData]       = useState<CleaningChecklistData | null>(null);
   const [cleaningStopId, setCleaningStopId]   = useState<string | null>(null);
   const [cleaningChecked, setCleaningChecked] = useState<Record<string, boolean>>({});
@@ -1086,8 +1086,8 @@ export default function MachinePage() {
       }
       setReclassTarget(null);
       setReclassCat(null);
-      // Stop justified as the cleaning category → same checklist flow as a new stop.
-      if (singleTarget && catId && catId === cleaningCatId && cleaningItems.length > 0) {
+      // Stop justified as the cleaning subcategory → same checklist flow as a new stop.
+      if (singleTarget && subId && subId === cleaningSubId && cleaningItems.length > 0) {
         openCleaningChecklist(singleTarget.id);
       }
       if (bulkStops) { setBulkStops(null); setSelResetKey((k) => k + 1); }
@@ -1222,13 +1222,13 @@ export default function MachinePage() {
   };
 
   // ── Cleaning checklist ──
-  const cleaningCatId = cleaningData?.checklist?.stop_category_id ?? null;
+  const cleaningSubId = cleaningData?.checklist?.stop_subcategory_id ?? null;
   const cleaningItems = cleaningData?.items ?? [];
-  // Open stop declared with the cleaning category → offer to (re)open its checklist.
+  // Open stop declared with the cleaning subcategory → offer to (re)open its checklist.
   // Union of today's stops and the displayed window (like the auto-prompt): a long
   // stop justified as cleaning may predate today and only live in timelineStops.
-  const openCleaningStop = (cleaningCatId && cleaningItems.length > 0)
-    ? [...stops, ...timelineStops].find((s) => !s.ended_at && s.category?.id === cleaningCatId) ?? null
+  const openCleaningStop = (cleaningSubId && cleaningItems.length > 0)
+    ? [...stops, ...timelineStops].find((s) => !s.ended_at && s.subcategory?.id === cleaningSubId) ?? null
     : null;
 
   const openCleaningChecklist = async (stopId: string) => {
@@ -1296,8 +1296,8 @@ export default function MachinePage() {
         try { await callMaintenance(machine.id, stopComment || undefined); } catch { /* non-blocking */ }
       }
       setShowModal(false);
-      // Stop declared with the cleaning category → show the operator's task list.
-      if (cleaningCatId && selectedCat?.id === cleaningCatId && cleaningItems.length > 0) {
+      // Stop declared with the cleaning subcategory → show the operator's task list.
+      if (cleaningSubId && selectedSub?.id === cleaningSubId && cleaningItems.length > 0) {
         openCleaningChecklist(res.id);
       }
       load();

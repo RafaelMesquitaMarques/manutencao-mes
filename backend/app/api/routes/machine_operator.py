@@ -15,10 +15,40 @@ from app.models.models import (
     InterventionChecklistResponse, InterventionPart, InterventionTechnician,
     StockItem, Technician, User,
 )
+import logging
+
+from app.services import kiosk_wo_bridge, part_pricing
 from app.services.note_organizer import organize_note
 from app.services.ticket_service import _next_ticket_number, _next_alert_number, sync_alert_from_ticket
 
 router = APIRouter(prefix="/api/machine-operator", tags=["Machine Operator"])
+
+logger = logging.getLogger(__name__)
+
+
+async def _mirror_to_work_order(hook, db: AsyncSession, intervention) -> None:
+    """Run a kiosk→WO bridge hook without ever failing the kiosk request.
+
+    What the mechanic taps must go through: declaring, starting and closing a
+    repair is the floor's job, and by completion time the ticket has already been
+    synced and its notifications sent. Mirroring the labor onto the office work
+    order is derived bookkeeping that ``scripts/backfill_kiosk_labor.py`` can
+    rebuild at any time, so a failure here is logged, not raised.
+
+    Runs inside a SAVEPOINT: swallowing the exception alone would leave the
+    session dirty and the kiosk's own commit would then fail with
+    PendingRollbackError. The savepoint rolls back just the mirror's writes and
+    leaves the kiosk transaction intact and committable."""
+    try:
+        async with db.begin_nested():
+            await hook(db, intervention)
+    except Exception:
+        logger.exception(
+            "kiosk→WO labor mirror failed for intervention %s (kiosk flow continues; "
+            "replay with scripts/backfill_kiosk_labor.py)",
+            getattr(intervention, "id", None),
+        )
+
 
 _STATUS_WAITING     = "waiting"
 _STATUS_IN_PROGRESS = "in_progress"
@@ -83,6 +113,22 @@ async def _last_intervention(machine_id, db: AsyncSession) -> Optional[MachineIn
         .limit(1)
     )
     return r.scalar_one_or_none()
+
+
+async def _intervention_of(machine, intervention_id: str, db: AsyncSession) -> MachineIntervention:
+    """Load an intervention and refuse it when it belongs to another machine.
+    The kiosk sends the id it happens to hold; without this check a part could be
+    booked onto another machine's repair (it happened)."""
+    try:
+        inv_id = UUID(intervention_id)
+    except (ValueError, TypeError):
+        raise HTTPException(400, "Invalid intervention_id")
+    intervention = await db.get(MachineIntervention, inv_id)
+    if not intervention:
+        raise HTTPException(404, "Intervention not found")
+    if intervention.machine_id and machine and intervention.machine_id != machine.id:
+        raise HTTPException(400, "intervention_machine_mismatch")
+    return intervention
 
 
 async def _checkins(db: AsyncSession, intervention_id) -> list[dict]:
@@ -312,6 +358,9 @@ async def start_intervention(machine_id: str, body: StartBody, db: AsyncSession 
                 ticket.started_at = intervention.started_at
             await sync_alert_from_ticket(ticket, db)
 
+    # The office WO is now really being worked on: in_progress + labor clock.
+    await _mirror_to_work_order(kiosk_wo_bridge.on_intervention_started, db, intervention)
+
     await db.commit()
     await db.refresh(intervention)
     return {"status": "started", "intervention": _intervention_dict(intervention, await _checkins(db, intervention.id))}
@@ -376,6 +425,8 @@ async def check_in_technician(machine_id: str, body: CheckInBody, db: AsyncSessi
         if not intervention.started_by_name:
             intervention.started_by_name = tech_name
             intervention.started_by_id = tech.user_id
+        await db.flush()
+        await _mirror_to_work_order(kiosk_wo_bridge.on_checkins_changed, db, intervention)
         await db.commit()
 
     return {"status": "checked_in", "intervention": _intervention_dict(intervention, await _checkins(db, intervention.id))}
@@ -401,6 +452,8 @@ async def check_out_technician(machine_id: str, body: CheckInBody, db: AsyncSess
     )).scalars().first()
     if open_row:
         open_row.checked_out_at = datetime.now(timezone.utc)
+        await db.flush()
+        await _mirror_to_work_order(kiosk_wo_bridge.on_checkins_changed, db, intervention)
         await db.commit()
     return {"status": "checked_out", "intervention": _intervention_dict(intervention, await _checkins(db, intervention.id))}
 
@@ -441,9 +494,9 @@ class KioskNoteOrganizeBody(BaseModel):
 
 @router.post("/{machine_id}/notes/organize")
 async def organize_closing_note(machine_id: str, body: KioskNoteOrganizeBody, db: AsyncSession = Depends(get_db)):
-    """Tidy up the dictated closing note (same organizer as WO notes: Anthropic →
-    Ollama → local cleanup). Scoped under a real machine so the kiosk can only
-    call it from a valid machine screen."""
+    """Tidy up the dictated closing note (same organizer as WO notes: Anthropic
+    → local cleanup). Scoped under a real machine so the kiosk can only call it
+    from a valid machine screen."""
     await _resolve(machine_id, db)
     text, ai_used = await organize_note(body.text, body.language)
     return {"text": text, "ai_used": ai_used}
@@ -510,6 +563,12 @@ async def complete_intervention(machine_id: str, body: CompleteBody, db: AsyncSe
         )
     )).scalars().all():
         open_ci.checked_out_at = now
+
+    # Mirror the measured repair onto the WO: labor records closed at this exact
+    # instant, then repair_hours / total_minutes / total_cost rolled up. Runs
+    # after the check-ins close so every window is final.
+    await db.flush()
+    await _mirror_to_work_order(kiosk_wo_bridge.on_intervention_completed, db, intervention)
 
     machine.last_maintenance_at = now
     # Do NOT assume production resumed. Close the maintenance downtime and repaint:
@@ -666,15 +725,12 @@ async def get_intervention_parts(
     intervention_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    await _resolve(machine_id, db)
-    try:
-        inv_id = UUID(intervention_id)
-    except ValueError:
-        raise HTTPException(400, "Invalid intervention_id")
+    machine, _ = await _resolve(machine_id, db)
+    intervention = await _intervention_of(machine, intervention_id, db)
 
     r = await db.execute(
         select(InterventionPart)
-        .where(InterventionPart.intervention_id == inv_id)
+        .where(InterventionPart.intervention_id == intervention.id)
         .order_by(InterventionPart.added_at)
     )
     parts = r.scalars().all()
@@ -707,15 +763,9 @@ class AddPartBody(BaseModel):
 
 @router.post("/{machine_id}/parts")
 async def add_intervention_part(machine_id: str, body: AddPartBody, db: AsyncSession = Depends(get_db)):
-    await _resolve(machine_id, db)
-    try:
-        inv_id = UUID(body.intervention_id)
-    except ValueError:
-        raise HTTPException(400, "Invalid intervention_id")
-
-    intervention = await db.get(MachineIntervention, inv_id)
-    if not intervention:
-        raise HTTPException(404, "Intervention not found")
+    machine, _ = await _resolve(machine_id, db)
+    intervention = await _intervention_of(machine, body.intervention_id, db)
+    inv_id = intervention.id
 
     stock_id = None
     if body.stock_item_id:
@@ -735,7 +785,7 @@ async def add_intervention_part(machine_id: str, body: AddPartBody, db: AsyncSes
             item_code = item_code or stock.code
             item_description = item_description or stock.description or stock.name
             unit = unit or stock.unit
-            unit_cost = stock.unit_cost
+            unit_cost = part_pricing.unit_cost_of(stock)
 
     part = InterventionPart(
         intervention_id=inv_id,
@@ -745,7 +795,7 @@ async def add_intervention_part(machine_id: str, body: AddPartBody, db: AsyncSes
         quantity_used=body.quantity_used,
         unit=unit,
         unit_cost=unit_cost,
-        total_cost=round(unit_cost * body.quantity_used, 2) if unit_cost is not None else None,
+        total_cost=part_pricing.line_total(unit_cost, body.quantity_used),
         approval_status="pending",
     )
     db.add(part)
@@ -768,7 +818,7 @@ async def add_intervention_part(machine_id: str, body: AddPartBody, db: AsyncSes
 
 @router.delete("/{machine_id}/parts/{part_id}", status_code=204)
 async def remove_intervention_part(machine_id: str, part_id: str, db: AsyncSession = Depends(get_db)):
-    await _resolve(machine_id, db)
+    machine, _ = await _resolve(machine_id, db)
     try:
         pid = UUID(part_id)
     except ValueError:
@@ -777,5 +827,10 @@ async def remove_intervention_part(machine_id: str, part_id: str, db: AsyncSessi
     part = await db.get(InterventionPart, pid)
     if not part:
         raise HTTPException(404, "Part not found")
+    await _intervention_of(machine, str(part.intervention_id), db)
+    if part.approval_status == "approved":
+        # Approval deducted the stock and booked the money; removing the line
+        # here would leave both dangling. Reject it in WO Approval instead.
+        raise HTTPException(400, "part_already_approved")
     await db.delete(part)
     await db.commit()

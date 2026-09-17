@@ -901,6 +901,16 @@ class LaborRecord(Base):
     effective_hours   = Column(Float, nullable=True)
     overtime_approved = Column(Boolean, nullable=False, default=False)
     deducted_minutes  = Column(Float, nullable=True)
+    # ── Kiosk provenance (see services/kiosk_wo_bridge.py) ───────────────────
+    # A repair declared on the floor is clocked by the kiosk check-in ledger, not
+    # by the office Start button. These link the record back to the intervention
+    # (and to the exact check-in window) so the mirror is idempotent and the UI
+    # can tell floor-measured time from an office entry.
+    # ON DELETE SET NULL: provenance must never stop an intervention (or the
+    # simulator's cleanup) from being deleted — the labor stays, it just loses
+    # the link back.
+    intervention_id            = Column(UUID(as_uuid=True), ForeignKey("machine_interventions.id", ondelete="SET NULL"), nullable=True)
+    intervention_technician_id = Column(UUID(as_uuid=True), ForeignKey("intervention_technicians.id", ondelete="SET NULL"), nullable=True)
 
     work_order = relationship("WorkOrder", back_populates="labor_records")
     technician = relationship("Technician", back_populates="labor_records")
@@ -1669,6 +1679,16 @@ class MachineProductionLog(Base):
     date             = Column(Date, nullable=False)
     shift            = Column(SAEnum(AlertShift, native_enum=False), nullable=False)
     job_number       = Column(String(100), nullable=True)
+    # Operator credited with this shift's output. A production log row IS one
+    # machine·date·shift, which is also the grain at which an operator owns a
+    # machine — so the shift's pieces/rejects are that operator's productivity.
+    # Stamped from Machine.current_operator when the row is created (or when it
+    # is still unattributed); never rewritten afterwards, so a mid-shift handover
+    # does not silently re-credit the whole shift. `operator_name` is the SNAPSHOT
+    # to group by: the same person has a distinct MachineOperator row per machine,
+    # so operator_id would split one human across the machines they run.
+    operator_id      = Column(UUID(as_uuid=True), ForeignKey("machine_operators.id"), nullable=True)
+    operator_name    = Column(String(200), nullable=True)
     target_count     = Column(Integer, default=0)
     actual_count     = Column(Integer, default=0)
     reject_count     = Column(Integer, default=0)
@@ -2324,14 +2344,16 @@ class InterventionChecklistResponse(Base):
 
 class CleaningChecklist(Base):
     """Operator cleaning task list, shown on the kiosk when a stop is declared
-    with the linked stop category (e.g. "Nettoyage"). One per equipment."""
+    with the linked stop subcategory (e.g. Planned Stop → "Nettoyage").
+    One per equipment. stop_category_id is the pre-subcategory legacy link."""
     __tablename__ = "cleaning_checklists"
-    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    plant_id         = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
-    equipment_id     = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True)
-    stop_category_id = Column(UUID(as_uuid=True), ForeignKey("stop_categories.id"), nullable=True)
-    name             = Column(String(200), default="Cleaning checklist")
-    is_active        = Column(Boolean, default=True)
+    id                  = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id            = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    equipment_id        = Column(UUID(as_uuid=True), ForeignKey("equipment.id"), nullable=True)
+    stop_category_id    = Column(UUID(as_uuid=True), ForeignKey("stop_categories.id"), nullable=True)
+    stop_subcategory_id = Column(UUID(as_uuid=True), ForeignKey("stop_subcategories.id"), nullable=True)
+    name                = Column(String(200), default="Cleaning checklist")
+    is_active           = Column(Boolean, default=True)
 
 
 class CleaningChecklistItem(Base):
@@ -2656,6 +2678,135 @@ class SapCostLine(Base):
     comment          = Column(Text)
     currency         = Column(String(3), nullable=False, default="CAD")
     imported_at      = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ─── Cost control layer (reconciliation, forecast, alerts, actions) ────────────
+#
+# Everything below is ADDITIVE to the Costs page: it never changes how the
+# existing budget/actual series are built. The SAP ledger stays the official
+# source of OPEX actuals and platform-tracked spend stays the operational
+# detail — the link table below is what says "this GL line is that work order",
+# WITHOUT ever adding the two together (they are the same economic event).
+
+
+class SapCostLink(Base):
+    """Ties one SAP GL line to a KAIZO operational record (work order, equipment
+    or purchase order), so the official ledger can be explained line by line.
+
+    Keyed by the SAP line's NATURAL key — (fiscal_year, pos, cost_center_code,
+    account_code), the same tuple as uq_sap_line_fy_pos_cc_acct — not by its row
+    id, because a re-import deletes and recreates every row of a fiscal year.
+    Links therefore survive re-imports; a link whose key no longer exists after
+    an import is reported as orphaned instead of silently vanishing.
+
+    `amount` is the portion of the GL line attributed to the target (a line can
+    be split across several targets). It EXPLAINS the SAP actual, it is never an
+    extra cost: the Costs page never sums a link into any total."""
+    __tablename__ = "sap_cost_links"
+
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id         = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    fiscal_year      = Column(Integer, nullable=False, index=True)
+    pos              = Column(Integer, nullable=False)          # 1..12 fiscal slot (1 = Dec)
+    cost_center_code = Column(String(50), nullable=False, index=True)
+    account_code     = Column(String(50), nullable=False)
+    # What the line is explained by. Exactly one of the *_id columns is set.
+    target_kind        = Column(String(20), nullable=False)     # work_order | equipment | purchase_order
+    work_order_id      = Column(UUID(as_uuid=True), ForeignKey("work_orders.id", ondelete="CASCADE"), nullable=True, index=True)
+    equipment_id       = Column(UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="CASCADE"), nullable=True, index=True)
+    purchase_order_id  = Column(UUID(as_uuid=True), ForeignKey("purchase_orders.id", ondelete="CASCADE"), nullable=True, index=True)
+    amount           = Column(Float, nullable=False, default=0.0)
+    # "confirmed" only — a suggestion is computed on the fly and must be accepted
+    # by a human before it is stored (ambiguous matches are never auto-confirmed).
+    status           = Column(String(20), nullable=False, default="confirmed")
+    # How the link was made: manual | suggested (accepted from a suggestion)
+    origin           = Column(String(20), nullable=False, default="manual")
+    note             = Column(Text, nullable=True)
+    created_by_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class CostForecastAdjustment(Base):
+    """A justified manual adjustment to the year-end forecast: a big planned
+    intervention, a contract renewal, a known extraordinary event. Stored per
+    calendar (year, month) so it maps onto both calendar and fiscal slots.
+
+    It moves the FORECAST only — never the actual and never the budget. The
+    landing bridge shows it as its own block so the projection stays auditable."""
+    __tablename__ = "cost_forecast_adjustments"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id    = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    site        = Column(String(2), nullable=True)              # QS | QM | NULL (combined / non-Quebec)
+    year        = Column(Integer, nullable=False, index=True)   # calendar year of the month
+    month       = Column(Integer, nullable=False)               # 1..12
+    scope       = Column(String(10), nullable=False, default="opex")   # opex | capex
+    kind        = Column(String(30), nullable=False, default="other")  # major_intervention | contract | extraordinary | other
+    amount      = Column(Float, nullable=False, default=0.0)
+    reason      = Column(Text, nullable=False, default="")
+    cost_center = Column(String(200), nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at  = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class CostAlertRule(Base):
+    """A configurable cost-control alert. Evaluation is always live against the
+    current data (GET /api/costs/alerts) — nothing is precomputed, so an alert
+    can always show the numbers that produced it."""
+    __tablename__ = "cost_alert_rules"
+    __table_args__ = (UniqueConstraint("plant_id", "site", "kind", name="uq_cost_alert_rule_scope_kind"),)
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id   = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    site       = Column(String(2), nullable=True)
+    # forecast_over_budget | cost_increase | recurring_corrective | stale_commitments
+    # | cc_variance | low_link_coverage | stale_import
+    kind       = Column(String(40), nullable=False, index=True)
+    enabled    = Column(Boolean, nullable=False, default=True)
+    # Meaning depends on the kind (% over budget, % increase, failures/period,
+    # days, % variance, % coverage, days since import).
+    threshold  = Column(Float, nullable=False, default=0.0)
+    scope      = Column(String(10), nullable=False, default="opex")   # opex | capex | both
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class CostAction(Base):
+    """A management action opened from a cost alert or from any cost view.
+    Carries an owner, a due date, a status and a result.
+
+    Savings are tracked in three DISTINCT states and never mixed:
+      potential   — estimated, nothing done yet
+      implemented — the action was carried out, saving not yet proven in the ledger
+      verified    — the saving is visible in the actuals (amount + evidence note)
+    A deferred expense or a skipped necessary maintenance is NOT a saving; the
+    UI says so and such cases stay 'none'."""
+    __tablename__ = "cost_actions"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id    = Column(UUID(as_uuid=True), ForeignKey("plants.id"), nullable=True)
+    site        = Column(String(2), nullable=True)
+    fiscal_year = Column(Integer, nullable=True, index=True)
+    title       = Column(String(300), nullable=False)
+    description = Column(Text, nullable=True)
+    # Where the action came from: an alert kind, or 'manual'
+    alert_kind  = Column(String(40), nullable=True)
+    # What it is about: cost_center | equipment | supplier | purchase_order | import | other
+    context_kind = Column(String(30), nullable=False, default="other")
+    context_ref  = Column(String(300), nullable=True)   # cost-center name, equipment id, supplier name…
+    owner_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    due_date    = Column(Date, nullable=True)
+    status      = Column(String(20), nullable=False, default="open")   # open | in_progress | done | cancelled
+    savings_type   = Column(String(20), nullable=False, default="none")  # none | potential | implemented | verified
+    savings_amount = Column(Float, nullable=True)
+    result_note = Column(Text, nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at  = Column(DateTime(timezone=True), onupdate=func.now())
+    closed_at   = Column(DateTime(timezone=True), nullable=True)
+
 
 
 # ─── Pit Stop (buffer fabrication → assemblage) ────────────────────────────────

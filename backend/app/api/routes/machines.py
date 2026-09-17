@@ -874,6 +874,8 @@ async def add_production(
             actual_count=0,
         )
         db.add(log)
+    # Credit the shift's pieces to the operator on the machine (productivity report).
+    await MesService(db).attribute_operator(log)
     log.actual_count = max(0, (log.actual_count or 0) + data.delta)
     await db.commit()
     await db.refresh(log)
@@ -1055,8 +1057,8 @@ async def close_stop(
 
 
 # ── Cleaning checklist (kiosk) ────────────────────────────────────────────────
-# Operator task list shown when a stop is declared with the linked category
-# (e.g. "Nettoyage"). Same trust level as the stop endpoints — no auth.
+# Operator task list shown when a stop is declared with the linked subcategory
+# (e.g. Planned Stop → "Nettoyage"). Same trust level as the stop endpoints — no auth.
 
 async def _cleaning_checklist_for_machine(machine: Machine, db: AsyncSession) -> Optional[CleaningChecklist]:
     eq_id = machine.equipment_id
@@ -1092,7 +1094,7 @@ async def get_cleaning_checklist(ref: str, db: AsyncSession = Depends(get_db)):
         "checklist": {
             "id": str(checklist.id),
             "name": checklist.name,
-            "stop_category_id": str(checklist.stop_category_id) if checklist.stop_category_id else None,
+            "stop_subcategory_id": str(checklist.stop_subcategory_id) if checklist.stop_subcategory_id else None,
         },
         "items": [
             {"id": str(i.id), "text": i.text, "sort_order": i.sort_order, "is_required": i.is_required}
@@ -2132,6 +2134,52 @@ async def update_machine_stop_category(
                            ) for s in subs])
 
 
+async def _stop_category_in_use(db: AsyncSession, cat_id: UUID) -> bool:
+    """Stops and cleaning checklists keep FK references to categories/subcategories
+    (cleaning_checklists.stop_category_id is the legacy link, stop_subcategory_id the
+    current one); a hard delete on a referenced category raises IntegrityError — its
+    subcategories go with it via cascade, so their references count too. Callers
+    deactivate instead; the list endpoints filter on is_active, so it disappears
+    either way."""
+    if (await db.execute(
+        select(MachineStop.id).where(MachineStop.stop_category_id == cat_id).limit(1)
+    )).first():
+        return True
+    if (await db.execute(
+        select(CleaningChecklist.id).where(CleaningChecklist.stop_category_id == cat_id).limit(1)
+    )).first():
+        return True
+    sub_ids = (await db.execute(
+        select(StopSubcategory.id).where(StopSubcategory.category_id == cat_id)
+    )).scalars().all()
+    if sub_ids:
+        if (await db.execute(
+            select(MachineStop.id).where(MachineStop.stop_subcategory_id.in_(sub_ids)).limit(1)
+        )).first():
+            return True
+        if (await db.execute(
+            select(CleaningChecklist.id).where(CleaningChecklist.stop_subcategory_id.in_(sub_ids)).limit(1)
+        )).first():
+            return True
+    return False
+
+
+async def _reject_category_in_use(db: AsyncSession, cat_id: UUID) -> bool:
+    """Reject-side twin of _stop_category_in_use (reject logs hold the FKs)."""
+    if (await db.execute(
+        select(RejectLog.id).where(RejectLog.reject_category_id == cat_id).limit(1)
+    )).first():
+        return True
+    sub_ids = (await db.execute(
+        select(RejectSubcategory.id).where(RejectSubcategory.category_id == cat_id)
+    )).scalars().all()
+    if sub_ids and (await db.execute(
+        select(RejectLog.id).where(RejectLog.reject_subcategory_id.in_(sub_ids)).limit(1)
+    )).first():
+        return True
+    return False
+
+
 @router.delete("/{ref}/stop-categories/{cat_id}", status_code=204)
 async def delete_machine_stop_category(
     ref: str, cat_id: UUID,
@@ -2142,21 +2190,7 @@ async def delete_machine_stop_category(
     cat = await db.get(StopCategory, cat_id)
     if not cat:
         raise HTTPException(404, "Category not found")
-    # Stops keep FK references to their category/subcategories; a hard delete on a
-    # category with history raises IntegrityError. Deactivate instead — the list
-    # endpoints filter on is_active, so it disappears from the UI either way.
-    used = (await db.execute(
-        select(MachineStop.id).where(MachineStop.stop_category_id == cat_id).limit(1)
-    )).first()
-    if not used:
-        sub_ids = (await db.execute(
-            select(StopSubcategory.id).where(StopSubcategory.category_id == cat_id)
-        )).scalars().all()
-        if sub_ids:
-            used = (await db.execute(
-                select(MachineStop.id).where(MachineStop.stop_subcategory_id.in_(sub_ids)).limit(1)
-            )).first()
-    if used:
+    if await _stop_category_in_use(db, cat_id):
         cat.is_active = False
     else:
         await db.delete(cat)
@@ -2333,20 +2367,7 @@ async def delete_machine_reject_category(
     cat = await db.get(RejectCategory, cat_id)
     if not cat:
         raise HTTPException(404, "Reject category not found")
-    # Reject logs reference categories/subcategories; keep history intact by
-    # deactivating instead of hard-deleting when referenced.
-    used = (await db.execute(
-        select(RejectLog.id).where(RejectLog.reject_category_id == cat_id).limit(1)
-    )).first()
-    if not used:
-        sub_ids = (await db.execute(
-            select(RejectSubcategory.id).where(RejectSubcategory.category_id == cat_id)
-        )).scalars().all()
-        if sub_ids:
-            used = (await db.execute(
-                select(RejectLog.id).where(RejectLog.reject_subcategory_id.in_(sub_ids)).limit(1)
-            )).first()
-    if used:
+    if await _reject_category_in_use(db, cat_id):
         cat.is_active = False
     else:
         await db.delete(cat)
@@ -2443,10 +2464,15 @@ async def clone_categories(
         src_cats = src_cats_r.scalars().all()
 
         for target_id in data.target_machine_ids:
-            # Remove existing machine-specific categories on target
+            # Replace existing machine-specific categories on target. Categories
+            # referenced by stop history or a cleaning checklist can't be hard
+            # deleted (FK) — deactivate those; the kiosk/config lists hide them.
             existing_r = await db.execute(select(StopCategory).where(StopCategory.machine_id == target_id))
             for old in existing_r.scalars().all():
-                await db.delete(old)
+                if await _stop_category_in_use(db, old.id):
+                    old.is_active = False
+                else:
+                    await db.delete(old)
 
             for src_cat in src_cats:
                 new_cat = StopCategory(
@@ -2478,7 +2504,10 @@ async def clone_categories(
         for target_id in data.target_machine_ids:
             existing_r = await db.execute(select(RejectCategory).where(RejectCategory.machine_id == target_id))
             for old in existing_r.scalars().all():
-                await db.delete(old)
+                if await _reject_category_in_use(db, old.id):
+                    old.is_active = False
+                else:
+                    await db.delete(old)
 
             for src_cat in src_cats:
                 new_cat = RejectCategory(

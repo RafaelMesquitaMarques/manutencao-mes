@@ -31,6 +31,7 @@ from app.services.ticket_service import sync_alert_from_ticket
 from app.services import pm_service
 from app.services import intervention_sync
 from app.services import labor_time_service
+from app.services import wo_totals
 from app.services.note_organizer import organize_note
 from pydantic import BaseModel
 
@@ -52,9 +53,9 @@ async def organize_technician_note(
     body: NoteOrganizeRequest,
     current_user: User = Depends(get_current_user),
 ):
-    """Tidy up / organize a dictated technician note using the token-free local
-    LLM (Ollama). Degrades to a light local cleanup when the model is offline —
-    always returns usable text; `ai_used` says which path ran."""
+    """Tidy up / organize a dictated technician note with the Anthropic API.
+    Degrades to a light local cleanup when the API is unavailable — always
+    returns usable text; `ai_used` says which path ran."""
     text, ai_used = await organize_note(body.text, body.language)
     return NoteOrganizeResponse(text=text, ai_used=ai_used)
 
@@ -293,6 +294,8 @@ async def _enrich_wo(wo: WorkOrder, db: AsyncSession) -> WorkOrderOut:
                     "item_description": p.item_description or stock_desc.get(p.stock_item_id, ""),
                     "quantity_used": p.quantity_used,
                     "unit": p.unit or "",
+                    "unit_cost": p.unit_cost,
+                    "total_cost": p.total_cost,
                     "approval_status": p.approval_status,
                     "approved_at": p.approved_at.isoformat() if p.approved_at else None,
                 }
@@ -844,33 +847,9 @@ async def complete_work_order(
     # Close any in-flight labor records
     await _close_open_labor_records(work_order_id, db)
 
-    # Sum all labor records (open ones were just closed above)
-    labor_result = await db.execute(
-        select(LaborRecord).where(LaborRecord.work_order_id == work_order_id)
-    )
-    labor_records = labor_result.scalars().all()
-
-    if repair_hours:
-        wo.repair_hours = repair_hours
-        wo.total_minutes = int(repair_hours * 60)
-    else:
-        computed_minutes = int(sum(r.hours_worked for r in labor_records) * 60)
-        if computed_minutes > 0:
-            wo.total_minutes = computed_minutes
-            wo.repair_hours = round(computed_minutes / 60.0, 4)
-        elif wo.started_at:
-            elapsed_minutes = int((now - wo.started_at).total_seconds() / 60)
-            if elapsed_minutes > 0:
-                wo.total_minutes = elapsed_minutes
-                wo.repair_hours = round(elapsed_minutes / 60.0, 4)
-
-    # Roll up total_cost = labor + parts
-    labor_cost_total = sum(r.labor_cost or 0.0 for r in labor_records)
-    parts_result = await db.execute(
-        select(WOPart).where(WOPart.work_order_id == work_order_id)
-    )
-    parts_cost_total = sum(p.total_cost or 0.0 for p in parts_result.scalars().all())
-    wo.total_cost = round(labor_cost_total + parts_cost_total, 2) or None
+    # Time + cost from the ledgers (labor, parts, other costs) — one shared rule
+    # for every completion path, office or kiosk. See services/wo_totals.py.
+    await wo_totals.recompute(db, wo, repair_hours=repair_hours, now=now)
 
     # Close the machine's active intervention so the kiosk goes back to normal
     await intervention_sync.on_wo_finished(db, wo)
@@ -1206,6 +1185,10 @@ async def cost_summary(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    wo = await db.get(WorkOrder, work_order_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+
     costs_result = await db.execute(select(WOCost).where(WOCost.work_order_id == work_order_id))
     costs = costs_result.scalars().all()
 
@@ -1216,7 +1199,11 @@ async def cost_summary(
     parts = parts_result.scalars().all()
 
     labor_total = sum(r.labor_cost or 0 for r in labor)
-    parts_total = sum(p.total_cost or 0 for p in parts)
+    # Parts live in two ledgers: wo_parts (office) and approved intervention_parts
+    # (declared at the kiosk). The Costs dashboards have always summed both; the
+    # WO page used to read only the first, so a part consumed on the floor was
+    # money everywhere except on its own work order. See services/wo_totals.py.
+    parts_total = sum(p.total_cost or 0 for p in parts) + await wo_totals.kiosk_parts_total(db, wo)
     other_total = sum(c.amount for c in costs)
     # Effective vs raw transparency. effective_hours falls back to hours_worked
     # for legacy/historical records that predate effective-time accounting.

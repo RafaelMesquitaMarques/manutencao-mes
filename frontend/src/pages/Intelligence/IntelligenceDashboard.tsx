@@ -114,7 +114,7 @@ export default function IntelligenceDashboard() {
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="font-brand text-xl font-bold uppercase tracking-[0.1em] text-white flex items-center gap-2.5">
-            <img src="/mirai-icon.png" alt="" className="w-7 h-7 object-contain" />
+            <img src="/ninja-mark.png" alt="" className="w-7 h-7 object-contain" />
             {t('intelligence.title', 'Ask Ninja')}
           </h1>
           <p className="text-gray-500 text-sm mt-0.5">{t('intelligence.subtitle', 'AI-assisted analysis of maintenance data')}</p>
@@ -159,7 +159,7 @@ export default function IntelligenceDashboard() {
             <div className="glass-card p-6">
               {!insight ? (
                 <div className="flex flex-col items-center justify-center h-56 gap-3 text-center">
-                  <img src="/mirai-icon.png" alt="" className="w-12 h-12 object-contain opacity-40" />
+                  <img src="/ninja-mark.png" alt="" className="w-12 h-12 object-contain opacity-40" />
                   <p className="text-gray-400 font-medium">{t('intelligence.noInsight', 'No analysis yet')}</p>
                   <p className="text-gray-600 text-sm max-w-sm">{t('intelligence.noInsightHint', 'Click Generate to produce a maintenance intelligence report for the selected period.')}</p>
                 </div>

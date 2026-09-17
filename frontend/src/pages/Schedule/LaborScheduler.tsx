@@ -30,7 +30,9 @@ import { fetchShiftTemplates } from '../../api/shifts';
 import { useWorkOrderStore } from '../../store/workOrderStore';
 import { usePermission } from '../../hooks/usePermission';
 import AvailabilityBadge from '../../components/AvailabilityBadge';
-import type { WorkOrder, TechnicianFull, MaintenanceTicket, ShiftTemplate } from '../../types';
+import type {
+  WorkOrder, TechnicianFull, MaintenanceTicket, ShiftTemplate, AvailabilityStatus,
+} from '../../types';
 
 // Above this many backlog items we stop rendering the whole list (keeps the DOM
 // — and dnd-kit's sortable registry — bounded). The list is triage-ordered so
@@ -525,19 +527,39 @@ function UnassignedColumn({
   );
 }
 
-type TechStatus = 'busy' | 'assigned' | 'free';
+// The avatar ring answers "can I hand this technician work right now?".
+// Presence comes first: someone off shift, on vacation or inactive reads grey
+// whatever their backlog looks like — a red "busy" ring on a technician who
+// isn't in the plant is a lie. Whoever IS on shift falls through to the
+// workload ladder below.
+type TechStatus = 'away' | 'busy' | 'assigned' | 'free';
 
 const TECH_STATUS_STYLE: Record<TechStatus, { bg: string; icon: string; pulse: boolean }> = {
+  away:     { bg: 'bg-gray-500/15 ring-2 ring-gray-500/30',   icon: 'text-gray-500',  pulse: false },
   busy:     { bg: 'bg-red-500/20 ring-2 ring-red-500/50',     icon: 'text-red-400',   pulse: true  },
   assigned: { bg: 'bg-amber-500/20 ring-2 ring-amber-500/40', icon: 'text-amber-400', pulse: false },
   free:     { bg: 'bg-green-500/20 ring-2 ring-green-500/40', icon: 'text-green-400', pulse: false },
 };
 
 const TECH_STATUS_LABEL_KEY: Record<TechStatus, string> = {
+  away: 'schedule.away',
   busy: 'schedule.techStatusBusy',
   assigned: 'schedule.techStatusAssigned',
   free: 'schedule.free',
 };
+
+// Availability states that mean "not on the floor right now" (mirrors the
+// backend's warn set). A scheduled lunch or break is deliberately NOT in here:
+// the technician is still on shift, and the amber pill already says so —
+// greying the whole day crew out at noon would read as a broken board.
+const AWAY_STATUSES = new Set<AvailabilityStatus>([
+  'off_shift', 'on_vacation', 'unavailable', 'inactive',
+]);
+
+/** A work order only counts as live work while it was started inside this
+ * window (one shift plus overtime). Without it a WO left in `in_progress` for
+ * months pins its technician red forever, which is what the board used to do. */
+const ACTIVE_WORK_WINDOW_MS = 12 * 60 * 60 * 1000;
 
 /** One technician tile — a sortable grid cell: drag the header to reorder it
  * (tiles reflow and never overlap), drag the bottom-right corner to resize it.
@@ -584,6 +606,11 @@ function TechCell({
   // exception (vacation, off shift, lunch…): green-by-default keeps tiles calm.
   const avail = tech.availability;
   const showAvail = !!avail && avail.status !== 'available';
+  // When the technician isn't on the floor, the ring tooltip names the actual
+  // reason (off shift, lunch, vacation…) rather than a generic "away".
+  const statusTitle = status === 'away' && avail
+    ? t(`availability.${avail.status}`, t('schedule.away'))
+    : t(TECH_STATUS_LABEL_KEY[status]);
 
   const startResize = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
@@ -628,7 +655,7 @@ function TechCell({
         <div className="flex items-center gap-2">
           {canEdit && <GripVertical size={13} className="text-gray-600 flex-shrink-0" />}
           <div
-            title={t(TECH_STATUS_LABEL_KEY[status])}
+            title={statusTitle}
             className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 ${s.bg} ${s.pulse ? 'animate-pulse' : ''}`}
           >
             <User size={12} className={s.icon} />
@@ -1200,18 +1227,24 @@ export default function LaborScheduler() {
     setLoading(false);
   }, []);
 
-  // busy = executing a WO right now; assigned = has open WOs; free = neither
+  // busy = executing a WO right now — "right now" being the point: a WO parked
+  // in `in_progress` since last season is stale paperwork, not live work.
   const busyTechIds = useMemo(() => {
     const ids = new Set<string>();
+    const floor = Date.now() - ACTIVE_WORK_WINDOW_MS;
     allWOs
-      .filter((w) => w.status === 'in_progress')
+      .filter((w) => w.status === 'in_progress'
+        && !!w.started_at && new Date(w.started_at).getTime() >= floor)
       .forEach((w) => woTechIds(w).forEach((id) => ids.add(id)));
     return ids;
   }, [allWOs]);
 
-  const techStatus = useCallback((techId: string): TechStatus => {
-    if (busyTechIds.has(techId)) return 'busy';
-    if ((assignments.get(techId) ?? []).length > 0) return 'assigned';
+  // away (off shift / vacation / inactive) > busy > assigned > free
+  const techStatus = useCallback((tech: TechnicianFull): TechStatus => {
+    const a = tech.availability;
+    if (a && AWAY_STATUSES.has(a.status)) return 'away';
+    if (busyTechIds.has(tech.id)) return 'busy';
+    if ((assignments.get(tech.id) ?? []).length > 0) return 'assigned';
     return 'free';
   }, [busyTechIds, assignments]);
 
@@ -1403,6 +1436,9 @@ export default function LaborScheduler() {
           <span className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" /> {t('schedule.busy', 'Busy')}
           </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-gray-500" /> {t('schedule.away', 'Off shift')}
+          </span>
         </div>
 
         {/* Technician self-assignment switch (supervisor control) */}
@@ -1536,7 +1572,7 @@ export default function LaborScheduler() {
                         key={tech.id}
                         tech={tech}
                         items={assignments.get(tech.id) ?? []}
-                        status={techStatus(tech.id)}
+                        status={techStatus(tech)}
                         size={sizeOf(tech.id)}
                         capacity={capacityOf(tech.shift)}
                         onResize={(sz) => liveSize(tech.id, sz)}

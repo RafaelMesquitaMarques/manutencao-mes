@@ -46,13 +46,6 @@ class Settings(BaseSettings):
     # Premade "Adam" — present on every ElevenLabs account; multilingual via Flash.
     elevenlabs_voice_id: str = "pNInz6obpgDQGcFmaJgB"
 
-    # Local, token-free LLM (Ollama) used to tidy up / organize dictated notes.
-    # Runs on-prem with no per-token cost. If the server is unreachable, the note
-    # organizer degrades to a light local text cleanup (no AI). Set OLLAMA_BASE_URL
-    # empty to disable the AI path entirely.
-    OLLAMA_BASE_URL: str = "http://ollama:11434"
-    OLLAMA_MODEL: str = "llama3.2"
-
     # Upload
     MAX_UPLOAD_MB: int = 200   # allows short SOP videos; override via env if needed
     UPLOAD_DIR: str = "/app/uploads"

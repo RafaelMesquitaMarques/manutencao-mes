@@ -9,46 +9,26 @@ import { fetchEquipment } from '../../api/workOrders';
 import { fetchMachineReport, fetchMachineComparison } from '../../api/reports';
 import type { Equipment, MachineReportData, MachineCompareItem } from '../../types';
 import { humanDuration } from '../../utils/duration';
+import { ProductivityView, MachineProductionSection } from './Productivity';
+import {
+  MetricCard, LoadingBlock, Empty, DateRangePicker,
+  todayISO, addDaysISO, inclusiveDays, rangeComplete,
+  fmtMinutes, fmtPct, fmtHours,
+} from './reportUI';
+import type { DayRange } from './reportUI';
 
-const PERIOD_OPTIONS = [
-  { value: 7, label: '7d' },
-  { value: 30, label: '30d' },
-  { value: 90, label: '90d' },
-  { value: 180, label: '180d' },
-];
-
-const COST_TYPE_LABELS: Record<string, string> = {
-  labor: 'Labor',
-  local_parts: 'Local Parts',
-  external_parts: 'External Parts',
-  contracts: 'Contracts',
-  rentals: 'Rentals',
-  other: 'Other',
-  parts_used: 'Parts Used (stock)',
-};
-
-function fmtMinutes(min: number | null | undefined): string {
-  if (min == null) return '—';
-  if (min < 60) return `${Math.round(min)}m`;
-  const h = Math.floor(min / 60);
-  const m = Math.round(min % 60);
-  return m > 0 ? `${h}h ${m}m` : `${h}h`;
-}
-
-function fmtPct(v: number | null | undefined): string {
-  return v == null ? '—' : `${v}%`;
-}
-
-function fmtHours(v: number | null | undefined): string {
-  if (v == null) return '—';
-  if (v > 0 && v < 1) return `${Math.round(v * 60)} min`;
-  return `${v}h`;
-}
+/** Opening window. Not a "preset" the user is stuck with — just the range the
+ *  pickers start on, so the page has something to show before they touch it. */
+const DEFAULT_DAYS = 30;
 
 export default function MachineReport() {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<'report' | 'compare'>('report');
-  const [period, setPeriod] = useState(30);
+  const [tab, setTab] = useState<'report' | 'compare' | 'productivity'>('report');
+  const [range, setRange] = useState<DayRange>(() => {
+    const end = todayISO();
+    return { start: addDaysISO(end, -(DEFAULT_DAYS - 1)), end };
+  });
+  const ready = rangeComplete(range);
   const [machines, setMachines] = useState<Equipment[]>([]);
   const [machineId, setMachineId] = useState<string>('');
   const [report, setReport] = useState<MachineReportData | null>(null);
@@ -65,23 +45,29 @@ export default function MachineReport() {
     }).catch(() => {});
   }, []);
 
+  // Both fetches drop their result when the selection moved on (rapid machine or
+  // period switching), so a slow earlier response never overwrites a newer one.
   useEffect(() => {
-    if (tab !== 'report' || !machineId) return;
+    if (tab !== 'report' || !machineId || !ready) return;
+    let current = true;
     setLoading(true);
-    fetchMachineReport(machineId, period)
-      .then(setReport)
-      .catch(() => setReport(null))
-      .finally(() => setLoading(false));
-  }, [tab, machineId, period]);
+    fetchMachineReport(machineId, range)
+      .then((r) => { if (current) setReport(r); })
+      .catch(() => { if (current) setReport(null); })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [tab, machineId, range, ready]);
 
   useEffect(() => {
-    if (tab !== 'compare') return;
+    if (tab !== 'compare' || !ready) return;
+    let current = true;
     setLoading(true);
-    fetchMachineComparison(period)
-      .then((r) => setCompare(r.items))
-      .catch(() => setCompare([]))
-      .finally(() => setLoading(false));
-  }, [tab, period]);
+    fetchMachineComparison(range)
+      .then((r) => { if (current) setCompare(r.items); })
+      .catch(() => { if (current) setCompare([]); })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [tab, range, ready]);
 
   return (
     <div className="p-6 space-y-6">
@@ -110,6 +96,14 @@ export default function MachineReport() {
             >
               {t('machineReport.tabCompare')}
             </button>
+            <button
+              onClick={() => setTab('productivity')}
+              className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                tab === 'productivity' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'
+              }`}
+            >
+              {t('machineReport.tabProductivity')}
+            </button>
           </div>
           {/* Machine selector */}
           {tab === 'report' && (
@@ -126,26 +120,29 @@ export default function MachineReport() {
               ))}
             </select>
           )}
-          {/* Period */}
-          <div className="flex gap-1 bg-[#0d1421] border border-white/[0.06] rounded-lg p-1">
-            {PERIOD_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => setPeriod(opt.value)}
-                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
-                  period === opt.value ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
+          {/* Analysis window — any two dates, no fixed periods */}
+          <DateRangePicker
+            value={range}
+            onChange={setRange}
+            fromLabel={t('machineReport.rangeFrom')}
+            toLabel={t('machineReport.rangeTo')}
+            hint={ready
+              ? t('machineReport.rangeDays', { n: inclusiveDays(range.start, range.end) })
+              : t('machineReport.rangeIncomplete')}
+            warn={!ready}
+          />
         </div>
       </div>
 
-      {tab === 'report'
-        ? <ReportView report={report} loading={loading} />
-        : <CompareView items={compare} loading={loading} />}
+      {!ready
+        ? <Empty tall label={t('machineReport.rangeIncomplete')} hint={t('machineReport.rangeIncompleteHint')} />
+        : (
+          <>
+            {tab === 'report' && <ReportView report={report} loading={loading} />}
+            {tab === 'compare' && <CompareView items={compare} loading={loading} />}
+            {tab === 'productivity' && <ProductivityView range={range} />}
+          </>
+        )}
     </div>
   );
 }
@@ -272,14 +269,14 @@ function ReportView({ report, loading }: { report: MachineReportData | null; loa
         center: ['50%', '42%'],
         label: { show: false },
         emphasis: { label: { show: true, fontSize: 13, fontWeight: 'bold', color: '#fff' } },
-        data: report.costs.by_type.map((c) => ({ name: COST_TYPE_LABELS[c.type] ?? c.type, value: c.total })),
+        data: report.costs.by_type.map((c) => ({ name: t(`costType.${c.type}`, { defaultValue: c.type }), value: c.total })),
         itemStyle: { borderRadius: 4, borderColor: '#0b1120', borderWidth: 2 },
       }],
     };
-  }, [report]);
+  }, [report, t]);
 
-  if (loading) return <LoadingBlock />;
-  if (!report) return <Empty label="No data" tall />;
+  if (loading) return <LoadingBlock label={t('common.loading')} />;
+  if (!report) return <Empty label={t('machineReport.noData')} tall />;
 
   const availColor =
     report.availability.avg_pct == null ? 'gray'
@@ -369,6 +366,13 @@ function ReportView({ report, loading }: { report: MachineReportData | null; loa
           ? <Empty label={t('machineReport.noData')} />
           : <ReactECharts option={trendOption} style={{ height: 260 }} theme="dark" />}
       </div>
+
+      {/* Production & productivity — pieces made on this machine */}
+      <div className="pt-2 border-t border-white/[0.06]">
+        <h2 className="text-sm font-semibold text-gray-300">{t('productivity.machineTitle')}</h2>
+        <p className="text-xs text-gray-600 mt-0.5">{t('productivity.machineSub')}</p>
+      </div>
+      <MachineProductionSection production={report.production} />
 
       {/* Downtime Paretos — by cause (category) and by subcategory */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -467,7 +471,7 @@ function CompareView({ items, loading }: { items: MachineCompareItem[]; loading:
     };
   }, [sorted, metric, def]);
 
-  if (loading) return <LoadingBlock />;
+  if (loading) return <LoadingBlock label={t('common.loading')} />;
   if (items.length === 0) return <Empty label={t('machineReport.noData')} tall />;
 
   return (
@@ -541,54 +545,5 @@ function CompareView({ items, loading }: { items: MachineCompareItem[]; loading:
         </table>
       </div>
     </>
-  );
-}
-
-// ─── Shared bits ───────────────────────────────────────────────────────────────
-
-function MetricCard({ icon, label, value, sub, color }: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  sub: string;
-  color: 'blue' | 'amber' | 'green' | 'purple' | 'red' | 'gray';
-}) {
-  const styles: Record<string, { bg: string; text: string }> = {
-    blue:   { bg: 'bg-blue-500/10',   text: 'text-blue-400' },
-    amber:  { bg: 'bg-amber-500/10',  text: 'text-amber-400' },
-    green:  { bg: 'bg-green-500/10',  text: 'text-green-400' },
-    purple: { bg: 'bg-purple-500/10', text: 'text-purple-400' },
-    red:    { bg: 'bg-red-500/10',    text: 'text-red-400' },
-    gray:   { bg: 'bg-gray-500/10',   text: 'text-gray-400' },
-  };
-  const s = styles[color];
-  return (
-    <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-[11px] text-gray-500 font-medium uppercase tracking-wide">{label}</p>
-        <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${s.bg} ${s.text}`}>
-          {icon}
-        </div>
-      </div>
-      <p className="text-xl font-bold text-white">{value}</p>
-      <p className="text-xs text-gray-600 mt-0.5">{sub}</p>
-    </div>
-  );
-}
-
-function LoadingBlock() {
-  return (
-    <div className="flex items-center justify-center h-64 text-gray-500 text-sm">
-      <div className="animate-spin rounded-full h-6 w-6 border-2 border-blue-500 border-t-transparent mr-3" />
-      Loading…
-    </div>
-  );
-}
-
-function Empty({ label, tall }: { label: string; tall?: boolean }) {
-  return (
-    <div className={`flex items-center justify-center ${tall ? 'h-64' : 'h-[220px]'} text-gray-600 text-sm`}>
-      {label}
-    </div>
   );
 }

@@ -25,6 +25,7 @@ from app.models.models import (
     WorkOrder,
     WorkOrderStatus,
 )
+from app.services import part_pricing, wo_totals
 from app.services.inventory_service import InventoryService
 
 # A supervisor / maintenance director approves every completed work order, no matter
@@ -76,16 +77,17 @@ async def _consume_stock(db: AsyncSession, part: InterventionPart, user_id) -> N
     stock = await db.get(StockItem, part.stock_item_id)
     if not stock:
         return
-    if part.unit_cost is None and stock.unit_cost is not None:
-        part.unit_cost = stock.unit_cost
+    if part.unit_cost is None:
+        part.unit_cost = part_pricing.unit_cost_of(stock)
     if part.unit_cost is not None and part.total_cost is None:
-        part.total_cost = round(float(part.unit_cost) * float(part.quantity_used), 2)
+        part.total_cost = part_pricing.line_total(part.unit_cost, part.quantity_used)
     await InventoryService(db).deduct_stock(
         part.stock_item_id,
         float(part.quantity_used),
         user_id=user_id,
         notes=f"Intervention part approved ({part.item_code or part.id})",
     )
+
 
 
 # ── view builders ─────────────────────────────────────────────────────────────
@@ -316,6 +318,11 @@ async def approve_intervention(
             part.approved_at = now
             await _consume_stock(db, part, current_user.id)
 
+    # The parts money now exists (approved + priced): refresh the WO's own total
+    # so the detail page matches the Costs dashboards.
+    await db.flush()
+    await wo_totals.recompute_for_ticket(db, mi.ticket_id)
+
     mi.approval_status = "approved"
     mi.approved_by_id = current_user.id
     mi.approved_at = now
@@ -367,14 +374,27 @@ async def reject_intervention_part(
     part = await db.get(InterventionPart, part_id)
     if not part or part.intervention_id != intervention_id:
         raise HTTPException(404, "Part not found on this work order")
+    mi = await db.get(MachineIntervention, intervention_id)
 
+    was_approved = part.approval_status == "approved"
     part.approval_status = "rejected"
     part.approved_by_id = current_user.id
     part.approved_at = datetime.now(timezone.utc)
     part.rejection_reason = body.reason
 
+    # Rejecting after approval has to undo what approval did — put the stock back
+    # — or the part stays deducted from inventory with nothing to show for it.
+    if was_approved:
+        if part.stock_item_id and part.quantity_used:
+            await InventoryService(db).add_stock(
+                part.stock_item_id, float(part.quantity_used),
+                user_id=current_user.id,
+                notes=f"Intervention part rejected after approval ({part.item_code or part.id})",
+            )
+        await db.flush()
+        await wo_totals.recompute_for_ticket(db, mi.ticket_id if mi else None)
+
     await db.commit()
-    mi = await db.get(MachineIntervention, intervention_id)
     return await _view_from_intervention(db, mi)
 
 
@@ -430,7 +450,7 @@ async def add_intervention_part(
         item_code = item_code or stock.code
         item_description = item_description or stock.name or stock.description
         unit = unit or stock.unit
-        unit_cost = stock.unit_cost
+        unit_cost = part_pricing.unit_cost_of(stock)
 
     # Stock is deducted only at approval (_consume_stock), so adding the line is a pure data edit.
     part = InterventionPart(
@@ -441,7 +461,7 @@ async def add_intervention_part(
         quantity_used=body.quantity,
         unit=unit,
         unit_cost=unit_cost,
-        total_cost=round(float(unit_cost) * body.quantity, 2) if unit_cost is not None else None,
+        total_cost=part_pricing.line_total(unit_cost, body.quantity),
         added_by_id=current_user.id,
     )
     db.add(part)

@@ -111,21 +111,27 @@ const fmtMoney = (n?: number | null, currency = 'CAD') => {
   return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(n);
 };
 
-const fmtDuration = (wo: WorkOrder): string | null => {
-  let seconds: number | null = null;
+// How long the work took — and whether that number was actually MEASURED.
+// `measured` means it came from recorded labor / the kiosk's own stopwatch.
+// The fallback is only the WO's wall-clock span (open → closed), which includes
+// waiting, travel and paperwork: it must never be presented as hours worked.
+type WODuration = { text: string; measured: boolean };
+
+const fmtDuration = (wo: WorkOrder): WODuration | null => {
   if (wo.total_minutes != null && wo.total_minutes > 0) {
-    seconds = wo.total_minutes * 60;
-  } else if (wo.repair_hours != null && wo.repair_hours > 0) {
-    seconds = wo.repair_hours * 3600;
-  } else if (wo.completed_at) {
-    // Fall back to elapsed time; use started_at, else opened_at (to the second).
+    return { text: humanDuration(wo.total_minutes * 60), measured: true };
+  }
+  if (wo.repair_hours != null && wo.repair_hours > 0) {
+    return { text: humanDuration(wo.repair_hours * 3600), measured: true };
+  }
+  if (wo.completed_at) {
     const start = wo.started_at ?? wo.opened_at;
     if (start) {
       const diff = (new Date(wo.completed_at).getTime() - new Date(start).getTime()) / 1000;
-      if (diff > 0) seconds = diff;
+      if (diff > 0) return { text: humanDuration(diff), measured: false };
     }
   }
-  return seconds && seconds > 0 ? humanDuration(seconds) : null;
+  return null;
 };
 
 const FieldRow = ({ label, value }: { label: string; value: React.ReactNode }) => (
@@ -534,14 +540,30 @@ const OverviewTab = ({
           </div>
         </SectionCard>
 
-        <SectionCard icon={Clock} title={t('workOrders.hoursWorked')}>
+        {/* Titled for what it actually holds: measured repair time, or — when
+            nothing was ever clocked — the WO's own open-to-closed span, which is
+            not hours worked and must not be labelled as such. */}
+        <SectionCard
+          icon={Clock}
+          title={fmtDuration(wo)?.measured === false ? t('workOrders.elapsedTime') : t('workOrders.hoursWorked')}
+        >
           <div className="space-y-3">
             {(() => {
               const dur = fmtDuration(wo);
               return dur ? (
-                <FieldRow label={t('workOrders.repairHours')} value={
-                  <span className="font-mono text-blue-400 font-semibold text-base">{dur}</span>
-                } />
+                dur.measured ? (
+                  <FieldRow
+                    label={t('workOrders.repairHours')}
+                    value={<span className="font-mono font-semibold text-base text-blue-400">{dur.text}</span>}
+                  />
+                ) : (
+                  <div>
+                    <span className="font-mono font-semibold text-base text-gray-400">{dur.text}</span>
+                    <p className="text-amber-400/70 text-[11px] mt-1 leading-snug">
+                      {t('workOrders.elapsedTimeHint')}
+                    </p>
+                  </div>
+                )
               ) : (
                 <p className="text-gray-600 text-sm italic">
                   {wo.status === 'in_progress' ? t('workOrders.timeInProgress') : t('workOrders.noTimeRecorded')}
@@ -586,6 +608,25 @@ const OverviewTab = ({
     </div>
   );
 };
+
+// The backend writes a small set of fixed activity strings on labor records
+// (office start/resume, kiosk mirror). They are shown to the user, so they go
+// through t() like any other label; anything else is free text a human typed
+// and is shown as-is.
+const ACTIVITY_KEYS: Record<string, string> = {
+  'Repair': 'workOrders.activityRepair',
+  'Resumed repair': 'workOrders.activityResumedRepair',
+  'Kiosk intervention': 'workOrders.activityKioskIntervention',
+};
+
+// Marks a row whose data was captured on the floor (kiosk check-in / part scan)
+// rather than typed in the office — the two are accounted identically but a
+// supervisor reading the table should know which is which.
+const KioskChip = ({ label }: { label: string }) => (
+  <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium uppercase tracking-wide bg-violet-500/10 text-violet-300 border border-violet-500/25">
+    {label}
+  </span>
+);
 
 // ─── Labor Tab ───────────────────────────────────────────────────────────────
 
@@ -726,7 +767,9 @@ const LaborTab = ({
               <div>
                 <p className="text-xs text-gray-300 font-medium">{s.name}</p>
                 <p className="text-[11px] font-mono">
-                  <span className="text-blue-400">{s.hours.toFixed(1)} {t('common.hours')}</span>
+                  {/* humanDuration, not hours.toFixed(1): a 2-minute kiosk repair
+                      used to read "0.0 h", which looks like nothing happened. */}
+                  <span className="text-blue-400">{humanDuration(s.hours * 3600)}</span>
                   {s.cost > 0 && <span className="text-green-400 ml-2">{fmtMoney(s.cost)}</span>}
                 </p>
               </div>
@@ -807,6 +850,21 @@ const LaborTab = ({
         </form>
       )}
 
+      {/* Time is recorded but nobody set an hourly rate → cost can't be computed.
+          Say so instead of showing a silent dash that reads like "free". */}
+      {records.some((r) => (r.hours_worked ?? 0) > 0 && !r.hourly_rate) && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] px-3 py-2">
+          <AlertCircle size={14} className="text-amber-400 mt-0.5 flex-shrink-0" />
+          <p className="text-[12px] text-amber-200/90 leading-snug">
+            {t('workOrders.noRateWarningPrefix')}
+            <Link to="/technicians" className="underline hover:text-amber-100">
+              {t('workOrders.noRateWarningLink')}
+            </Link>
+            {t('workOrders.noRateWarningSuffix')}
+          </p>
+        </div>
+      )}
+
       {/* Table */}
       <div className="glass-card overflow-hidden">
         {records.length === 0 ? (
@@ -836,6 +894,7 @@ const LaborTab = ({
                     <tr key={r.id} className="table-row">
                       <td className="table-cell text-gray-200">
                         {r.technician_name ?? `${r.technician_id.slice(0, 8)}…`}
+                        {r.intervention_id && <KioskChip label={t('workOrders.sourceKiosk')} />}
                       </td>
                       <td className="table-cell font-mono text-xs text-gray-400">
                         {r.started_at ? fmt(r.started_at) : fmtDate(r.date)}
@@ -866,12 +925,18 @@ const LaborTab = ({
                         )}
                       </td>
                       <td className="table-cell text-right font-mono text-gray-400 text-xs">
-                        {r.hourly_rate ? `$${r.hourly_rate}/h` : '—'}
+                        {r.hourly_rate
+                          ? `$${r.hourly_rate}/h`
+                          : <span className="text-amber-400/80 not-italic">{t('workOrders.noRate')}</span>}
                       </td>
                       <td className="table-cell text-right font-mono text-green-400">
                         {r.labor_cost ? fmtMoney(r.labor_cost) : '—'}
                       </td>
-                      <td className="table-cell text-gray-400 text-xs">{r.activity ?? '—'}</td>
+                      <td className="table-cell text-gray-400 text-xs">
+                        {r.activity
+                          ? (ACTIVITY_KEYS[r.activity] ? t(ACTIVITY_KEYS[r.activity]) : r.activity)
+                          : '—'}
+                      </td>
                     </tr>
                   );
                 })}
@@ -903,12 +968,19 @@ const InterventionPartsSection = ({ wo }: { wo: WorkOrder }) => {
         <span className="text-sm font-medium text-gray-300">{t('workOrders.partsViaKiosk')}</span>
         <span className="ml-auto text-xs text-gray-600 font-mono">{t('workOrders.partsCount', { count: iParts.length })}</span>
       </div>
+      {/* These lines are their own ledger (intervention_parts), not rows of the
+          table below: an APPROVED one counts toward this WO's cost and the Costs
+          dashboards; pending and refused ones count nowhere. */}
+      <p className="px-4 pt-2.5 text-[11px] text-gray-500 leading-snug">
+        {t('workOrders.partsViaKioskHint')}
+      </p>
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-white/[0.04]">
             <th className="table-header-cell">{t('workOrders.code')}</th>
             <th className="table-header-cell">{t('common.description')}</th>
             <th className="table-header-cell text-right">{t('workOrders.quantity')}</th>
+            <th className="table-header-cell text-right">{t('workOrders.totalCost')}</th>
             <th className="table-header-cell text-center">{t('common.status')}</th>
           </tr>
         </thead>
@@ -918,6 +990,11 @@ const InterventionPartsSection = ({ wo }: { wo: WorkOrder }) => {
               <td className="table-cell font-mono text-blue-400 text-xs">{p.item_code || '—'}</td>
               <td className="table-cell text-gray-300">{p.item_description || '—'}</td>
               <td className="table-cell text-right font-mono">{p.quantity_used} {p.unit}</td>
+              <td className="table-cell text-right font-mono text-gray-400 text-xs">
+                {p.total_cost != null
+                  ? fmtMoney(p.total_cost)
+                  : <span className="text-amber-400/80">{t('workOrders.noPrice')}</span>}
+              </td>
               <td className="table-cell text-center">
                 <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border ${IPART_STYLE[p.approval_status] ?? IPART_STYLE.pending}`}>
                   {t(`partApprovalStatus.${p.approval_status}`, p.approval_status)}
@@ -957,7 +1034,13 @@ const PartsTab = ({
     supplier: '',
   });
 
-  const totalCost = parts.reduce((s, p) => s + (p.total_cost ?? 0), 0);
+  // Approved kiosk lines are part of this WO's parts cost (same union the
+  // backend and the Costs dashboards apply), so the tab total must include them.
+  const kioskParts = wo.intervention_parts ?? [];
+  const approvedKiosk = kioskParts.filter((p) => p.approval_status === 'approved');
+  const totalCost =
+    parts.reduce((s, p) => s + (p.total_cost ?? 0), 0) +
+    approvedKiosk.reduce((s, p) => s + (p.total_cost ?? 0), 0);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -983,8 +1066,24 @@ const PartsTab = ({
     }
   };
 
+  // A refused line will never be money, so a missing price on it is not a
+  // problem to report — otherwise the banner could never be cleared.
+  const unpriced = parts.filter((p) => p.unit_cost == null).length
+    + kioskParts.filter((p) => p.approval_status !== 'rejected' && p.total_cost == null).length;
+
   return (
     <div className="space-y-4">
+      {unpriced > 0 && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] px-3 py-2">
+          <AlertCircle size={14} className="text-amber-400 mt-0.5 flex-shrink-0" />
+          <p className="text-[12px] text-amber-200/90 leading-snug">
+            {t('workOrders.missingPriceWarning', { count: unpriced })}{' '}
+            <Link to="/inventory" className="underline hover:text-amber-100">
+              {t('workOrders.missingPriceAction')}
+            </Link>
+          </p>
+        </div>
+      )}
       <InterventionPartsSection wo={wo} />
       <div className="flex items-center justify-between">
         {totalCost > 0 && (
@@ -1076,7 +1175,9 @@ const PartsTab = ({
                     <td className="table-cell text-gray-400 text-xs">{p.supplier ?? '—'}</td>
                     <td className="table-cell text-right font-mono">{p.quantity} {p.unit}</td>
                     <td className="table-cell text-right font-mono text-gray-400 text-xs">
-                      {p.unit_cost != null ? fmtMoney(p.unit_cost) : '—'}
+                      {p.unit_cost != null
+                        ? fmtMoney(p.unit_cost)
+                        : <span className="text-amber-400/80">{t('workOrders.noPrice')}</span>}
                     </td>
                     <td className="table-cell text-right font-mono text-blue-400">
                       {p.total_cost != null ? fmtMoney(p.total_cost) : '—'}

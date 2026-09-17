@@ -16,7 +16,7 @@ from app.api.routes import (
     auth, plants, equipment, work_orders,
     maintenance_plans, inventory, alerts, iot, users, kpis, technicians,
     tickets, maintenance_dashboard, machines, stop_categories, job_orders,
-    suppliers as suppliers_module, reports, escalation, factory_map, costs,
+    suppliers as suppliers_module, reports, escalation, factory_map, costs, costs_control,
     departments as departments_module,
     factory_calendar, adam_devices, cortex_stations, shift_templates,
     temperature_sensors, pit_stop, sushi, sushi_devices, home_insights,
@@ -1177,7 +1177,8 @@ async def _run_migrations() -> None:
             'cost_centers','cost_center_budgets','maintenance_budgets','sap_cost_lines',
             'escalation_settings','escalation_contacts','factory_calendar_settings',
             'factory_holidays','shift_reports','adam_devices','cortex_stations','shift_templates',
-            'line_tv_settings','dashboards','ai_insights','temperature_sensors'
+            'line_tv_settings','dashboards','ai_insights','temperature_sensors',
+            'sap_cost_links','cost_forecast_adjustments','cost_alert_rules','cost_actions'
           ] LOOP
             IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name = t) THEN
               IF NOT EXISTS (
@@ -1414,6 +1415,40 @@ async def _run_migrations() -> None:
                 ALTER TABLE sushi_devices ALTER COLUMN tag_name TYPE VARCHAR(60);
             END IF;
         END $$
+        """,
+        # Cleaning checklist now links to a stop SUBcategory (e.g. Planned Stop →
+        # Nettoyage); stop_category_id stays as the legacy pre-subcategory link.
+        "ALTER TABLE cleaning_checklists ADD COLUMN IF NOT EXISTS stop_subcategory_id UUID REFERENCES stop_subcategories(id)",
+        # Phase: productivity reporting — pieces per OPERATOR. Nothing linked output
+        # to a person before this: the shift log had no operator column and
+        # job_order_runs.operator_id was never written. The shift log is the right
+        # grain (one machine·date·shift = one operator's turn on that machine);
+        # operator_name is the snapshot we group by (see MachineProductionLog).
+        "ALTER TABLE machine_production_logs ADD COLUMN IF NOT EXISTS operator_id UUID REFERENCES machine_operators(id) ON DELETE SET NULL",
+        "ALTER TABLE machine_production_logs ADD COLUMN IF NOT EXISTS operator_name VARCHAR(200)",
+        "CREATE INDEX IF NOT EXISTS idx_prodlogs_operator ON machine_production_logs (operator_name, date DESC)",
+        # Phase: kiosk → work order bridge. A repair declared on the floor is
+        # clocked by the kiosk check-in ledger and its parts live on the
+        # intervention; nothing of that ever reached the WO, so Labor was empty,
+        # repair_hours/MTTR unstamped and cost 0 for every kiosk-driven repair.
+        # These columns carry the provenance of the mirrored rows.
+        # ON DELETE SET NULL on both: an intervention (or a simulator run) must
+        # stay deletable, and the labor itself outlives its provenance link.
+        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS intervention_id UUID REFERENCES machine_interventions(id) ON DELETE SET NULL",
+        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS intervention_technician_id UUID REFERENCES intervention_technicians(id) ON DELETE SET NULL",
+        "CREATE INDEX IF NOT EXISTS idx_labor_intervention_tech ON labor_records (intervention_technician_id)",
+        "CREATE INDEX IF NOT EXISTS idx_labor_intervention ON labor_records (intervention_id)",
+        # Part pricing falls back to the purchase history when no catalog price was
+        # ever set (the inventory XML carries none), so keep those columns filled.
+        """
+        UPDATE intervention_parts ip
+        SET unit_cost = COALESCE(s.unit_cost, s.average_cost, s.last_purchase_cost),
+            total_cost = COALESCE(s.unit_cost, s.average_cost, s.last_purchase_cost)
+                         * COALESCE(ip.quantity_used, 1)
+        FROM stock_items s
+        WHERE ip.stock_item_id = s.id
+          AND ip.unit_cost IS NULL
+          AND COALESCE(s.unit_cost, s.average_cost, s.last_purchase_cost) IS NOT NULL
         """,
     ]
     async with engine.begin() as conn:
@@ -1652,10 +1687,6 @@ async def lifespan(app: FastAPI):
     temperature_task = asyncio.create_task(_temperature_loop())
     from app.services.predictive.runner import predictive_loop
     predictive_task = asyncio.create_task(predictive_loop())
-    # Preload the note-organizer fallback LLM (self-skips when the Anthropic
-    # API is the primary path; cold Ollama load measured at ~90s on CPU).
-    from app.services.note_organizer import warm_up as _warm_ollama
-    ollama_warmup_task = asyncio.create_task(_warm_ollama())
     yield
     task.cancel()
     of_watch_task.cancel()
@@ -1665,7 +1696,6 @@ async def lifespan(app: FastAPI):
     weather_task.cancel()
     temperature_task.cancel()
     predictive_task.cancel()
-    ollama_warmup_task.cancel()
     await engine.dispose()
 
 
@@ -1733,6 +1763,9 @@ app.include_router(kpis.router,                   prefix="/api/kpis",          t
 app.include_router(home_insights.router,          prefix="/api/insights",      tags=["Home Insights"])
 app.include_router(predictive.router,             prefix="/api/predictive",    tags=["Predictive"],           dependencies=[Depends(resource_guard("predictive"))])
 app.include_router(costs.router,                  prefix="/api/costs",         tags=["Costs"],                dependencies=[Depends(resource_guard("costs"))])
+# Cost-control layer (reconciliation, cut-off/forecast, commitments, alerts,
+# actions, executive report) — same prefix and same guard as the Costs router.
+app.include_router(costs_control.router,          prefix="/api/costs",         tags=["Costs"],                dependencies=[Depends(resource_guard("costs"))])
 app.include_router(factory_calendar.router,       prefix="/api/calendar",      tags=["Factory Calendar"],     dependencies=[Depends(resource_guard("calendar"))])
 app.include_router(adam_devices.router,           prefix="/api/adam-devices",  tags=["ADAM Devices"],         dependencies=[Depends(resource_guard("settings_devices"))])
 app.include_router(cortex_stations.router,        prefix="/api/cortex-stations", tags=["Cortex Stations"],    dependencies=[Depends(resource_guard("settings_devices"))])

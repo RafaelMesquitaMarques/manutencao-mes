@@ -12,7 +12,7 @@ from sqlalchemy import select, func, or_
 
 from app.models.models import (
     Machine, MachineStop, MachineProductionLog, MachineProductionHourly, AlertShift,
-    StopCategory, StopCategoryType, Plant,
+    MachineOperator, StopCategory, StopCategoryType, Plant,
 )
 
 
@@ -75,6 +75,29 @@ def shift_windows(shifts_config: Optional[dict], for_date: date) -> list[tuple[d
     return merged
 
 
+def shift_length_minutes(shifts_config, shift_value: str) -> float:
+    """Length of ONE shift window (minutes) from a machine's shifts_config.
+    Handles overnight shifts (end <= start). Falls back to 480 (8 h) when the
+    config is missing or unparseable. Used to turn a count of recorded shifts
+    into scheduled hours (OEE planned time, productivity rates)."""
+    default = 480.0
+    cfg = shifts_config.get(shift_value) if isinstance(shifts_config, dict) else None
+    if not cfg:
+        return default
+    start, end = cfg.get("start"), cfg.get("end")
+    if not start or not end:
+        return default
+    try:
+        sh, sm = (int(x) for x in start.split(":"))
+        eh, em = (int(x) for x in end.split(":"))
+        mins = (eh * 60 + em) - (sh * 60 + sm)
+        if mins <= 0:
+            mins += 24 * 60            # overnight shift (e.g. 23:30 → 07:00)
+        return float(mins)
+    except (ValueError, AttributeError):
+        return default
+
+
 def overlap_seconds(start_a: datetime, end_a: datetime, start_b: datetime, end_b: datetime) -> float:
     start = max(start_a, start_b)
     end = min(end_a, end_b)
@@ -94,6 +117,35 @@ class MesService:
         return (await self.db.execute(
             select(Machine.plant_id).where(Machine.id == machine_id)
         )).scalar_one_or_none()
+
+    async def _operator_of(self, machine_id: UUID) -> tuple[Optional[UUID], Optional[str]]:
+        """Who is credited with the machine's output right now: the operator picked
+        at the kiosk (Machine.current_operator). Returns (operator_id, name) —
+        the id is a best-effort match against this machine's roster, the name is
+        the snapshot the productivity report groups by. (None, None) when no
+        operator is selected, which the report shows as unattributed."""
+        name = (await self.db.execute(
+            select(Machine.current_operator).where(Machine.id == machine_id)
+        )).scalar_one_or_none()
+        name = (name or "").strip()
+        if not name:
+            return None, None
+        op_id = (await self.db.execute(
+            select(MachineOperator.id).where(
+                MachineOperator.machine_id == machine_id,
+                func.lower(MachineOperator.name) == name.lower(),
+            ).limit(1)
+        )).scalar_one_or_none()
+        return op_id, name
+
+    async def attribute_operator(self, log: MachineProductionLog) -> None:
+        """Stamp the current operator on a shift log that has none. Only fills a
+        blank — a handover mid-shift must not re-credit pieces already counted."""
+        if log.operator_name:
+            return
+        op_id, name = await self._operator_of(log.machine_id)
+        if name:
+            log.operator_id, log.operator_name = op_id, name
 
     async def get_today_rejects(self, machine_id: UUID) -> int:
         """Return total reject count for today across all shifts."""
@@ -129,6 +181,7 @@ class MesService:
                 reject_count=0,
             )
             self.db.add(log)
+        await self.attribute_operator(log)
         log.reject_count = max(0, (log.reject_count or 0) + delta)
         # Persist the per-shift OEE snapshot so historical dashboards can chart
         # quality/OEE trends per shift (not just the live aggregate). Quality is the
@@ -166,6 +219,7 @@ class MesService:
             self.db.add(log)
         elif not log.target_count:
             log.target_count = int(default_target or 0)
+        await self.attribute_operator(log)
         if job_number:
             log.job_number = job_number
         log.actual_count = (log.actual_count or 0) + max(0, count)

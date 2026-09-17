@@ -6,7 +6,7 @@ import {
   DollarSign, Wallet, TrendingUp, PiggyBank, Plus, Loader2, Check,
   ChevronRight, ChevronDown, BarChart3, Table2, Factory, Building2, Trash2, X,
   Flame, Receipt, CalendarRange, Upload, MessageSquareText, Landmark, Truck,
-  ShoppingCart, MapPin,
+  ShoppingCart, MapPin, Scale, Boxes, BellRing, ArrowUpDown,
 } from 'lucide-react';
 import {
   fetchCostPnL, fetchCostCenters, fetchCostCenterBudgets, saveCostCenterBudgets,
@@ -19,6 +19,19 @@ import {
 import { usePermission } from '../../hooks/usePermission';
 import { usePlantStore } from '../../store/plantStore';
 import Spinner from '../../components/ui/Spinner';
+import {
+  fetchCostForecast, fetchCostCenterAnalysis,
+  type CostForecast, type CostCenterAnalysis, type CostCenterAnalysisRow,
+} from '../../api/costs';
+import BudgetControlPanel from './BudgetControlPanel';
+import ExecutiveSummaryPanel from './ExecutiveSummaryPanel';
+import ReconciliationTab from './ReconciliationTab';
+import CommitmentsTab from './CommitmentsTab';
+import StockTab from './StockTab';
+import AlertsTab from './AlertsTab';
+import MachineReliabilityPanel from './MachineReliabilityPanel';
+import SupplierInsightsPanel from './SupplierInsightsPanel';
+import { Card, Panel, Stat, varianceClass } from './shared';
 
 // English fallbacks for expense types (localized via t('costType.*')).
 const COST_TYPE_FALLBACK: Record<string, string> = {
@@ -73,7 +86,8 @@ const parseCustomPeriod = (key: string): { from: number; to: number } | null => 
   return { from, to };
 };
 
-type Tab = 'pnl' | 'machine' | 'supplier' | 'budget' | 'manage';
+type Tab = 'pnl' | 'machine' | 'supplier' | 'reconciliation' | 'commitments'
+  | 'stock' | 'alerts' | 'budget' | 'manage';
 
 // Site filter: null = both sites combined. QS = Saint-Jérôme, QM = Mirabel
 // (told apart by the cost-center name, which carries "Mirabel" for QM).
@@ -146,6 +160,16 @@ export default function CostsDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [t, currentMonth, lang, mmapKey]);
   const [periodKey, setPeriodKey] = useState('year');
+  // Deep-link from an alert or the executive summary: switch tab and carry the
+  // cost center / machine the alert was about.
+  const [drillCc, setDrillCc] = useState<string | null>(null);
+  const [drillEquipment, setDrillEquipment] = useState<string | null>(null);
+  const onDrill = useCallback((d: { tab?: string; cost_center?: string; equipment_id?: string; slot?: number }) => {
+    if (d.cost_center) setDrillCc(d.cost_center);
+    if (d.equipment_id) setDrillEquipment(d.equipment_id);
+    if (d.slot) setPeriodKey(`m${d.slot}`);
+    if (d.tab) setTab(d.tab as Tab);
+  }, []);
   const custom = parseCustomPeriod(periodKey);
   const months = custom
     ? Array.from({ length: custom.to - custom.from + 1 }, (_, i) => custom.from + i)
@@ -222,6 +246,10 @@ export default function CostsDashboard() {
           ['pnl', Table2, t('costs.tabControl')],
           ['machine', Factory, t('costs.tabByMachine')],
           ['supplier', ShoppingCart, t('costs.tabBySupplier')],
+          ['reconciliation', Scale, t('costs.tabReconciliation')],
+          ['commitments', Truck, t('costs.tabCommitments')],
+          ['stock', Boxes, t('costs.tabStock')],
+          ['alerts', BellRing, t('costs.tabAlerts')],
           ['budget', Wallet, t('costs.tabBudget')],
           ...(canEdit ? [['manage', Building2, t('costs.tabManage')] as const] : []),
         ] as const).map(([id, Icon, label]) => (
@@ -237,13 +265,37 @@ export default function CostsDashboard() {
         <div className="flex items-center justify-center h-64"><Spinner size="lg" /></div>
       ) : tab === 'pnl' ? (
         <ControlTab pnl={pnl} months={months} periodKey={periodKey} setPeriodKey={setPeriodKey}
-          periods={PERIODS} periodLabel={periodLabel} monthLabel={monthLabel} ccLabel={ccLabel} typeLabel={typeLabel} year={year}
-          todaySlot={todaySlot} sapMode={sapMode} fiscal={fiscal} site={site} />
+          periods={PERIODS} periodLabel={periodLabel} monthLabel={monthLabel} monthYearLabel={monthYearLabel}
+          ccLabel={ccLabel} typeLabel={typeLabel} year={year}
+          todaySlot={todaySlot} sapMode={sapMode} fiscal={fiscal} site={site}
+          canEdit={canEdit} onDrill={onDrill} drillCc={drillCc} clearDrillCc={() => setDrillCc(null)} />
       ) : tab === 'machine' ? (
         <ByMachineTab year={year} months={months} periodKey={periodKey} setPeriodKey={setPeriodKey}
-          periods={PERIODS} periodLabel={periodLabel} monthLabel={monthLabel} typeLabel={typeLabel} fiscal={fiscal} site={site} />
+          periods={PERIODS} periodLabel={periodLabel} monthLabel={monthLabel} typeLabel={typeLabel}
+          fiscal={fiscal} site={site} drillEquipment={drillEquipment} clearDrill={() => setDrillEquipment(null)} />
       ) : tab === 'supplier' ? (
-        <SupplierTab year={year} fiscal={fiscal} site={site} siteLabel={siteLabel} ccLabel={ccLabel} />
+        <SupplierTab year={year} fiscal={fiscal} site={site} siteLabel={siteLabel} ccLabel={ccLabel}
+          months={months} monthLabel={monthLabel} periodLabel={periodLabel} />
+      ) : ['reconciliation', 'commitments', 'stock', 'alerts'].includes(tab) ? (
+        <div className="space-y-6">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500 uppercase tracking-wide">{t('costs.period')}</span>
+            <PeriodPicker periodKey={periodKey} setPeriodKey={setPeriodKey} periods={PERIODS}
+              periodLabel={periodLabel} monthLabel={monthLabel} />
+          </div>
+          {tab === 'reconciliation' ? (
+            <ReconciliationTab year={year} site={site} months={months} monthLabel={monthLabel}
+              monthYearLabel={monthYearLabel} periodLabel={periodLabel} ccLabel={ccLabel} canEdit={canEdit} />
+          ) : tab === 'commitments' ? (
+            <CommitmentsTab year={year} site={site} months={months} periodLabel={periodLabel}
+              monthLabel={monthLabel} ccLabel={ccLabel} />
+          ) : tab === 'stock' ? (
+            <StockTab year={year} site={site} months={months} periodLabel={periodLabel} />
+          ) : (
+            <AlertsTab year={year} site={site} months={months} canEdit={canEdit}
+              monthYearLabel={monthYearLabel} onDrill={onDrill} />
+          )}
+        </div>
       ) : tab === 'manage' ? (
         <ManageTab onSaved={loadPnl} />
       ) : (
@@ -337,7 +389,7 @@ function PeriodPicker({ periodKey, setPeriodKey, periods, periodLabel, monthLabe
 
 // ─── Budget vs Actual tab (cost-control statement) ────────────────────────────
 
-function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel, monthLabel, ccLabel, typeLabel, year, todaySlot, sapMode, fiscal, site }: {
+function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel, monthLabel, monthYearLabel, ccLabel, typeLabel, year, todaySlot, sapMode, fiscal, site, canEdit, onDrill, drillCc, clearDrillCc }: {
   pnl: CostPnL | null;
   months: number[];
   periodKey: string;
@@ -345,6 +397,7 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
   periods: { key: string; label: string; months: number[] }[];
   periodLabel: string;
   monthLabel: (m: number) => string;
+  monthYearLabel: (e: MonthMapEntry) => string;
   ccLabel: (cc: string) => string;
   typeLabel: (ty: string) => string;
   year: number;
@@ -352,11 +405,40 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
   sapMode: boolean;
   fiscal: boolean;
   site: CostSite | null;
+  canEdit: boolean;
+  onDrill: (d: { tab?: string; cost_center?: string; equipment_id?: string; slot?: number }) => void;
+  drillCc: string | null;
+  clearDrillCc: () => void;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState<string | null>(null);
   const [scope, setScope] = useState<CostScope>('opex');
   const [txCc, setTxCc] = useState<string | null>(null);
+
+  // ── Control layer: cut-off, budget control, projection, cost-center depth ──
+  const monthFrom = Math.min(...months);
+  const monthTo = Math.max(...months);
+  const [forecast, setForecast] = useState<CostForecast | null>(null);
+  const [ccDepth, setCcDepth] = useState<CostCenterAnalysis | null>(null);
+  const loadControl = useCallback(() => {
+    const params = { year, site, kind: scope, month_from: monthFrom, month_to: monthTo };
+    fetchCostForecast(params).then(setForecast).catch(() => setForecast(null));
+    fetchCostCenterAnalysis(params).then(setCcDepth).catch(() => setCcDepth(null));
+  }, [year, site, scope, monthFrom, monthTo]);
+  useEffect(() => { loadControl(); }, [loadControl]);
+  const ccDepthMap = useMemo(() => {
+    const m: Record<string, CostCenterAnalysisRow> = {};
+    (ccDepth?.cost_centers ?? []).forEach((r) => { m[r.cost_center] = r; });
+    return m;
+  }, [ccDepth]);
+
+  // An alert or the executive summary can point at one cost center — open it.
+  useEffect(() => {
+    if (drillCc) {
+      setExpanded(drillCc);
+      clearDrillCc();
+    }
+  }, [drillCc, clearDrillCc]);
 
   const now = new Date();
   // Everything below works in slot space (1..12 over the months map) — on SAP
@@ -482,16 +564,55 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
     ? ((actualPast + (hasCurMonth ? cmMtdEff : 0)) / elapsedFrac) * months.length : 0;
   const vac = periodBudget - eac;
 
+  // ── Reconciliation with the control layer ──
+  // The projection above reads an elapsed month with no posting as a month that
+  // cost nothing. /forecast does not: it carries a real cut-off and tops those
+  // months up to the observed run rate. When it answers, it is THE projection on
+  // this page — the header, the S-curve and the bridge all read it, so no two
+  // widgets can disagree. (The arithmetic above stays as the fallback, and it is
+  // exact for a fully closed period, where the two agree by construction.)
+  const fcSlots = forecast?.slots ?? null;
+  const fcStatus = forecast?.as_of.slot_status ?? null;
+  const eacEff = forecast ? forecast.forecast : eac;
+  const runRateEff = forecast ? forecast.run_rate * months.length : runRate;
+  const vacEff = forecast ? forecast.projected_variance : vac;
+  // Last month in the period whose ledger is closed — where the booked line ends.
+  const lastClosedIdx = fcStatus
+    ? months.reduce((acc, m, j) => (fcStatus[m - 1] === 'closed' ? j : acc), -1)
+    : -1;
+
   // ── Cumulative S-curve with forecast (over the selected months) ──
   const cumBudget = cumulative(pickedBudget);
   const cumActualFull = cumulative(pickedActual);
   // The booked line stops at the last COMPLETE month; the current month lives on
   // the forecast line (its booked value is partial — and the demo data even
   // carries future-dated lines inside the month).
-  const cumActual = isCurrentYear
-    ? cumActualFull.map((v, j) => (months[j] < curMonth ? v : null))
-    : cumActualFull;
+  const cumActual = fcStatus
+    ? cumActualFull.map((v, j) => (j <= lastClosedIdx ? v : null))
+    : isCurrentYear
+      ? cumActualFull.map((v, j) => (months[j] < curMonth ? v : null))
+      : cumActualFull;
   const forecastData = useMemo(() => {
+    if (fcSlots && forecast) {
+      // Cumulative of the reconciled per-slot projection, joined to the booked
+      // line at the last closed month so the two curves meet.
+      const overdue = forecast.scenarios.base.overdue_committed;
+      if (lastClosedIdx >= months.length - 1 && overdue <= 0) return null;
+      const data: (number | null)[] = months.map(() => null);
+      let acc = lastClosedIdx >= 0 ? (cumActualFull[lastClosedIdx] ?? 0) : 0;
+      if (lastClosedIdx >= 0) data[lastClosedIdx] = acc;
+      for (let j = lastClosedIdx + 1; j < months.length; j++) {
+        acc += fcSlots[months[j] - 1]?.forecast ?? 0;
+        data[j] = acc;
+      }
+      // Open POs expected in an already-closed month never reached the ledger;
+      // they land at the end of the period, exactly as in the EAC.
+      if (overdue > 0 && months.length > 0) {
+        const last = months.length - 1;
+        data[last] = (data[last] ?? acc) + overdue;
+      }
+      return data;
+    }
     if (!isCurrentYear) return null;
     let lastIdx = -1;
     months.forEach((m, j) => { if (m < curMonth) lastIdx = j; });
@@ -518,7 +639,8 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
       data[j] = acc;
     }
     return data;
-  }, [isCurrentYear, curMonth, months, cmProjectedEff, overdueCommitted, cumActualFull, pickedBudget, pickedCommitted]);
+  }, [isCurrentYear, curMonth, months, cmProjectedEff, overdueCommitted, cumActualFull,
+    pickedBudget, pickedCommitted, fcSlots, forecast, lastClosedIdx]);
 
   // ── Current-month landing (daily cumulative + run-rate projection) ──
   const landing = useMemo(() => {
@@ -626,9 +748,38 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
   }, [cm, months, pnl, scope, totBudgetArr, totActualArr, totCommittedArr, curSlotCommitted,
     cmProjectedEff, cmProjectedBase, cmProjected, curMonth, sapOfficial]);
 
+  // Rebuilt on the control layer's basis when it is available: spend by expense
+  // type over the CLOSED months, one block for commitments that never landed,
+  // one for everything still to come. The blocks therefore add up to exactly the
+  // projection in the header and in the budget-control panel.
+  const reconciledLanding = useMemo(() => {
+    if (!forecast || !fcStatus) return periodLanding;
+    const closed = months.filter((m) => fcStatus[m - 1] === 'closed');
+    const byType: Record<string, number> = {};
+    pnl?.cost_centers.forEach((c) => Object.entries(c.by_type[scope] ?? {}).forEach(([k, arr]) => {
+      const v = closed.reduce((sum, m) => sum + (arr[m - 1] ?? 0), 0);
+      if (v) byType[k] = (byType[k] ?? 0) + v;
+    }));
+    const entries = Object.entries(byType)
+      .filter(([, v]) => Math.round(v) !== 0)
+      .map(([type, value]) => ({ type, value }))
+      .sort((a, b) => b.value - a.value);
+    const committed = forecast.scenarios.base.overdue_committed;
+    const booked = entries.reduce((sum, e) => sum + e.value, 0);
+    return {
+      entries,
+      committed,
+      futureBudget: forecast.forecast - booked - committed,
+      landingTotal: forecast.forecast,
+      budget: forecast.period_budget,
+      variance: forecast.projected_variance,
+      hasCur: periodLanding?.hasCur ?? false,
+    };
+  }, [forecast, fcStatus, months, pnl, scope, periodLanding]);
+
   const bridgeOption = useMemo(() => {
-    if (!periodLanding) return null;
-    const { entries, committed, futureBudget, budget } = periodLanding;
+    if (!reconciledLanding) return null;
+    const { entries, committed, futureBudget, budget } = reconciledLanding;
     // Reference bar (period budget), then a contribution walk from zero — one
     // floating block per expense type (down for credits), a grey block for
     // upcoming months at budget — closing on the anchored landing bar.
@@ -688,7 +839,7 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
             } } },
       ],
     };
-  }, [periodLanding, t, typeLabel, sapOfficial]);
+  }, [reconciledLanding, t, typeLabel, sapOfficial]);
 
   const landingOption = landing && cm ? {
     backgroundColor: 'transparent',
@@ -796,11 +947,12 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
     }],
   };
 
-  const monthFrom = Math.min(...months);
-  const monthTo = Math.max(...months);
-
   return (
     <div className="space-y-6">
+      {/* Period read-out, assembled from the numbers below */}
+      <ExecutiveSummaryPanel year={year} site={site} scope={scope} months={months}
+        periodLabel={periodLabel} monthYearLabel={monthYearLabel} ccLabel={ccLabel} onDrill={onDrill} />
+
       {/* Scope (OPEX / CAPEX) + period selector */}
       <div className="flex items-center gap-4 flex-wrap">
         <div className="flex gap-1 bg-[#0d1421] border border-white/[0.06] rounded-lg p-1">
@@ -825,22 +977,45 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
       {/* Summary cards — column count grows with the optional cards */}
       {(() => {
         const showCommitted = committedPeriod > 0;
-        const nCards = (isOpex ? (sapOfficial ? 6 : 5) : 4) + (showCommitted ? 1 : 0);
-        const gridCols = ({ 4: 'xl:grid-cols-4', 5: 'xl:grid-cols-5', 6: 'xl:grid-cols-6', 7: 'xl:grid-cols-7' } as Record<number, string>)[nCards];
+        // Period-coherent variance. Budget over the WHOLE period minus a partial
+        // actual is the leftover envelope, not a favourable variance — so the
+        // variance card compares both sides up to the cut-off and the leftover
+        // gets its own card. The old arithmetic stays as the fallback for a year
+        // with no control data (which is also the only case where it is right:
+        // a fully closed period).
+        const hasCutoff = forecast != null && forecast.as_of.cutoff_slot != null;
+        const varValue = hasCutoff ? forecast!.variance_to_date : totVar;
+        const varPct = hasCutoff ? forecast!.variance_to_date_pct : null;
+        const cutoffLabel = forecast?.as_of.cutoff_period
+          ? monthYearLabel(forecast.as_of.cutoff_period) : periodLabel;
+        const remaining = totBudget - totActual;
+        const nCards = (isOpex ? (sapOfficial ? 7 : 6) : 5) + (showCommitted ? 1 : 0);
+        const gridCols = ({ 4: 'xl:grid-cols-4', 5: 'xl:grid-cols-5', 6: 'xl:grid-cols-6',
+          7: 'xl:grid-cols-7', 8: 'xl:grid-cols-8' } as Record<number, string>)[nCards];
         return (
           <div className={`grid grid-cols-2 lg:grid-cols-3 ${gridCols} gap-4`}>
             <Card icon={<Wallet size={20} className="text-blue-400" />} label={t('costs.budget')} value={money(totBudget)} sub={periodLabel} color="blue" />
             <Card icon={<DollarSign size={20} className="text-purple-400" />} label={t('costs.actual')} value={money(totActual)}
               sub={yoyPct == null ? periodLabel : t('costs.vsLastYear', { pct: `${yoyPct >= 0 ? '+' : ''}${yoyPct}`, year: pnl?.prev_year ?? year - 1 })} color="purple" />
-            <Card icon={<TrendingUp size={20} className={totVar >= 0 ? 'text-green-400' : 'text-red-400'} />}
-              label={t('costs.variance')} value={signedMoney(totVar)} sub={totVar >= 0 ? t('costs.underBudget') : t('costs.overBudget')}
-              color={totVar >= 0 ? 'green' : 'red'} valueClass={totVar >= 0 ? 'text-green-400' : 'text-red-400'} />
+            <Card icon={<TrendingUp size={20} className={varValue >= 0 ? 'text-green-400' : 'text-red-400'} />}
+              label={hasCutoff ? t('costs.varianceYtd') : t('costs.variance')}
+              value={`${signedMoney(varValue)}${varPct == null ? '' : ` (${varPct > 0 ? '+' : ''}${varPct}%)`}`}
+              sub={hasCutoff
+                ? t('costs.varianceYtdSub', { cutoff: cutoffLabel })
+                : (varValue >= 0 ? t('costs.underBudget') : t('costs.overBudget'))}
+              color={varValue >= 0 ? 'green' : 'red'} valueClass={varValue >= 0 ? 'text-green-400' : 'text-red-400'} />
+            <Card icon={<PiggyBank size={20} className="text-blue-400" />} label={t('costs.remainingBudgetCard')}
+              value={signedMoney(remaining)} sub={t('costs.remainingBudgetSub')} color="blue" />
             <Card icon={<PiggyBank size={20} className="text-amber-400" />} label={t('costs.consumed')}
               value={consumedPct == null ? '—' : `${consumedPct}%`}
-              sub={isCurrentYear ? t('costs.elapsed', { pct: elapsedPct }) : t('costs.consumedSub')} color="amber" valueClass={consumedColor} />
+              sub={hasCutoff
+                ? t('costs.consumedVsPosted', { pct: Math.round(((forecast!.as_of.cutoff_slot ?? 0) / 12) * 100) })
+                : (isCurrentYear ? t('costs.elapsed', { pct: elapsedPct }) : t('costs.consumedSub'))}
+              color="amber" valueClass={consumedColor} />
             {showCommitted && (
               <Card icon={<Truck size={20} className="text-cyan-400" />} label={t('costs.committed')}
-                value={money(committedPeriod)} sub={t('costs.committedSub')} color="cyan" />
+                value={money(committedPeriod)} sub={t('costs.committedSub')} color="cyan"
+                onClick={() => onDrill({ tab: 'commitments' })} title={t('costs.committedDrill')} />
             )}
             {isOpex && (
               <Card icon={<Flame size={20} className="text-red-400" />} label={t('costs.unplannedShare')}
@@ -855,8 +1030,16 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
         );
       })()}
 
+      {/* Budget control: cut-off, to-date variance, projection and scenarios.
+          Sits above the existing charts — they are unchanged. */}
+      {forecast && (
+        <BudgetControlPanel data={forecast} months={months} monthLabel={monthLabel}
+          monthYearLabel={monthYearLabel} scope={scope} site={site} canEdit={canEdit}
+          onChanged={loadControl} periodLabel={periodLabel} />
+      )}
+
       {/* S-curve + monthly bars (+ current-month landing) */}
-      <div className={`grid grid-cols-1 lg:grid-cols-2 ${periodLanding && bridgeOption && cm ? 'xl:grid-cols-3' : ''} gap-4`}>
+      <div className={`grid grid-cols-1 lg:grid-cols-2 ${reconciledLanding && bridgeOption && cm ? 'xl:grid-cols-3' : ''} gap-4`}>
         <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
           <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
             <div>
@@ -866,19 +1049,19 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
               </div>
               <p className="text-xs text-gray-600">{t('costs.sCurveSub')}</p>
             </div>
-            {isCurrentYear && periodBudget > 0 && (
+            {(forecast || isCurrentYear) && periodBudget > 0 && (
               <div className="flex gap-4 text-right">
                 <div>
                   <p className="text-[10px] text-gray-500 uppercase tracking-wide">{t('costs.forecastEac')}</p>
-                  <p className="text-sm font-semibold text-white font-mono">{money(eac)}</p>
+                  <p className="text-sm font-semibold text-white font-mono">{money(eacEff)}</p>
                 </div>
                 <div>
                   <p className="text-[10px] text-gray-500 uppercase tracking-wide">{t('costs.runRate')}</p>
-                  <p className="text-sm font-semibold text-gray-300 font-mono">{money(runRate)}</p>
+                  <p className="text-sm font-semibold text-gray-300 font-mono">{money(runRateEff)}</p>
                 </div>
                 <div>
                   <p className="text-[10px] text-gray-500 uppercase tracking-wide">{t('costs.vac')}</p>
-                  <p className={`text-sm font-semibold font-mono ${vac >= 0 ? 'text-green-400' : 'text-red-400'}`}>{signedMoney(vac)}</p>
+                  <p className={`text-sm font-semibold font-mono ${vacEff >= 0 ? 'text-green-400' : 'text-red-400'}`}>{signedMoney(vacEff)}</p>
                 </div>
               </div>
             )}
@@ -895,7 +1078,7 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
         </div>
         {/* Landing bridge. Platform-tracked years also offer a daily-curve view;
             SAP years project from posted monthly actuals, so bridge only. */}
-        {periodLanding && bridgeOption && cm && (
+        {reconciledLanding && bridgeOption && cm && (
           <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
             <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
               <div>
@@ -910,27 +1093,27 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
               <div className="flex items-start gap-4 text-right">
                 <div>
                   <p className="text-[10px] text-gray-500 uppercase tracking-wide">{t('costs.projLanding')}</p>
-                  <p className="text-sm font-semibold text-white font-mono">{money(periodLanding.landingTotal)}</p>
+                  <p className="text-sm font-semibold text-white font-mono">{money(reconciledLanding.landingTotal)}</p>
                 </div>
                 <div>
                   <p className="text-[10px] text-gray-500 uppercase tracking-wide">{t('costs.budget')}</p>
-                  <p className="text-sm font-semibold text-gray-300 font-mono">{money(periodLanding.budget)}</p>
+                  <p className="text-sm font-semibold text-gray-300 font-mono">{money(reconciledLanding.budget)}</p>
                 </div>
                 <div>
                   <p className="text-[10px] text-gray-500 uppercase tracking-wide">{t('costs.projVariance')}</p>
                   <p className={`text-sm font-semibold font-mono ${
-                    periodLanding.variance >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {signedMoney(periodLanding.variance)}
+                    reconciledLanding.variance >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {signedMoney(reconciledLanding.variance)}
                   </p>
                 </div>
                 <div className="flex gap-1 bg-[#0b1120] border border-white/[0.06] rounded-lg p-1">
                   <button onClick={() => setLandingView('bridge')} title={t('costs.landingBridge')}
                     className={`p-1.5 rounded transition-colors ${
-                      landingView !== 'curve' || !periodLanding.hasCur || sapOfficial
+                      landingView !== 'curve' || !reconciledLanding.hasCur || sapOfficial
                         ? 'bg-blue-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>
                     <BarChart3 size={13} />
                   </button>
-                  {periodLanding.hasCur && !sapOfficial && (
+                  {reconciledLanding.hasCur && !sapOfficial && (
                     <button onClick={() => setLandingView('curve')} title={t('costs.landingCurve')}
                       className={`p-1.5 rounded transition-colors ${
                         landingView === 'curve' ? 'bg-blue-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>
@@ -941,7 +1124,7 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
               </div>
             </div>
             <ReactECharts
-              option={landingView === 'curve' && periodLanding.hasCur && landingOption && !sapOfficial ? landingOption : bridgeOption}
+              option={landingView === 'curve' && reconciledLanding.hasCur && landingOption && !sapOfficial ? landingOption : bridgeOption}
               style={{ height: 300 }} theme="dark" notMerge />
           </div>
         )}
@@ -1016,6 +1199,57 @@ function ControlTab({ pnl, months, periodKey, setPeriodKey, periods, periodLabel
                                   <Receipt size={13} /> {t('costs.viewTransactions')}
                                 </button>
                               </div>
+                              {/* Depth: to-date variance, year-on-year and the
+                                  accounts driving the move. A YoY figure only
+                                  appears when the previous year was imported. */}
+                              {ccDepthMap[r.cost_center] && (
+                                <div className="border-t border-white/[0.05] pt-2 space-y-2">
+                                  <div className="flex items-center gap-x-6 gap-y-2 flex-wrap">
+                                    <Stat label={t('costs.budgetToDate')}
+                                      value={money(ccDepthMap[r.cost_center].budget_to_date)} />
+                                    <Stat label={t('costs.varianceToDate')}
+                                      value={ccDepthMap[r.cost_center].variance_to_date == null ? '—'
+                                        : signedMoney(ccDepthMap[r.cost_center].variance_to_date as number)}
+                                      valueClass={varianceClass(ccDepthMap[r.cost_center].variance_to_date ?? 0)} />
+                                    {ccDepth?.has_prev ? (
+                                      <>
+                                        <Stat label={String(ccDepth.prev_year)}
+                                          value={money(ccDepthMap[r.cost_center].prev_actual)} />
+                                        <Stat label={t('costs.supDelta')}
+                                          value={signedMoney(ccDepthMap[r.cost_center].delta)}
+                                          valueClass={varianceClass(-ccDepthMap[r.cost_center].delta)} />
+                                      </>
+                                    ) : (
+                                      <span className="text-[11px] text-gray-600 flex items-center gap-1.5">
+                                        <ArrowUpDown size={11} />
+                                        {t('costs.ccNoPrevYear', { prev: ccDepth?.prev_year ?? year - 1 })}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {ccDepthMap[r.cost_center].drivers.length > 0 && (
+                                    <div>
+                                      <p className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">
+                                        {t('costs.ccDrivers')}
+                                      </p>
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-x-6 gap-y-1">
+                                        {ccDepthMap[r.cost_center].drivers.map((d) => (
+                                          <div key={d.account} className="flex items-baseline justify-between gap-2 min-w-0">
+                                            <span className="text-xs text-gray-400 truncate" title={d.account}>{d.account}</span>
+                                            <span className="text-xs font-mono text-gray-300 flex-shrink-0">
+                                              {money(d.actual)}
+                                              {ccDepth?.has_prev && (
+                                                <span className={`ml-1.5 ${varianceClass(-d.delta)}`}>
+                                                  {signedMoney(d.delta)}
+                                                </span>
+                                              )}
+                                            </span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                               {ccComments.length > 0 && (
                                 <div className="border-t border-white/[0.05] pt-2 space-y-1">
                                   <p className="flex items-center gap-1.5 text-[10px] text-gray-500 uppercase tracking-wide">
@@ -1196,7 +1430,7 @@ function TransactionsModal({ year, monthFrom, monthTo, costCenter, equipmentId, 
 
 // ─── By-machine tab ───────────────────────────────────────────────────────────
 
-function ByMachineTab({ year, months, periodKey, setPeriodKey, periods, periodLabel, monthLabel, typeLabel, fiscal, site }: {
+function ByMachineTab({ year, months, periodKey, setPeriodKey, periods, periodLabel, monthLabel, typeLabel, fiscal, site, drillEquipment, clearDrill }: {
   year: number;
   months: number[];
   periodKey: string;
@@ -1207,6 +1441,8 @@ function ByMachineTab({ year, months, periodKey, setPeriodKey, periods, periodLa
   typeLabel: (ty: string) => string;
   fiscal: boolean;
   site: CostSite | null;
+  drillEquipment: string | null;
+  clearDrill: () => void;
 }) {
   const { t } = useTranslation();
   const [data, setData] = useState<CostByMachine | null>(null);
@@ -1218,6 +1454,14 @@ function ByMachineTab({ year, months, periodKey, setPeriodKey, periods, periodLa
     setLoading(true);
     fetchCostByMachine(year, fiscal, site).then(setData).finally(() => setLoading(false));
   }, [year, fiscal, site]);
+
+  // An alert can point at one asset — open its ledger straight away.
+  useEffect(() => {
+    if (drillEquipment) {
+      setTxMachine({ id: drillEquipment, label: '' });
+      clearDrill();
+    }
+  }, [drillEquipment, clearDrill]);
 
   const rows = useMemo(() => {
     if (!data) return [];
@@ -1263,6 +1507,10 @@ function ByMachineTab({ year, months, periodKey, setPeriodKey, periods, periodLa
         </div>
         <span className="text-xs text-gray-600">{t('costs.byMachineLaborNote')}</span>
       </div>
+
+      {/* Cost crossed with reliability — coverage caveat included */}
+      <MachineReliabilityPanel year={year} site={site} months={months} periodLabel={periodLabel}
+        onTransactions={(id, label) => setTxMachine({ id, label })} />
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
         <Card icon={<DollarSign size={20} className="text-purple-400" />} label={t('costs.totalCost')} value={money(total)} sub={periodLabel} color="purple" />
@@ -1366,12 +1614,15 @@ function ByMachineTab({ year, months, periodKey, setPeriodKey, periods, periodLa
 
 // ─── By-supplier tab (procurement expense report) ────────────────────────────
 
-function SupplierTab({ year, fiscal, site, siteLabel, ccLabel }: {
+function SupplierTab({ year, fiscal, site, siteLabel, ccLabel, months, monthLabel, periodLabel }: {
   year: number;
   fiscal: boolean;
   site: CostSite | null;
   siteLabel: (s: CostSite | null) => string;
   ccLabel: (cc: string) => string;
+  months: number[];
+  monthLabel: (m: number) => string;
+  periodLabel: string;
 }) {
   const { t, i18n } = useTranslation();
   const lang = (i18n.language || 'en').slice(0, 2);
@@ -1452,6 +1703,10 @@ function SupplierTab({ year, fiscal, site, siteLabel, ccLabel }: {
         {top.length === 0 ? <div className="flex items-center justify-center h-40 text-gray-600 text-sm">{t('common.noData')}</div>
           : <ReactECharts option={paretoOption} style={{ height: 340 }} theme="dark" />}
       </div>
+
+      {/* Evolution, year-on-year, concentration and comparable-item price drift */}
+      <SupplierInsightsPanel year={year} site={site} months={months} monthLabel={monthLabel}
+        periodLabel={periodLabel} onPickSupplier={(name) => setExpanded(name)} />
 
       <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
         <div className="flex items-center gap-2 mb-3"><Table2 size={15} className="text-gray-500" />
@@ -1939,26 +2194,4 @@ function ImportSapModal({ onClose, onImported }: {
 
 // ─── Shared card ──────────────────────────────────────────────────────────────
 
-function Card({ icon, label, value, sub, color, valueClass }: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  sub: string;
-  color: 'blue' | 'amber' | 'green' | 'purple' | 'red' | 'cyan';
-  valueClass?: string;
-}) {
-  const bg: Record<string, string> = {
-    blue: 'bg-blue-500/10', amber: 'bg-amber-500/10', green: 'bg-green-500/10',
-    purple: 'bg-purple-500/10', red: 'bg-red-500/10', cyan: 'bg-cyan-500/10',
-  };
-  return (
-    <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
-      <div className="flex items-center justify-between mb-3">
-        <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">{label}</p>
-        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${bg[color]}`}>{icon}</div>
-      </div>
-      <p className={`text-2xl font-bold ${valueClass ?? 'text-white'}`}>{value}</p>
-      <p className="text-xs text-gray-600 mt-1">{sub}</p>
-    </div>
-  );
-}
+// `Card` now lives in ./shared — the new control panels render the same one.

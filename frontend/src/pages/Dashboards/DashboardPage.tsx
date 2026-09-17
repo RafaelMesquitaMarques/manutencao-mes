@@ -23,7 +23,7 @@ export default function DashboardPage() {
   const { slug } = useParams<{ slug: string }>();
   const { t } = useTranslation();
   const [params] = useSearchParams();
-  const canEdit = useRole('supervisor', 'plant_manager', 'director', 'admin');
+  const canEdit = useRole('supervisor', 'maintenance_director', 'plant_manager', 'director', 'admin');
   const [dash, setDash] = useState<Dashboard | null>(null);
   const [tiles, setTiles] = useState<DashboardTile[]>([]);
   const [machines, setMachines] = useState<Machine[]>([]);

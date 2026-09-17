@@ -9,7 +9,7 @@ export default function DashboardList() {
   const { t } = useTranslation();
   const [list, setList] = useState<Dashboard[]>([]);
   const [loading, setLoading] = useState(true);
-  const canEdit = useRole('supervisor', 'plant_manager', 'director', 'admin');
+  const canEdit = useRole('supervisor', 'maintenance_director', 'plant_manager', 'director', 'admin');
   const nav = useNavigate();
 
   const load = () => fetchDashboards().then(setList).catch(() => setList([])).finally(() => setLoading(false));

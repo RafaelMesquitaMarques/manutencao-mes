@@ -192,7 +192,7 @@ only one consistent with the existing half-built multi-plant schema and the busi
 ### 2.1 Stack & deployment
 
 - One Docker Compose stack: `db` (TimescaleDB PG16), `redis`, `mqtt`, `backend` (FastAPI),
-  `iot_worker`, `adam_gateway`, `ollama`, `frontend` (nginx-served build), `nginx`, `backup`
+  `iot_worker`, `adam_gateway`, `frontend` (nginx-served build), `nginx`, `backup`
   (postgres-backup-local). Volumes incl. `uploads_data`.
 - Schema managed by `Base.metadata.create_all` + ~500 idempotent SQL statements in
   `main.py::_run_migrations` at startup; one-time steps guarded by the `_kaizo_migrations` marker

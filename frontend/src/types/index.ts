@@ -234,6 +234,7 @@ export interface LaborRecord {
   notes?: string;
   started_at?: string;
   stopped_at?: string;
+  intervention_id?: string | null;      // set → time measured by the kiosk check-in ledger
   created_at: string;
 }
 
@@ -642,7 +643,154 @@ export interface StopParetoItem {
   minutes: number;
 }
 
+// ── Productivity (pieces produced) ────────────────────────────────────────────
+
+/** One row of any productivity breakdown (machine, shift, operator, department,
+ *  weekday, machine×shift). `key` identifies it, `label` is the raw name — shift
+ *  and weekday keys are translated in the UI, machine/operator names are not. */
+export interface ProductivityBucket {
+  key: string;
+  label: string;
+  pieces: number;
+  rejects: number;
+  good_pieces: number;
+  target: number;
+  attainment_pct: number | null;
+  quality_pct: number | null;
+  scrap_pct: number | null;
+  production_hours: number;
+  pieces_per_hour: number | null;
+  shifts: number;
+  pieces_per_shift: number | null;
+  days: number;
+  pieces_per_day: number | null;
+  machines: number;
+  operators: number;
+  oee_pct: number | null;
+  code?: string | null;
+  department?: string | null;
+  shift?: string;
+  machine_id?: string;
+  unattributed?: boolean;   // by_operator: output with no operator on the log
+  unassigned?: boolean;     // by_department: machine with no department
+}
+
+export interface ProductivityTrendPoint {
+  date: string;
+  pieces: number;
+  rejects: number;
+  good_pieces: number;
+  target: number;
+}
+
+/** Hour-of-day curve from the REAL per-hour feed; `machines` says how many
+ *  machines are wired to it, so partial coverage is visible. */
+export interface ProductivityHourly {
+  hours: { hour: number; pieces: number; rejects: number }[];
+  machines: number;
+  pieces: number;
+  peak_hour: number | null;
+}
+
+export interface ProductivityJobOrder {
+  job_number: string;
+  product_name?: string | null;
+  target_quantity?: number | null;
+  status: string;
+  pieces: number;
+  rejects: number;
+  good_pieces: number;
+  completion_pct: number | null;
+  quality_pct: number | null;
+  runs: number;
+  machines: number;
+  minutes: number;
+  pieces_per_hour: number | null;
+}
+
+/** Filter options for the window, computed WITHOUT the request's own filters so
+ *  the pickers never collapse onto the current selection. */
+export interface ProductivityFacets {
+  machines: { id: string; label: string; code?: string | null; department?: string | null; pieces: number }[];
+  operators: { name: string; pieces: number }[];
+  departments: string[];
+  shifts: string[];
+}
+
+export interface ProductivityFilters {
+  shift: string | null;
+  department: string | null;
+  machine_ids: string[];
+  operators: string[];
+  include_unattributed: boolean;
+}
+
+export interface ProductivityData {
+  period_days: number;
+  start: string;
+  end: string;
+  custom_range: boolean;
+  filters: ProductivityFilters;
+  timezone: string;
+  totals: ProductivityBucket;
+  trend: ProductivityTrendPoint[];
+  best_day: ProductivityTrendPoint | null;
+  by_machine: ProductivityBucket[];
+  by_shift: ProductivityBucket[];
+  by_operator: ProductivityBucket[];
+  by_department: ProductivityBucket[];
+  by_weekday: ProductivityBucket[];
+  machine_shift: ProductivityBucket[];
+  by_hour: ProductivityHourly;
+  by_job_order: ProductivityJobOrder[];
+  facets: ProductivityFacets;
+}
+
+export type CompareDimension = 'machine' | 'operator' | 'shift' | 'department';
+
+/** One side of a comparison: full metrics, its own daily series (aligned on the
+ *  response's `dates`), its shift split, and `cross` — who ran this machine, or
+ *  which machines this operator ran. */
+export interface ProductivityCompareEntity extends ProductivityBucket {
+  trend: ProductivityTrendPoint[];
+  by_shift: ProductivityBucket[];
+  cross: ProductivityBucket[];
+}
+
+export interface ProductivityCompareData {
+  dimension: CompareDimension;
+  period_days: number;
+  start: string;
+  end: string;
+  custom_range: boolean;
+  requested_keys: string[];
+  entities: ProductivityCompareEntity[];
+  dates: string[];
+  available: {
+    key: string; label: string; pieces: number;
+    code?: string | null; department?: string | null;
+    unattributed?: boolean; unassigned?: boolean;
+  }[];
+  facets: ProductivityFacets;
+}
+
+/** The production block of a single machine's report. */
+export interface MachineProductionData extends Omit<ProductivityBucket, 'key' | 'label'> {
+  trend: ProductivityTrendPoint[];
+  best_day: ProductivityTrendPoint | null;
+  by_shift: ProductivityBucket[];
+  by_operator: ProductivityBucket[];
+  by_weekday: ProductivityBucket[];
+  by_hour: ProductivityHourly;
+  by_job_order: ProductivityJobOrder[];
+  target_per_shift: number | null;
+  target_per_hour: number | null;
+}
+
 export interface MachineReportData {
+  start: string;
+  end: string;
+  custom_range: boolean;
   machine: {
     id: string;
     name: string;
@@ -666,6 +814,7 @@ export interface MachineReportData {
     pareto: StopParetoItem[];
     sub_pareto?: StopParetoItem[];
   };
+  production: MachineProductionData;
   mttr: { hours: number | null; repairs: number };
   mtbf: { hours: number | null; failures: number };
   pm_compliance: { pct: number | null; total: number; on_time: number };
@@ -701,6 +850,9 @@ export interface MachineCompareItem {
 
 export interface MachineCompareResponse {
   period_days: number;
+  start: string;
+  end: string;
+  custom_range: boolean;
   items: MachineCompareItem[];
 }
 
