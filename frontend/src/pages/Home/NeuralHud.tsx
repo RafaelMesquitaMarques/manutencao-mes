@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { LucideIcon } from 'lucide-react';
+import { MembraneDefs, MembraneLayer } from '../../components/membrane/MembraneLayer';
 import './NeuralHud.css';
 
 export type HudTone = 'good' | 'warn' | 'bad';
@@ -220,6 +221,7 @@ const NeuralHud = ({ nodes, coreTo, onCoreClick, coreHint, coreActive }: NeuralH
                 <circle cx="240" cy="240" r="78" />
                 <rect x="172" y="262" width="136" height="56" />
               </clipPath>
+              <MembraneDefs id="nhud-mem" />
             </defs>
 
             <line x1="240" y1="8" x2="240" y2="24" stroke="#f87171" strokeOpacity="0.55" strokeWidth="1.2" />
@@ -261,6 +263,7 @@ const NeuralHud = ({ nodes, coreTo, onCoreClick, coreHint, coreActive }: NeuralH
             <polygon points="216,314 264,314 284,186 196,186" fill="url(#nhud-beam-grad)" />
             <g ref={packetsRef} />
             <circle className={`nhud-a8 nhud-corering${coreLit ? ' on' : ''}`} cx="240" cy="240" r="86" fill="none" stroke="rgba(34,211,238,.3)" strokeDasharray="10 6" />
+            <MembraneLayer id="nhud-mem" cx={240} cy={240} />
             <g className={`nhud-core${coreLit ? ' on' : ''}`}>
               <image
                 href="/core-hud.png"
