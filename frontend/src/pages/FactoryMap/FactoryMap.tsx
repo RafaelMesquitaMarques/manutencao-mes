@@ -8,7 +8,7 @@ import '@xyflow/react/dist/style.css';
 import {
   Map as MapIcon, Pencil, Eye, Upload, RefreshCw, Image as ImageIcon,
   Camera, Wrench, RotateCw, Trash2, X, Plus, ExternalLink, Box, Boxes, Maximize2, Minimize2, Move,
-  Search, ChevronDown, ChevronUp, Magnet, RotateCcw, MapPin, BellRing,
+  Search, ChevronDown, ChevronUp, Magnet, RotateCcw, MapPin, BellRing, History, Radio,
 } from 'lucide-react';
 import api from '../../api/axios';
 import { useTranslation } from 'react-i18next';
@@ -43,10 +43,15 @@ import { usePlantStore } from '../../store/plantStore';
 import { useEditorStore } from './editorStore';
 import { useMapEditor, type GroupMove } from './useMapEditor';
 import MapEditorPanel, { type PanelSelection } from './MapEditorPanel';
+import { useReplay } from './replay/useReplay';
+import ReplayBar from './replay/ReplayBar';
+import ReplayMachineDetail from './replay/ReplayMachineDetail';
+import ReplayOfDetail from './replay/ReplayOfDetail';
+import type { ReplayAsset } from './replay/replayModel';
 import SaveStatusPill from './SaveStatusPill';
 import { BLOCK_KINDS } from './catalog';
 
-interface Plant { id: string; code: string; name: string; }
+interface Plant { id: string; code: string; name: string; timezone?: string | null; }
 
 // Reserved region key for the whole-plant "Overview" pose override, stored in the
 // FactoryView.department column (real department names never collide with this).
@@ -528,6 +533,15 @@ export default function FactoryMap() {
   // machine (or by the OF search; `highlight` rings the searched OF in the list).
   const [ofPanel, setOfPanel] = useState<{ machineId: string; name: string; role: string | null; highlight?: string } | null>(null);
   const [ofList, setOfList] = useState<JobOrder[] | null>(null);
+  // ── Replay do turno ──
+  // Modo alternativo do MESMO mapa: enquanto está ligado, o WS ao vivo e os polls
+  // ficam suspensos e quem pinta os nós é o overlay reconstruído do histórico.
+  // Sair volta a ligar o live e recarrega o mapa — o modo ao vivo é intocado.
+  const [replayOn, setReplayOn] = useState(false);
+  const [replayOfId, setReplayOfId] = useState<string | null>(null);
+  const [mapAssets, setMapAssets] = useState<ReplayAsset[]>([]);
+  const replay = useReplay();
+  const replayActive = replayOn && replay.index !== null;
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
@@ -730,6 +744,12 @@ export default function FactoryMap() {
         }
       }
       setNodes(buildNodes(data));
+      // Parentesco/tipo dos ativos — estável entre pushes de estado, é o que o
+      // replay usa para herdar o estado da máquina-mãe sem re-render em cascata.
+      setMapAssets(data.machines.map((m) => ({
+        id: m.id, parent_equipment_id: m.parent_equipment_id,
+        block_kind: m.block_kind, subtype: m.subtype,
+      })));
       setUnplaced(data.machines.filter((m) => !m.placed));
       setProps(data.props ?? []);
       setSensors(data.sensors ?? []);
@@ -750,10 +770,10 @@ export default function FactoryMap() {
   }, [plantId]);
 
   useEffect(() => {
-    if (editMode || !plantId) return;
+    if (editMode || !plantId || replayOn) return;   // replay pinta o mapa a partir do histórico
     const t = setInterval(() => load(plantId), 30000);   // slow fallback; WS does the live push
     return () => clearInterval(t);
-  }, [editMode, plantId, load]);
+  }, [editMode, plantId, load, replayOn]);
 
   const applyStatus = useCallback((list: Array<{ id: string; status: string; operator: string | null; technicians?: MapMachine['technicians']; stop_reason?: string | null; line_stats?: MapMachine['line_stats']; current_job_number?: string | null; queued_ofs?: MapMachine['queued_ofs']; queued_total?: number; pipeline_ofs?: MapMachine['pipeline_ofs']; pipeline_total?: number; open_ticket: boolean; open_ticket_id: string | null; open_ticket_number: string | null }>) => {
     const byId = new Map(list.map((s) => [s.id, s]));
@@ -795,9 +815,9 @@ export default function FactoryMap() {
     });
   }, [setNodes]);
 
-  // Live status push over WebSocket (view mode only)
+  // Live status push over WebSocket (view mode only; nunca durante o replay)
   useEffect(() => {
-    if (editMode || !plantId || !token) return;
+    if (editMode || !plantId || !token || replayOn) return;
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
     let ws: WebSocket | null = null;
     let retry: ReturnType<typeof setTimeout> | undefined;
@@ -810,7 +830,63 @@ export default function FactoryMap() {
     };
     connect();
     return () => { closed = true; if (retry) clearTimeout(retry); ws?.close(); };
-  }, [editMode, plantId, token, applyStatus]);
+  }, [editMode, plantId, token, applyStatus, replayOn]);
+
+  // ── O replay pinta o mapa ────────────────────────────────────────────────
+  // Mesmo caminho do push ao vivo (`applyStatus`), só que o overlay vem do
+  // histórico reconstruído em vez do WebSocket: 2D, 3D, legenda e badges
+  // seguem todos sem nenhuma alteração neles.
+  useEffect(() => {
+    if (!replayOn || !replay.index || mapAssets.length === 0) return;
+    applyStatus(replay.index.overlayAt(replay.cursor, mapAssets));
+  }, [replayOn, replay.index, replay.cursor, mapAssets, applyStatus]);
+
+  // Replay ligado mas ainda sem janela carregada: o mapa fica neutro em vez de
+  // continuar a exibir o último estado AO VIVO como se fosse o passado.
+  useEffect(() => {
+    if (!replayOn || replay.index || mapAssets.length === 0) return;
+    applyStatus(mapAssets.map((a) => ({
+      id: a.id, status: 'idle', operator: null, technicians: null, stop_reason: null,
+      line_stats: null, current_job_number: null, queued_ofs: null, queued_total: 0,
+      pipeline_ofs: null, pipeline_total: 0,
+      open_ticket: false, open_ticket_id: null, open_ticket_number: null,
+    })));
+  }, [replayOn, replay.index, mapAssets, applyStatus]);
+
+  const replayOnRef = useRef(replayOn);
+  useEffect(() => { replayOnRef.current = replayOn; }, [replayOn]);
+
+  const enterReplay = useCallback(() => {
+    setEditMode(false);
+    setDetail(null); setOfPanel(null); setPitStopOfId(null); setPitStopZone(false);
+    setSearchResult(null); setSearchMiss(false);
+    setReplayOn(true);
+  }, []);
+
+  const exitReplay = useCallback(() => {
+    if (!replayOnRef.current) return;   // já estamos ao vivo — não recarregar à toa
+    setReplayOn(false);
+    setReplayOfId(null);
+    setDetail(null); setOfPanel(null);
+    replay.exit();
+    if (plantId) load(plantId);   // repõe o estado AO VIVO imediatamente
+  }, [replay.exit, plantId, load]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fuso da planta ativa — o replay lê e escreve horas de parede da fábrica.
+  const activePlant = useMemo(() => plants.find((p) => p.id === plantId) ?? null, [plants, plantId]);
+
+  // Trocar de planta enquanto o replay corre invalida a janela carregada — ela
+  // pertence à planta anterior. Voltamos ao live; o `load` da troca de planta já
+  // repõe o mapa, por isso aqui só limpamos o estado do replay.
+  // `replay.exit` é estável (useCallback sem deps) — o objeto `replay` NÃO é, e
+  // usá-lo como dependência faria o efeito disparar a cada render, matando o replay.
+  const replayExit = replay.exit;
+  useEffect(() => {
+    if (!replayOnRef.current) return;
+    setReplayOn(false);
+    setReplayOfId(null);
+    replayExit();
+  }, [plantId, replayExit]);
 
   // Snapshot a machine node (its start position + size + its orbit's start/size) so the
   // whole thing can ride a group delta and be persisted on drop.
@@ -1325,6 +1401,14 @@ export default function FactoryMap() {
     return m;
   }, [nodes, unplaced]);
 
+  // Durante o replay o painel de detalhe segue o CURSOR: relemos a máquina do nó
+  // que o overlay acabou de repintar, em vez de manter o instantâneo tirado no
+  // momento do clique. Ao vivo o comportamento fica exatamente como era.
+  const detailNow = useMemo(() => {
+    if (!detail) return null;
+    return replayActive ? (equipById.get(detail.id) ?? detail) : detail;
+  }, [detail, replayActive, equipById]);
+
   const equipOptions = useMemo(
     () => Array.from(equipById.values()).map((e) => ({ id: e.id, name: e.name }))
       .sort((a, b) => a.name.localeCompare(b.name)),
@@ -1382,7 +1466,9 @@ export default function FactoryMap() {
   // Dedicated slow poll (~15 s) — deliberately OUTSIDE the 4 s status WS: buffer
   // data is heavier and does not need machine-status latency.
   useEffect(() => {
-    if (!plantId || editMode || !pitStopEqId) { setPitStop(null); return; }
+    // Durante o replay o buffer fica vazio em vez de mostrar o conteúdo ATUAL:
+    // as pilhas do Pit Stop ainda não são reconstruídas no tempo (ver limitações).
+    if (!plantId || editMode || !pitStopEqId || replayOn) { setPitStop(null); return; }
     let cancelled = false;
     const tick = () => fetchPitStopState(plantId)
       .then((s) => { if (!cancelled) setPitStop(s); })
@@ -1390,7 +1476,7 @@ export default function FactoryMap() {
     tick();
     const iv = setInterval(tick, 15000);
     return () => { cancelled = true; clearInterval(iv); };
-  }, [plantId, editMode, pitStopEqId]);
+  }, [plantId, editMode, pitStopEqId, replayOn]);
 
   // Immediate refresh after an action (release / hold / priority).
   const refreshPitStop = useCallback(() => {
@@ -1446,7 +1532,8 @@ export default function FactoryMap() {
   // ── OF watches ("spots") ──
   // Slow poll (~30 s), view mode only — inactivity clocks move by the minute.
   useEffect(() => {
-    if (!plantId || editMode) { setOfWatches(null); return; }
+    // "Spots" e relógios de inatividade são conceitos do AGORA — fora do replay.
+    if (!plantId || editMode || replayOn) { setOfWatches(null); return; }
     let cancelled = false;
     const tick = () => fetchOfWatches(plantId)
       .then((w) => { if (!cancelled) setOfWatches(w); })
@@ -1454,7 +1541,7 @@ export default function FactoryMap() {
     tick();
     const iv = setInterval(tick, 30000);
     return () => { cancelled = true; clearInterval(iv); };
-  }, [plantId, editMode]);
+  }, [plantId, editMode, replayOn]);
 
   const refreshOfWatches = useCallback(() => {
     if (!plantId) return;
@@ -1620,6 +1707,9 @@ export default function FactoryMap() {
       // A conveyor tied to a machine opens that machine's OFs (Ordres de fabrication).
       if (pr?.machine_id) {
         const mm = Array.from(equipByIdRef.current.values()).find((e) => e.machine_id === pr.machine_id);
+        // No replay a lista de OFs do transportador seria o estado AO VIVO —
+        // abrimos antes a máquina, cujo painel mostra a OF do instante.
+        if (replayOnRef.current) { setOfPanel(null); setReplayOfId(null); if (mm) setDetail(mm); return; }
         setDetail(null);
         setOfPanel({ machineId: pr.machine_id, name: mm?.name ?? '', role: pr.role ?? null });
         return;
@@ -1728,9 +1818,12 @@ export default function FactoryMap() {
     () => sensors.map((s) => ({
       id: s.id, name: s.name, department: s.department,
       pos_x: s.pos_x ?? 0, pos_y: s.pos_y ?? 0,
-      height_3d: s.height_3d, last_value_c: s.last_value_c,
+      height_3d: s.height_3d,
+      // Sem histórico de temperatura, o termómetro fica sem leitura no replay
+      // em vez de mostrar o valor de agora.
+      last_value_c: replayOn ? null : s.last_value_c,
     })),
-    [sensors],
+    [sensors, replayOn],
   );
 
   // Placed machines' centres + departments — the badge uses these to resolve which
@@ -1833,18 +1926,20 @@ export default function FactoryMap() {
 
   // Cached outdoor weather for the overview badge — refreshed on plant change + every 10 min.
   useEffect(() => {
-    if (!plantId) { setWeather(null); return; }
+    // O tempo lá fora é do AGORA: durante o replay o badge fica sem valor em vez
+    // de anunciar a meteorologia de hoje sobre o turno de ontem.
+    if (!plantId || replayOn) { setWeather(null); return; }
     let alive = true;
     const pull = () => fetchPlantWeather(plantId).then((w) => { if (alive) setWeather(w); }).catch(() => {});
     pull();
     const iv = setInterval(pull, 10 * 60 * 1000);
     return () => { alive = false; clearInterval(iv); };
-  }, [plantId]);
+  }, [plantId, replayOn]);
 
   // Keep the thermometer readings live (values change every ~30s server-side).
   // Merge only the reading fields so an in-progress drag position is never yanked.
   useEffect(() => {
-    if (!plantId || !mode3d) return;
+    if (!plantId || !mode3d || replayOn) return;   // temperatura não é historizada
     let alive = true;
     const pull = () => fetchMapSensors(plantId).then((fresh) => {
       if (!alive) return;
@@ -1856,7 +1951,7 @@ export default function FactoryMap() {
     }).catch(() => {});
     const iv = setInterval(pull, 45 * 1000);
     return () => { alive = false; clearInterval(iv); };
-  }, [plantId, mode3d]);
+  }, [plantId, mode3d, replayOn]);
 
   // The badge: the sensor the camera is nearest to (indoor), else outdoor weather.
   const nearestSensor = useMemo(
@@ -1892,7 +1987,7 @@ export default function FactoryMap() {
   // Live maintenance KPIs for the selected machine (real data from /api/kpis)
   useEffect(() => {
     const mid = detail?.machine_id;
-    if (!mid) { setKpi(null); return; }
+    if (!mid || replayOn) { setKpi(null); return; }   // 30 dias "até agora" não é o passado que se revê
     let cancelled = false;
     setKpiLoading(true);
     setKpi(null);
@@ -1901,7 +1996,7 @@ export default function FactoryMap() {
       .catch(() => { if (!cancelled) setKpi(null); })
       .finally(() => { if (!cancelled) setKpiLoading(false); });
     return () => { cancelled = true; };
-  }, [detail?.machine_id]);
+  }, [detail?.machine_id, replayOn]);
 
   useEffect(() => { if (!mode3d || !editMode) { setSel3d(null); setSelProp(null); setSelSensor(null); setSelZone3d(null); setPlacement(null); setMultiSel(null); } }, [mode3d, editMode]);
 
@@ -2093,7 +2188,19 @@ export default function FactoryMap() {
           <button onClick={() => { setMode3d(true); setSel3d(null); }} className={`px-3 py-1.5 ${mode3d ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>3D</button>
         </span>
 
-        {canEdit && (
+        {/* Ao vivo ↔ Replay do turno — o mesmo mapa, outra fonte de tempo. */}
+        <span className="inline-flex rounded-lg border border-gray-700 overflow-hidden text-sm">
+          <button onClick={exitReplay} title={t('replay.liveHint')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 ${!replayOn ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
+            <Radio size={14} /> {t('replay.live')}
+          </button>
+          <button onClick={enterReplay} title={t('replay.replayHint')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 ${replayOn ? 'bg-amber-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
+            <History size={14} /> {t('replay.title')}
+          </button>
+        </span>
+
+        {canEdit && !replayOn && (
           <span className="inline-flex rounded-lg border border-gray-700 overflow-hidden text-sm">
             <button onClick={() => setEditMode(false)} className={`flex items-center gap-1.5 px-3 py-1.5 ${!editMode ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}><Eye size={14} /> {t('factoryMap.view')}</button>
             <button onClick={() => { setEditMode(true); setDetail(null); }} className={`flex items-center gap-1.5 px-3 py-1.5 ${editMode ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}><Pencil size={14} /> {t('factoryMap.edit')}</button>
@@ -2122,9 +2229,11 @@ export default function FactoryMap() {
           </>
         )}
 
-        <button onClick={() => load(plantId)} className="p-2 text-gray-400 hover:text-gray-200 hover:bg-gray-800 rounded-lg">
-          <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
-        </button>
+        {!replayOn && (
+          <button onClick={() => load(plantId)} className="p-2 text-gray-400 hover:text-gray-200 hover:bg-gray-800 rounded-lg">
+            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+          </button>
+        )}
 
         <div className="flex items-center gap-3 ml-auto text-xs text-gray-400 flex-wrap">
           {Object.entries(STATUS_LABELS).map(([k, label]) => (
@@ -2322,8 +2431,9 @@ export default function FactoryMap() {
           })()}
           {/* OF search (whole map: buffer + machines + backend locator), the
               search-result card (an OF found but with nowhere to fly to) and the
-              watch widget — one column under the fullscreen button. */}
-          {mode3d && !editMode && (
+              watch widget — one column under the fullscreen button. Busca e
+              "spots" interrogam o estado AO VIVO, por isso saem no replay. */}
+          {mode3d && !editMode && !replayOn && (
           <div className="absolute top-14 right-3 z-10 flex flex-col items-end gap-2">
             <form onSubmit={submitPitStopSearch}
               className="flex items-center gap-1.5 bg-gray-900/90 border border-gray-700 rounded-lg pl-2 pr-1 py-1">
@@ -2541,7 +2651,7 @@ export default function FactoryMap() {
               zones={zones3d} selectedZoneId={selZone3d} onSelectZone={onSelectZone3d} onZoneCommit={onZoneCommit3d}
               snap={snap} placement={editMode ? placementSpec : null} onPlace={onPlace3d}
               multiSelection={multiSel} onMultiCommit={onMultiCommit3d}
-              infoId={!editMode ? (detail?.id ?? null) : null} infoKpi={kpi} focus={focus}
+              infoId={!editMode && !replayActive ? (detail?.id ?? null) : null} infoKpi={kpi} focus={focus}
               onPoseReader={(r) => { poseReaderRef.current = r; }} />
           ) : (
           <PitStop2DCtx.Provider value={pitStop}>
@@ -2600,6 +2710,16 @@ export default function FactoryMap() {
                 </div>
               </div>
             </div>
+          )}
+
+          {/* Barra de transporte do replay — rodapé da área do mapa */}
+          {replayOn && plantId && (
+            <ReplayBar
+              plantId={plantId}
+              plantTimezone={activePlant?.timezone || 'America/Toronto'}
+              replay={replay}
+              onExit={exitReplay}
+            />
           )}
         </div>
 
@@ -2663,52 +2783,52 @@ export default function FactoryMap() {
         )}
 
         {/* Detail panel (View mode) */}
-        {!editMode && detail && (
+        {!editMode && detailNow && (
           <aside className="w-80 flex-shrink-0 border-l border-gray-800 overflow-y-auto p-4">
             <div className="flex items-start justify-between mb-3">
-              <h3 className="text-white font-semibold text-sm leading-snug">{detail.name}</h3>
+              <h3 className="text-white font-semibold text-sm leading-snug">{detailNow.name}</h3>
               <button onClick={() => setDetail(null)} className="text-gray-500 hover:text-gray-300"><X size={16} /></button>
             </div>
-            <p className="text-xs text-gray-600 font-mono mb-3">{detail.code ?? '—'}</p>
+            <p className="text-xs text-gray-600 font-mono mb-3">{detailNow.code ?? '—'}</p>
             <div className="space-y-2 text-sm">
               <div className="flex items-center gap-2">
-                <span style={{ width: 10, height: 10, borderRadius: '50%', background: STATUS_COLORS[detail.status] ?? STATUS_COLORS.idle }} />
-                <span className="text-gray-200">{STATUS_LABELS[detail.status]?.[lang as 'en' | 'fr' | 'es'] ?? detail.status}</span>
+                <span style={{ width: 10, height: 10, borderRadius: '50%', background: STATUS_COLORS[detailNow.status] ?? STATUS_COLORS.idle }} />
+                <span className="text-gray-200">{STATUS_LABELS[detailNow.status]?.[lang as 'en' | 'fr' | 'es'] ?? detailNow.status}</span>
               </div>
-              <p className="text-gray-400 text-xs">{t('factoryMap.operator')}: <span className="text-gray-200">{detail.operator ?? '—'}</span></p>
-              <p className="text-gray-400 text-xs">{t('factoryMap.department')}: <span className="text-gray-200">{detail.department ?? '—'}</span></p>
-              {(detail.function_label || detail.subtype || detail.family) && (
-                <p className="text-gray-400 text-xs">{t('common.type')}: <span className="text-gray-200">{detail.function_label ?? detail.subtype ?? detail.family}</span></p>
+              <p className="text-gray-400 text-xs">{t('factoryMap.operator')}: <span className="text-gray-200">{detailNow.operator ?? '—'}</span></p>
+              <p className="text-gray-400 text-xs">{t('factoryMap.department')}: <span className="text-gray-200">{detailNow.department ?? '—'}</span></p>
+              {(detailNow.function_label || detailNow.subtype || detailNow.family) && (
+                <p className="text-gray-400 text-xs">{t('common.type')}: <span className="text-gray-200">{detailNow.function_label ?? detailNow.subtype ?? detailNow.family}</span></p>
               )}
-              {detail.open_ticket && (
-                <button onClick={() => detail.open_ticket_id && navigate(`/tickets/${detail.open_ticket_id}`)}
+              {detailNow.open_ticket && (
+                <button onClick={() => detailNow.open_ticket_id && navigate(`/tickets/${detailNow.open_ticket_id}`)}
                   className="w-full flex items-center gap-2 mt-1 px-3 py-2 rounded-lg text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20">
-                  <Wrench size={13} /> {t('factoryMap.openTicket')} {detail.open_ticket_number ?? ''}
+                  <Wrench size={13} /> {t('factoryMap.openTicket')} {detailNow.open_ticket_number ?? ''}
                 </button>
               )}
-              {detail.predictive && (
+              {!replayActive && detailNow.predictive && (
                 <button
-                  onClick={() => navigate(`/equipment/${detail.id}`)}
+                  onClick={() => navigate(`/equipment/${detailNow.id}`)}
                   title={t('predictive.openDashboard')}
                   className={`w-full flex items-center justify-between gap-2 mt-1 px-3 py-2 rounded-lg text-xs border transition-colors ${
-                    detail.predictive.level === 'critical'
+                    detailNow.predictive.level === 'critical'
                       ? 'text-red-300 bg-red-500/10 border-red-500/30 hover:bg-red-500/20'
-                      : detail.predictive.level === 'alert'
+                      : detailNow.predictive.level === 'alert'
                         ? 'text-orange-300 bg-orange-500/10 border-orange-500/30 hover:bg-orange-500/20'
-                        : detail.predictive.level === 'watch'
+                        : detailNow.predictive.level === 'watch'
                           ? 'text-amber-300 bg-amber-500/10 border-amber-500/30 hover:bg-amber-500/20'
                           : 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/20'
                   }`}
                 >
-                  <span>{t('predictive.tabHealth')}: {t(`predictive.level.${detail.predictive.level}`)}</span>
-                  <span className="font-semibold">{Math.round(detail.predictive.score)}/100</span>
+                  <span>{t('predictive.tabHealth')}: {t(`predictive.level.${detailNow.predictive.level}`)}</span>
+                  <span className="font-semibold">{Math.round(detailNow.predictive.score)}/100</span>
                 </button>
               )}
             </div>
 
             {/* OFs at this machine (loaded / awaiting transfer / planned) — each can
                 be followed ("spot") here, before it ever reaches the Pit Stop. */}
-            {(detail.current_job_number || (detail.queued_ofs?.length ?? 0) > 0 || (detail.pipeline_ofs?.length ?? 0) > 0) && (
+            {!replayActive && (detailNow.current_job_number || (detailNow.queued_ofs?.length ?? 0) > 0 || (detailNow.pipeline_ofs?.length ?? 0) > 0) && (
               <div className="mt-4 pt-3 border-t border-gray-800">
                 <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-2">{t('ofWatch.machineOfs')}</p>
                 <div className="space-y-1.5">
@@ -2720,7 +2840,7 @@ export default function FactoryMap() {
                           <span className="font-mono text-xs text-purple-300 flex-1 min-w-0 truncate">{num}</span>
                           {sub && <span className="text-[10px] text-gray-500 flex-shrink-0">{sub}</span>}
                           <button
-                            onClick={() => (w ? unwatchOf(w.id) : watchOfByNumber(num, detail.machine_id))}
+                            onClick={() => (w ? unwatchOf(w.id) : watchOfByNumber(num, detailNow.machine_id))}
                             title={w ? t('ofWatch.unwatch') : t('ofWatch.watch')}
                             className={w ? 'text-cyan-400 hover:text-red-400' : 'text-gray-600 hover:text-cyan-400'}>
                             <MapPin size={14} />
@@ -2729,17 +2849,18 @@ export default function FactoryMap() {
                       );
                     };
                     const out: React.ReactNode[] = [];
-                    if (detail.current_job_number) out.push(row(detail.current_job_number, t('ofWatch.currentOf'), 'cur'));
-                    detail.queued_ofs?.forEach((o, i) => out.push(row(o.job_number, t('factoryMap.queuedOfs'), `q${i}`)));
-                    detail.pipeline_ofs?.forEach((o, i) => out.push(row(o.job_number, o.scheduled_date ?? t('factoryMap.pipeline'), `p${i}`)));
+                    if (detailNow.current_job_number) out.push(row(detailNow.current_job_number, t('ofWatch.currentOf'), 'cur'));
+                    detailNow.queued_ofs?.forEach((o, i) => out.push(row(o.job_number, t('factoryMap.queuedOfs'), `q${i}`)));
+                    detailNow.pipeline_ofs?.forEach((o, i) => out.push(row(o.job_number, o.scheduled_date ?? t('factoryMap.pipeline'), `p${i}`)));
                     return out;
                   })()}
                 </div>
               </div>
             )}
 
-            {/* Live maintenance KPIs (last 30 days) — only for items linked to a machine */}
-            {detail.machine_id && (
+            {/* Live maintenance KPIs (last 30 days) — only for items linked to a machine.
+                No replay dão lugar ao estado reconstruído do instante. */}
+            {!replayActive && detailNow.machine_id && (
               <div className="mt-4 pt-3 border-t border-gray-800">
                 <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-2">{t('factoryMap.liveKpis')}</p>
                 {kpiLoading ? (
@@ -2785,12 +2906,44 @@ export default function FactoryMap() {
               </div>
             )}
 
-            <button onClick={() => openMachinePage(detail)}
+            {replayActive && replay.index && (
+              <ReplayMachineDetail
+                snapshot={replay.index.machineAt(detailNow.id, replay.cursor, mapAssets)}
+                segments={replay.index.segmentsFor(detailNow.id)}
+                cursor={replay.cursor}
+                windowStart={replay.startMs}
+                windowEnd={replay.endMs}
+                timezone={replay.index.timezone}
+                lang={lang}
+                onOpenOf={(id) => { setReplayOfId(id); setDetail(null); }}
+                onSeek={replay.seek}
+              />
+            )}
+
+            <button onClick={() => openMachinePage(detailNow)}
               className="w-full flex items-center justify-center gap-1.5 mt-4 px-3 py-2 rounded-lg text-sm text-white bg-indigo-600 hover:bg-indigo-500">
               <ExternalLink size={14} /> {t('factoryMap.openMachinePage')}
             </button>
           </aside>
         )}
+
+        {/* Painel da OF no replay — percurso na janela + onde estava no instante */}
+        {replayActive && replayOfId && replay.index && (() => {
+          const snap = replay.index.ofAt(replayOfId, replay.cursor);
+          if (!snap) return null;
+          return (
+            <ReplayOfDetail
+              snapshot={snap}
+              cursor={replay.cursor}
+              timezone={replay.index.timezone}
+              machineName={(id) => (id && equipById.get(id)?.name) || t('common.na')}
+              onClose={() => setReplayOfId(null)}
+              onSeek={replay.seek}
+              onFocus={(id) => { const eq = equipById.get(id); if (eq) focusEquipment(eq); }}
+              onOpenOfPage={() => navigate(`/job-orders/${snap.jobOrderId}`)}
+            />
+          );
+        })()}
 
         {/* OF panel (View mode) — a conveyor tied to a machine lists its Ordres de fabrication */}
         {!editMode && ofPanel && (
