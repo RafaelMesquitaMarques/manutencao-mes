@@ -234,7 +234,7 @@ function CreateSopModal({ onClose }: { onClose: () => void }) {
       });
       navigate(`/sops/${sop.id}`);
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? t('common.saveError', 'Error'));
+      setError(e?.response?.data?.detail ?? t('common.error'));
       setBusy(false);
     }
   };

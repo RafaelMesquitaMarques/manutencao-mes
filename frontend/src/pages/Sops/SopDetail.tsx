@@ -55,7 +55,7 @@ export default function SopDetail() {
 
   const apiError = (e: any) => {
     const detail = e?.response?.data?.detail;
-    setError(typeof detail === 'string' && detail.startsWith('errors.') ? t(detail) : detail || t('common.saveError', 'Error'));
+    setError(typeof detail === 'string' && detail.startsWith('errors.') ? t(detail) : detail || t('common.error'));
   };
 
   const patch = async (payload: Parameters<typeof updateSop>[1]) => {

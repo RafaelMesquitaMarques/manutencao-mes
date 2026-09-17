@@ -337,9 +337,9 @@ export default function EquipmentList() {
   const isList = assetFilter !== 'production';
 
   const FILTER_TABS: { id: 'all' | 'production' | 'auxiliary'; label: string }[] = [
-    { id: 'all', label: t('equipment.filterAll', 'All') },
-    { id: 'production', label: t('equipment.filterProduction', 'Production') },
-    { id: 'auxiliary', label: t('equipment.filterAuxiliary', 'Auxiliary') },
+    { id: 'all', label: t('common.all') },
+    { id: 'production', label: t('equipment.assetProduction') },
+    { id: 'auxiliary', label: t('equipment.assetAuxiliary') },
   ];
 
   const SortHead = ({ k, label, className = '' }: { k: SortKey; label: string; className?: string }) => (
@@ -444,7 +444,7 @@ export default function EquipmentList() {
       {selected.size > 0 && canUpdate && (
         <div className="flex items-center gap-3 px-4 py-2.5 bg-blue-600/10 border border-blue-500/30 rounded-lg">
           <span className="text-sm text-blue-200 font-medium">
-            {selected.size} {t('equipment.selected', 'selected')}
+            {t('common.nSelected', { n: selected.size })}
           </span>
           <div className="flex items-center gap-2 ml-auto">
             <button
@@ -580,7 +580,7 @@ export default function EquipmentList() {
                     className="w-4 h-4 accent-blue-500 cursor-pointer align-middle"
                   />
                 </th>
-                <SortHead k="name" label={t('equipment.colName', 'Name')} />
+                <SortHead k="name" label={t('equipment.name')} />
                 <SortHead k="plant" label={t('equipment.colPlant', 'Plant')} />
                 <SortHead k="department" label={t('equipment.department', 'Department')} />
                 <SortHead k="family" label={t('equipment.family', 'Family')} />

@@ -2885,7 +2885,7 @@ export default function EquipmentDetail() {
                 </span>
                 {isAux && (
                   <span className="text-xs font-medium px-2 py-0.5 rounded-full border border-teal-500/20 bg-teal-500/10 text-teal-400">
-                    {equipment.subtype || t('equipment.filterAuxiliary', 'Auxiliary')}
+                    {equipment.subtype || t('equipment.assetAuxiliary')}
                   </span>
                 )}
               </div>
@@ -2969,14 +2969,14 @@ export default function EquipmentDetail() {
               onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, code: v } : prev))}
             />
             <EditableSpecRow
-              label={t('equipment.equipmentType', 'Type')}
+              label={t('common.type')}
               value={equipment.asset_type}
               equipmentId={equipment.id}
               field="asset_type"
               type="select"
               options={[
-                { value: 'production', label: t('equipment.filterProduction', 'Production') },
-                { value: 'auxiliary', label: t('equipment.filterAuxiliary', 'Auxiliary') },
+                { value: 'production', label: t('equipment.assetProduction') },
+                { value: 'auxiliary', label: t('equipment.assetAuxiliary') },
               ]}
               onSaved={(v) => setEquipment((prev) => (prev ? { ...prev, asset_type: v as 'production' | 'auxiliary' } : prev))}
             />
@@ -3097,7 +3097,7 @@ export default function EquipmentDetail() {
               />
             )}
             <EditableSpecRow
-              label={t('equipment.height3d', '3D height')}
+              label={t('factoryMap.height3d')}
               value={equipment.height_3d != null ? String(equipment.height_3d) : undefined}
               equipmentId={equipment.id}
               field="height_3d"

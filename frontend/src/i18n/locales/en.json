@@ -232,7 +232,8 @@
     "clearFilters": "Clear",
     "loadError": "Failed to load",
     "createdAt": "Created",
-    "updatedAt": "Updated"
+    "updatedAt": "Updated",
+    "refresh": "Refresh"
   },
   "settings": {
     "profileTitle": "My Profile",
@@ -323,7 +324,9 @@
     "gestionBT": "WO Management",
     "costs": "Costs",
     "jobOrders": "Manufacturing Orders",
-    "sops": "SOPs"
+    "sops": "SOPs",
+    "expandMenu": "Expand menu",
+    "collapseMenu": "Collapse menu"
   },
   "jobOrders": {
     "title": "Manufacturing Orders",
@@ -1398,7 +1401,9 @@
     "organizeHint": "Clean up and structure the note with the local AI",
     "organizeOffline": "AI offline — applied basic formatting only.",
     "organizeFailed": "Could not organize the note. Please try again.",
-    "noNotes": "No notes yet"
+    "noNotes": "No notes yet",
+    "sector": "Location",
+    "timeWorked": "Work time"
   },
   "status": {
     "open": "Open",
@@ -1556,7 +1561,19 @@
     "openWOs": "Open / In Progress",
     "activePlans": "Active Plans",
     "avgRepair": "Avg. Repair",
-    "noPlans": "No maintenance plans"
+    "noPlans": "No maintenance plans",
+    "name": "Name",
+    "code": "Code",
+    "functionLabel": "Function",
+    "colSubtype": "Subtype",
+    "department": "Department",
+    "family": "Family",
+    "colPlant": "Plant",
+    "colLocation": "Location",
+    "pmStrategy": "PM strategy",
+    "cleaningPriority": "Cleaning priority",
+    "moveToAuxiliary": "Move to Auxiliary",
+    "moveToProduction": "Move to Production"
   },
   "kpis": {
     "title": "KPIs",
@@ -1951,7 +1968,8 @@
     "noAlerts": "No alerts found",
     "alertNumber": "Alert #",
     "timeOpen": "Time Open",
-    "escalation": "Escalation"
+    "escalation": "Escalation",
+    "showResolved": "Resolved"
   },
   "tickets": {
     "newTicket": "New Ticket",
@@ -2084,7 +2102,8 @@
     "results": "results",
     "adjustQty": "Adjust stock",
     "supplier": "Supplier",
-    "orderFromSupplier": "Order from Supplier"
+    "orderFromSupplier": "Order from Supplier",
+    "editHint": "Double-click to edit"
   },
   "suppliers": {
     "title": "Suppliers",

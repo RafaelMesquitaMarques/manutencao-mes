@@ -31,7 +31,7 @@ export default function DepartmentSettings() {
     if (!name) return;
     setBusy(true); setError('');
     try { await createDepartment(name); setNewName(''); load(); }
-    catch (e: any) { setError(e?.response?.data?.detail ?? t('common.saveError', 'Error')); }
+    catch (e: any) { setError(e?.response?.data?.detail ?? t('common.error')); }
     finally { setBusy(false); }
   };
 
@@ -40,7 +40,7 @@ export default function DepartmentSettings() {
     if (!name) { setEditId(null); return; }
     setError('');
     try { await updateDepartment(id, { name }); setEditId(null); load(); }
-    catch (e: any) { setError(e?.response?.data?.detail ?? t('common.saveError', 'Error')); }
+    catch (e: any) { setError(e?.response?.data?.detail ?? t('common.error')); }
   };
 
   const toggleActive = async (d: Department) => {
@@ -51,7 +51,7 @@ export default function DepartmentSettings() {
     if (!window.confirm(t('departments.confirmDelete', { name: d.name }))) return;
     setError('');
     try { await deleteDepartment(d.id); load(); }
-    catch (e: any) { setError(e?.response?.data?.detail ?? t('common.saveError', 'Error')); }
+    catch (e: any) { setError(e?.response?.data?.detail ?? t('common.error')); }
   };
 
   return (

@@ -122,7 +122,7 @@ export default function AlertDetail() {
           <Field label={t('alerts.problemType')} value={t(`problemType.${alert.problem_type}`, alert.problem_type)} />
           <Field label={t('alerts.operatorName')} value={alert.created_by} />
           <Field label={t('alerts.shift')} value={alert.shift ? t(`shift.${alert.shift}`, alert.shift) : undefined} />
-          <Field label={t('alerts.assignedTo')} value={alert.assigned_to_name} />
+          <Field label={t('tickets.assignedTo')} value={alert.assigned_to_name} />
           <Field
             label={t('alerts.createdAt')}
             value={alert.created_at ? new Date(alert.created_at).toLocaleString() : undefined}
@@ -132,7 +132,7 @@ export default function AlertDetail() {
           )}
           {alert.ticket_id && (
             <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">{t('alerts.linkedTicket')}</p>
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">{t('workOrders.linkedTicket')}</p>
               <Link to={`/tickets/${alert.ticket_id}`} className="text-blue-400 hover:text-blue-300 text-sm underline-offset-2 hover:underline">
                 {t('alerts.viewTicket')}
               </Link>

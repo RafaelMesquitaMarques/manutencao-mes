@@ -210,7 +210,7 @@ export default function InventoryList() {
         const v = parseFloat(String(newValue ?? '').replace('$', '').replace(',', '.'));
         return Number.isFinite(v) && v >= 0 ? v : null;
       },
-      headerTooltip: t('inventory.costEditHint', 'Double-click to edit'),
+      headerTooltip: t('inventory.editHint', 'Double-click to edit'),
     },
     {
       field: 'average_cost',

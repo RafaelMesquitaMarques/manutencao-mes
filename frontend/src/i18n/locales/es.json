@@ -232,7 +232,8 @@
     "clearFilters": "Limpiar",
     "loadError": "Error al cargar",
     "createdAt": "Creado",
-    "updatedAt": "Actualizado"
+    "updatedAt": "Actualizado",
+    "refresh": "Actualizar"
   },
   "settings": {
     "profileTitle": "Mi perfil",
@@ -323,7 +324,9 @@
     "gestionBT": "Gestión OT",
     "costs": "Costos",
     "jobOrders": "Órdenes de fabricación",
-    "sops": "SOP"
+    "sops": "SOP",
+    "expandMenu": "Expandir menú",
+    "collapseMenu": "Contraer menú"
   },
   "jobOrders": {
     "title": "Órdenes de fabricación",
@@ -1398,7 +1401,9 @@
     "organizeHint": "Limpiar y estructurar la nota con la IA local",
     "organizeOffline": "IA sin conexión — solo se aplicó formato básico.",
     "organizeFailed": "No se pudo organizar la nota. Inténtalo de nuevo.",
-    "noNotes": "Aún no hay notas"
+    "noNotes": "Aún no hay notas",
+    "sector": "Ubicación",
+    "timeWorked": "Tiempo de trabajo"
   },
   "status": {
     "open": "Abierto",
@@ -1556,7 +1561,19 @@
     "openWOs": "Abiertas / En progreso",
     "activePlans": "Planes activos",
     "avgRepair": "Reparación prom.",
-    "noPlans": "Sin planes de mantenimiento"
+    "noPlans": "Sin planes de mantenimiento",
+    "name": "Nombre",
+    "code": "Código",
+    "functionLabel": "Función",
+    "colSubtype": "Subtipo",
+    "department": "Departamento",
+    "family": "Familia",
+    "colPlant": "Planta",
+    "colLocation": "Ubicación",
+    "pmStrategy": "Estrategia PM",
+    "cleaningPriority": "Prioridad de limpieza",
+    "moveToAuxiliary": "Clasificar como auxiliar",
+    "moveToProduction": "Clasificar como producción"
   },
   "kpis": {
     "title": "KPIs",
@@ -1951,7 +1968,8 @@
     "noAlerts": "No se encontraron alertas",
     "alertNumber": "Alerta #",
     "timeOpen": "Tiempo abierto",
-    "escalation": "Escalada"
+    "escalation": "Escalada",
+    "showResolved": "Resueltas"
   },
   "tickets": {
     "newTicket": "Nuevo ticket",
@@ -2084,7 +2102,8 @@
     "results": "resultados",
     "adjustQty": "Ajustar stock",
     "supplier": "Proveedor",
-    "orderFromSupplier": "Pedir al proveedor"
+    "orderFromSupplier": "Pedir al proveedor",
+    "editHint": "Doble clic para editar"
   },
   "maintenanceDash": {
     "title": "Panel de mantenimiento",

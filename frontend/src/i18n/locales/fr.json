@@ -232,7 +232,8 @@
     "clearFilters": "Effacer",
     "loadError": "Échec du chargement",
     "createdAt": "Créé",
-    "updatedAt": "Modifié"
+    "updatedAt": "Modifié",
+    "refresh": "Actualiser"
   },
   "settings": {
     "profileTitle": "Mon profil",
@@ -323,7 +324,9 @@
     "gestionBT": "Gestion BT",
     "costs": "Coûts",
     "jobOrders": "Ordres de fabrication",
-    "sops": "SOP"
+    "sops": "SOP",
+    "expandMenu": "Déployer le menu",
+    "collapseMenu": "Replier le menu"
   },
   "jobOrders": {
     "title": "Ordres de fabrication",
@@ -1398,7 +1401,9 @@
     "organizeHint": "Nettoyer et structurer la note avec l'IA locale",
     "organizeOffline": "IA hors ligne — mise en forme de base appliquée uniquement.",
     "organizeFailed": "Impossible d'organiser la note. Veuillez réessayer.",
-    "noNotes": "Aucune note pour le moment"
+    "noNotes": "Aucune note pour le moment",
+    "sector": "Emplacement",
+    "timeWorked": "Temps de travail"
   },
   "status": {
     "open": "Ouvert",
@@ -1556,7 +1561,19 @@
     "openWOs": "Ouverts / En cours",
     "activePlans": "Plans actifs",
     "avgRepair": "Réparation moy.",
-    "noPlans": "Aucun plan de maintenance"
+    "noPlans": "Aucun plan de maintenance",
+    "name": "Nom",
+    "code": "Code",
+    "functionLabel": "Fonction",
+    "colSubtype": "Sous-type",
+    "department": "Département",
+    "family": "Famille",
+    "colPlant": "Usine",
+    "colLocation": "Emplacement",
+    "pmStrategy": "Stratégie PM",
+    "cleaningPriority": "Priorité de nettoyage",
+    "moveToAuxiliary": "Classer en auxiliaire",
+    "moveToProduction": "Classer en production"
   },
   "kpis": {
     "title": "KPIs",
@@ -1951,7 +1968,8 @@
     "noAlerts": "Aucune alerte trouvée",
     "alertNumber": "Alerte #",
     "timeOpen": "Temps ouvert",
-    "escalation": "Escalade"
+    "escalation": "Escalade",
+    "showResolved": "Résolues"
   },
   "tickets": {
     "newTicket": "Nouveau ticket",
@@ -2084,7 +2102,8 @@
     "results": "résultats",
     "adjustQty": "Ajuster le stock",
     "supplier": "Fournisseur",
-    "orderFromSupplier": "Commander au fournisseur"
+    "orderFromSupplier": "Commander au fournisseur",
+    "editHint": "Double-cliquer pour modifier"
   },
   "suppliers": {
     "title": "Fournisseurs",

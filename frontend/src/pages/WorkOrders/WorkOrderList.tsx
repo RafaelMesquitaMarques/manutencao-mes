@@ -193,7 +193,7 @@ const WorkOrderList = () => {
     },
     {
       colId: 'technician',
-      headerName: t('workOrders.technician', 'Technicien'),
+      headerName: t('workOrders.technicianLabel'),
       valueGetter: (p) =>
         p.data?.technicians?.[0]?.name ?? p.data?.assigned_to_name ?? '',
       width: 160,
