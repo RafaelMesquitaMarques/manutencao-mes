@@ -97,7 +97,7 @@ export default function SupplierList() {
             onChange={e => setCategory(e.target.value)}
             className="bg-gray-800 border border-gray-700 text-sm text-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-purple-500"
           >
-            <option value="">{t('common.all', 'All')} categories</option>
+            <option value="">{t('suppliers.allCategories', 'All categories')}</option>
             {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
           <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
@@ -107,7 +107,7 @@ export default function SupplierList() {
           </label>
           {hasFilters && (
             <button onClick={clearFilters} className="flex items-center gap-1 px-2 py-2 text-xs text-gray-400 hover:text-gray-200">
-              <X size={13} /> Clear
+              <X size={13} /> {t('common.clear', 'Clear')}
             </button>
           )}
           <button onClick={load} className="p-2 text-gray-400 hover:text-gray-200 hover:bg-gray-800 rounded-lg">
@@ -122,7 +122,7 @@ export default function SupplierList() {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-xs text-gray-500 uppercase tracking-wider">
-              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left font-medium">Code</th>
+              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left font-medium">{t('suppliers.codeCol', 'Code')}</th>
               <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left font-medium">{t('suppliers.name', 'Name')}</th>
               <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left font-medium">{t('suppliers.category', 'Category')}</th>
               <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left font-medium">{t('suppliers.contact', 'Contact')}</th>

@@ -94,7 +94,7 @@ export default function NewSupplier() {
               </FormField>
               <FormField label={t('suppliers.category', 'Category')}>
                 <select value={form.category} onChange={e => set('category', e.target.value)} className={inputCls}>
-                  <option value="">— None —</option>
+                  <option value="">{t('suppliers.noneOption', '— None —')}</option>
                   {CATEGORIES.map(c => <option key={c}>{c}</option>)}
                 </select>
               </FormField>
@@ -117,10 +117,10 @@ export default function NewSupplier() {
               <FormField label={t('suppliers.phone', 'Phone')}>
                 <input value={form.phone} onChange={e => set('phone', e.target.value)} className={inputCls} />
               </FormField>
-              <FormField label="Fax">
+              <FormField label={t('suppliers.fax', 'Fax')}>
                 <input value={form.fax} onChange={e => set('fax', e.target.value)} className={inputCls} />
               </FormField>
-              <FormField label="Website">
+              <FormField label={t('suppliers.website', 'Website')}>
                 <input value={form.website} onChange={e => set('website', e.target.value)} placeholder="https://" className={inputCls} />
               </FormField>
             </div>
@@ -153,7 +153,7 @@ export default function NewSupplier() {
               </FormField>
               <FormField label={t('suppliers.paymentTerms', 'Payment terms')}>
                 <select value={form.payment_terms} onChange={e => set('payment_terms', e.target.value)} className={inputCls}>
-                  <option value="">— None —</option>
+                  <option value="">{t('suppliers.noneOption', '— None —')}</option>
                   {TERMS.map(t => <option key={t}>{t}</option>)}
                 </select>
               </FormField>

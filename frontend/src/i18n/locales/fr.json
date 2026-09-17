@@ -1103,7 +1103,22 @@
     "activeOnly": "Actifs seulement",
     "viewDetails": "Voir",
     "items": "pièces",
-    "orders": "commandes"
+    "orders": "commandes",
+    "lowStockLinked": "Stock bas avec fournisseur",
+    "searchPlaceholder": "Rechercher par nom, code, contact…",
+    "results": "fournisseurs",
+    "rating": "Évaluation",
+    "status": "Statut",
+    "codeCol": "Code",
+    "fax": "Fax",
+    "website": "Site web",
+    "noneOption": "— Aucun —",
+    "noNotes": "Aucune note",
+    "stockCol": "Stock",
+    "minCol": "Min",
+    "poNumber": "BC #",
+    "totalCol": "Total",
+    "expectedCol": "Prévue"
   },
   "purchaseOrders": {
     "title": "Bons de commande",

@@ -1103,7 +1103,22 @@
     "activeOnly": "Active only",
     "viewDetails": "View",
     "items": "items",
-    "orders": "orders"
+    "orders": "orders",
+    "lowStockLinked": "Low stock w/ supplier",
+    "searchPlaceholder": "Search by name, code, contact…",
+    "results": "suppliers",
+    "rating": "Rating",
+    "status": "Status",
+    "codeCol": "Code",
+    "fax": "Fax",
+    "website": "Website",
+    "noneOption": "— None —",
+    "noNotes": "No notes",
+    "stockCol": "Stock",
+    "minCol": "Min",
+    "poNumber": "PO #",
+    "totalCol": "Total",
+    "expectedCol": "Expected"
   },
   "purchaseOrders": {
     "title": "Purchase Orders",
