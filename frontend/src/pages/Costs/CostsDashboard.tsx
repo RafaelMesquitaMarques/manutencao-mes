@@ -209,7 +209,7 @@ export default function CostsDashboard() {
         <ByMachineTab year={year} months={months} periodKey={periodKey} setPeriodKey={setPeriodKey}
           periods={PERIODS} periodLabel={periodLabel} monthLabel={monthLabel} typeLabel={typeLabel} fiscal={fiscal} />
       ) : tab === 'manage' ? (
-        <ManageTab ccLabel={ccLabel} onSaved={loadPnl} />
+        <ManageTab onSaved={loadPnl} />
       ) : (
         <BudgetTab year={year} canEdit={canEdit} monthLabel={calMonthLabel} ccLabel={ccLabel}
           onSaved={loadPnl} sapMode={sapMode} />
