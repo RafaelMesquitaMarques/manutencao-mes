@@ -1450,6 +1450,37 @@ async def _run_migrations() -> None:
           AND ip.unit_cost IS NULL
           AND COALESCE(s.unit_cost, s.average_cost, s.last_purchase_cost) IS NOT NULL
         """,
+        # ── Stock settlement per part line: how much inventory this line really
+        # took out, so a reversal (reject / remove / lower the quantity) gives
+        # back exactly that and never more. Guarded on information_schema so a
+        # steady-state boot takes NO exclusive lock (see the RLS note above:
+        # this whole list is one transaction and holds every lock it takes).
+        """
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_schema='public' AND table_name='intervention_parts'
+                           AND column_name='stock_deducted') THEN
+            ALTER TABLE intervention_parts ADD COLUMN stock_deducted DOUBLE PRECISION;
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_schema='public' AND table_name='wo_parts'
+                           AND column_name='stock_deducted') THEN
+            ALTER TABLE wo_parts ADD COLUMN stock_deducted DOUBLE PRECISION;
+          END IF;
+        END $$
+        """,
+        # Backfill: lines that already settled stock. Approved kiosk parts and
+        # every office part did deduct (both paths always did), so the amount to
+        # credit back is the line quantity — the only number history holds.
+        """
+        UPDATE intervention_parts SET stock_deducted = COALESCE(quantity_used, 0)
+        WHERE stock_deducted IS NULL AND stock_item_id IS NOT NULL
+          AND approval_status = 'approved'
+        """,
+        """
+        UPDATE wo_parts SET stock_deducted = COALESCE(quantity, 0)
+        WHERE stock_deducted IS NULL AND stock_item_id IS NOT NULL
+        """,
     ]
     async with engine.begin() as conn:
         for stmt in stmts:

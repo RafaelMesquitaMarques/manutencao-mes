@@ -71,7 +71,11 @@ def _wo_part_out(p: WOPart) -> dict:
 
 
 async def _consume_stock(db: AsyncSession, part: InterventionPart, user_id) -> None:
-    """Snapshot price if still missing and deduct stock with a tracked movement."""
+    """Snapshot price if still missing and deduct stock with a tracked movement.
+
+    The MONEY is the line quantity — the part was used, whatever the count said.
+    The STOCK is whatever inventory actually held, recorded on the line so a
+    later reversal credits back exactly that much (see ``_restock``)."""
     if not part.stock_item_id or not part.quantity_used:
         return
     stock = await db.get(StockItem, part.stock_item_id)
@@ -81,12 +85,26 @@ async def _consume_stock(db: AsyncSession, part: InterventionPart, user_id) -> N
         part.unit_cost = part_pricing.unit_cost_of(stock)
     if part.unit_cost is not None and part.total_cost is None:
         part.total_cost = part_pricing.line_total(part.unit_cost, part.quantity_used)
-    await InventoryService(db).deduct_stock(
+    movement = await InventoryService(db).deduct_stock(
         part.stock_item_id,
         float(part.quantity_used),
         user_id=user_id,
         notes=f"Intervention part approved ({part.item_code or part.id})",
     )
+    part.stock_deducted = (part.stock_deducted or 0.0) + movement.quantity
+
+
+async def _restock(db: AsyncSession, part, *, user_id, notes: str) -> None:
+    """Give back what this line actually took, and only that. ``stock_deducted``
+    is the single source of truth: zeroed here, so a repeated reversal (or a
+    reject after a reject) cannot credit the same units twice."""
+    settled = float(part.stock_deducted or 0.0)
+    if not part.stock_item_id or settled <= 0:
+        return
+    await InventoryService(db).add_stock(
+        part.stock_item_id, settled, user_id=user_id, notes=notes,
+    )
+    part.stock_deducted = 0.0
 
 
 
@@ -385,12 +403,10 @@ async def reject_intervention_part(
     # Rejecting after approval has to undo what approval did — put the stock back
     # — or the part stays deducted from inventory with nothing to show for it.
     if was_approved:
-        if part.stock_item_id and part.quantity_used:
-            await InventoryService(db).add_stock(
-                part.stock_item_id, float(part.quantity_used),
-                user_id=current_user.id,
-                notes=f"Intervention part rejected after approval ({part.item_code or part.id})",
-            )
+        await _restock(
+            db, part, user_id=current_user.id,
+            notes=f"Intervention part rejected after approval ({part.item_code or part.id})",
+        )
         await db.flush()
         await wo_totals.recompute_for_ticket(db, mi.ticket_id if mi else None)
 
@@ -608,6 +624,7 @@ async def add_wo_part(
         raise HTTPException(400, "Quantity must be positive")
 
     part_number, description, unit, unit_cost = body.item_code, body.item_description, body.unit, None
+    settled = None
     if body.stock_item_id:
         stock = await db.get(StockItem, body.stock_item_id)
         if not stock:
@@ -616,13 +633,14 @@ async def add_wo_part(
         description = description or stock.name or stock.description
         unit = unit or stock.unit
         unit_cost = stock.unit_cost
-        await InventoryService(db).deduct_stock(
+        movement = await InventoryService(db).deduct_stock(
             body.stock_item_id,
             body.quantity,
             work_order_id=wo.id,
             user_id=current_user.id,
             notes=f"Used in WO {wo.wo_number} (added at approval)",
         )
+        settled = movement.quantity
 
     part = WOPart(
         work_order_id=wo.id,
@@ -633,6 +651,7 @@ async def add_wo_part(
         unit=unit or "un",
         unit_cost=unit_cost,
         total_cost=round(float(unit_cost) * body.quantity, 2) if unit_cost is not None else None,
+        stock_deducted=settled,
     )
     db.add(part)
     await db.commit()
@@ -660,17 +679,23 @@ async def update_wo_part(
     if part.stock_item_id and delta:
         inv = InventoryService(db)
         if delta > 0:
-            await inv.deduct_stock(
+            movement = await inv.deduct_stock(
                 part.stock_item_id, delta,
                 work_order_id=wo.id, user_id=current_user.id,
                 notes=f"Quantity increased on WO {wo.wo_number} (approval edit)",
             )
+            part.stock_deducted = (part.stock_deducted or 0.0) + movement.quantity
         else:
-            await inv.add_stock(
-                part.stock_item_id, -delta,
-                user_id=current_user.id,
-                notes=f"Quantity reduced on WO {wo.wo_number} (approval edit)",
-            )
+            # Never credit more than this line took out: the original deduction
+            # may have been capped by the count on hand.
+            give_back = min(-delta, float(part.stock_deducted or 0.0))
+            if give_back > 0:
+                await inv.add_stock(
+                    part.stock_item_id, give_back,
+                    user_id=current_user.id,
+                    notes=f"Quantity reduced on WO {wo.wo_number} (approval edit)",
+                )
+                part.stock_deducted = float(part.stock_deducted or 0.0) - give_back
 
     part.quantity = body.quantity
     if part.unit_cost is not None:
@@ -694,12 +719,10 @@ async def delete_wo_part(
     wo = await db.get(WorkOrder, work_order_id)
     _require_pending(wo.approval_status)
 
-    if part.stock_item_id and part.quantity:
-        await InventoryService(db).add_stock(
-            part.stock_item_id, float(part.quantity),
-            user_id=current_user.id,
-            notes=f"Part removed from WO {wo.wo_number} (approval edit)",
-        )
+    await _restock(
+        db, part, user_id=current_user.id,
+        notes=f"Part removed from WO {wo.wo_number} (approval edit)",
+    )
 
     await db.delete(part)
     await db.commit()
