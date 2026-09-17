@@ -1808,6 +1808,7 @@
     "free": "Disponible",
     "assigned": "Assigné",
     "busy": "Occupé",
+    "away": "Hors quart / absent",
     "techStatusBusy": "Occupé — OT en cours",
     "techStatusAssigned": "Assigné — OT ouverts",
     "autoAssignTooltip": "Quand activé, les techniciens peuvent prendre les tickets non assignés depuis Mon travail (pour les quarts sans superviseur). Quand désactivé, seuls les superviseurs répartissent le travail.",

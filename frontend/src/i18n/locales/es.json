@@ -1808,6 +1808,7 @@
     "free": "Disponible",
     "assigned": "Asignado",
     "busy": "Ocupado",
+    "away": "Fuera de turno / ausente",
     "techStatusBusy": "Ocupado — OT en curso",
     "techStatusAssigned": "Asignado — OT abiertas",
     "autoAssignTooltip": "Cuando está activado, los técnicos pueden tomar tickets sin asignar desde Mi trabajo (para turnos sin supervisor). Cuando está desactivado, solo los supervisores asignan el trabajo.",

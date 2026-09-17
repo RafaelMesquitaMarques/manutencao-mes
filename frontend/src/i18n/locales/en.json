@@ -1808,6 +1808,7 @@
     "free": "Available",
     "assigned": "Assigned",
     "busy": "Busy",
+    "away": "Off shift / away",
     "techStatusBusy": "Busy — WO in progress",
     "techStatusAssigned": "Assigned — open WOs",
     "autoAssignTooltip": "When ON, technicians can claim unassigned tickets from My Work (for shifts without a supervisor). When OFF, only supervisors dispatch work.",
