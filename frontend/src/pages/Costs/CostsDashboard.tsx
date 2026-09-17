@@ -1164,7 +1164,7 @@ function TransactionsModal({ year, monthFrom, monthTo, costCenter, equipmentId, 
                           <span className="text-gray-500 text-xs">{t('costs.intervention')}</span>
                         )}
                       </td>
-                      <td className="py-1.5 px-3 text-gray-400 text-xs whitespace-nowrap">{ln.equipment_code || ln.equipment_name || '—'}</td>
+                      <td className="py-1.5 px-3 text-gray-400 text-xs max-w-[160px] truncate" title={ln.equipment_name || ln.equipment_code || ''}>{ln.equipment_name || ln.equipment_code || '—'}</td>
                       <td className="py-1.5 px-3 whitespace-nowrap">
                         <span className="inline-flex items-center gap-1.5 text-xs text-gray-300">
                           <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ background: colorFor(ln.expense_type) }} />
@@ -1236,7 +1236,7 @@ function ByMachineTab({ year, months, periodKey, setPeriodKey, periods, periodLa
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
     legend: { textStyle: { color: '#94a3b8' }, top: 0, itemWidth: 14, itemHeight: 8 },
     grid: { left: '3%', right: '4%', top: '16%', bottom: '2%', containLabel: true },
-    xAxis: { type: 'category', data: top.map((m) => m.code || m.name), axisLabel: { color: '#94a3b8', rotate: 40, fontSize: 10 } },
+    xAxis: { type: 'category', data: top.map((m) => m.name || m.code), axisLabel: { color: '#94a3b8', rotate: 40, fontSize: 10, width: 90, overflow: 'truncate' } },
     yAxis: [
       { type: 'value', axisLabel: { color: '#94a3b8', formatter: (v: number) => `$${v >= 1000 ? `${v / 1000}k` : v}` }, splitLine: { lineStyle: { color: '#1e293b' } } },
       { type: 'value', min: 0, max: 100, axisLabel: { color: '#94a3b8', formatter: '{value}%' }, splitLine: { show: false } },
@@ -1268,7 +1268,7 @@ function ByMachineTab({ year, months, periodKey, setPeriodKey, periods, periodLa
         <Card icon={<DollarSign size={20} className="text-purple-400" />} label={t('costs.totalCost')} value={money(total)} sub={periodLabel} color="purple" />
         <Card icon={<Factory size={20} className="text-blue-400" />} label={t('costs.machinesWithCost')} value={String(rows.length)} sub={periodLabel} color="blue" />
         <Card icon={<TrendingUp size={20} className="text-amber-400" />} label={t('costs.topMachine')}
-          value={rows[0] ? (rows[0].code || rows[0].name) : '—'} sub={rows[0] ? money(rows[0].cost) : ''} color="amber" />
+          value={rows[0] ? (rows[0].name || rows[0].code || '—') : '—'} sub={rows[0] ? money(rows[0].cost) : ''} color="amber" />
       </div>
 
       <div className="bg-[#0d1421] border border-white/[0.06] rounded-xl p-4">
@@ -1330,7 +1330,7 @@ function ByMachineTab({ year, months, periodKey, setPeriodKey, periods, periodLa
                                   ))}
                               </div>
                               {r.equipment_id && (
-                                <button onClick={(e) => { e.stopPropagation(); setTxMachine({ id: r.equipment_id!, label: r.code || r.name }); }}
+                                <button onClick={(e) => { e.stopPropagation(); setTxMachine({ id: r.equipment_id!, label: r.name || r.code || '—' }); }}
                                   className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors flex-shrink-0">
                                   <Receipt size={13} /> {t('costs.viewTransactions')}
                                 </button>
