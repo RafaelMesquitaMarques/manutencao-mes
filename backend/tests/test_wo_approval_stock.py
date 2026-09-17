@@ -22,7 +22,6 @@ endpoints call db.commit(), so commit is redirected to flush for the duration.
 Run (inside the backend container):
     pytest tests/test_wo_approval_stock.py -v
 """
-import asyncio
 import os
 import sys
 import uuid
@@ -30,14 +29,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from fastapi import HTTPException                                       # noqa: E402
 
-from app.core.config import settings                                    # noqa: E402
 from app.api.routes import machine_operator, wo_approval, work_orders   # noqa: E402
 from app.schemas.wo_subresources import WOPartCreate                    # noqa: E402
 from app.models.models import (                                         # noqa: E402
@@ -45,41 +41,9 @@ from app.models.models import (                                         # noqa: 
     MachineIntervention, MaintenanceTicket, Plant, StockItem, TicketStatus,
     User, UserRole, WOPart, WorkOrder, WorkOrderStatus, WorkOrderType,
 )
+from db_harness import with_session_commit_as_flush as with_session    # noqa: E402
 
-_LOOP = asyncio.new_event_loop()
-_ENGINE = {}
 BASE = datetime(2026, 6, 1, 14, 0, tzinfo=timezone.utc)
-
-
-def _maker():
-    if "e" not in _ENGINE:
-        _ENGINE["e"] = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-    return async_sessionmaker(_ENGINE["e"], expire_on_commit=False)
-
-
-def with_session(fn):
-    """``async def test(s)`` -> sync pytest test on the shared loop, rolled back.
-    The endpoints under test commit; commit is flush here so the outer
-    transaction still owns (and discards) every row."""
-    def wrapper():
-        async def runner():
-            s = _maker()()
-            real_commit = s.commit
-
-            async def flush_only():
-                await s.flush()
-
-            s.commit = flush_only
-            try:
-                await fn(s)
-            finally:
-                s.commit = real_commit
-                await s.rollback()
-                await s.close()
-        _LOOP.run_until_complete(runner())
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
 
 
 # -- fixtures -----------------------------------------------------------------
