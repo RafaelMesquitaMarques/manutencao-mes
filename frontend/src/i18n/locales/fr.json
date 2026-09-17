@@ -2128,7 +2128,15 @@
     "activeOnly": "Actifs seulement",
     "viewDetails": "Voir",
     "items": "pièces",
-    "orders": "commandes"
+    "orders": "commandes",
+    "fax": "Fax",
+    "website": "Site web",
+    "codeCol": "Code",
+    "stockCol": "Stock",
+    "minCol": "Min",
+    "noneOption": "— Aucun —",
+    "noNotes": "Aucune note",
+    "internalNotesPlaceholder": "Notes internes…"
   },
   "purchaseOrders": {
     "title": "Bons de commande",

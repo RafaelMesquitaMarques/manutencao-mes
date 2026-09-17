@@ -150,9 +150,9 @@ export default function SupplierDetail() {
             <RatingStars value={editing ? (draft.rating ?? null) : supplier.rating} onChange={editing ? n => set('rating', n) : undefined} />
           </div>
           <div className="grid grid-cols-3 gap-3 text-center">
-            <Stat label="Items" value={String(supplier.item_count ?? 0)} icon={<Package size={14} className="text-indigo-400" />} />
-            <Stat label="Orders" value={String(supplier.order_count ?? 0)} icon={<ShoppingCart size={14} className="text-blue-400" />} />
-            <Stat label="Open POs" value={String(supplier.open_order_count ?? 0)} icon={<AlertTriangle size={14} className="text-amber-400" />} />
+            <Stat label={t('suppliers.tabItems', 'Items')} value={String(supplier.item_count ?? 0)} icon={<Package size={14} className="text-indigo-400" />} />
+            <Stat label={t('suppliers.tabOrders', 'Orders')} value={String(supplier.order_count ?? 0)} icon={<ShoppingCart size={14} className="text-blue-400" />} />
+            <Stat label={t('suppliers.openPOs', 'Open POs')} value={String(supplier.open_order_count ?? 0)} icon={<AlertTriangle size={14} className="text-amber-400" />} />
           </div>
         </div>
       </div>
@@ -183,10 +183,10 @@ export default function SupplierDetail() {
               <Field label={t('suppliers.phone', 'Phone')}>
                 {editing ? <input className={inputCls} value={draft.phone ?? ''} onChange={e => set('phone', e.target.value)} /> : <span>{supplier.phone || '—'}</span>}
               </Field>
-              <Field label="Fax">
+              <Field label={t('suppliers.fax', 'Fax')}>
                 {editing ? <input className={inputCls} value={draft.fax ?? ''} onChange={e => set('fax', e.target.value)} /> : <span>{supplier.fax || '—'}</span>}
               </Field>
-              <Field label="Website">
+              <Field label={t('suppliers.website', 'Website')}>
                 {editing ? <input className={inputCls} value={draft.website ?? ''} onChange={e => set('website', e.target.value)} /> : (
                   supplier.website ? <a href={supplier.website} target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 text-xs">{supplier.website}</a> : <span>—</span>
                 )}
@@ -195,13 +195,13 @@ export default function SupplierDetail() {
 
             {/* Classification */}
             <DetailCard title={t('suppliers.classification', 'Classification')} icon={<Hash size={14} className="text-indigo-400" />}>
-              <Field label="Code">
+              <Field label={t('suppliers.codeCol', 'Code')}>
                 {editing ? <input className={inputCls} value={draft.code ?? ''} onChange={e => set('code', e.target.value)} placeholder="SUP-XXX" /> : <span className="font-mono">{supplier.code || '—'}</span>}
               </Field>
               <Field label={t('suppliers.category', 'Category')}>
                 {editing ? (
                   <select className={inputCls} value={draft.category ?? ''} onChange={e => set('category', e.target.value)}>
-                    <option value="">— None —</option>
+                    <option value="">{t('suppliers.noneOption', '— None —')}</option>
                     {CATEGORIES.map(c => <option key={c}>{c}</option>)}
                   </select>
                 ) : <span>{supplier.category || '—'}</span>}
@@ -216,7 +216,7 @@ export default function SupplierDetail() {
               <Field label={t('suppliers.paymentTerms', 'Payment terms')}>
                 {editing ? (
                   <select className={inputCls} value={draft.payment_terms ?? ''} onChange={e => set('payment_terms', e.target.value)}>
-                    <option value="">— None —</option>
+                    <option value="">{t('suppliers.noneOption', '— None —')}</option>
                     {TERMS.map(t => <option key={t}>{t}</option>)}
                   </select>
                 ) : <span>{supplier.payment_terms || '—'}</span>}
@@ -242,9 +242,9 @@ export default function SupplierDetail() {
             {/* Notes */}
             <DetailCard title={t('common.notes', 'Notes')} icon={<CreditCard size={14} className="text-gray-400" />}>
               {editing ? (
-                <textarea className={inputCls + ' resize-none'} rows={5} value={draft.notes ?? ''} onChange={e => set('notes', e.target.value)} placeholder="Internal notes…" />
+                <textarea className={inputCls + ' resize-none'} rows={5} value={draft.notes ?? ''} onChange={e => set('notes', e.target.value)} placeholder={t('suppliers.internalNotesPlaceholder', 'Internal notes…')} />
               ) : (
-                <p className="text-sm text-gray-400 whitespace-pre-wrap">{supplier.notes || <span className="italic text-gray-600">No notes</span>}</p>
+                <p className="text-sm text-gray-400 whitespace-pre-wrap">{supplier.notes || <span className="italic text-gray-600">{t('suppliers.noNotes', 'No notes')}</span>}</p>
               )}
             </DetailCard>
           </div>
@@ -259,13 +259,13 @@ export default function SupplierDetail() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-gray-800 text-xs text-gray-500 uppercase tracking-wider">
-                    <th className="px-3 py-3 text-left">Code</th>
-                    <th className="px-3 py-3 text-left">Description</th>
-                    <th className="px-3 py-3 text-left">Category</th>
-                    <th className="px-3 py-3 text-center">Stock</th>
-                    <th className="px-3 py-3 text-center">Min</th>
-                    <th className="px-3 py-3 text-right">Unit cost</th>
-                    <th className="px-3 py-3 text-left">Supplier code</th>
+                    <th className="px-3 py-3 text-left">{t('suppliers.codeCol', 'Code')}</th>
+                    <th className="px-3 py-3 text-left">{t('common.description', 'Description')}</th>
+                    <th className="px-3 py-3 text-left">{t('suppliers.category', 'Category')}</th>
+                    <th className="px-3 py-3 text-center">{t('suppliers.stockCol', 'Stock')}</th>
+                    <th className="px-3 py-3 text-center">{t('suppliers.minCol', 'Min')}</th>
+                    <th className="px-3 py-3 text-right">{t('inventory.cost', 'Unit cost')}</th>
+                    <th className="px-3 py-3 text-left">{t('suppliers.code', 'Supplier code')}</th>
                   </tr>
                 </thead>
                 <tbody>

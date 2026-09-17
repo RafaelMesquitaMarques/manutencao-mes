@@ -2128,7 +2128,15 @@
     "activeOnly": "Active only",
     "viewDetails": "View",
     "items": "items",
-    "orders": "orders"
+    "orders": "orders",
+    "fax": "Fax",
+    "website": "Website",
+    "codeCol": "Code",
+    "stockCol": "Stock",
+    "minCol": "Min",
+    "noneOption": "— None —",
+    "noNotes": "No notes",
+    "internalNotesPlaceholder": "Internal notes…"
   },
   "purchaseOrders": {
     "title": "Purchase Orders",

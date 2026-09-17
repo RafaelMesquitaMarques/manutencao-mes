@@ -122,7 +122,7 @@ export default function SupplierList() {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-xs text-gray-500 uppercase tracking-wider">
-              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left font-medium">Code</th>
+              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left font-medium">{t('suppliers.codeCol', 'Code')}</th>
               <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left font-medium">{t('suppliers.name', 'Name')}</th>
               <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left font-medium">{t('suppliers.category', 'Category')}</th>
               <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left font-medium">{t('suppliers.contact', 'Contact')}</th>
