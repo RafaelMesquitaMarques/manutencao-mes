@@ -112,8 +112,11 @@ const Login = () => {
         <div className="bg-[#0d1421]/60 backdrop-blur-sm border border-white/[0.08] rounded-2xl p-8 shadow-2xl">
           {/* Brand */}
           <div className="flex items-center gap-3.5 mb-8">
-            <img src="/mirai-icon.png" alt="" className="w-12 h-12 object-contain flex-shrink-0" />
+            {/* 45px = wordmark (28) + gap (6) + tagline (11), so the mark spans
+                exactly from the top of "Ninja" to the bottom of the tagline */}
+            <img src="/ninja-mark.png" alt="" className="h-[45px] w-auto object-contain flex-shrink-0" />
             <div>
+              <img src="/ninja-wordmark.png" alt="Ninja" className="h-7 w-auto object-contain" />
               <p className="text-gray-400 text-[11px] mt-1.5 leading-none">Manufacturing Execution System</p>
             </div>
           </div>

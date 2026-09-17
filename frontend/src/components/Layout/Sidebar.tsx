@@ -85,7 +85,7 @@ const CORE_GROUPS: NavGroup[] = [
       { to: '/costs', icon: DollarSign, key: 'costs', roles: SUPERVISOR_UP },
       { to: '/job-orders', icon: Boxes, key: 'jobOrders', roles: SUPERVISOR_UP },
       { to: '/kpis/machines', icon: Factory, key: 'machineReports', roles: SUPERVISOR_UP },
-      { to: '/intelligence', icon: Brain, img: '/mirai-icon.png', key: 'intelligence', roles: TECH_UP },
+      { to: '/intelligence', icon: Brain, img: '/ninja-mark.png', key: 'intelligence', roles: TECH_UP },
     ],
   },
 ];
@@ -172,7 +172,7 @@ const Sidebar = ({ onClose }: SidebarProps) => {
           className="flex items-center gap-2 min-w-0 rounded-lg hover:opacity-80 transition-opacity"
         >
           <img
-            src="/mirai-icon.png"
+            src="/ninja-mark.png"
             alt=""
             className={`object-contain ${collapsed ? 'h-9 w-auto' : 'h-11 w-auto'}`}
           />
