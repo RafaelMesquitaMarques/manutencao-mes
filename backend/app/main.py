@@ -181,88 +181,97 @@ async def _backfill_ticket_alerts() -> None:
 
 
 async def _run_migrations() -> None:
-    """Add new columns to existing tables (idempotent via IF NOT EXISTS)."""
+    """Bring an existing database up to the current schema.
+
+    Entries are either a ("table", "column", "TYPE SQL") tuple — an ADD COLUMN,
+    gated against information_schema so it is only ISSUED when actually missing
+    (see the comment after the list: IF NOT EXISTS does not avoid the lock) — or
+    a raw SQL string for everything that is not a plain ADD COLUMN: CREATE
+    TABLE/INDEX, ALTER ... TYPE, DROP CONSTRAINT, DO blocks, GRANTs, backfills.
+    Order is significant and preserved; all of it is idempotent and re-runs on
+    every boot.
+    """
     stmts = [
         # Phase: predictive intelligence — failure-mode labeling provenance
-        "ALTER TABLE failure_events ADD COLUMN IF NOT EXISTS label_source VARCHAR(20)",
-        "ALTER TABLE failure_events ADD COLUMN IF NOT EXISTS label_confidence FLOAT",
+        ('failure_events', 'label_source', 'VARCHAR(20)'),
+        ('failure_events', 'label_confidence', 'FLOAT'),
         # Phase: ticket-WO integration
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS ticket_id UUID",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'manual'",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS scheduled_date DATE",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS scheduled_start_time VARCHAR(10)",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS scheduled_end_time VARCHAR(10)",
-        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS work_order_id UUID REFERENCES work_orders(id)",
+        ('work_orders', 'ticket_id', 'UUID'),
+        ('work_orders', 'source', "VARCHAR(20) NOT NULL DEFAULT 'manual'"),
+        ('work_orders', 'scheduled_date', 'DATE'),
+        ('work_orders', 'scheduled_start_time', 'VARCHAR(10)'),
+        ('work_orders', 'scheduled_end_time', 'VARCHAR(10)'),
+        ('maintenance_tickets', 'work_order_id', 'UUID REFERENCES work_orders(id)'),
         # Phase: machine page v1
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS code VARCHAR(50) UNIQUE",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS current_status VARCHAR(20) NOT NULL DEFAULT 'running'",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS current_operator VARCHAR(200)",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS current_shift VARCHAR(20)",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS last_maintenance_at TIMESTAMPTZ",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS page_slug VARCHAR(200) UNIQUE",
-        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS machine_page_source BOOLEAN NOT NULL DEFAULT FALSE",
-        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS opened_by_technician_at TIMESTAMPTZ",
-        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS closed_by_technician_at TIMESTAMPTZ",
-        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS problem_type VARCHAR(50)",
-        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS description TEXT",
+        ('machines', 'code', 'VARCHAR(50) UNIQUE'),
+        ('machines', 'current_status', "VARCHAR(20) NOT NULL DEFAULT 'running'"),
+        ('machines', 'current_operator', 'VARCHAR(200)'),
+        ('machines', 'current_shift', 'VARCHAR(20)'),
+        ('machines', 'last_maintenance_at', 'TIMESTAMPTZ'),
+        ('machines', 'page_slug', 'VARCHAR(200) UNIQUE'),
+        ('maintenance_tickets', 'machine_page_source', 'BOOLEAN NOT NULL DEFAULT FALSE'),
+        ('maintenance_tickets', 'opened_by_technician_at', 'TIMESTAMPTZ'),
+        ('maintenance_tickets', 'closed_by_technician_at', 'TIMESTAMPTZ'),
+        ('maintenance_tickets', 'problem_type', 'VARCHAR(50)'),
+        ('maintenance_tickets', 'description', 'TEXT'),
         # Phase: machine page v2 — MES panel
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS current_operator_id UUID REFERENCES users(id)",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS current_job_number VARCHAR(100)",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS kiosk_layout JSON",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS work_pauses JSON",
-        "ALTER TABLE line_tv_settings ADD COLUMN IF NOT EXISTS global_cadence_per_hour INTEGER",
-        "ALTER TABLE line_tv_settings ADD COLUMN IF NOT EXISTS global_work_start VARCHAR(10)",
-        "ALTER TABLE line_tv_settings ADD COLUMN IF NOT EXISTS global_work_end VARCHAR(10)",
-        "ALTER TABLE line_tv_settings ADD COLUMN IF NOT EXISTS global_pauses JSON",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS last_stop_at TIMESTAMPTZ",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS last_start_at TIMESTAMPTZ",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS page_language VARCHAR(10) NOT NULL DEFAULT 'fr'",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS target_availability_pct FLOAT NOT NULL DEFAULT 70",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS target_count INT",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS show_production_panel BOOLEAN NOT NULL DEFAULT TRUE",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS show_reject_panel BOOLEAN NOT NULL DEFAULT TRUE",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS show_availability_gauge BOOLEAN NOT NULL DEFAULT TRUE",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS show_job_number BOOLEAN NOT NULL DEFAULT TRUE",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS custom_color VARCHAR(20)",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS display_name VARCHAR(200)",
+        ('machines', 'current_operator_id', 'UUID REFERENCES users(id)'),
+        ('machines', 'current_job_number', 'VARCHAR(100)'),
+        ('machines', 'kiosk_layout', 'JSON'),
+        ('machines', 'work_pauses', 'JSON'),
+        ('line_tv_settings', 'global_cadence_per_hour', 'INTEGER'),
+        ('line_tv_settings', 'global_work_start', 'VARCHAR(10)'),
+        ('line_tv_settings', 'global_work_end', 'VARCHAR(10)'),
+        ('line_tv_settings', 'global_pauses', 'JSON'),
+        ('machines', 'last_stop_at', 'TIMESTAMPTZ'),
+        ('machines', 'last_start_at', 'TIMESTAMPTZ'),
+        ('machines', 'page_language', "VARCHAR(10) NOT NULL DEFAULT 'fr'"),
+        ('machines', 'target_availability_pct', 'FLOAT NOT NULL DEFAULT 70'),
+        ('machines', 'target_count', 'INT'),
+        ('machines', 'show_production_panel', 'BOOLEAN NOT NULL DEFAULT TRUE'),
+        ('machines', 'show_reject_panel', 'BOOLEAN NOT NULL DEFAULT TRUE'),
+        ('machines', 'show_availability_gauge', 'BOOLEAN NOT NULL DEFAULT TRUE'),
+        ('machines', 'show_job_number', 'BOOLEAN NOT NULL DEFAULT TRUE'),
+        ('machines', 'custom_color', 'VARCHAR(20)'),
+        ('machines', 'display_name', 'VARCHAR(200)'),
         # Phase: work order extra fields
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS estimated_hours FLOAT",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS notes TEXT",
+        ('work_orders', 'estimated_hours', 'FLOAT'),
+        ('work_orders', 'notes', 'TEXT'),
         # Phase: MES panel + per-machine categories
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS hourly_rate FLOAT",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS hourly_rate_currency VARCHAR(10) NOT NULL DEFAULT 'CAD'",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS target_count_per_shift INT",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS target_count_per_hour INT",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS shifts_config JSONB",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS shift_schedule JSONB",
-        "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS machine_id UUID REFERENCES machines(id) ON DELETE CASCADE",
-        "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS name_en VARCHAR(200)",
-        "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS name_fr VARCHAR(200)",
-        "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS name_es VARCHAR(200)",
-        "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS comment_required BOOLEAN NOT NULL DEFAULT FALSE",
-        "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS triggers_maintenance BOOLEAN NOT NULL DEFAULT FALSE",
-        "ALTER TABLE stop_categories ADD COLUMN IF NOT EXISTS is_global BOOLEAN NOT NULL DEFAULT FALSE",
-        "ALTER TABLE stop_subcategories ADD COLUMN IF NOT EXISTS name_en VARCHAR(200)",
-        "ALTER TABLE stop_subcategories ADD COLUMN IF NOT EXISTS name_fr VARCHAR(200)",
-        "ALTER TABLE stop_subcategories ADD COLUMN IF NOT EXISTS name_es VARCHAR(200)",
-        "ALTER TABLE stop_subcategories ADD COLUMN IF NOT EXISTS comment_required BOOLEAN NOT NULL DEFAULT FALSE",
-        "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS operator_id UUID REFERENCES machine_operators(id) ON DELETE SET NULL",
-        "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS shift VARCHAR(20)",
-        "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS job_number VARCHAR(100)",
+        ('machines', 'hourly_rate', 'FLOAT'),
+        ('machines', 'hourly_rate_currency', "VARCHAR(10) NOT NULL DEFAULT 'CAD'"),
+        ('machines', 'target_count_per_shift', 'INT'),
+        ('machines', 'target_count_per_hour', 'INT'),
+        ('machines', 'shifts_config', 'JSONB'),
+        ('machines', 'shift_schedule', 'JSONB'),
+        ('stop_categories', 'machine_id', 'UUID REFERENCES machines(id) ON DELETE CASCADE'),
+        ('stop_categories', 'name_en', 'VARCHAR(200)'),
+        ('stop_categories', 'name_fr', 'VARCHAR(200)'),
+        ('stop_categories', 'name_es', 'VARCHAR(200)'),
+        ('stop_categories', 'comment_required', 'BOOLEAN NOT NULL DEFAULT FALSE'),
+        ('stop_categories', 'triggers_maintenance', 'BOOLEAN NOT NULL DEFAULT FALSE'),
+        ('stop_categories', 'is_global', 'BOOLEAN NOT NULL DEFAULT FALSE'),
+        ('stop_subcategories', 'name_en', 'VARCHAR(200)'),
+        ('stop_subcategories', 'name_fr', 'VARCHAR(200)'),
+        ('stop_subcategories', 'name_es', 'VARCHAR(200)'),
+        ('stop_subcategories', 'comment_required', 'BOOLEAN NOT NULL DEFAULT FALSE'),
+        ('machine_stops', 'operator_id', 'UUID REFERENCES machine_operators(id) ON DELETE SET NULL'),
+        ('machine_stops', 'shift', 'VARCHAR(20)'),
+        ('machine_stops', 'job_number', 'VARCHAR(100)'),
         # Scale machine_stops range scans (downtime by machine over time) without
         # hypertabling it (kept plain: small, and fetched by id via db.get).
         "CREATE INDEX IF NOT EXISTS idx_machine_stops_machine_started ON machine_stops (machine_id, started_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_machine_stops_started ON machine_stops (started_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_machine_stops_category ON machine_stops (stop_category_id)",
         # Phase: user permissions system
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) NOT NULL DEFAULT 'operator'",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50)",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS job_title VARCHAR(200)",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS invited_by_id UUID REFERENCES users(id) ON DELETE SET NULL",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS invited_at TIMESTAMPTZ",
+        ('users', 'role', "VARCHAR(50) NOT NULL DEFAULT 'operator'"),
+        ('users', 'avatar_url', 'VARCHAR(500)'),
+        ('users', 'phone', 'VARCHAR(50)'),
+        ('users', 'job_title', 'VARCHAR(200)'),
+        ('users', 'last_login_at', 'TIMESTAMPTZ'),
+        ('users', 'must_change_password', 'BOOLEAN NOT NULL DEFAULT FALSE'),
+        ('users', 'invited_by_id', 'UUID REFERENCES users(id) ON DELETE SET NULL'),
+        ('users', 'invited_at', 'TIMESTAMPTZ'),
         """
         CREATE TABLE IF NOT EXISTS permissions (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -360,9 +369,9 @@ async def _run_migrations() -> None:
            EXCEPTION WHEN others THEN NULL; END $$""",
         """DO $$ BEGIN ALTER TABLE reject_logs RENAME COLUMN comment TO comments;
            EXCEPTION WHEN others THEN NULL; END $$""",
-        "ALTER TABLE reject_logs ADD COLUMN IF NOT EXISTS date DATE NOT NULL DEFAULT CURRENT_DATE",
-        "ALTER TABLE reject_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
-        "ALTER TABLE reject_logs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ",
+        ('reject_logs', 'date', 'DATE NOT NULL DEFAULT CURRENT_DATE'),
+        ('reject_logs', 'created_at', 'TIMESTAMPTZ NOT NULL DEFAULT NOW()'),
+        ('reject_logs', 'updated_at', 'TIMESTAMPTZ'),
         """
         CREATE TABLE IF NOT EXISTS job_orders (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -378,12 +387,12 @@ async def _run_migrations() -> None:
         )
         """,
         # Phase: ticket-WO redesign — new columns on existing tables
-        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS suggested_technician_id UUID REFERENCES users(id)",
-        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS reported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS machine_id UUID",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS total_minutes INTEGER",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS estimated_downtime_minutes INTEGER",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS actual_downtime_minutes INTEGER",
+        ('maintenance_tickets', 'suggested_technician_id', 'UUID REFERENCES users(id)'),
+        ('maintenance_tickets', 'reported_at', 'TIMESTAMPTZ NOT NULL DEFAULT NOW()'),
+        ('work_orders', 'machine_id', 'UUID'),
+        ('work_orders', 'total_minutes', 'INTEGER'),
+        ('work_orders', 'estimated_downtime_minutes', 'INTEGER'),
+        ('work_orders', 'actual_downtime_minutes', 'INTEGER'),
         # Phase: inventory module — suppliers table + stock_items new columns
         """
         CREATE TABLE IF NOT EXISTS suppliers (
@@ -399,24 +408,24 @@ async def _run_migrations() -> None:
             is_active BOOLEAN DEFAULT TRUE
         )
         """,
-        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS category VARCHAR(200)",
-        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS part_class VARCHAR(200)",
-        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS warehouse VARCHAR(100)",
-        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS supplier_id UUID REFERENCES suppliers(id) ON DELETE SET NULL",
-        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS interal_product_id VARCHAR(50)",
-        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS notes TEXT",
+        ('stock_items', 'category', 'VARCHAR(200)'),
+        ('stock_items', 'part_class', 'VARCHAR(200)'),
+        ('stock_items', 'warehouse', 'VARCHAR(100)'),
+        ('stock_items', 'supplier_id', 'UUID REFERENCES suppliers(id) ON DELETE SET NULL'),
+        ('stock_items', 'interal_product_id', 'VARCHAR(50)'),
+        ('stock_items', 'notes', 'TEXT'),
         # Phase: supplier management module
-        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS contact_name VARCHAR(200)",
-        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS address TEXT",
-        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS city VARCHAR(100)",
-        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS country VARCHAR(100)",
-        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS category VARCHAR(100)",
-        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS payment_terms VARCHAR(100)",
-        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS lead_time_days INTEGER",
-        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS rating INTEGER",
-        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
-        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ",
-        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS supplier_code VARCHAR(100)",
+        ('suppliers', 'contact_name', 'VARCHAR(200)'),
+        ('suppliers', 'address', 'TEXT'),
+        ('suppliers', 'city', 'VARCHAR(100)'),
+        ('suppliers', 'country', 'VARCHAR(100)'),
+        ('suppliers', 'category', 'VARCHAR(100)'),
+        ('suppliers', 'payment_terms', 'VARCHAR(100)'),
+        ('suppliers', 'lead_time_days', 'INTEGER'),
+        ('suppliers', 'rating', 'INTEGER'),
+        ('suppliers', 'created_at', 'TIMESTAMPTZ NOT NULL DEFAULT NOW()'),
+        ('suppliers', 'updated_at', 'TIMESTAMPTZ'),
+        ('stock_items', 'supplier_code', 'VARCHAR(100)'),
         """
         CREATE TABLE IF NOT EXISTS purchase_orders (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -498,15 +507,15 @@ async def _run_migrations() -> None:
             is_active    BOOLEAN DEFAULT TRUE
         )
         """,
-        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS intervention_type_id UUID REFERENCES intervention_types(id) ON DELETE SET NULL",
-        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS intervention_type_name VARCHAR(200)",
+        ('machine_interventions', 'intervention_type_id', 'UUID REFERENCES intervention_types(id) ON DELETE SET NULL'),
+        ('machine_interventions', 'intervention_type_name', 'VARCHAR(200)'),
         # Phase: intervention timing metrics
-        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS response_time_minutes FLOAT",
-        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS intervention_duration_minutes FLOAT",
-        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS total_downtime_minutes FLOAT",
-        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS called_by_name VARCHAR(200)",
-        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS started_by_name VARCHAR(200)",
-        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS completed_by_name VARCHAR(200)",
+        ('machine_interventions', 'response_time_minutes', 'FLOAT'),
+        ('machine_interventions', 'intervention_duration_minutes', 'FLOAT'),
+        ('machine_interventions', 'total_downtime_minutes', 'FLOAT'),
+        ('machine_interventions', 'called_by_name', 'VARCHAR(200)'),
+        ('machine_interventions', 'started_by_name', 'VARCHAR(200)'),
+        ('machine_interventions', 'completed_by_name', 'VARCHAR(200)'),
         # Phase: machine operator call flow
         """
         CREATE TABLE IF NOT EXISTS machine_interventions (
@@ -585,12 +594,12 @@ async def _run_migrations() -> None:
         )
         """,
         # Phase: alert ↔ ticket direct link
-        "ALTER TABLE maintenance_alerts ADD COLUMN IF NOT EXISTS ticket_id UUID REFERENCES maintenance_tickets(id) ON DELETE SET NULL",
+        ('maintenance_alerts', 'ticket_id', 'UUID REFERENCES maintenance_tickets(id) ON DELETE SET NULL'),
         "ALTER TABLE maintenance_alerts ALTER COLUMN escalation_level SET DEFAULT 0",
         "ALTER TABLE maintenance_alerts ALTER COLUMN is_overdue SET DEFAULT FALSE",
         # Phase: labor record time tracking
-        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
-        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS stopped_at TIMESTAMPTZ",
+        ('labor_records', 'started_at', 'TIMESTAMPTZ'),
+        ('labor_records', 'stopped_at', 'TIMESTAMPTZ'),
         # Phase: cost audit log table
         """
         CREATE TABLE IF NOT EXISTS cost_audit_log (
@@ -627,27 +636,27 @@ async def _run_migrations() -> None:
             is_required BOOLEAN DEFAULT TRUE
         )
         """,
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS pm_template_id UUID REFERENCES pm_templates(id) ON DELETE SET NULL",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS plan_type VARCHAR(30) DEFAULT 'preventive'",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS frequency_type VARCHAR(30)",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS frequency_value INTEGER DEFAULT 1",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS frequency_days INTEGER",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS frequency_hours DOUBLE PRECISION",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS weekdays VARCHAR(20)",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS start_date DATE",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS recurrence_end_type VARCHAR(20) DEFAULT 'never'",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS recurrence_end_value INTEGER",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS recurrence_end_date DATE",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS lead_time_days INTEGER DEFAULT 3",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS assigned_technician_id UUID REFERENCES technicians(id) ON DELETE SET NULL",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS priority VARCHAR(20) DEFAULT 'medium'",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS estimated_hours DOUBLE PRECISION DEFAULT 1.0",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS next_due_date DATE",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS next_due_hours DOUBLE PRECISION",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS total_occurrences INTEGER DEFAULT 0",
-        "ALTER TABLE maintenance_plans ADD COLUMN IF NOT EXISTS created_by_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        ('maintenance_plans', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('maintenance_plans', 'pm_template_id', 'UUID REFERENCES pm_templates(id) ON DELETE SET NULL'),
+        ('maintenance_plans', 'plan_type', "VARCHAR(30) DEFAULT 'preventive'"),
+        ('maintenance_plans', 'frequency_type', 'VARCHAR(30)'),
+        ('maintenance_plans', 'frequency_value', 'INTEGER DEFAULT 1'),
+        ('maintenance_plans', 'frequency_days', 'INTEGER'),
+        ('maintenance_plans', 'frequency_hours', 'DOUBLE PRECISION'),
+        ('maintenance_plans', 'weekdays', 'VARCHAR(20)'),
+        ('maintenance_plans', 'start_date', 'DATE'),
+        ('maintenance_plans', 'recurrence_end_type', "VARCHAR(20) DEFAULT 'never'"),
+        ('maintenance_plans', 'recurrence_end_value', 'INTEGER'),
+        ('maintenance_plans', 'recurrence_end_date', 'DATE'),
+        ('maintenance_plans', 'lead_time_days', 'INTEGER DEFAULT 3'),
+        ('maintenance_plans', 'assigned_technician_id', 'UUID REFERENCES technicians(id) ON DELETE SET NULL'),
+        ('maintenance_plans', 'priority', "VARCHAR(20) DEFAULT 'medium'"),
+        ('maintenance_plans', 'estimated_hours', 'DOUBLE PRECISION DEFAULT 1.0'),
+        ('maintenance_plans', 'is_active', 'BOOLEAN DEFAULT TRUE'),
+        ('maintenance_plans', 'next_due_date', 'DATE'),
+        ('maintenance_plans', 'next_due_hours', 'DOUBLE PRECISION'),
+        ('maintenance_plans', 'total_occurrences', 'INTEGER DEFAULT 0'),
+        ('maintenance_plans', 'created_by_id', 'UUID REFERENCES users(id) ON DELETE SET NULL'),
         """
         CREATE TABLE IF NOT EXISTS plan_occurrences (
             id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -681,14 +690,14 @@ async def _run_migrations() -> None:
             unit                 VARCHAR(50)
         )
         """,
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS plan_id UUID REFERENCES maintenance_plans(id)",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS occurrence_id UUID REFERENCES plan_occurrences(id) ON DELETE SET NULL",
-        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS description TEXT",
-        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS is_required BOOLEAN DEFAULT TRUE",
-        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS is_completed BOOLEAN DEFAULT FALSE",
-        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ",
-        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS completed_by_id UUID REFERENCES users(id) ON DELETE SET NULL",
-        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0",
+        ('work_orders', 'plan_id', 'UUID REFERENCES maintenance_plans(id)'),
+        ('work_orders', 'occurrence_id', 'UUID REFERENCES plan_occurrences(id) ON DELETE SET NULL'),
+        ('wo_actions', 'description', 'TEXT'),
+        ('wo_actions', 'is_required', 'BOOLEAN DEFAULT TRUE'),
+        ('wo_actions', 'is_completed', 'BOOLEAN DEFAULT FALSE'),
+        ('wo_actions', 'completed_at', 'TIMESTAMPTZ'),
+        ('wo_actions', 'completed_by_id', 'UUID REFERENCES users(id) ON DELETE SET NULL'),
+        ('wo_actions', 'sort_order', 'INTEGER DEFAULT 0'),
         # Phase: multi-technician work orders — backfill join table from executor_id
         """
         INSERT INTO work_order_technicians (work_order_id, technician_id, is_primary)
@@ -708,7 +717,7 @@ async def _run_migrations() -> None:
           AND mt.assigned_to_id IS DISTINCT FROM wo.assigned_to_id
         """,
         # Phase: per-machine reports — explicit Machine -> Equipment link
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS equipment_id UUID REFERENCES equipment(id) ON DELETE SET NULL",
+        ('machines', 'equipment_id', 'UUID REFERENCES equipment(id) ON DELETE SET NULL'),
         # Backfill: machines auto-provisioned from equipment share the same UUID
         "UPDATE machines SET equipment_id = id WHERE equipment_id IS NULL AND id IN (SELECT id FROM equipment)",
         # Backfill: match remaining machines to equipment by code
@@ -721,34 +730,34 @@ async def _run_migrations() -> None:
           AND m.code = e.code
         """,
         # Phase: ticket lifecycle SMS notifications
-        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS notify_on_ticket_opened BOOLEAN DEFAULT TRUE",
-        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS notify_on_ticket_completed BOOLEAN DEFAULT TRUE",
+        ('escalation_settings', 'notify_on_ticket_opened', 'BOOLEAN DEFAULT TRUE'),
+        ('escalation_settings', 'notify_on_ticket_completed', 'BOOLEAN DEFAULT TRUE'),
         # Phase: supervisor-controlled technician self-assignment
-        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS technician_self_assign BOOLEAN DEFAULT TRUE",
+        ('escalation_settings', 'technician_self_assign', 'BOOLEAN DEFAULT TRUE'),
         # End-of-shift summary (SMS to level-1 contacts) — off until enabled in Settings → Escalation
-        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS shift_report_enabled BOOLEAN DEFAULT FALSE",
+        ('escalation_settings', 'shift_report_enabled', 'BOOLEAN DEFAULT FALSE'),
         # Phase: work-order-driven maintenance stop (office/mobile flow feeds Availability/OEE)
-        "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'operator'",
+        ('machine_stops', 'source', "VARCHAR(20) DEFAULT 'operator'"),
         # Phase: per-machine production-signal ingest token (ADAM-6050)
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS signal_ingest_token VARCHAR(120)",
+        ('machines', 'signal_ingest_token', 'VARCHAR(120)'),
         # Phase 4 multi-plant: per-machine kiosk access token (KIOSK_ENFORCE_TOKEN)
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS kiosk_token VARCHAR(120)",
+        ('machines', 'kiosk_token', 'VARCHAR(120)'),
         # Phase: PM template SOP — expected result per step (media live in pm_task_media, created by create_all)
-        "ALTER TABLE pm_template_tasks ADD COLUMN IF NOT EXISTS expected_result TEXT",
+        ('pm_template_tasks', 'expected_result', 'TEXT'),
         # Phase: checklist rigor on the work order (advisory | required | strict)
-        "ALTER TABLE pm_templates ADD COLUMN IF NOT EXISTS enforcement VARCHAR(20) DEFAULT 'advisory'",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checklist_enforcement VARCHAR(20) DEFAULT 'advisory'",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS board_order INTEGER",
+        ('pm_templates', 'enforcement', "VARCHAR(20) DEFAULT 'advisory'"),
+        ('work_orders', 'checklist_enforcement', "VARCHAR(20) DEFAULT 'advisory'"),
+        ('work_orders', 'board_order', 'INTEGER'),
         # Phase: auxiliary (non-productive) equipment — maintenance-only assets
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS asset_type VARCHAR(20) DEFAULT 'production'",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS subtype VARCHAR(100)",
+        ('equipment', 'asset_type', "VARCHAR(20) DEFAULT 'production'"),
+        ('equipment', 'subtype', 'VARCHAR(100)'),
         # Phase: equipment classification fields (promoted from the maintenance Excel import)
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS department VARCHAR(200)",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS cost_center VARCHAR(200)",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS family VARCHAR(200)",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS pm_strategy VARCHAR(300)",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS cleaning_priority VARCHAR(50)",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS function_label VARCHAR(300)",
+        ('equipment', 'department', 'VARCHAR(200)'),
+        ('equipment', 'cost_center', 'VARCHAR(200)'),
+        ('equipment', 'family', 'VARCHAR(200)'),
+        ('equipment', 'pm_strategy', 'VARCHAR(300)'),
+        ('equipment', 'cleaning_priority', 'VARCHAR(50)'),
+        ('equipment', 'function_label', 'VARCHAR(300)'),
         # One-time backfill from the import's specifications JSON (guarded by IS NULL)
         """
         UPDATE equipment SET
@@ -759,12 +768,12 @@ async def _run_migrations() -> None:
         WHERE specifications IS NOT NULL
           AND (department IS NULL OR family IS NULL OR pm_strategy IS NULL OR cleaning_priority IS NULL)
         """,
-        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS expected_result TEXT",
-        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS template_task_id UUID",
-        "ALTER TABLE wo_actions ADD COLUMN IF NOT EXISTS proof_photo_url VARCHAR(1000)",
+        ('wo_actions', 'expected_result', 'TEXT'),
+        ('wo_actions', 'template_task_id', 'UUID'),
+        ('wo_actions', 'proof_photo_url', 'VARCHAR(1000)'),
         # Phase: parts pricing — snapshot stock price on intervention parts
-        "ALTER TABLE intervention_parts ADD COLUMN IF NOT EXISTS unit_cost DOUBLE PRECISION",
-        "ALTER TABLE intervention_parts ADD COLUMN IF NOT EXISTS total_cost DOUBLE PRECISION",
+        ('intervention_parts', 'unit_cost', 'DOUBLE PRECISION'),
+        ('intervention_parts', 'total_cost', 'DOUBLE PRECISION'),
         """
         UPDATE intervention_parts ip
         SET unit_cost = s.unit_cost,
@@ -775,50 +784,50 @@ async def _run_migrations() -> None:
           AND s.unit_cost IS NOT NULL
         """,
         # Phase: average cost + last purchase cost on stock items
-        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS average_cost DOUBLE PRECISION",
-        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS last_purchase_cost DOUBLE PRECISION",
-        "ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS last_purchase_date DATE",
+        ('stock_items', 'average_cost', 'DOUBLE PRECISION'),
+        ('stock_items', 'last_purchase_cost', 'DOUBLE PRECISION'),
+        ('stock_items', 'last_purchase_date', 'DATE'),
         # Phase: serial number on machines + equipment
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS serial_number VARCHAR(200)",
+        ('machines', 'serial_number', 'VARCHAR(200)'),
         # ── Factory map / digital-twin layout ──
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS pos_x DOUBLE PRECISION",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS pos_y DOUBLE PRECISION",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS pos_w DOUBLE PRECISION",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS pos_h DOUBLE PRECISION",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS rotation_deg DOUBLE PRECISION",
-        "ALTER TABLE machines ADD COLUMN IF NOT EXISTS icon_url VARCHAR(500)",
-        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS floor_plan_url VARCHAR(500)",
+        ('machines', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('machines', 'pos_x', 'DOUBLE PRECISION'),
+        ('machines', 'pos_y', 'DOUBLE PRECISION'),
+        ('machines', 'pos_w', 'DOUBLE PRECISION'),
+        ('machines', 'pos_h', 'DOUBLE PRECISION'),
+        ('machines', 'rotation_deg', 'DOUBLE PRECISION'),
+        ('machines', 'icon_url', 'VARCHAR(500)'),
+        ('plants', 'floor_plan_url', 'VARCHAR(500)'),
         # backfill the machine→plant link from its equipment (one-time, guarded)
         "UPDATE machines SET plant_id = e.plant_id FROM equipment e WHERE machines.equipment_id = e.id AND machines.plant_id IS NULL",
         # equipment carries the map position (the factory map is asset-based, not machine-based)
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS pos_x DOUBLE PRECISION",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS pos_y DOUBLE PRECISION",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS pos_w DOUBLE PRECISION",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS pos_h DOUBLE PRECISION",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS rotation_deg DOUBLE PRECISION",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS icon_url VARCHAR(500)",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS model_url VARCHAR(500)",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS height_3d DOUBLE PRECISION",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS model_scale DOUBLE PRECISION",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS scale_y DOUBLE PRECISION",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS scale_z DOUBLE PRECISION",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS block_kind VARCHAR(40)",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS parent_equipment_id UUID REFERENCES equipment(id)",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS orbit_x DOUBLE PRECISION",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS orbit_y DOUBLE PRECISION",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS orbit_w DOUBLE PRECISION",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS orbit_h DOUBLE PRECISION",
-        "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS serial_number VARCHAR(200)",
+        ('equipment', 'pos_x', 'DOUBLE PRECISION'),
+        ('equipment', 'pos_y', 'DOUBLE PRECISION'),
+        ('equipment', 'pos_w', 'DOUBLE PRECISION'),
+        ('equipment', 'pos_h', 'DOUBLE PRECISION'),
+        ('equipment', 'rotation_deg', 'DOUBLE PRECISION'),
+        ('equipment', 'icon_url', 'VARCHAR(500)'),
+        ('equipment', 'model_url', 'VARCHAR(500)'),
+        ('equipment', 'height_3d', 'DOUBLE PRECISION'),
+        ('equipment', 'model_scale', 'DOUBLE PRECISION'),
+        ('equipment', 'scale_y', 'DOUBLE PRECISION'),
+        ('equipment', 'scale_z', 'DOUBLE PRECISION'),
+        ('equipment', 'block_kind', 'VARCHAR(40)'),
+        ('equipment', 'parent_equipment_id', 'UUID REFERENCES equipment(id)'),
+        ('equipment', 'orbit_x', 'DOUBLE PRECISION'),
+        ('equipment', 'orbit_y', 'DOUBLE PRECISION'),
+        ('equipment', 'orbit_w', 'DOUBLE PRECISION'),
+        ('equipment', 'orbit_h', 'DOUBLE PRECISION'),
+        ('equipment', 'serial_number', 'VARCHAR(200)'),
         # Map props can optionally link to a real equipment (live status / click-through)
-        "ALTER TABLE map_props ADD COLUMN IF NOT EXISTS equipment_id UUID REFERENCES equipment(id)",
+        ('map_props', 'equipment_id', 'UUID REFERENCES equipment(id)'),
         # ── Why an entry raised the count: a purchase receipt is money paid for
         # these units, a reversal is units coming back from a part line that did
         # not keep them. movement_type cannot tell them apart (both were
         # 'addition'), yet the purchase-price backfills below must only ever see
         # receipts. Guarded on information_schema so a steady-state boot takes NO
-        # exclusive lock (this whole list is one transaction and holds every lock
-        # it takes — an unconditional ALTER here deadlocks against the workers).
+        # exclusive lock: ALTER TABLE grabs AccessExclusive before it even reads
+        # the catalog, so IF NOT EXISTS alone would still block the workers.
         """
         DO $$ BEGIN
           IF NOT EXISTS (SELECT 1 FROM information_schema.columns
@@ -876,31 +885,31 @@ async def _run_migrations() -> None:
         """,
         # Phase: escalation flexibility — per-contact scope (department/machines)
         # and quiet hours, + minimum priority for the level-0 ticket group
-        "ALTER TABLE escalation_contacts ADD COLUMN IF NOT EXISTS scope_department VARCHAR(200)",
-        "ALTER TABLE escalation_contacts ADD COLUMN IF NOT EXISTS scope_machine_ids JSON",
-        "ALTER TABLE escalation_contacts ADD COLUMN IF NOT EXISTS notify_start VARCHAR(5)",
-        "ALTER TABLE escalation_contacts ADD COLUMN IF NOT EXISTS notify_end VARCHAR(5)",
-        "ALTER TABLE escalation_contacts ADD COLUMN IF NOT EXISTS critical_bypass BOOLEAN DEFAULT TRUE",
-        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS ticket_group_min_priority VARCHAR(20) DEFAULT 'low'",
+        ('escalation_contacts', 'scope_department', 'VARCHAR(200)'),
+        ('escalation_contacts', 'scope_machine_ids', 'JSON'),
+        ('escalation_contacts', 'notify_start', 'VARCHAR(5)'),
+        ('escalation_contacts', 'notify_end', 'VARCHAR(5)'),
+        ('escalation_contacts', 'critical_bypass', 'BOOLEAN DEFAULT TRUE'),
+        ('escalation_settings', 'ticket_group_min_priority', "VARCHAR(20) DEFAULT 'low'"),
         # Phase: escalation lifecycle — same-level reminders + planned-stop pause
         # (the "I'm on it" ack feature was built then removed — DROPs clean it up)
-        "ALTER TABLE maintenance_alerts ADD COLUMN IF NOT EXISTS last_notified_at TIMESTAMPTZ",
-        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS reminder_minutes INTEGER DEFAULT 0",
-        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS pause_during_planned_stop BOOLEAN DEFAULT TRUE",
+        ('maintenance_alerts', 'last_notified_at', 'TIMESTAMPTZ'),
+        ('escalation_settings', 'reminder_minutes', 'INTEGER DEFAULT 0'),
+        ('escalation_settings', 'pause_during_planned_stop', 'BOOLEAN DEFAULT TRUE'),
         "ALTER TABLE maintenance_alerts DROP COLUMN IF EXISTS ack_token",
         "ALTER TABLE maintenance_alerts DROP COLUMN IF EXISTS acknowledged_at",
         "ALTER TABLE maintenance_alerts DROP COLUMN IF EXISTS acknowledged_by",
         "ALTER TABLE escalation_settings DROP COLUMN IF EXISTS ack_enabled",
         # Phase: editable SMS templates + per-trigger channel matrix
-        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS sms_templates JSON",
-        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS channel_matrix JSON",
+        ('escalation_settings', 'sms_templates', 'JSON'),
+        ('escalation_settings', 'channel_matrix', 'JSON'),
         # Phase: Microsoft Teams channel notifications (Workflows webhook per plant)
-        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS teams_enabled BOOLEAN DEFAULT FALSE",
-        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS teams_webhook_url TEXT",
+        ('escalation_settings', 'teams_enabled', 'BOOLEAN DEFAULT FALSE'),
+        ('escalation_settings', 'teams_webhook_url', 'TEXT'),
         # Phase: OF alerts split from machine alerts — own Teams channel (empty =
         # shared) + own recipients group (escalation_contacts.category = 'of')
-        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS of_teams_webhook_url TEXT",
-        "ALTER TABLE escalation_contacts ADD COLUMN IF NOT EXISTS category VARCHAR(20)",
+        ('escalation_settings', 'of_teams_webhook_url', 'TEXT'),
+        ('escalation_contacts', 'category', 'VARCHAR(20)'),
         # Phase: WO-level approval — supervisor/director approves completed work
         # (whole intervention OR whole formal work order), not just individual parts.
         # A marker table makes the historical "grandfather" backfill run exactly once,
@@ -912,17 +921,17 @@ async def _run_migrations() -> None:
         )
         """,
         # Floor work order = MachineIntervention
-        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS approval_status VARCHAR(20) NOT NULL DEFAULT 'pending'",
-        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS approved_by_id UUID REFERENCES users(id) ON DELETE SET NULL",
-        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ",
-        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS approval_note TEXT",
-        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS rejection_reason TEXT",
+        ('machine_interventions', 'approval_status', "VARCHAR(20) NOT NULL DEFAULT 'pending'"),
+        ('machine_interventions', 'approved_by_id', 'UUID REFERENCES users(id) ON DELETE SET NULL'),
+        ('machine_interventions', 'approved_at', 'TIMESTAMPTZ'),
+        ('machine_interventions', 'approval_note', 'TEXT'),
+        ('machine_interventions', 'rejection_reason', 'TEXT'),
         # Office work order = work_orders
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS approval_status VARCHAR(20) NOT NULL DEFAULT 'pending'",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS approved_by_id UUID REFERENCES users(id) ON DELETE SET NULL",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS approval_note TEXT",
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS rejection_reason TEXT",
+        ('work_orders', 'approval_status', "VARCHAR(20) NOT NULL DEFAULT 'pending'"),
+        ('work_orders', 'approved_by_id', 'UUID REFERENCES users(id) ON DELETE SET NULL'),
+        ('work_orders', 'approved_at', 'TIMESTAMPTZ'),
+        ('work_orders', 'approval_note', 'TEXT'),
+        ('work_orders', 'rejection_reason', 'TEXT'),
         # One-time grandfather: everything already completed at rollout (incl. thousands of
         # imported historical WOs) is marked approved so the queue isn't flooded; only future
         # completions require sign-off. Interventions still holding pending parts stay queued.
@@ -944,22 +953,22 @@ async def _run_migrations() -> None:
         END $$
         """,
         # Costs page: budgets split into OPEX / CAPEX envelopes
-        "ALTER TABLE cost_center_budgets ADD COLUMN IF NOT EXISTS kind VARCHAR(10) NOT NULL DEFAULT 'opex'",
+        ('cost_center_budgets', 'kind', "VARCHAR(10) NOT NULL DEFAULT 'opex'"),
         """DO $$ BEGIN
            ALTER TABLE cost_center_budgets DROP CONSTRAINT IF EXISTS uq_cc_budget_year_month_cc;
            ALTER TABLE cost_center_budgets ADD CONSTRAINT uq_cc_budget_year_month_cc_kind
              UNIQUE (year, month, cost_center, kind);
            EXCEPTION WHEN others THEN NULL; END $$""",
         # Cost center on approval + purchase-order commitments (forecast)
-        "ALTER TABLE machine_interventions ADD COLUMN IF NOT EXISTS cost_center VARCHAR(200)",
-        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS cost_center VARCHAR(200)",
-        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS scope VARCHAR(10) NOT NULL DEFAULT 'opex'",
+        ('machine_interventions', 'cost_center', 'VARCHAR(200)'),
+        ('purchase_orders', 'cost_center', 'VARCHAR(200)'),
+        ('purchase_orders', 'scope', "VARCHAR(10) NOT NULL DEFAULT 'opex'"),
         # Phase: effective labor time (shift templates, breaks, technician
         # unavailability). effective_hours drives labor_cost; hours_worked stays
         # raw so repair_hours / MTTR / downtime are never affected.
-        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS effective_hours FLOAT",
-        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS overtime_approved BOOLEAN NOT NULL DEFAULT FALSE",
-        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS deducted_minutes FLOAT",
+        ('labor_records', 'effective_hours', 'FLOAT'),
+        ('labor_records', 'overtime_approved', 'BOOLEAN NOT NULL DEFAULT FALSE'),
+        ('labor_records', 'deducted_minutes', 'FLOAT'),
         """
         CREATE TABLE IF NOT EXISTS shift_templates (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1002,9 +1011,9 @@ async def _run_migrations() -> None:
         "CREATE INDEX IF NOT EXISTS idx_tech_unavail_tech ON technician_unavailability (technician_id, start_date, end_date)",
         # Phase: multi-plant (phase 0) — user_plants becomes the authoritative
         # plant-access table (role per plant). See docs/multi-plant-architecture-assessment.md.
-        "ALTER TABLE user_plants ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT FALSE",
-        "ALTER TABLE user_plants ADD COLUMN IF NOT EXISTS granted_by_id UUID REFERENCES users(id) ON DELETE SET NULL",
-        "ALTER TABLE user_plants ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        ('user_plants', 'is_default', 'BOOLEAN NOT NULL DEFAULT FALSE'),
+        ('user_plants', 'granted_by_id', 'UUID REFERENCES users(id) ON DELETE SET NULL'),
+        ('user_plants', 'created_at', 'TIMESTAMPTZ NOT NULL DEFAULT NOW()'),
         # De-dup defensively before the unique index (table is tiny; keeps the oldest id).
         """
         DELETE FROM user_plants a USING user_plants b
@@ -1044,45 +1053,45 @@ async def _run_migrations() -> None:
         # NO plant column: compressed chunks can't be updated; they derive their
         # plant via sensor/equipment/machine joins. Technicians also get none —
         # their plant scope IS user_plants (SJ+MIRA share the maintenance team).
-        "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE sensors ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE robot_cells ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE machine_stops ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE machine_operators ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE machine_production_logs ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE maintenance_alerts ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE reject_logs ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE machine_history ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE adam_devices ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE maintenance_budgets ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE cost_center_budgets ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE cost_centers ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE sap_cost_lines ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE escalation_contacts ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE factory_calendar_settings ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE factory_holidays ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
-        "ALTER TABLE shift_reports ADD COLUMN IF NOT EXISTS plant_id UUID REFERENCES plants(id)",
+        ('work_orders', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('sensors', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('alerts', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('robot_cells', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('machine_stops', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('machine_operators', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('machine_production_logs', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('maintenance_alerts', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('maintenance_tickets', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('reject_logs', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('job_orders', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('machine_history', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('adam_devices', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('suppliers', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('purchase_orders', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('maintenance_budgets', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('cost_center_budgets', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('cost_centers', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('sap_cost_lines', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('escalation_settings', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('escalation_contacts', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('factory_calendar_settings', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('factory_holidays', 'plant_id', 'UUID REFERENCES plants(id)'),
+        ('shift_reports', 'plant_id', 'UUID REFERENCES plants(id)'),
         # ── Phase: temperature sensors + outdoor weather badge (factory map)
-        "ALTER TABLE users  ADD COLUMN IF NOT EXISTS temp_unit VARCHAR(1) DEFAULT 'C'",
+        ('users', 'temp_unit', "VARCHAR(1) DEFAULT 'C'"),
         # ── Phase: preferred greeting name, set in User Management (NULL → first name)
-        "ALTER TABLE users  ADD COLUMN IF NOT EXISTS nickname VARCHAR(100)",
-        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION",
-        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION",
-        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS weather_temp_c DOUBLE PRECISION",
-        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS weather_code INTEGER",
-        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS weather_updated_at TIMESTAMPTZ",
+        ('users', 'nickname', 'VARCHAR(100)'),
+        ('plants', 'latitude', 'DOUBLE PRECISION'),
+        ('plants', 'longitude', 'DOUBLE PRECISION'),
+        ('plants', 'weather_temp_c', 'DOUBLE PRECISION'),
+        ('plants', 'weather_code', 'INTEGER'),
+        ('plants', 'weather_updated_at', 'TIMESTAMPTZ'),
         # Seed coordinates for the known plants (only where unset, so admin edits in
         # Settings → Plants are never clobbered). Open-Meteo reads these for the badge.
         "UPDATE plants SET latitude = 45.7805, longitude = -74.0037 WHERE code IN ('PLT1','QS') AND latitude IS NULL",
         "UPDATE plants SET latitude = 45.6501, longitude = -74.0848 WHERE code IN ('MIRA','QM') AND latitude IS NULL",
         "UPDATE plants SET latitude = 36.1699, longitude = -115.1398 WHERE code = 'NL' AND latitude IS NULL",
-        "ALTER TABLE temperature_sensors ADD COLUMN IF NOT EXISTS department VARCHAR(200)",
+        ('temperature_sensors', 'department', 'VARCHAR(200)'),
         # ── Backfill: machine-derived (documented rule: row's plant = its machine's plant)
         "UPDATE maintenance_alerts t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
         "UPDATE maintenance_tickets t SET plant_id = m.plant_id FROM machines m WHERE t.machine_id = m.id AND t.plant_id IS NULL AND m.plant_id IS NOT NULL",
@@ -1137,7 +1146,7 @@ async def _run_migrations() -> None:
         # (2) The existing supplier base belongs to the Quebec operation → owned by
         # PLT1, shared with Mirabel via the plant group below. (3) SJ+Mirabel form
         # group 'QC': group-scoped resources (inventory, suppliers) pool across it.
-        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS group_code VARCHAR(20)",
+        ('plants', 'group_code', 'VARCHAR(20)'),
         """
         DO $$
         DECLARE sj UUID := (SELECT id FROM plants WHERE code IN ('PLT1', 'QS') LIMIT 1);
@@ -1238,7 +1247,7 @@ async def _run_migrations() -> None:
         # calendar rows so it never follows the shared QC configuration. No user
         # is granted access here — NL memberships are always assigned explicitly
         # in Settings → Users.
-        "ALTER TABLE plants ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'CAD'",
+        ('plants', 'currency', "VARCHAR(3) NOT NULL DEFAULT 'CAD'"),
         """
         DO $$
         DECLARE nl UUID;
@@ -1329,27 +1338,27 @@ async def _run_migrations() -> None:
         # + scheduled_date/erp_reference/department/started_at/completed_at). Idempotent
         # ADD COLUMN IF NOT EXISTS guarantees every column exists regardless of how the
         # table was first created (DDL vs create_all).
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS product_name VARCHAR(300)",
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS scheduled_date DATE",
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS department VARCHAR(200)",
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS erp_reference VARCHAR(200)",
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ",
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ",
+        ('job_orders', 'product_name', 'VARCHAR(300)'),
+        ('job_orders', 'scheduled_date', 'DATE'),
+        ('job_orders', 'department', 'VARCHAR(200)'),
+        ('job_orders', 'erp_reference', 'VARCHAR(200)'),
+        ('job_orders', 'started_at', 'TIMESTAMPTZ'),
+        ('job_orders', 'completed_at', 'TIMESTAMPTZ'),
+        ('job_orders', 'updated_at', 'TIMESTAMPTZ'),
         # Pit Stop TV: equivalent-unit factor per product unit (1 EU = 100 s of
         # assembly-line time). Will come from SAP with the OF; simulator seeds it.
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS eu_per_unit DOUBLE PRECISION",
+        ('job_orders', 'eu_per_unit', 'DOUBLE PRECISION'),
         # Pit Stop CG/SG split: which furniture family a component category belongs
         # to ('both' shared · 'cg' case goods · 'sg' soft goods). Drives the legend
         # grouping and the physically split buffer areas. seed_pit_stop reconciles.
-        "ALTER TABLE pit_stop_categories ADD COLUMN IF NOT EXISTS family VARCHAR(10) NOT NULL DEFAULT 'both'",
+        ('pit_stop_categories', 'family', "VARCHAR(10) NOT NULL DEFAULT 'both'"),
         # OF numbers are unique PER PLANT, not globally (Mirabel supplies St-Jérôme &
         # Las Vegas — the same number can exist in different plants). Drop the old
         # global unique constraint and scope uniqueness to (plant_id, job_number).
         "ALTER TABLE job_orders DROP CONSTRAINT IF EXISTS job_orders_job_number_key",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_job_orders_plant_number ON job_orders (plant_id, job_number)",
         # Carry the OF onto the raw per-hour production feed so pieces can be attributed.
-        "ALTER TABLE machine_production_hourly ADD COLUMN IF NOT EXISTS job_number VARCHAR(100)",
+        ('machine_production_hourly', 'job_number', 'VARCHAR(100)'),
         # Keystone: one "passagem" of an OF through a machine (scan → next scan).
         """
         CREATE TABLE IF NOT EXISTS job_order_runs (
@@ -1380,12 +1389,12 @@ async def _run_migrations() -> None:
         "ALTER TABLE job_order_runs ALTER COLUMN source TYPE VARCHAR(20)",
         # A conveyor prop can be tied to a kiosk machine (in/out feed): clicking it on
         # the map opens that machine's OFs.
-        "ALTER TABLE map_props ADD COLUMN IF NOT EXISTS machine_id UUID REFERENCES machines(id)",
-        "ALTER TABLE map_props ADD COLUMN IF NOT EXISTS role VARCHAR(10)",
+        ('map_props', 'machine_id', 'UUID REFERENCES machines(id)'),
+        ('map_props', 'role', 'VARCHAR(10)'),
         # A saved 3D view can be pinned to a department (its machines) — a custom camera
         # pose overriding that department's auto bounding-box frame. NULL = free view.
         # (create_all only makes NEW tables, never adds a column to the existing one.)
-        "ALTER TABLE factory_views ADD COLUMN IF NOT EXISTS department VARCHAR(120)",
+        ('factory_views', 'department', 'VARCHAR(120)'),
         "CREATE INDEX IF NOT EXISTS idx_factory_views_dept ON factory_views (plant_id, department)",
         # Phase: managed department registry (per plant). The department string on
         # equipment/machine/OF is chosen from this list.
@@ -1423,20 +1432,20 @@ async def _run_migrations() -> None:
         # Phase: OF watch (map "spot" + inactivity alerts). Production counts are
         # movement too — stamp them on the run so a line working the same OF for
         # an hour never looks stalled (job_order_watches itself comes via create_all).
-        "ALTER TABLE job_order_runs ADD COLUMN IF NOT EXISTS last_piece_at TIMESTAMPTZ",
+        ('job_order_runs', 'last_piece_at', 'TIMESTAMPTZ'),
         # Phase: Cortex inbound API (/api/v1/cortex — cobot pushes the scanned OF).
         # ERP/Cortex enrichment shown on the kiosk OF panel; the cortex_events
         # audit/idempotency table itself comes via create_all.
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS product_code VARCHAR(100)",
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS unit_of_measure VARCHAR(20)",
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS operation_code VARCHAR(50)",
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS operation_description VARCHAR(300)",
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS planned_start_at TIMESTAMPTZ",
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS planned_end_at TIMESTAMPTZ",
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS completed_quantity INT",
+        ('job_orders', 'product_code', 'VARCHAR(100)'),
+        ('job_orders', 'unit_of_measure', 'VARCHAR(20)'),
+        ('job_orders', 'operation_code', 'VARCHAR(50)'),
+        ('job_orders', 'operation_description', 'VARCHAR(300)'),
+        ('job_orders', 'planned_start_at', 'TIMESTAMPTZ'),
+        ('job_orders', 'planned_end_at', 'TIMESTAMPTZ'),
+        ('job_orders', 'completed_quantity', 'INT'),
         # Cobot/Tablette real contract: unit time per piece (raw value, unit TBC
         # with the integrator team).
-        "ALTER TABLE job_orders ADD COLUMN IF NOT EXISTS unit_completion_time INT",
+        ('job_orders', 'unit_completion_time', 'INT'),
         # Sushi device tag_name doubles as the user-editable component/position
         # label ("Palier avant") — 20 chars (the 0x42 hardware tag is 10) is too
         # short for that. Guarded widen: no exclusive lock on steady-state boots.
@@ -1454,14 +1463,14 @@ async def _run_migrations() -> None:
         """,
         # Cleaning checklist now links to a stop SUBcategory (e.g. Planned Stop →
         # Nettoyage); stop_category_id stays as the legacy pre-subcategory link.
-        "ALTER TABLE cleaning_checklists ADD COLUMN IF NOT EXISTS stop_subcategory_id UUID REFERENCES stop_subcategories(id)",
+        ('cleaning_checklists', 'stop_subcategory_id', 'UUID REFERENCES stop_subcategories(id)'),
         # Phase: productivity reporting — pieces per OPERATOR. Nothing linked output
         # to a person before this: the shift log had no operator column and
         # job_order_runs.operator_id was never written. The shift log is the right
         # grain (one machine·date·shift = one operator's turn on that machine);
         # operator_name is the snapshot we group by (see MachineProductionLog).
-        "ALTER TABLE machine_production_logs ADD COLUMN IF NOT EXISTS operator_id UUID REFERENCES machine_operators(id) ON DELETE SET NULL",
-        "ALTER TABLE machine_production_logs ADD COLUMN IF NOT EXISTS operator_name VARCHAR(200)",
+        ('machine_production_logs', 'operator_id', 'UUID REFERENCES machine_operators(id) ON DELETE SET NULL'),
+        ('machine_production_logs', 'operator_name', 'VARCHAR(200)'),
         "CREATE INDEX IF NOT EXISTS idx_prodlogs_operator ON machine_production_logs (operator_name, date DESC)",
         # Phase: kiosk → work order bridge. A repair declared on the floor is
         # clocked by the kiosk check-in ledger and its parts live on the
@@ -1470,8 +1479,8 @@ async def _run_migrations() -> None:
         # These columns carry the provenance of the mirrored rows.
         # ON DELETE SET NULL on both: an intervention (or a simulator run) must
         # stay deletable, and the labor itself outlives its provenance link.
-        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS intervention_id UUID REFERENCES machine_interventions(id) ON DELETE SET NULL",
-        "ALTER TABLE labor_records ADD COLUMN IF NOT EXISTS intervention_technician_id UUID REFERENCES intervention_technicians(id) ON DELETE SET NULL",
+        ('labor_records', 'intervention_id', 'UUID REFERENCES machine_interventions(id) ON DELETE SET NULL'),
+        ('labor_records', 'intervention_technician_id', 'UUID REFERENCES intervention_technicians(id) ON DELETE SET NULL'),
         "CREATE INDEX IF NOT EXISTS idx_labor_intervention_tech ON labor_records (intervention_technician_id)",
         "CREATE INDEX IF NOT EXISTS idx_labor_intervention ON labor_records (intervention_id)",
         # Part pricing falls back to the purchase history when no catalog price was
@@ -1489,8 +1498,9 @@ async def _run_migrations() -> None:
         # ── Stock settlement per part line: how much inventory this line really
         # took out, so a reversal (reject / remove / lower the quantity) gives
         # back exactly that and never more. Guarded on information_schema so a
-        # steady-state boot takes NO exclusive lock (see the RLS note above:
-        # this whole list is one transaction and holds every lock it takes).
+        # steady-state boot takes NO exclusive lock: ALTER TABLE grabs
+        # AccessExclusive before it even reads the catalog, so IF NOT EXISTS
+        # alone would still block the workers.
         """
         DO $$ BEGIN
           IF NOT EXISTS (SELECT 1 FROM information_schema.columns
@@ -1518,9 +1528,68 @@ async def _run_migrations() -> None:
         WHERE stock_deducted IS NULL AND stock_item_id IS NOT NULL
         """,
     ]
-    async with engine.begin() as conn:
-        for stmt in stmts:
+    # `ADD COLUMN IF NOT EXISTS` is statement-level idempotency, NOT lock avoidance.
+    # Taking an AccessExclusiveLock is the FIRST step of executing any ALTER TABLE,
+    # before the command inspects the catalog at all — so on a steady-state boot,
+    # where every column already exists, these still lock all ~50 tables and, being
+    # one transaction, hold every lock until commit. Anything reading or writing
+    # those tables queues behind the boot, and a worker already holding a row lock
+    # deadlocks against it (that is the 2026-07-17 zombie-uvicorn/empty-UI outage).
+    # So gate on the catalog first and never ISSUE an ALTER that has nothing to do.
+    # One round-trip for all pairs, rather than 286 per-statement DO blocks; same
+    # reasoning as the guarded widen of sushi_devices.tag_name above, generalized.
+    #
+    # The whole schema is ~1.6k rows, so it is fetched unparameterized: binding a
+    # table-name array would put driver-specific array adaptation on the boot path
+    # for no measurable gain, and filtering in Python cannot fail at runtime.
+    wanted = [e for e in stmts if isinstance(e, tuple)]
+    async with engine.connect() as conn:
+        rows = await conn.execute(
+            text("SELECT table_name, column_name FROM information_schema.columns "
+                 "WHERE table_schema = current_schema()"))
+        present = {(r[0], r[1]) for r in rows}
+
+    pending: list[str] = []
+    skipped = 0
+    for entry in stmts:
+        if isinstance(entry, tuple):
+            table, column, type_sql = entry
+            if (table, column) in present:
+                skipped += 1
+                continue
+            # IF NOT EXISTS is still kept: `present` is a snapshot taken before any
+            # of this runs, and some of these tables are created by a raw CREATE
+            # TABLE later in this same list, so the ALTER must stay self-guarding.
+            pending.append(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {type_sql}")
+        else:
+            # Raw-SQL escape hatch: DO blocks, CREATE TABLE/INDEX, ALTER ... TYPE,
+            # DROP CONSTRAINT, GRANT, backfill UPDATEs — passed through untouched.
+            pending.append(entry)
+
+    # print(flush) rather than logger: app loggers have no handler under uvicorn
+    # (only the sqlalchemy echo surfaces), and stdout is block-buffered in the
+    # container (no PYTHONUNBUFFERED), so an unflushed print never reaches
+    # `docker logs`. This line is the boot's proof that a steady-state start
+    # issues no ALTER at all, so it has to be visible.
+    print(f"[Startup] Migrations: {skipped}/{len(wanted)} ADD COLUMN already "
+          f"applied (not issued); {len(pending)} statement(s) to run", flush=True)
+
+    # Each statement commits on its own (AUTOCOMMIT — same precedent as
+    # _ensure_timescale) so one slow ALTER holds its own lock for its own duration
+    # instead of pinning ~50 unrelated tables until the whole list finishes.
+    # Nothing here depends on all-or-nothing: every statement is idempotent
+    # (IF NOT EXISTS / DO-block guarded / _kaizo_migrations ledger) and re-runs on
+    # the next boot, so a partial application self-heals — whereas the single
+    # transaction made one bad statement roll back all the good ones, every boot.
+    ac_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
+    async with ac_engine.connect() as conn:
+        for stmt in pending:
             await conn.execute(text(stmt))
+
+    # The data fix-ups and seeds below stay in one transaction: unlike the DDL they
+    # are not individually self-guarding, and they touch only a handful of tables.
+    async with engine.begin() as conn:
         # Mark pre-existing global stop categories (IS DISTINCT FROM also catches NULL,
         # otherwise the kiosk's global fallback finds nothing and stop reasons go blank).
         await conn.execute(text(
