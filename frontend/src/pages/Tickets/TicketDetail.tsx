@@ -10,7 +10,7 @@ import {
   fetchTicket, updateTicketStatus, closeTicket, addTicketComment,
   assignTicket, fetchTicketWorkOrder,
 } from '../../api/maintenance';
-import type { MaintenanceTicket, TicketStatus, WorkOrder, MachineHistoryEntry } from '../../types';
+import type { MaintenanceTicket, WorkOrder, MachineHistoryEntry } from '../../types';
 import { fetchTechniciansFull } from '../../api/workOrders';
 import type { TechnicianFull } from '../../types';
 import api from '../../api/axios';
@@ -26,17 +26,13 @@ const PRIORITY_BADGE: Record<string, string> = {
   low:      'bg-gray-500/15 text-gray-400 border-gray-500/30',
 };
 
-const STATUS_LABEL: Record<TicketStatus, string> = {
-  open: 'Open', in_progress: 'In Progress', on_hold_parts: 'On Hold (Parts)',
-  on_hold_ext: 'On Hold (External)', completed: 'Completed', cancelled: 'Cancelled',
-};
-
 const fmtDt = (d?: string | null) =>
   d ? new Date(d).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
 
 export default function TicketDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { t } = useTranslation();
 
   const [ticket, setTicket]   = useState<MaintenanceTicket | null>(null);
   const [wo, setWo]           = useState<WorkOrder | null>(null);
@@ -60,7 +56,7 @@ export default function TicketDetail() {
   useEffect(() => { load(); }, [id]);
 
   if (loading) return <div className="flex items-center justify-center h-64"><Spinner size="lg" /></div>;
-  if (!ticket) return <div className="p-6 text-gray-400">Ticket not found.</div>;
+  if (!ticket) return <div className="p-6 text-gray-400">{t('tickets.notFound')}</div>;
 
   return (
     <div className="p-4 sm:p-6 max-w-3xl mx-auto space-y-4 animate-fade-in">
@@ -73,14 +69,14 @@ export default function TicketDetail() {
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-mono text-blue-400 font-semibold">{ticket.ticket_number}</span>
             <span className={`text-xs border px-2 py-0.5 rounded ${PRIORITY_BADGE[ticket.priority]}`}>
-              {ticket.priority}
+              {t(`priority.${ticket.priority}`, ticket.priority)}
             </span>
-            <span className="text-xs text-gray-500">{STATUS_LABEL[ticket.status]}</span>
+            <span className="text-xs text-gray-500">{t(`ticketStatus.${ticket.status}`, ticket.status.replace(/_/g, ' '))}</span>
           </div>
           <p className="text-white font-medium mt-0.5 text-sm">
-            {ticket.machine_name ?? 'Unknown Machine'}
+            {ticket.machine_name ?? t('tickets.unknownMachine')}
             {ticket.problem_type && (
-              <span className="text-gray-500"> · {ticket.problem_type.replace(/_/g, ' ')}</span>
+              <span className="text-gray-500"> · {t(`problemType.${ticket.problem_type}`, ticket.problem_type.replace(/_/g, ' '))}</span>
             )}
           </p>
         </div>
@@ -89,10 +85,10 @@ export default function TicketDetail() {
       {/* Tabs */}
       <div className="flex border-b border-white/[0.08] gap-1">
         {([
-          { key: 'details',   icon: Info,       label: 'Details' },
-          { key: 'workorder', icon: Wrench,      label: `Work Order${wo ? ' ✓' : ''}` },
-          { key: 'parts',     icon: Package,     label: `Parts${ticket.intervention_parts?.length ? ` (${ticket.intervention_parts.length})` : ''}` },
-          { key: 'history',   icon: History,     label: 'Machine History' },
+          { key: 'details',   icon: Info,       label: t('tickets.tabDetails') },
+          { key: 'workorder', icon: Wrench,      label: `${t('tickets.tabWorkOrder')}${wo ? ' ✓' : ''}` },
+          { key: 'parts',     icon: Package,     label: `${t('tickets.tabParts')}${ticket.intervention_parts?.length ? ` (${ticket.intervention_parts.length})` : ''}` },
+          { key: 'history',   icon: History,     label: t('tickets.tabHistory') },
         ] as { key: Tab; icon: React.ElementType; label: string }[]).map(({ key, icon: Icon, label }) => (
           <button
             key={key}
@@ -157,7 +153,7 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
       await assignTicket(ticket.id, techId, Number.isFinite(h) && h >= 0 ? h : undefined);
       onRefresh();
     } catch (e: unknown) {
-      setErr((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Error');
+      setErr((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? t('common.error'));
     } finally { setAssigning(false); }
   };
 
@@ -189,13 +185,16 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
   return (
     <div className="space-y-4">
       <div className="glass-card p-4 grid grid-cols-2 gap-4 text-sm">
-        <Field label="Machine" value={ticket.machine_name ?? '—'} />
-        <Field label="Problem Type" value={ticket.problem_type?.replace(/_/g, ' ') ?? '—'} />
-        <Field label="Priority" value={ticket.priority} />
-        <Field label="Status" value={ticket.status.replace(/_/g, ' ')} />
-        <Field label="Opened" value={fmtDt(ticket.opened_at)} />
+        <Field label={t('tickets.machine')} value={ticket.machine_name ?? '—'} />
+        <Field
+          label={t('tickets.problemType')}
+          value={ticket.problem_type ? t(`problemType.${ticket.problem_type}`, ticket.problem_type.replace(/_/g, ' ')) : '—'}
+        />
+        <Field label={t('common.priority')} value={t(`priority.${ticket.priority}`, ticket.priority)} />
+        <Field label={t('common.status')} value={t(`ticketStatus.${ticket.status}`, ticket.status.replace(/_/g, ' '))} />
+        <Field label={t('tickets.openedAt')} value={fmtDt(ticket.opened_at)} />
         <div>
-          <p className="text-xs text-gray-600">Assigned To</p>
+          <p className="text-xs text-gray-600">{t('tickets.assignedTo')}</p>
           {(ticket.assigned_technicians?.length ?? 0) > 0 ? (
             <div className="flex flex-wrap gap-1 mt-0.5">
               {ticket.assigned_technicians!.map((tech) => (
@@ -208,22 +207,22 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
               ))}
             </div>
           ) : (
-            <p className="text-sm text-gray-300 font-medium">{ticket.assigned_to_name ?? 'Unassigned'}</p>
+            <p className="text-sm text-gray-300 font-medium">{ticket.assigned_to_name ?? t('workOrders.unassigned')}</p>
           )}
         </div>
-        {ticket.started_at && <Field label="Started" value={fmtDt(ticket.started_at)} />}
-        {ticket.completed_at && <Field label="Completed" value={fmtDt(ticket.completed_at)} />}
+        {ticket.started_at && <Field label={t('tickets.startedAt')} value={fmtDt(ticket.started_at)} />}
+        {ticket.completed_at && <Field label={t('tickets.completedAt')} value={fmtDt(ticket.completed_at)} />}
         {ticket.estimated_downtime_minutes != null && (
-          <Field label="Est. Downtime" value={`${ticket.estimated_downtime_minutes} min`} />
+          <Field label={t('tickets.estDowntime')} value={`${ticket.estimated_downtime_minutes} min`} />
         )}
         {ticket.total_intervention_minutes != null && (
-          <Field label="Intervention Time" value={`${ticket.total_intervention_minutes} min`} />
+          <Field label={t('tickets.interventionTime')} value={`${ticket.total_intervention_minutes} min`} />
         )}
       </div>
 
       {ticket.description && (
         <div className="glass-card p-4">
-          <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">Description</p>
+          <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">{t('common.description')}</p>
           <p className="text-sm text-gray-300">{ticket.description}</p>
         </div>
       )}
@@ -232,13 +231,13 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
         <div className="glass-card p-4 space-y-3">
           <p className="text-sm font-semibold text-gray-300 flex items-center gap-2">
             <UserCheck size={15} className="text-blue-400" />
-            Assign Technician — Work Order Created Automatically
+            {t('tickets.assignTechnicianWoAuto')}
           </p>
           <div className="flex gap-2">
             <select value={techId} onChange={(e) => setTechId(e.target.value)} className="input-field flex-1 text-sm">
-              <option value="">Select technician…</option>
-              {techs.map((t) => (
-                <option key={t.id} value={t.id}>{t.full_name ?? t.email}</option>
+              <option value="">{t('form.selectTechnician')}</option>
+              {techs.map((tech) => (
+                <option key={tech.id} value={tech.id}>{tech.full_name ?? tech.email}</option>
               ))}
             </select>
             <input
@@ -255,7 +254,7 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
             <button onClick={doAssign} disabled={assigning || !techId}
               className="btn-primary px-4 py-2 text-sm flex items-center gap-1.5">
               {assigning ? <Spinner size="sm" /> : <UserCheck size={14} />}
-              {assigning ? 'Creating WO…' : 'Assign + WO'}
+              {assigning ? t('tickets.creatingWo') : t('tickets.assignAndWo')}
             </button>
           </div>
           {!!ticket.estimated_downtime_minutes && (
@@ -269,31 +268,31 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
 
       {ticket.status === 'in_progress' && !showClose && (
         <button onClick={() => setShowClose(true)} className="btn-success w-full py-3 flex items-center justify-center gap-2">
-          <CheckCircle2 size={16} /> Mark Ticket Complete
+          <CheckCircle2 size={16} /> {t('tickets.markComplete')}
         </button>
       )}
       {showClose && (
         <div className="glass-card p-4 space-y-3">
-          <p className="text-sm font-semibold text-gray-200">Close Ticket</p>
+          <p className="text-sm font-semibold text-gray-200">{t('tickets.closeTicket')}</p>
           <div>
-            <label className="label">Diagnosis *</label>
+            <label className="label">{t('tickets.diagnosis')} *</label>
             <textarea className="input-field w-full h-20 resize-none" value={closeForm.diagnosis}
               onChange={(e) => setCloseForm((f) => ({ ...f, diagnosis: e.target.value }))} />
           </div>
           <div>
-            <label className="label">Corrective Action *</label>
+            <label className="label">{t('tickets.correctiveAction')} *</label>
             <textarea className="input-field w-full h-20 resize-none" value={closeForm.corrective_action}
               onChange={(e) => setCloseForm((f) => ({ ...f, corrective_action: e.target.value }))} />
           </div>
           <div>
-            <label className="label">Intervention Time (minutes)</label>
+            <label className="label">{t('tickets.interventionMinutes')}</label>
             <input type="number" className="input-field w-full" value={closeForm.total_intervention_minutes}
               onChange={(e) => setCloseForm((f) => ({ ...f, total_intervention_minutes: e.target.value }))} />
           </div>
           <div className="flex gap-2">
-            <button onClick={() => setShowClose(false)} className="btn-secondary flex-1 py-2">Cancel</button>
+            <button onClick={() => setShowClose(false)} className="btn-secondary flex-1 py-2">{t('common.cancel')}</button>
             <button onClick={doClose} disabled={closing} className="btn-success flex-1 py-2 font-semibold">
-              {closing ? 'Saving…' : 'Close Ticket'}
+              {closing ? t('common.saving') : t('tickets.closeTicket')}
             </button>
           </div>
         </div>
@@ -301,7 +300,7 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
 
       <div className="glass-card p-4 space-y-3">
         <p className="text-xs text-gray-600 uppercase tracking-wider flex items-center gap-2">
-          <MessageSquare size={12} /> Comments ({ticket.comments?.length ?? 0})
+          <MessageSquare size={12} /> {t('tickets.tabComments')} ({ticket.comments?.length ?? 0})
         </p>
         {ticket.comments?.map((c) => (
           <div key={c.id} className="border-l-2 border-white/10 pl-3 py-1">
@@ -310,10 +309,10 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
           </div>
         ))}
         <div className="space-y-2 pt-1">
-          <input placeholder="Your name" value={commentAuthor}
+          <input placeholder={t('tickets.yourName')} value={commentAuthor}
             onChange={(e) => setCommentAuthor(e.target.value)} className="input-field w-full text-sm" />
           <div className="flex gap-2">
-            <textarea placeholder="Add a comment…" value={commentText}
+            <textarea placeholder={t('tickets.commentPlaceholder')} value={commentText}
               onChange={(e) => setCommentText(e.target.value)}
               className="input-field flex-1 h-16 resize-none text-sm" />
             {micSupported && (
@@ -333,7 +332,7 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
             )}
             <button onClick={doComment} disabled={postingComment || !commentText.trim()}
               className="btn-primary px-3 self-end py-2 text-sm">
-              {postingComment ? '…' : 'Post'}
+              {postingComment ? '…' : t('common.post')}
             </button>
           </div>
         </div>
@@ -346,13 +345,14 @@ function DetailsTab({ ticket, wo: _wo, onRefresh }: { ticket: MaintenanceTicket;
 
 function WorkOrderTab({ ticket, wo }: { ticket: MaintenanceTicket; wo: WorkOrder | null }) {
   const navigate = useNavigate();
+  const { t } = useTranslation();
 
   if (!wo && !ticket.work_order_id) {
     return (
       <div className="glass-card p-8 text-center space-y-3">
         <Wrench size={36} className="text-gray-700 mx-auto" />
-        <p className="text-gray-400 font-medium">No work order yet</p>
-        <p className="text-gray-600 text-sm">Assign a technician from the Details tab to auto-create a work order.</p>
+        <p className="text-gray-400 font-medium">{t('tickets.noWorkOrder')}</p>
+        <p className="text-gray-600 text-sm">{t('tickets.noWorkOrderHint')}</p>
       </div>
     );
   }
@@ -369,40 +369,40 @@ function WorkOrderTab({ ticket, wo }: { ticket: MaintenanceTicket; wo: WorkOrder
         <div className="flex items-center justify-between">
           <span className="font-mono text-blue-400 font-semibold text-lg">{wo.wo_number}</span>
           <span className={`text-sm font-medium ${statusCls[wo.status] ?? 'text-gray-400'}`}>
-            {wo.status.replace(/_/g, ' ')}
+            {t(`status.${wo.status}`, wo.status.replace(/_/g, ' '))}
           </span>
         </div>
         <p className="text-white font-medium">{wo.title}</p>
         <div className="grid grid-cols-2 gap-3 text-sm">
-          <Field label="Priority" value={wo.priority} />
+          <Field label={t('common.priority')} value={t(`priority.${wo.priority}`, wo.priority)} />
           <Field
-            label="Assigned To"
+            label={t('tickets.assignedTo')}
             value={
               wo.technicians && wo.technicians.length > 0
-                ? wo.technicians.map((t) => t.name ?? `${t.technician_id.slice(0, 8)}…`).join(', ')
-                : (wo.executor_name ?? wo.assigned_to_name ?? 'Unassigned')
+                ? wo.technicians.map((tech) => tech.name ?? `${tech.technician_id.slice(0, 8)}…`).join(', ')
+                : (wo.executor_name ?? wo.assigned_to_name ?? t('workOrders.unassigned'))
             }
           />
-          {wo.started_at && <Field label="Started" value={fmtDt(wo.started_at)} />}
-          {wo.completed_at && <Field label="Completed" value={fmtDt(wo.completed_at)} />}
-          {wo.repair_hours != null && <Field label="Repair Hours" value={`${wo.repair_hours}h`} />}
-          {wo.downtime_hours != null && <Field label="Downtime Hours" value={`${wo.downtime_hours}h`} />}
+          {wo.started_at && <Field label={t('tickets.startedAt')} value={fmtDt(wo.started_at)} />}
+          {wo.completed_at && <Field label={t('tickets.completedAt')} value={fmtDt(wo.completed_at)} />}
+          {wo.repair_hours != null && <Field label={t('workOrders.repairHours')} value={`${wo.repair_hours}h`} />}
+          {wo.downtime_hours != null && <Field label={t('tickets.downtimeHours')} value={`${wo.downtime_hours}h`} />}
         </div>
         {wo.root_cause && (
           <div>
-            <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">Diagnosis</p>
+            <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">{t('tickets.diagnosis')}</p>
             <p className="text-sm text-gray-300">{wo.root_cause}</p>
           </div>
         )}
         {wo.solution_applied && (
           <div>
-            <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">Corrective Action</p>
+            <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">{t('tickets.correctiveAction')}</p>
             <p className="text-sm text-gray-300">{wo.solution_applied}</p>
           </div>
         )}
         <button onClick={() => navigate(`/work-orders/${wo.id}`)}
           className="btn-secondary w-full py-2 text-sm flex items-center justify-center gap-2">
-          Open Full WO Detail <ChevronRight size={14} />
+          {t('tickets.openFullWo')} <ChevronRight size={14} />
         </button>
       </div>
     </div>
@@ -418,14 +418,15 @@ const APPROVAL_STYLE: Record<string, { bg: string; text: string; border: string 
 };
 
 function PartsTab({ ticket }: { ticket: MaintenanceTicket }) {
+  const { t } = useTranslation();
   const parts = ticket.intervention_parts ?? [];
 
   if (parts.length === 0) {
     return (
       <div className="glass-card p-8 text-center">
         <Package size={32} className="text-gray-700 mx-auto mb-2 opacity-50" />
-        <p className="text-gray-500 text-sm">No parts recorded for this intervention</p>
-        <p className="text-gray-600 text-xs mt-1">Parts are added from the kiosk during the intervention.</p>
+        <p className="text-gray-500 text-sm">{t('tickets.noPartsForIntervention')}</p>
+        <p className="text-gray-600 text-xs mt-1">{t('tickets.partsFromKioskHint')}</p>
       </div>
     );
   }
@@ -439,18 +440,18 @@ function PartsTab({ ticket }: { ticket: MaintenanceTicket }) {
     <div className="glass-card overflow-hidden">
       <div className="px-4 py-3 border-b border-white/[0.06] flex items-center gap-2">
         <Package size={14} className="text-gray-500" />
-        <span className="text-sm font-medium text-gray-300">Parts used during intervention</span>
-        <span className="ml-auto text-xs text-gray-600 font-mono">{parts.length} part{parts.length !== 1 ? 's' : ''}</span>
+        <span className="text-sm font-medium text-gray-300">{t('tickets.partsUsedDuringIntervention')}</span>
+        <span className="ml-auto text-xs text-gray-600 font-mono">{t('workOrders.partsCount', { count: parts.length })}</span>
       </div>
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-white/[0.06]">
-            <th className="text-left p-3 text-xs text-gray-600 uppercase tracking-wider">Code</th>
-            <th className="text-left p-3 text-xs text-gray-600 uppercase tracking-wider">Description</th>
-            <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">Qty</th>
-            <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">Unit cost</th>
-            <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">Total</th>
-            <th className="text-center p-3 text-xs text-gray-600 uppercase tracking-wider">Status</th>
+            <th className="text-left p-3 text-xs text-gray-600 uppercase tracking-wider">{t('workOrders.code')}</th>
+            <th className="text-left p-3 text-xs text-gray-600 uppercase tracking-wider">{t('common.description')}</th>
+            <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">{t('workOrders.quantity')}</th>
+            <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">{t('workOrders.unitCost')}</th>
+            <th className="text-right p-3 text-xs text-gray-600 uppercase tracking-wider">{t('workOrders.totalCost')}</th>
+            <th className="text-center p-3 text-xs text-gray-600 uppercase tracking-wider">{t('common.status')}</th>
           </tr>
         </thead>
         <tbody>
@@ -469,7 +470,7 @@ function PartsTab({ ticket }: { ticket: MaintenanceTicket }) {
                 </td>
                 <td className="p-3 text-center">
                   <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border ${s.bg} ${s.text} ${s.border}`}>
-                    {p.approval_status}
+                    {t(`partApprovalStatus.${p.approval_status}`, p.approval_status)}
                   </span>
                 </td>
               </tr>
@@ -480,7 +481,7 @@ function PartsTab({ ticket }: { ticket: MaintenanceTicket }) {
           <tfoot>
             <tr className="border-t border-white/[0.06]">
               <td colSpan={4} className="p-3 text-right text-xs text-gray-500 uppercase tracking-wider">
-                Parts total
+                {t('workOrders.partsTotal')}
               </td>
               <td className="p-3 text-right font-mono font-semibold text-emerald-300">
                 ${totalCost.toFixed(2)}
@@ -497,6 +498,7 @@ function PartsTab({ ticket }: { ticket: MaintenanceTicket }) {
 // ── Machine History Tab ───────────────────────────────────────────────────────
 
 function MachineHistoryTab({ machineId }: { machineId: string }) {
+  const { t } = useTranslation();
   const [history, setHistory] = useState<MachineHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -521,35 +523,39 @@ function MachineHistoryTab({ machineId }: { machineId: string }) {
       ) : history.length === 0 ? (
         <div className="glass-card p-8 text-center">
           <History size={32} className="text-gray-700 mx-auto mb-2 opacity-50" />
-          <p className="text-gray-500 text-sm">No maintenance history recorded yet</p>
+          <p className="text-gray-500 text-sm">{t('tickets.noHistory')}</p>
         </div>
       ) : (
         history.map((h) => (
           <div key={h.id} className="glass-card p-4 space-y-2">
             <div className="flex items-center justify-between">
               <span className={`text-xs px-2 py-0.5 rounded font-medium ${eventTypeColors[h.event_type] ?? 'text-gray-400 bg-gray-500/10'}`}>
-                {h.event_type}
+                {t(`type.${h.event_type}`, h.event_type.replace(/_/g, ' '))}
               </span>
               <span className="text-xs text-gray-600">{fmtDt(h.occurred_at)}</span>
             </div>
-            {h.problem_type && <p className="text-xs text-gray-500">{h.problem_type.replace(/_/g, ' ')}</p>}
+            {h.problem_type && (
+              <p className="text-xs text-gray-500">
+                {t(`problemType.${h.problem_type}`, h.problem_type.replace(/_/g, ' '))}
+              </p>
+            )}
             {h.description && <p className="text-sm text-gray-400">{h.description}</p>}
             {h.diagnosis && (
               <div>
-                <p className="text-xs text-gray-600">Diagnosis</p>
+                <p className="text-xs text-gray-600">{t('tickets.diagnosis')}</p>
                 <p className="text-sm text-gray-300">{h.diagnosis}</p>
               </div>
             )}
             {h.corrective_action && (
               <div>
-                <p className="text-xs text-gray-600">Corrective Action</p>
+                <p className="text-xs text-gray-600">{t('tickets.correctiveAction')}</p>
                 <p className="text-sm text-gray-300">{h.corrective_action}</p>
               </div>
             )}
             <div className="flex flex-wrap gap-3 text-xs text-gray-600">
               {h.technician_name && <span className="flex items-center gap-1"><User size={10} />{h.technician_name}</span>}
-              {h.downtime_minutes != null && <span className="flex items-center gap-1"><AlertTriangle size={10} />{h.downtime_minutes} min downtime</span>}
-              {h.total_minutes != null && <span className="flex items-center gap-1"><Clock size={10} />{h.total_minutes} min repair</span>}
+              {h.downtime_minutes != null && <span className="flex items-center gap-1"><AlertTriangle size={10} />{t('tickets.minDowntime', { min: h.downtime_minutes })}</span>}
+              {h.total_minutes != null && <span className="flex items-center gap-1"><Clock size={10} />{t('tickets.minRepair', { min: h.total_minutes })}</span>}
             </div>
           </div>
         ))
