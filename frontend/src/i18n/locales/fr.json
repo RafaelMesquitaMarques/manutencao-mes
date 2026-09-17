@@ -132,7 +132,9 @@
     "retry": "Réessayer",
     "saving": "Enregistrement…",
     "saved": "Enregistré",
-    "clear": "Effacer"
+    "clear": "Effacer",
+    "loadError": "Échec du chargement",
+    "optional": "Optionnel"
   },
   "settings": {
     "profileTitle": "Mon profil",
@@ -1129,7 +1131,24 @@
     "noOrders": "Aucun bon de commande trouvé",
     "costCenter": "Centre de coûts",
     "selectCostCenter": "Choisir un centre de coûts",
-    "scope": "Portée"
+    "scope": "Portée",
+    "replenish": "Réapprovisionner le stock bas",
+    "replenishTitle": "Réapprovisionner le stock bas",
+    "replenishError": "Échec de la création des commandes brouillon",
+    "lowStockItems": "articles sous le minimum",
+    "orderable": "commandables",
+    "alreadyOrdered": "déjà sur des BC ouverts",
+    "nothingOrderable": "Aucun article en stock bas avec un fournisseur associé.",
+    "leadTimeDays": "délai : {{days}} j",
+    "noSupplierHint": "articles en stock bas n'ont pas de fournisseur associé et ne peuvent pas être commandés automatiquement. Associez un fournisseur depuis la page",
+    "createDrafts": "Créer un BC brouillon",
+    "createDraftsN": "Créer {{n}} BC brouillons",
+    "fromDate": "Date de début",
+    "toDate": "Date de fin",
+    "poNumber": "N° BC",
+    "ordered": "Commandé",
+    "alreadyReceived": "Déjà reçu",
+    "internalNotesPlaceholder": "Notes internes…"
   },
   "maintenanceDash": {
     "title": "Tableau maintenance",

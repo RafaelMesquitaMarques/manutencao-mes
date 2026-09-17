@@ -124,11 +124,11 @@ export default function PurchaseOrderList() {
           <option value="">{t('suppliers.allSuppliers', 'All suppliers')}</option>
           {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
         </select>
-        <input type="date" value={filters.date_from} onChange={e => set('date_from', e.target.value)} className={inputCls} title="From date" />
+        <input type="date" value={filters.date_from} onChange={e => set('date_from', e.target.value)} className={inputCls} title={t('purchaseOrders.fromDate', 'From date')} />
         <span className="text-gray-600 text-sm">→</span>
-        <input type="date" value={filters.date_to} onChange={e => set('date_to', e.target.value)} className={inputCls} title="To date" />
+        <input type="date" value={filters.date_to} onChange={e => set('date_to', e.target.value)} className={inputCls} title={t('purchaseOrders.toDate', 'To date')} />
         <button onClick={() => setFilters({ status: '', supplier_id: '', date_from: '', date_to: '' })} className="text-xs text-gray-500 hover:text-gray-300 px-2 py-2">
-          {t('common.clearFilters', 'Clear')}
+          {t('common.clear', 'Clear')}
         </button>
         <button onClick={load} className="ml-auto p-2 text-gray-500 hover:text-gray-300 hover:bg-gray-800 rounded-lg">
           <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
@@ -145,7 +145,7 @@ export default function PurchaseOrderList() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-gray-500 uppercase tracking-wider">
-                <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left">PO #</th>
+                <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left">{t('purchaseOrders.poNumber', 'PO #')}</th>
                 <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left">{t('suppliers.supplier', 'Supplier')}</th>
                 <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-center">{t('purchaseOrders.status', 'Status')}</th>
                 <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-left">{t('purchaseOrders.orderDate', 'Order date')}</th>
@@ -222,10 +222,10 @@ export default function PurchaseOrderList() {
                   <div key={item.id} className="flex items-center gap-3 bg-gray-800/50 rounded-lg p-3">
                     <div className="flex-1 min-w-0">
                       <p className="text-sm text-gray-200 truncate">{item.description}</p>
-                      <p className="text-xs text-gray-500">Ordered: {item.quantity} | Already received: {item.received_quantity}</p>
+                      <p className="text-xs text-gray-500">{t('purchaseOrders.ordered', 'Ordered')}: {item.quantity} | {t('purchaseOrders.alreadyReceived', 'Already received')}: {item.received_quantity}</p>
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <label className="text-xs text-gray-500">Qty:</label>
+                      <label className="text-xs text-gray-500">{t('purchaseOrders.qty', 'Qty')}:</label>
                       <input
                         type="number"
                         min="0"
@@ -373,7 +373,7 @@ function ReplenishModal({ onClose, onCreated }: { onClose: () => void; onCreated
                     <p className="text-sm font-medium text-gray-200 truncate">{g.supplier_name}</p>
                     <p className="text-[11px] text-gray-500">
                       {groupItems.length} {t('purchaseOrders.items', 'items')}
-                      {g.lead_time_days != null && <> · {t('purchaseOrders.leadTime', 'lead time')}: {g.lead_time_days}d</>}
+                      {g.lead_time_days != null && <> · {t('purchaseOrders.leadTimeDays', { days: g.lead_time_days })}</>}
                     </p>
                   </div>
                   <span className="text-xs font-mono text-emerald-300">
@@ -444,7 +444,9 @@ function ReplenishModal({ onClose, onCreated }: { onClose: () => void; onCreated
             <Zap size={14} />
             {generating
               ? t('common.saving', 'Saving…')
-              : `${t('purchaseOrders.createDrafts', 'Create draft PO')}${supplierCount > 1 ? `s (${supplierCount})` : ''} · ${selectedCount} ${t('purchaseOrders.items', 'items')}`}
+              : `${supplierCount > 1
+                  ? t('purchaseOrders.createDraftsN', { n: supplierCount })
+                  : t('purchaseOrders.createDrafts', 'Create draft PO')} · ${selectedCount} ${t('purchaseOrders.items', 'items')}`}
           </button>
         </div>
       </div>

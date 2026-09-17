@@ -194,7 +194,7 @@ export default function NewPurchaseOrder() {
                 </select>
               </FormField>
               <FormField label={t('common.notes', 'Notes')}>
-                <input value={form.notes} onChange={e => setF('notes', e.target.value)} placeholder="Internal notes…" className={inputCls} />
+                <input value={form.notes} onChange={e => setF('notes', e.target.value)} placeholder={t('purchaseOrders.internalNotesPlaceholder', 'Internal notes…')} className={inputCls} />
               </FormField>
             </div>
           </div>
@@ -226,7 +226,7 @@ export default function NewPurchaseOrder() {
                       onChange={e => updateLine(line._key, 'stock_item_id', e.target.value)}
                       className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-blue-500"
                     >
-                      <option value="">— Optional —</option>
+                      <option value="">— {t('common.optional', 'Optional')} —</option>
                       {stockItems.map(s => <option key={s.id} value={s.id}>{s.code} — {(s.description || s.name || '').slice(0, 30)}</option>)}
                     </select>
                   </div>
@@ -235,7 +235,7 @@ export default function NewPurchaseOrder() {
                       required
                       value={line.description}
                       onChange={e => updateLine(line._key, 'description', e.target.value)}
-                      placeholder="Description *"
+                      placeholder={`${t('common.description', 'Description')} *`}
                       className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-blue-500"
                     />
                   </div>

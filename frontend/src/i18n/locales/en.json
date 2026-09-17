@@ -132,7 +132,9 @@
     "retry": "Retry",
     "saving": "Saving…",
     "saved": "Saved",
-    "clear": "Clear"
+    "clear": "Clear",
+    "loadError": "Failed to load",
+    "optional": "Optional"
   },
   "settings": {
     "profileTitle": "My Profile",
@@ -1129,7 +1131,24 @@
     "noOrders": "No purchase orders found",
     "costCenter": "Cost center",
     "selectCostCenter": "Select a cost center",
-    "scope": "Scope"
+    "scope": "Scope",
+    "replenish": "Replenish low stock",
+    "replenishTitle": "Replenish low stock",
+    "replenishError": "Failed to create draft orders",
+    "lowStockItems": "items below minimum",
+    "orderable": "orderable",
+    "alreadyOrdered": "already on open POs",
+    "nothingOrderable": "No low-stock items with a linked supplier.",
+    "leadTimeDays": "lead time: {{days}}d",
+    "noSupplierHint": "low-stock items have no linked supplier and cannot be ordered automatically. Link suppliers in the",
+    "createDrafts": "Create draft PO",
+    "createDraftsN": "Create {{n}} draft POs",
+    "fromDate": "From date",
+    "toDate": "To date",
+    "poNumber": "PO #",
+    "ordered": "Ordered",
+    "alreadyReceived": "Already received",
+    "internalNotesPlaceholder": "Internal notes…"
   },
   "maintenanceDash": {
     "title": "Maintenance Dashboard",

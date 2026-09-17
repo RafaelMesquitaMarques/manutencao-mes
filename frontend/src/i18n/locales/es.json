@@ -132,7 +132,9 @@
     "retry": "Reintentar",
     "saving": "Guardando…",
     "saved": "Guardado",
-    "clear": "Limpiar"
+    "clear": "Limpiar",
+    "loadError": "Error al cargar",
+    "optional": "Opcional"
   },
   "settings": {
     "profileTitle": "Mi perfil",
@@ -1502,8 +1504,46 @@
     "tabBT": "Tickets y OT"
   },
   "purchaseOrders": {
+    "title": "Órdenes de compra",
+    "newOrder": "Nueva orden",
+    "createOrder": "Crear orden",
+    "orderDetails": "Detalles de la orden",
+    "orderDate": "Fecha de orden",
+    "expectedDate": "Fecha prevista",
+    "status": "Estado",
+    "allStatuses": "Todos los estados",
+    "orders": "órdenes",
+    "items": "Artículos",
+    "addLine": "Añadir línea",
+    "stockItem": "Artículo de stock",
+    "qty": "Cant.",
+    "unitCost": "Costo unitario",
+    "orderTotal": "Total de la orden",
+    "total": "Total",
+    "receive": "Recibir",
+    "receiveOrder": "Recibir orden",
+    "confirmReceive": "Confirmar recepción",
+    "loadingItems": "Cargando artículos…",
+    "noOrders": "No se encontraron órdenes de compra",
     "costCenter": "Centro de costos",
     "selectCostCenter": "Elegir un centro de costos",
-    "scope": "Alcance"
+    "scope": "Alcance",
+    "replenish": "Reponer stock bajo",
+    "replenishTitle": "Reponer stock bajo",
+    "replenishError": "Error al crear las órdenes en borrador",
+    "lowStockItems": "artículos bajo el mínimo",
+    "orderable": "se pueden pedir",
+    "alreadyOrdered": "ya en órdenes abiertas",
+    "nothingOrderable": "No hay artículos con stock bajo que tengan proveedor asociado.",
+    "leadTimeDays": "plazo de entrega: {{days}} d",
+    "noSupplierHint": "artículos con stock bajo no tienen proveedor asociado y no se pueden pedir automáticamente. Vincule proveedores en la página",
+    "createDrafts": "Crear OC en borrador",
+    "createDraftsN": "Crear {{n}} OC en borrador",
+    "fromDate": "Fecha desde",
+    "toDate": "Fecha hasta",
+    "poNumber": "N° OC",
+    "ordered": "Pedido",
+    "alreadyReceived": "Ya recibido",
+    "internalNotesPlaceholder": "Notas internas…"
   }
 }
