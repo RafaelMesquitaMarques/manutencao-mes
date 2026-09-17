@@ -97,7 +97,7 @@ export default function SupplierList() {
             onChange={e => setCategory(e.target.value)}
             className="bg-gray-800 border border-gray-700 text-sm text-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-purple-500"
           >
-            <option value="">{t('common.all', 'All')} categories</option>
+            <option value="">{t('suppliers.allCategories', 'All categories')}</option>
             {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
           <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
@@ -130,7 +130,7 @@ export default function SupplierList() {
               <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-center font-medium">{t('suppliers.leadTime', 'Lead time')}</th>
               <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-center font-medium">{t('suppliers.rating', 'Rating')}</th>
               <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-center font-medium">{t('suppliers.items', 'Items')}</th>
-              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-center font-medium">{t('suppliers.status', 'Status')}</th>
+              <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3 text-center font-medium">{t('common.status', 'Status')}</th>
               <th className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-4 py-3"></th>
             </tr>
           </thead>
