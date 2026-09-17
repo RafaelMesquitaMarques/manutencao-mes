@@ -1018,6 +1018,9 @@ class WOPart(Base):
     unit          = Column(String(20), default="un")
     unit_cost     = Column(Float)
     total_cost    = Column(Float)
+    # Units this line actually took out of inventory (see InterventionPart:
+    # office parts settle stock when the line is added, not at approval).
+    stock_deducted = Column(Float, nullable=True)
     supplier      = Column(String(300))
     notes         = Column(Text)
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
@@ -2188,7 +2191,12 @@ class InventoryMovement(Base):
     id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     stock_item_id    = Column(UUID(as_uuid=True), ForeignKey("stock_items.id"), nullable=False)
     work_order_id    = Column(UUID(as_uuid=True), nullable=True)  # soft ref
-    movement_type    = Column(String(20), nullable=False)  # deduction | addition | adjustment
+    movement_type    = Column(String(20), nullable=False)  # deduction | addition | return | adjustment
+    # WHY the count moved, which movement_type alone cannot say: a purchase
+    # receipt and a reversal are both entries, but only the receipt is money
+    # actually paid for these units. The weighted-average purchase cost counts
+    # source='purchase' and nothing else — see StockItem.average_cost.
+    source           = Column(String(20))   # purchase | reversal | None (unknown)
     quantity         = Column(Float, nullable=False)
     quantity_before  = Column(Float, nullable=False)
     quantity_after   = Column(Float, nullable=False)
@@ -2389,6 +2397,10 @@ class InterventionPart(Base):
     unit             = Column(String(50), nullable=True)
     unit_cost        = Column(Float, nullable=True)   # snapshot of stock price at usage time
     total_cost       = Column(Float, nullable=True)
+    # Units this line actually took out of inventory at approval. The count can
+    # hold less than the line claims, so a reversal gives back exactly this —
+    # crediting quantity_used would invent stock that never existed.
+    stock_deducted   = Column(Float, nullable=True)
     added_by_id      = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     added_at         = Column(DateTime(timezone=True), server_default=func.now())
     approval_status  = Column(String(20), default="pending")
