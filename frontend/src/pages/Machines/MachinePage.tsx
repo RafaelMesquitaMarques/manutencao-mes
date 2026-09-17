@@ -925,7 +925,7 @@ export default function MachinePage() {
   const [confirmedTicket, setConfirmedTicket] = useState<string | null>(null);
 
   // Kiosk layout editor (supervisor+): drag/resize panels, saved per machine
-  const canEditLayout = useRole('supervisor', 'plant_manager', 'director', 'admin');
+  const canEditLayout = useRole('supervisor', 'maintenance_director', 'plant_manager', 'director', 'admin');
   const [editLayout, setEditLayout] = useState(false);
   const [layout, setLayout] = useState<Layout[]>(DEFAULT_KIOSK_LAYOUT);
 
