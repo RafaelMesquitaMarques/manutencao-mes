@@ -1087,23 +1087,26 @@ async def add_part(
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
 
-    # If linked to a stock item, fetch unit cost and deduct inventory
+    # A part linked to a stock item MUST move inventory. This used to be wrapped
+    # in `except Exception: pass` ("don't fail part creation if deduction
+    # fails"), so a failure left the part booked on the work order with the
+    # stock never deducted and nothing anywhere to say so. An unknown item is
+    # now a 404 with a stable code, and a real failure fails the call.
     unit_cost = data.unit_cost
+    settled = None
     if data.stock_item_id:
-        try:
-            inv_svc = InventoryService(db)
-            await inv_svc.deduct_stock(
-                data.stock_item_id, data.quantity,
-                work_order_id=work_order_id,
-                user_id=current_user.id,
-                notes=f"Used in WO {wo.wo_number}",
-            )
-            from app.models.models import StockItem
-            item = await db.get(StockItem, data.stock_item_id)
-            if item and not unit_cost:
-                unit_cost = item.unit_cost
-        except Exception:
-            pass  # Don't fail part creation if deduction fails
+        item = await db.get(StockItem, data.stock_item_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="stock_item_not_found")
+        movement = await InventoryService(db).deduct_stock(
+            data.stock_item_id, data.quantity,
+            work_order_id=work_order_id,
+            user_id=current_user.id,
+            notes=f"Used in WO {wo.wo_number}",
+        )
+        settled = movement.quantity
+        if not unit_cost:
+            unit_cost = item.unit_cost
 
     total_cost = (unit_cost * data.quantity) if unit_cost else None
     part = WOPart(
@@ -1115,6 +1118,7 @@ async def add_part(
         unit=data.unit,
         unit_cost=unit_cost,
         total_cost=total_cost,
+        stock_deducted=settled,
         supplier=data.supplier,
         notes=data.notes,
     )
