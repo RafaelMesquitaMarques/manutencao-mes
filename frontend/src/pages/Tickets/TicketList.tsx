@@ -38,18 +38,22 @@ function timeOpen(openedAt: string): string {
   return `${Math.floor(mins / 1440)}d`;
 }
 
-function slaDisplay(priority: AlertPriority, openedAt: string, status: TicketStatus) {
+function slaDisplay(
+  priority: AlertPriority,
+  openedAt: string,
+  status: TicketStatus,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+) {
   if (status === 'completed' || status === 'cancelled') return null;
   const sla     = SLA_MINUTES[priority];
   const elapsed = (Date.now() - new Date(openedAt).getTime()) / 60_000;
   const remain  = sla - elapsed;
-  if (remain < 0) return { label: 'Overdue', color: 'text-red-400' };
-  if (remain < sla * 0.25) {
-    const m = Math.round(remain);
-    return { label: m < 60 ? `${m}m left` : `${Math.floor(m/60)}h left`, color: 'text-amber-400' };
-  }
+  if (remain < 0) return { label: t('tickets.slaOverdue'), color: 'text-red-400' };
   const m = Math.round(remain);
-  return { label: m < 60 ? `${m}m left` : `${Math.floor(m/60)}h left`, color: 'text-green-400' };
+  const label = m < 60
+    ? t('tickets.slaMinutesLeft', { minutes: m })
+    : t('tickets.slaHoursLeft', { hours: Math.floor(m / 60) });
+  return { label, color: remain < sla * 0.25 ? 'text-amber-400' : 'text-green-400' };
 }
 
 export default function TicketList() {
@@ -93,7 +97,7 @@ export default function TicketList() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm('Delete this ticket permanently?')) return;
+    if (!window.confirm(t('tickets.deleteConfirm'))) return;
     setDeletingId(id);
     try {
       await deleteTicket(id);
@@ -117,7 +121,7 @@ export default function TicketList() {
         </div>
         <div className="flex items-center gap-2">
           {hasError && (
-            <span className="text-xs text-amber-500 hidden sm:inline">⚠ Last update failed</span>
+            <span className="text-xs text-amber-500 hidden sm:inline">⚠ {t('common.lastUpdateFailed')}</span>
           )}
           {lastUpdatedAt && !hasError && (
             <span className="text-xs text-gray-600 font-mono hidden sm:inline">
@@ -129,7 +133,7 @@ export default function TicketList() {
           </button>
           {canCreate && (
             <Link to="/tickets/new" className="btn-primary py-1.5 px-3 flex items-center gap-1.5 text-sm">
-              <Plus size={14} /> New Ticket
+              <Plus size={14} /> {t('tickets.newTicket')}
             </Link>
           )}
         </div>
@@ -182,7 +186,7 @@ export default function TicketList() {
               </thead>
               <tbody>
                 {tickets.map((ticket) => {
-                  const sla = slaDisplay(ticket.priority, ticket.opened_at, ticket.status);
+                  const sla = slaDisplay(ticket.priority, ticket.opened_at, ticket.status, t);
                   return (
                     <tr key={ticket.id} className="table-row">
                       <td className="table-cell">
@@ -190,7 +194,7 @@ export default function TicketList() {
                           <span className="font-mono text-blue-400 text-xs">{ticket.ticket_number}</span>
                           {ticket.machine_page_source && (
                             <span className="text-[10px] font-medium bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 px-1.5 py-0.5 rounded w-fit">
-                              Machine Page
+                              {t('tickets.sourceMachinePage')}
                             </span>
                           )}
                         </div>
@@ -284,7 +288,7 @@ export default function TicketList() {
                             <button
                               onClick={() => handleDelete(ticket.id)}
                               disabled={deletingId === ticket.id}
-                              title="Delete ticket"
+                              title={t('tickets.deleteTicket')}
                               className="btn-danger py-1 px-2 text-xs"
                             >
                               <Trash2 size={11} />

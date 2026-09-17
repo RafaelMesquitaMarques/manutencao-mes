@@ -132,7 +132,8 @@
     "retry": "Retry",
     "saving": "Saving…",
     "saved": "Saved",
-    "clear": "Clear"
+    "clear": "Clear",
+    "lastUpdateFailed": "Last update failed"
   },
   "settings": {
     "profileTitle": "My Profile",
@@ -1003,7 +1004,14 @@
     "addComment": "Add Comment",
     "yourName": "Your Name",
     "namePlaceholder": "Your full name",
-    "commentPlaceholder": "Type a comment..."
+    "commentPlaceholder": "Type a comment...",
+    "newTicket": "New Ticket",
+    "deleteConfirm": "Delete this ticket permanently?",
+    "deleteTicket": "Delete ticket",
+    "slaOverdue": "Overdue",
+    "slaMinutesLeft": "{{minutes}}m left",
+    "slaHoursLeft": "{{hours}}h left",
+    "sourceMachinePage": "Machine Page"
   },
   "supervisor": {
     "title": "Supervisor View",

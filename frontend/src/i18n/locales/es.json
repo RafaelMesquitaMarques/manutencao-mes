@@ -132,7 +132,8 @@
     "retry": "Reintentar",
     "saving": "Guardando…",
     "saved": "Guardado",
-    "clear": "Limpiar"
+    "clear": "Limpiar",
+    "lastUpdateFailed": "Falló la última actualización"
   },
   "settings": {
     "profileTitle": "Mi perfil",
@@ -1003,7 +1004,14 @@
     "addComment": "Agregar comentario",
     "yourName": "Su nombre",
     "namePlaceholder": "Su nombre completo",
-    "commentPlaceholder": "Escriba un comentario..."
+    "commentPlaceholder": "Escriba un comentario...",
+    "newTicket": "Nuevo ticket",
+    "deleteConfirm": "¿Eliminar este ticket permanentemente?",
+    "deleteTicket": "Eliminar ticket",
+    "slaOverdue": "Vencido",
+    "slaMinutesLeft": "{{minutes}}m restantes",
+    "slaHoursLeft": "{{hours}}h restantes",
+    "sourceMachinePage": "Página de máquina"
   },
   "supervisor": {
     "title": "Vista supervisor",
