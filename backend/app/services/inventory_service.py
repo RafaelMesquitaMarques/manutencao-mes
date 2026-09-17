@@ -62,13 +62,59 @@ class InventoryService:
         self.db.add(movement)
         return movement
 
-    async def add_stock(
+    async def return_stock(
         self,
         stock_item_id: UUID,
         quantity: float,
         user_id: UUID | None = None,
         notes: str | None = None,
     ) -> InventoryMovement:
+        """Put back units a consumption line took out (rejected, removed, lowered).
+
+        Physically an entry, but NEVER a purchase: these units were already
+        bought once and are only coming back from a line that did not keep
+        them. Booking them as a purchase would feed ``item.unit_cost`` into the
+        weighted-average purchase cost as if it had been paid again — which is
+        why this is a ``return`` with ``source='reversal'`` and not an
+        ``addition``. See ``add_stock`` for a real entry.
+        """
+        return await self._entry(
+            stock_item_id, quantity, movement_type="return", source="reversal",
+            user_id=user_id, notes=notes,
+        )
+
+    async def add_stock(
+        self,
+        stock_item_id: UUID,
+        quantity: float,
+        user_id: UUID | None = None,
+        notes: str | None = None,
+        source: str | None = None,
+    ) -> InventoryMovement:
+        """Raise the count by units arriving from outside a consumption line.
+
+        Pass ``source='purchase'`` when these units were actually bought at
+        ``item.unit_cost`` — that is the ONLY marking the weighted-average
+        purchase cost counts. Leaving it unset keeps the movement out of the
+        average, which is the safe default: an entry of unknown provenance
+        must not re-price future consumption.
+        """
+        return await self._entry(
+            stock_item_id, quantity, movement_type="addition", source=source,
+            user_id=user_id, notes=notes,
+        )
+
+    async def _entry(
+        self,
+        stock_item_id: UUID,
+        quantity: float,
+        *,
+        movement_type: str,
+        source: str | None,
+        user_id: UUID | None,
+        notes: str | None,
+    ) -> InventoryMovement:
+        """Shared body of every movement that RAISES the count."""
         item = await self.db.get(StockItem, stock_item_id)
         if not item:
             raise ValueError("Stock item not found")
@@ -76,7 +122,8 @@ class InventoryService:
         item.quantity = before + quantity
         movement = InventoryMovement(
             stock_item_id=stock_item_id,
-            movement_type="addition",
+            movement_type=movement_type,
+            source=source,
             quantity=quantity,
             quantity_before=before,
             quantity_after=item.quantity,

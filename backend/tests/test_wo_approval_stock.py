@@ -262,9 +262,12 @@ async def test_rejecting_a_part_after_approval_puts_the_stock_back(s):
     # Both movements are stamped by the same transaction clock, so compare the
     # ledger as a set of facts rather than as an order.
     movs = await _movements(s, item)
-    assert sorted(m.movement_type for m in movs) == ["addition", "deduction"]
+    # The credit is a 'return', never an 'addition': it is units coming back, not
+    # units bought, and the weighted-average purchase cost must not see it.
+    assert sorted(m.movement_type for m in movs) == ["deduction", "return"]
     assert {m.quantity for m in movs} == {3.0}
-    restock = next(m for m in movs if m.movement_type == "addition")
+    restock = next(m for m in movs if m.movement_type == "return")
+    assert restock.source == "reversal"
     assert "rejected after approval" in (restock.notes or "")
 
 
@@ -382,7 +385,7 @@ async def test_rejecting_that_line_gives_back_two_not_five(s):
 
     assert item.quantity == 2.0                # exactly where it started
     assert part.stock_deducted == 0.0          # nothing left to give back
-    restock = next(m for m in await _movements(s, item) if m.movement_type == "addition")
+    restock = next(m for m in await _movements(s, item) if m.movement_type == "return")
     assert restock.quantity == 2.0
 
 

@@ -812,7 +812,43 @@ async def _run_migrations() -> None:
         "ALTER TABLE equipment ADD COLUMN IF NOT EXISTS serial_number VARCHAR(200)",
         # Map props can optionally link to a real equipment (live status / click-through)
         "ALTER TABLE map_props ADD COLUMN IF NOT EXISTS equipment_id UUID REFERENCES equipment(id)",
-        # One-time backfill from received purchases (inventory_movements 'addition').
+        # ── Why an entry raised the count: a purchase receipt is money paid for
+        # these units, a reversal is units coming back from a part line that did
+        # not keep them. movement_type cannot tell them apart (both were
+        # 'addition'), yet the purchase-price backfills below must only ever see
+        # receipts. Guarded on information_schema so a steady-state boot takes NO
+        # exclusive lock (this whole list is one transaction and holds every lock
+        # it takes — an unconditional ALTER here deadlocks against the workers).
+        """
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_schema='public' AND table_name='inventory_movements'
+                           AND column_name='source') THEN
+            ALTER TABLE inventory_movements ADD COLUMN source VARCHAR(20);
+          END IF;
+        END $$
+        """,
+        # Classify the history, which predates the column. Receiving a purchase
+        # order is the only code path that has ever written an entry directly,
+        # and it has stamped this exact note since the module landed (8e541c8);
+        # every other entry came from InventoryService, whose callers are all
+        # reversals of a consumption line. So the note settles it both ways, and
+        # rows with no note fall to the safe side (not a purchase).
+        """
+        UPDATE inventory_movements
+        SET source = 'purchase'
+        WHERE source IS NULL AND movement_type = 'addition'
+          AND notes LIKE 'Purchase Order %'
+        """,
+        # Reversals also take the movement_type they would be written with today,
+        # so one query finds them all regardless of when they happened. Only the
+        # label changes: quantity, direction and history stay exactly as booked.
+        """
+        UPDATE inventory_movements
+        SET source = 'reversal', movement_type = 'return'
+        WHERE source IS NULL AND movement_type = 'addition'
+        """,
+        # One-time backfill of the purchase prices, from RECEIPTS only (see above).
         # Guarded by IS NULL so it only fills items not yet computed.
         """
         UPDATE stock_items s
@@ -821,7 +857,7 @@ async def _run_migrations() -> None:
             SELECT stock_item_id,
                    SUM(unit_cost * quantity) / NULLIF(SUM(quantity), 0) AS avg_cost
             FROM inventory_movements
-            WHERE movement_type = 'addition' AND unit_cost IS NOT NULL AND quantity > 0
+            WHERE source = 'purchase' AND unit_cost IS NOT NULL AND quantity > 0
             GROUP BY stock_item_id
         ) sub
         WHERE s.id = sub.stock_item_id AND s.average_cost IS NULL
@@ -833,7 +869,7 @@ async def _run_migrations() -> None:
         FROM (
             SELECT DISTINCT ON (stock_item_id) stock_item_id, unit_cost, created_at
             FROM inventory_movements
-            WHERE movement_type = 'addition' AND unit_cost IS NOT NULL
+            WHERE source = 'purchase' AND unit_cost IS NOT NULL
             ORDER BY stock_item_id, created_at DESC
         ) lm
         WHERE s.id = lm.stock_item_id AND s.last_purchase_cost IS NULL
