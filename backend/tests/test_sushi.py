@@ -17,7 +17,6 @@ event loop and every write is ALWAYS rolled back. Covers:
 Run (inside the backend container):
     pytest tests/test_sushi.py -v
 """
-import asyncio
 import math
 import os
 import struct
@@ -27,12 +26,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.core.config import settings                                  # noqa: E402
 from app.models.models import (                                       # noqa: E402
     Alert, Equipment, Plant, Sensor, SensorReading, SushiDevice, SushiSensorModel,
 )
@@ -40,31 +36,7 @@ from app.services.sushi_service import (                               # noqa: E
     _recent_duplicate_alert, decode_uplink, device_health, extract_envelope,
     ingest_uplink, namur_state, sensor_code,
 )
-
-_LOOP = asyncio.new_event_loop()
-_ENGINE = {}
-
-
-def _maker():
-    if "e" not in _ENGINE:
-        _ENGINE["e"] = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-    return async_sessionmaker(_ENGINE["e"], expire_on_commit=False)
-
-
-def with_session(fn):
-    """Async body on the shared loop, always rolled back."""
-    def wrapper():
-        async def runner():
-            s = _maker()()
-            try:
-                await fn(s)
-            finally:
-                await s.rollback()
-                await s.close()
-        _LOOP.run_until_complete(runner())
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
+from db_harness import with_session    # noqa: E402
 
 
 def _now():

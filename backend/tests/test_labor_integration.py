@@ -6,22 +6,20 @@ from real rows and stamp labor records — the layer where the enum/serialisatio
 bug hid and pure unit tests can't reach.
 
 They run INSIDE the backend container (needs DB access) and are fully isolated:
-each test runs in its OWN event loop (``asyncio.run``) with its OWN engine, and
 every write happens in one transaction that is ALWAYS rolled back — the database
 is never mutated. Shift templates are editable in Settings, so tests never rely
 on live rows: any test that needs a schedule creates its own throwaway template
 via ``_mk_shift`` (which deactivates same-key rows first, inside the rolled-back
 transaction) and asserts against the values it created.
 
-Each test is a plain sync function (see ``with_session``) that drives its async
-body on one shared event loop, so no async pytest plugin is required.
+Each test is a plain sync function (see ``with_session`` in tests/db_harness.py)
+that drives its async body on the session's one shared event loop, so no async
+pytest plugin is required.
 
 Run (inside the backend container):
     pip install pytest
     pytest tests/test_labor_integration.py -v
 """
-import asyncio
-import functools
 import os
 import sys
 import uuid
@@ -29,60 +27,22 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import update
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.core.config import settings                            # noqa: E402
 from app.models.models import (                                  # noqa: E402
     LaborRecord, ShiftBreak, ShiftBreakKind, ShiftTemplate, Technician,
     TechnicianUnavailability, UnavailabilityType, User,
 )
 from app.services import labor_time_service as lts               # noqa: E402
 from app.services import technician_availability_service as avail  # noqa: E402
+from db_harness import with_session    # noqa: E402
 
 TZ = ZoneInfo(lts.DEFAULT_TZ)
 
 
 def _utc(y, mo, d, h, mi=0):
     return datetime(y, mo, d, h, mi, tzinfo=TZ).astimezone(timezone.utc)
-
-
-# SQLAlchemy's async engine binds its asyncpg connection to the event loop of the
-# first operation and caches it, so it must live on ONE persistent loop for the
-# whole run (a fresh asyncio.run() per test → "attached to a different loop").
-# We keep a single module loop and create the engine lazily on it, reused by every
-# test. NullPool → each session gets its own connection on that loop; every test is
-# rolled back, so the database is never mutated.
-_LOOP = asyncio.new_event_loop()
-_ENGINE = {}
-
-
-def _maker():
-    if "e" not in _ENGINE:
-        _ENGINE["e"] = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-    return async_sessionmaker(_ENGINE["e"], expire_on_commit=False)
-
-
-def with_session(fn):
-    """Turn an ``async def test(s)`` into a SYNC pytest test run on the shared loop.
-
-    NOTE: we deliberately do NOT use functools.wraps — it sets ``__wrapped__``,
-    which pytest follows back to the original async function and then refuses to
-    run ("async def not natively supported"). We copy name/doc by hand instead."""
-    def wrapper():
-        async def runner():
-            s = _maker()()
-            try:
-                await fn(s)
-            finally:
-                await s.rollback()
-                await s.close()
-        _LOOP.run_until_complete(runner())
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
 
 
 async def _mk_tech(s, *, shift="day", rate=60.0, active=True):

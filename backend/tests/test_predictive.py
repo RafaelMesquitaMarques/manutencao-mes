@@ -14,7 +14,6 @@ rolled back (flush only, never commit). Covers:
 Run (inside the backend container):
     pytest tests/test_predictive.py -v
 """
-import asyncio
 import os
 import sys
 import uuid
@@ -23,12 +22,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.core.config import settings                                   # noqa: E402
 from app.core.plant_context import resolve_plant_context               # noqa: E402
 from app.models.models import (                                        # noqa: E402
     Equipment, FailureEvent, FailurePattern, FailureSource, Machine,
@@ -54,30 +50,7 @@ from app.services.predictive.features import (                         # noqa: E
 from app.services.predictive.quality import sensor_quality             # noqa: E402
 from app.services.predictive.reliability import mtbf_signals           # noqa: E402
 from app.api.routes import predictive as predictive_routes             # noqa: E402
-
-_LOOP = asyncio.new_event_loop()
-_ENGINE = {}
-
-
-def _maker():
-    if "e" not in _ENGINE:
-        _ENGINE["e"] = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-    return async_sessionmaker(_ENGINE["e"], expire_on_commit=False)
-
-
-def with_session(fn):
-    def wrapper():
-        async def runner():
-            s = _maker()()
-            try:
-                await fn(s)
-            finally:
-                await s.rollback()
-                await s.close()
-        _LOOP.run_until_complete(runner())
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
+from db_harness import with_session    # noqa: E402
 
 
 def _now():

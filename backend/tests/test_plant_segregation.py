@@ -20,7 +20,6 @@ Run (inside the backend container):
     pip install pytest
     pytest tests/test_plant_segregation.py -v
 """
-import asyncio
 import os
 import sys
 import uuid
@@ -28,8 +27,6 @@ import uuid
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -45,32 +42,7 @@ from app.models.models import (                                   # noqa: E402
 from app.services.notification_service import NotificationService  # noqa: E402
 from app.services.numbering import series_prefix                   # noqa: E402
 from app.services.work_calendar import get_calendar_settings       # noqa: E402
-
-_LOOP = asyncio.new_event_loop()
-_ENGINE = {}
-
-
-def _maker():
-    if "e" not in _ENGINE:
-        _ENGINE["e"] = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-    return async_sessionmaker(_ENGINE["e"], expire_on_commit=False)
-
-
-def with_session(fn):
-    """Async test body on the shared loop, always rolled back.
-    NOTE: deliberately NOT functools.wraps (pytest follows __wrapped__)."""
-    def wrapper():
-        async def runner():
-            s = _maker()()
-            try:
-                await fn(s)
-            finally:
-                await s.rollback()
-                await s.close()
-        _LOOP.run_until_complete(runner())
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
+from db_harness import with_session    # noqa: E402
 
 
 async def _plants(db):

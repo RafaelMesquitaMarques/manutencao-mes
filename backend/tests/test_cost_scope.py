@@ -12,7 +12,6 @@ Québec cost universe, and the budget was a single global series. Now:
 Harness identical to test_plant_segregation.py — INSIDE the backend container,
 one shared loop, every write ALWAYS rolled back (flush only, never commit).
 """
-import asyncio
 import os
 import sys
 import uuid
@@ -20,12 +19,9 @@ import uuid
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.core.config import settings                              # noqa: E402
 from app.core.plant_context import resolve_plant_context          # noqa: E402
 from app.models.models import (                                   # noqa: E402
     MaintenanceBudget, Plant, User, UserPlant, UserRole,
@@ -33,31 +29,9 @@ from app.models.models import (                                   # noqa: E402
 from app.api.routes.costs import (  # noqa: E402
     Scope, _budgets_for, _resolve_scope, _resolve_site, _row_scope_ok, _site_ids,
 )
+from db_harness import with_session    # noqa: E402
 
-_LOOP = asyncio.new_event_loop()
-_ENGINE = {}
 _YEAR = 2099
-
-
-def _maker():
-    if "e" not in _ENGINE:
-        _ENGINE["e"] = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-    return async_sessionmaker(_ENGINE["e"], expire_on_commit=False)
-
-
-def with_session(fn):
-    def wrapper():
-        async def runner():
-            s = _maker()()
-            try:
-                await fn(s)
-            finally:
-                await s.rollback()
-                await s.close()
-        _LOOP.run_until_complete(runner())
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
 
 
 async def _plants(db):

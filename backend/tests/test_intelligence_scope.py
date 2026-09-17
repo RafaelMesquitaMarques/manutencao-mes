@@ -13,46 +13,19 @@ scoped to the plant:
 Harness identical to test_plant_segregation.py — INSIDE the backend container,
 one shared loop, every write ALWAYS rolled back (read-only here).
 """
-import asyncio
 import os
 import sys
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.core.config import settings                              # noqa: E402
 from app.models.models import Machine, MaintenanceTicket, Plant   # noqa: E402
 from app.services.intelligence_calculator import (                # noqa: E402
     _fetch_machines, _fetch_tickets, build_findings,
 )
-
-_LOOP = asyncio.new_event_loop()
-_ENGINE = {}
-
-
-def _maker():
-    if "e" not in _ENGINE:
-        _ENGINE["e"] = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-    return async_sessionmaker(_ENGINE["e"], expire_on_commit=False)
-
-
-def with_session(fn):
-    def wrapper():
-        async def runner():
-            s = _maker()()
-            try:
-                await fn(s)
-            finally:
-                await s.rollback()
-                await s.close()
-        _LOOP.run_until_complete(runner())
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
+from db_harness import with_session    # noqa: E402
 
 
 async def _plants(db):

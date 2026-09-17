@@ -23,7 +23,6 @@ Run (inside the backend container):
     pip install pytest
     pytest tests/test_cortex_ingest.py -v
 """
-import asyncio
 import os
 import sys
 import uuid
@@ -31,8 +30,6 @@ from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -44,31 +41,7 @@ from app.models.models import (                                       # noqa: E4
 import app.services.cortex_ingest_service as cis                      # noqa: E402
 from app.services.cortex_ingest_service import process_event          # noqa: E402
 from app.services.job_order_service import get_open_run               # noqa: E402
-
-_LOOP = asyncio.new_event_loop()
-_ENGINE = {}
-
-
-def _maker():
-    if "e" not in _ENGINE:
-        _ENGINE["e"] = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-    return async_sessionmaker(_ENGINE["e"], expire_on_commit=False)
-
-
-def with_session(fn):
-    """Async body on the shared loop, always rolled back."""
-    def wrapper():
-        async def runner():
-            s = _maker()()
-            try:
-                await fn(s)
-            finally:
-                await s.rollback()
-                await s.close()
-        _LOOP.run_until_complete(runner())
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
+from db_harness import with_session    # noqa: E402
 
 
 async def _plant(s, code=None):
@@ -121,8 +94,17 @@ def _payload(machine_code, of=None, event_id=None, site=None, mo_overrides=None,
 
 
 async def _events_for(s, event_id):
+    """The audit rows for one eventId, oldest first.
+
+    ``received_at`` alone is NOT a total order here: it is a ``server_default``
+    of ``now()``, which in Postgres is the TRANSACTION start time — so every row
+    a test writes inside its own transaction gets the SAME value, the ORDER BY is
+    a tie, and Postgres may return the rows either way round (it did, under load:
+    ``['success', 'error'] == ['error', 'success']``). ``processed_at`` is stamped
+    per event from Python on all three write paths, so it breaks the tie and
+    keeps the chronological intent."""
     r = await s.execute(select(CortexEvent).where(CortexEvent.event_id == event_id)
-                        .order_by(CortexEvent.received_at))
+                        .order_by(CortexEvent.received_at, CortexEvent.processed_at))
     return r.scalars().all()
 
 
