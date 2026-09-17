@@ -32,7 +32,6 @@ endpoints call db.commit(), so commit is redirected to flush for the duration.
 Run (inside the backend container):
     pytest tests/test_purchase_average_cost.py -v
 """
-import asyncio
 import os
 import sys
 import uuid
@@ -40,12 +39,9 @@ from datetime import date
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.core.config import settings                                    # noqa: E402
 from app.core.plant_context import resolve_plant_context                # noqa: E402
 from app.api.routes import suppliers                                    # noqa: E402
 from app.services.inventory_service import InventoryService             # noqa: E402
@@ -53,38 +49,7 @@ from app.models.models import (                                         # noqa: 
     InventoryMovement, Plant, PurchaseOrder, PurchaseOrderItem,
     PurchaseOrderStatus, StockItem, Supplier, User, UserPlant, UserRole,
 )
-
-_LOOP = asyncio.new_event_loop()
-_ENGINE = {}
-
-
-def _maker():
-    if "e" not in _ENGINE:
-        _ENGINE["e"] = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-    return async_sessionmaker(_ENGINE["e"], expire_on_commit=False)
-
-
-def with_session(fn):
-    """``async def test(s)`` -> sync pytest test on the shared loop, rolled back."""
-    def wrapper():
-        async def runner():
-            s = _maker()()
-            real_commit = s.commit
-
-            async def flush_only():
-                await s.flush()
-
-            s.commit = flush_only
-            try:
-                await fn(s)
-            finally:
-                s.commit = real_commit
-                await s.rollback()
-                await s.close()
-        _LOOP.run_until_complete(runner())
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
+from db_harness import with_session_commit_as_flush as with_session    # noqa: E402
 
 
 # -- fixtures -----------------------------------------------------------------
