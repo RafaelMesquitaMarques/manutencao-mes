@@ -10,50 +10,24 @@ Run (inside the backend container):
     pip install pytest
     pytest tests/test_job_order_cost.py -v
 """
-import asyncio
 import os
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.core.config import settings                                  # noqa: E402
 from app.models.models import (                                       # noqa: E402
     Machine, Plant, JobOrder, JobOrderRun, MachineStop, JobOrderStatus,
 )
 from app.services.job_order_cost_service import (                     # noqa: E402
     compute_job_order_cost, compute_cost_report,
 )
+from db_harness import with_session    # noqa: E402
 
-_LOOP = asyncio.new_event_loop()
-_ENGINE = {}
 T0 = datetime(2026, 5, 1, 8, 0, tzinfo=timezone.utc)
-
-
-def _maker():
-    if "e" not in _ENGINE:
-        _ENGINE["e"] = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-    return async_sessionmaker(_ENGINE["e"], expire_on_commit=False)
-
-
-def with_session(fn):
-    def wrapper():
-        async def runner():
-            s = _maker()()
-            try:
-                await fn(s)
-            finally:
-                await s.rollback()
-                await s.close()
-        _LOOP.run_until_complete(runner())
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
 
 
 async def _setup(s, rate=60.0):

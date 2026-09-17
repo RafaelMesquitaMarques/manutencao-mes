@@ -173,7 +173,7 @@ class _ScriptedDB:
 
 
 def _run(coro):
-    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)   # own loop, closed on exit — nothing here touches the DB
 
 
 class TestMontagemDaTimeline:

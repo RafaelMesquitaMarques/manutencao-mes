@@ -22,18 +22,14 @@ O cenário semeado é um quart de manhã conhecido:
 Correr (dentro do container do backend):
     pytest tests/test_factory_replay_db.py -v
 """
-import asyncio
 import os
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.core.config import settings                                  # noqa: E402
 from app.models.models import (                                       # noqa: E402
     AlertPriority, Equipment, EquipmentStatus, InterventionTechnician, JobOrder,
     JobOrderRun, JobOrderStatus, Machine, MachineIntervention, MachineOperator,
@@ -42,9 +38,8 @@ from app.models.models import (                                       # noqa: E4
     StopCategoryType, TicketStatus,
 )
 from app.services import factory_replay as fr                         # noqa: E402
+from db_harness import with_session    # noqa: E402
 
-_LOOP = asyncio.new_event_loop()
-_ENGINE = {}
 
 UTC = timezone.utc
 # 06:00 → 14:00 hora de Saint-Jérôme (EDT, UTC-4) numa data fixa do passado.
@@ -52,28 +47,6 @@ WS = datetime(2026, 6, 16, 10, 0, tzinfo=UTC)
 WE = WS + timedelta(hours=8)
 H = timedelta(hours=1)
 MIN = timedelta(minutes=1)
-
-
-def _maker():
-    if "e" not in _ENGINE:
-        _ENGINE["e"] = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-    return async_sessionmaker(_ENGINE["e"], expire_on_commit=False)
-
-
-def with_session(fn):
-    """Async body on the shared loop, always rolled back."""
-    def wrapper():
-        async def runner():
-            s = _maker()()
-            try:
-                await fn(s)
-            finally:
-                await s.rollback()
-                await s.close()
-        _LOOP.run_until_complete(runner())
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
 
 
 async def _seed(s):

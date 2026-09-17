@@ -18,7 +18,6 @@ job_order_runs.last_piece_at.
 Run (inside the backend container):
     pytest tests/test_of_watch.py -v
 """
-import asyncio
 import os
 import sys
 import uuid
@@ -26,12 +25,9 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.core.config import settings                                  # noqa: E402
 from app.models.models import (                                       # noqa: E402
     EscalationContact, EscalationSettings, JobOrder, JobOrderRun,
     JobOrderStatus, JobOrderWatch, Machine, NotificationLog,
@@ -42,51 +38,43 @@ from app.services.notification_service import NotificationService     # noqa: E4
 from app.services.of_watch_service import (                            # noqa: E402
     episode_due, last_movement_map, locate_map, watch_status,
 )
+from db_harness import (                                               # noqa: E402
+    engine as harness_engine, run as harness_run, with_session,
+)
 
-_LOOP = asyncio.new_event_loop()
-_ENGINE = {}
 
-
-def _maker():
-    if "e" not in _ENGINE:
-        _ENGINE["e"] = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-    return async_sessionmaker(_ENGINE["e"], expire_on_commit=False)
+_COLUMNS = (
+    ("job_order_runs", "last_piece_at", "TIMESTAMPTZ"),
+    ("escalation_contacts", "category", "VARCHAR(20)"),
+    ("escalation_settings", "of_teams_webhook_url", "TEXT"),
+)
 
 
 def _ensure_schema():
     """Additive DDL identical to the app's boot path (create_all + migration) —
-    lets this suite run against a DB whose backend hasn't rebooted on this code."""
-    async def run():
-        eng = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-        async with eng.begin() as conn:
-            await conn.execute(text(
-                "ALTER TABLE job_order_runs ADD COLUMN IF NOT EXISTS last_piece_at TIMESTAMPTZ"))
-            await conn.run_sync(JobOrderWatch.__table__.create, checkfirst=True)
-            await conn.execute(text(
-                "ALTER TABLE escalation_contacts ADD COLUMN IF NOT EXISTS category VARCHAR(20)"))
-            await conn.execute(text(
-                "ALTER TABLE escalation_settings ADD COLUMN IF NOT EXISTS of_teams_webhook_url TEXT"))
-        await eng.dispose()
-    _LOOP.run_until_complete(run())
+    lets this suite run against a DB whose backend hasn't rebooted on this code.
+
+    Each ALTER is gated on the catalog rather than left to ADD COLUMN IF NOT
+    EXISTS: Postgres takes AccessExclusive on the table before it discovers the
+    no-op, so the unconditional form briefly locked out every reader of three
+    shared tables on EVERY run."""
+    async def run(conn):
+        for table, column, ddl in _COLUMNS:
+            exists = await conn.scalar(text(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name=:t AND column_name=:c)"),
+                {"t": table, "c": column})
+            if not exists:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+        await conn.run_sync(JobOrderWatch.__table__.create, checkfirst=True)
+
+    async def body():
+        async with harness_engine().begin() as conn:
+            await run(conn)
+    harness_run(body)
 
 
 _ensure_schema()
-
-
-def with_session(fn):
-    """Async body on the shared loop, always rolled back."""
-    def wrapper():
-        async def runner():
-            s = _maker()()
-            try:
-                await fn(s)
-            finally:
-                await s.rollback()
-                await s.close()
-        _LOOP.run_until_complete(runner())
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
 
 
 def _now():

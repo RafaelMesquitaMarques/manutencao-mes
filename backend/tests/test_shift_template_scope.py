@@ -8,7 +8,6 @@ plant's template (global stays visible to all).
 Harness identical to test_plant_segregation.py — INSIDE the backend container,
 one shared loop, every write ALWAYS rolled back (flush only, never commit).
 """
-import asyncio
 import os
 import sys
 import uuid
@@ -16,39 +15,13 @@ import uuid
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.core.config import settings                              # noqa: E402
 from app.core.plant_context import resolve_plant_context          # noqa: E402
 from app.models.models import Plant, ShiftTemplate, User, UserPlant, UserRole  # noqa: E402
 from app.api.routes.shift_templates import list_shift_templates, _load  # noqa: E402
-
-_LOOP = asyncio.new_event_loop()
-_ENGINE = {}
-
-
-def _maker():
-    if "e" not in _ENGINE:
-        _ENGINE["e"] = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
-    return async_sessionmaker(_ENGINE["e"], expire_on_commit=False)
-
-
-def with_session(fn):
-    def wrapper():
-        async def runner():
-            s = _maker()()
-            try:
-                await fn(s)
-            finally:
-                await s.rollback()
-                await s.close()
-        _LOOP.run_until_complete(runner())
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
+from db_harness import with_session    # noqa: E402
 
 
 async def _plants(db):
