@@ -16,7 +16,7 @@ from app.api.routes import (
     auth, plants, equipment, work_orders,
     maintenance_plans, inventory, alerts, iot, users, kpis, technicians,
     tickets, maintenance_dashboard, machines, stop_categories, job_orders,
-    suppliers as suppliers_module, reports, escalation, factory_map, costs,
+    suppliers as suppliers_module, reports, escalation, factory_map, costs, costs_control,
     departments as departments_module,
     factory_calendar, adam_devices, cortex_stations, shift_templates,
     temperature_sensors, pit_stop, sushi, sushi_devices, home_insights,
@@ -1177,7 +1177,8 @@ async def _run_migrations() -> None:
             'cost_centers','cost_center_budgets','maintenance_budgets','sap_cost_lines',
             'escalation_settings','escalation_contacts','factory_calendar_settings',
             'factory_holidays','shift_reports','adam_devices','cortex_stations','shift_templates',
-            'line_tv_settings','dashboards','ai_insights','temperature_sensors'
+            'line_tv_settings','dashboards','ai_insights','temperature_sensors',
+            'sap_cost_links','cost_forecast_adjustments','cost_alert_rules','cost_actions'
           ] LOOP
             IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name = t) THEN
               IF NOT EXISTS (
@@ -1739,6 +1740,9 @@ app.include_router(kpis.router,                   prefix="/api/kpis",          t
 app.include_router(home_insights.router,          prefix="/api/insights",      tags=["Home Insights"])
 app.include_router(predictive.router,             prefix="/api/predictive",    tags=["Predictive"],           dependencies=[Depends(resource_guard("predictive"))])
 app.include_router(costs.router,                  prefix="/api/costs",         tags=["Costs"],                dependencies=[Depends(resource_guard("costs"))])
+# Cost-control layer (reconciliation, cut-off/forecast, commitments, alerts,
+# actions, executive report) — same prefix and same guard as the Costs router.
+app.include_router(costs_control.router,          prefix="/api/costs",         tags=["Costs"],                dependencies=[Depends(resource_guard("costs"))])
 app.include_router(factory_calendar.router,       prefix="/api/calendar",      tags=["Factory Calendar"],     dependencies=[Depends(resource_guard("calendar"))])
 app.include_router(adam_devices.router,           prefix="/api/adam-devices",  tags=["ADAM Devices"],         dependencies=[Depends(resource_guard("settings_devices"))])
 app.include_router(cortex_stations.router,        prefix="/api/cortex-stations", tags=["Cortex Stations"],    dependencies=[Depends(resource_guard("settings_devices"))])

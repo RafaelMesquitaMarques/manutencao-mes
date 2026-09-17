@@ -1021,6 +1021,30 @@ a plant outside QS/QM (e.g. NL) never lands on the Quebec cost page. The `_resol
 lock still restricts the QS/QM site filter to the caller's plants. Verified output-identical on
 current data (SAP totals unchanged: QS 744k / QM 95k actual, fiscal 2026).
 
+**Costs control layer (2026-09-16)** — additive on top of the Costs page; the existing budget/actual
+series are untouched and the new work reuses their exact scoping helpers. Backend
+`services/cost_control.py` (cut-off + forecast + SAP↔KAIZO reconciliation + commitments),
+`services/cost_insights.py` (equipment reliability, suppliers, cost centers, stock, alerts,
+executive read-out) and `api/routes/costs_control.py` (mounted on the SAME `/api/costs` prefix and
+`resource_guard("costs")`). Four additive tables: `sap_cost_links` (a GL line ↔ a WO/equipment/PO,
+keyed by the line's NATURAL key `(fiscal_year,pos,cc_code,account_code)` so links survive a
+re-import; a key that vanishes is reported as an orphan), `cost_forecast_adjustments`,
+`cost_alert_rules`, `cost_actions` — all four added to the `plant_isolation` RLS list.
+Three invariants the module enforces and `tests/test_cost_control.py` pins:
+(1) the **cut-off** is the ledger's, not the calendar's — the last posted fiscal slot, demoted to
+`partial` when it posts a token amount; an elapsed slot with nothing imported is `awaiting`, never a
+zero-cost month (a zero INSIDE the posted range stays `closed`);
+(2) the **variance compares the same months** (budget-to-cut-off vs actual-to-cut-off) — annual
+budget minus a partial actual is the remaining envelope and is reported under its own name. This was
+a live sign error: FY2026 read +$250k under budget where the same months ran −$108k over;
+(3) **no double counting** — SAP actuals and platform-tracked spend are never summed (the second is
+coverage), and a future month lands at `max(budget, open commitments)`, not their sum; an overdue
+commitment is carried on top of the cut-off because it never reached the ledger.
+The page's existing S-curve, EAC/VAC read-out and landing bridge now read this one projection, so
+every widget shows the same number. New tabs: Reconciliation, Commitments, Stock & parts,
+Alerts & actions; the executive read-out sits on top of Budget-vs-Actual and exports an XLSX with
+native charts (`GET /api/costs/executive-report`).
+
 **Kiosk** — historically token-less shop-floor endpoints. `machines.kiosk_token` +
 `POST /api/machines/{ref}/kiosk-token`; `core/kiosk_guard.py` router guard requires the token OR a
 bearer user with membership in the machine's plant. **Gated by `KIOSK_ENFORCE_TOKEN` (default
