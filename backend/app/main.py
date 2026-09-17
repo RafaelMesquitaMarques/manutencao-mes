@@ -20,7 +20,7 @@ from app.api.routes import (
     departments as departments_module,
     factory_calendar, adam_devices, cortex_stations, shift_templates,
     temperature_sensors, pit_stop, sushi, sushi_devices, home_insights,
-    of_watch, predictive,
+    of_watch, predictive, factory_replay,
 )
 from app.api.routes.machine_operator import router as machine_operator_router
 from app.api.routes.cortex_ingest import (
@@ -1781,6 +1781,7 @@ app.include_router(technicians.router,            prefix="/api/technicians",   t
 app.include_router(shift_templates.router,        prefix="/api/shift-templates", tags=["Shift Templates"],     dependencies=[Depends(resource_guard("technicians"))])
 app.include_router(machines.router,               prefix="/api/machines",      tags=["Machines"],             dependencies=[Depends(kiosk_ref_guard("ref"))])
 app.include_router(factory_map.router,            prefix="/api/factory-map",   tags=["Factory Map"])
+app.include_router(factory_replay.router,         prefix="/api/factory-replay", tags=["Factory Replay"])
 app.include_router(robot_cells_router,            prefix="/api/robot-cells",   tags=["Robot Cells"])
 app.include_router(stop_categories.router,        prefix="/api/stop-categories", tags=["Stop Categories"])
 app.include_router(job_orders.router,             prefix="/api/job-orders",      tags=["Job Orders"])
