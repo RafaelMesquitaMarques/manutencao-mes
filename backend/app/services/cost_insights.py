@@ -602,7 +602,9 @@ async def inventory_analysis(db: AsyncSession, ctx: CostContext, months: list[in
     (what is on the shelf) and purchases separately; it never adds them."""
     since, until, _ = window_bounds(ctx, months)
 
-    items = (await db.execute(select(StockItem))).scalars().all()
+    # Live catalogue only: the stock VALUE is unaffected by retired rows (they
+    # all hold quantity 0), but the "N of M items valued" denominator is not.
+    items = (await db.execute(select(StockItem).where(StockItem.archived.is_(False)))).scalars().all()
     if ctx.scope.is_plant:
         items = [i for i in items if i.plant_id == ctx.scope.plant_id]
     elif ctx.scope.site:

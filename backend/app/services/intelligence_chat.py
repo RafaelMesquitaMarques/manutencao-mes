@@ -218,7 +218,11 @@ _TABLE_HINTS = {
     "supplier_orders": "Purchasing / procurement spend: one row per order (supplier_name, amount, currency, status, ordered_at). 'Supplier we buy most from' = SUM(amount) GROUP BY supplier.",
     "purchase_orders": "Purchase orders (procurement). See purchase_order_items for line items.",
     "purchase_order_items": "Purchase-order line items (part, quantity, unit price).",
-    "stock_items": "Spare-parts inventory (quantity, min_quantity, unit_cost, average_cost, warehouse, location, category, supplier).",
+    # The archived rule has to travel WITH the schema: this sentence is the only
+    # thing standing between the model and a SELECT that counts retired parts.
+    # No type checker, linter or test suite can catch an incomplete hint — hence
+    # test_ask_ninja_schema_hint_warns_about_archived.
+    "stock_items": "Spare-parts inventory (quantity, min_quantity, unit_cost, average_cost, warehouse, location, category, supplier). archived=true marks part numbers RETIRED in the source system (~3.7k rows, code starts 'xPA-', quantity 0, kept only so an old number still resolves): ALWAYS add `archived = false` to counts, sums, averages and listings unless the question is explicitly about retired parts.",
     "inventory_movements": "Stock in/out movements (quantity, type, date).",
     "machines": "Production machines (MES/OEE); current_status is the LIVE state (running|stopped|maintenance|idle|planned_stop|unjustified|intervention). For 'status right now' questions prefer the list_assets tool — it adds the factory-map rules (open ticket → maintenance, parent inheritance).",
     "equipment": "Asset catalog (machines + auxiliaries); criticality, asset_type. Its status column is the STATIC catalog lifecycle, NOT the live state — use list_assets for live status.",
@@ -559,7 +563,11 @@ async def _inventory_overview(db: AsyncSession, ctx: PlantContext) -> dict:
     """Stock counts, value, and category breakdown from stock_items (group pool)."""
     from app.models.models import StockItem
 
-    scope = plant_condition(StockItem, ctx)   # group-scoped: QC shared warehouse
+    # Retired part numbers are excluded here exactly as the Inventory page
+    # excludes them: this tool answers "how many parts are out of stock", and
+    # counting the 3 729 rows the source withdrew answered 5 550 where the
+    # dashboard said 1 821. All six queries below reuse this scope.
+    scope = and_(plant_condition(StockItem, ctx), StockItem.archived.is_(False))
     unit_cost = func.coalesce(StockItem.average_cost, StockItem.unit_cost, StockItem.last_purchase_cost)
     low_cond = or_(
         StockItem.quantity <= 0,

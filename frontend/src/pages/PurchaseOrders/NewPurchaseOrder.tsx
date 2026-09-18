@@ -65,7 +65,11 @@ export default function NewPurchaseOrder() {
   useEffect(() => {
     Promise.all([
       fetchSupplierList({ active_only: true, limit: 200 }),
-      fetchStockItems({ limit: 5500 }),
+      // The whole live catalogue, because this feeds a part <select>: the cap
+      // used to sit just above the old 5 440-item catalogue, so when the Interal
+      // extraction grew it to 6 279 the last ~779 parts silently stopped being
+      // selectable. Retired parts are excluded by the endpoint's own default.
+      fetchStockItems({ limit: 12000 }),
       fetchPOCostCenters(),
     ]).then(([supRes, stockRes, ccRes]) => {
       setSuppliers(supRes.items);

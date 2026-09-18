@@ -889,9 +889,15 @@ OPEN_PO_STATUSES = [PurchaseOrderStatus.draft, PurchaseOrderStatus.sent, Purchas
 
 
 def _low_stock_cond():
-    return or_(
-        StockItem.quantity <= 0,
-        and_(StockItem.min_quantity.isnot(None), StockItem.quantity <= StockItem.min_quantity),
+    # A retired part is never "low" — nobody is going to reorder it. Without the
+    # archived guard the replenishment preview offered the buyer 3 729 extra
+    # items below minimum and warned that they had no supplier linked.
+    return and_(
+        StockItem.archived.is_(False),
+        or_(
+            StockItem.quantity <= 0,
+            and_(StockItem.min_quantity.isnot(None), StockItem.quantity <= StockItem.min_quantity),
+        ),
     )
 
 

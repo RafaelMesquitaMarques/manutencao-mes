@@ -385,6 +385,10 @@ async def _low_stock(s: _Snapshot) -> list[dict]:
     rows = (await s.db.execute(
         select(StockItem.code, StockItem.name, StockItem.quantity, StockItem.min_quantity)
         .where(plant_condition(StockItem, s.ctx),
+               # Dormant rather than wrong today — no item has a minimum set, so
+               # this detector returns nothing either way. It stays correct the
+               # day someone sets one on a part the source has retired.
+               StockItem.archived.is_(False),
                StockItem.min_quantity.isnot(None),
                StockItem.min_quantity > 0,
                StockItem.quantity <= StockItem.min_quantity)

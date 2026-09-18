@@ -106,7 +106,10 @@ export default function PurchaseOrderDetail() {
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     fetchSupplierList({ limit: 200 }).then(r => setSuppliers(r.items)).catch(() => {});
-    fetchStockItems({ limit: 5500 }).then(r => setStockItems(r.items)).catch(() => {});
+    // Same ceiling story as NewPurchaseOrder: this array also resolves each
+    // existing line's stock_item_id back to a part code, so a short page made
+    // the code vanish from lines pointing past the cut.
+    fetchStockItems({ limit: 12000 }).then(r => setStockItems(r.items)).catch(() => {});
     fetchPOCostCenters().then(setCostCenters).catch(() => {});
   }, []);
 

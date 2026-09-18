@@ -288,7 +288,9 @@ async def _fetch_parts_consumption(
         for r in baseline_result
     }
 
-    # All stock items
+    # All stock items the plant actually carries. Same dormancy as the home-page
+    # low-stock card: the risk branch only fires when a minimum is set, and none
+    # is — but a spare-parts risk report has no business ranking retired parts.
     items_result = await db.execute(
         select(
             StockItem.id,
@@ -296,7 +298,7 @@ async def _fetch_parts_consumption(
             StockItem.name,
             StockItem.quantity,
             StockItem.min_quantity,
-        )
+        ).where(StockItem.archived.is_(False))
     )
     items = items_result.all()
 
