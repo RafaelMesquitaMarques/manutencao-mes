@@ -251,7 +251,7 @@ export default function SupervisorDashboard({ embedded = false }: { embedded?: b
           </div>
         )}
         <div className="flex items-center gap-2">
-          {hasError && <span className="text-xs text-amber-500 hidden sm:inline">⚠ Last update failed</span>}
+          {hasError && <span className="text-xs text-amber-500 hidden sm:inline">⚠ {t('common.lastUpdateFailed')}</span>}
           {lastUpdatedAt && !hasError && (
             <span className="text-xs text-gray-600 font-mono hidden sm:inline">
               {lastUpdatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}

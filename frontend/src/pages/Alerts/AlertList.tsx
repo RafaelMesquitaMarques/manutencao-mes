@@ -154,7 +154,7 @@ export default function AlertList({ embedded = false }: { embedded?: boolean } =
         )}
         <div className="flex items-center gap-2">
           {hasError && (
-            <span className="text-xs text-amber-500 hidden sm:inline">⚠ Last update failed</span>
+            <span className="text-xs text-amber-500 hidden sm:inline">⚠ {t('common.lastUpdateFailed')}</span>
           )}
           {lastUpdatedAt && !hasError && (
             <span className="text-xs text-gray-600 font-mono hidden sm:inline">

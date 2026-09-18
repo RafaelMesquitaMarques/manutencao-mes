@@ -320,7 +320,7 @@ const WorkOrderList = () => {
             {priorities.map((p) => <option key={p} value={p}>{t(`priority.${p}`)}</option>)}
           </select>
           {hasError && (
-            <span className="text-xs text-amber-500 hidden sm:inline">⚠ Last update failed</span>
+            <span className="text-xs text-amber-500 hidden sm:inline">⚠ {t('common.lastUpdateFailed')}</span>
           )}
           {lastUpdatedAt && !hasError && (
             <span className="text-xs text-gray-600 font-mono hidden sm:inline">

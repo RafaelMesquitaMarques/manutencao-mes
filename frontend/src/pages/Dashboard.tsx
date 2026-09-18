@@ -85,7 +85,7 @@ const Dashboard = () => {
           <p className="text-gray-500 text-sm mt-1">{t('dashboard.subtitle')}</p>
         </div>
         <div className="hidden sm:flex items-center gap-2">
-          {hasError && <span className="text-xs text-amber-500">⚠ Last update failed</span>}
+          {hasError && <span className="text-xs text-amber-500">⚠ {t('common.lastUpdateFailed')}</span>}
           {lastUpdatedAt && !hasError && (
             <span className="text-xs text-gray-600 font-mono">
               {lastUpdatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
