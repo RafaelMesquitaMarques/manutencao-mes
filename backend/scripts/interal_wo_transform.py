@@ -135,7 +135,7 @@ def parse_num(s: str):
 
 
 def split_employee(s: str):
-    """'16525 - Olivier Pronovost' -> ('16525', 'Olivier Pronovost')."""
+    """Splits Interal's '<employee number> - <name>' into its two parts."""
     s = (s or "").strip()
     if not s:
         return None, None
