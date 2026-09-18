@@ -119,6 +119,13 @@ class WorkOrderOut(BaseModel):
     technicians: Optional[List] = None
     plan_id: Optional[UUID] = None
     occurrence_id: Optional[UUID] = None
+    # Historical import: the name/place the order was filed under in Interal, used
+    # as the display fallback when the person has no account or the machine is not
+    # in the current catalogue.
+    legacy_technician: Optional[str] = None
+    legacy_location: Optional[str] = None
+    import_source: Optional[str] = None
+    import_ref: Optional[str] = None
 
 
 class WorkOrderListResponse(BaseModel):

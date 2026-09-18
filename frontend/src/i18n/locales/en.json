@@ -1350,6 +1350,7 @@
     "solutionApplied": "Solution Applied",
     "diagnostic": "Diagnostic",
     "resolution": "Resolution",
+    "requestedWork": "Requested work",
     "executionMode": "Execution Mode",
     "classification": "Classification",
     "failureCode": "Failure Code",
@@ -3371,5 +3372,11 @@
       "end_before_start": "The end must come after the start",
       "window_in_future": "This window has not happened yet"
     }
+  },
+  "grid": {
+    "blanks": "(blanks)",
+    "searchValues": "Search…",
+    "selectAll": "Select all",
+    "clearAll": "Clear all"
   }
 }

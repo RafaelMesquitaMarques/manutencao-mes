@@ -1350,6 +1350,7 @@
     "solutionApplied": "Solución aplicada",
     "diagnostic": "Diagnóstico",
     "resolution": "Resolución",
+    "requestedWork": "Trabajo solicitado",
     "executionMode": "Modo de ejecución",
     "classification": "Clasificación",
     "failureCode": "Código de falla",
@@ -3371,5 +3372,11 @@
       "end_before_start": "El fin debe ser posterior al inicio",
       "window_in_future": "Esta ventana aún no ha ocurrido"
     }
+  },
+  "grid": {
+    "blanks": "(vacíos)",
+    "searchValues": "Buscar…",
+    "selectAll": "Seleccionar todo",
+    "clearAll": "Borrar todo"
   }
 }

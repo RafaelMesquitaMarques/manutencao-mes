@@ -35,9 +35,14 @@ export const fetchWorkOrders = async (
 };
 
 /**
- * Fetches every work order (backend caps a page at 200). The first page also
- * reports the total, so the remaining pages are fetched concurrently instead of
- * one-after-another — turning ~42 serial round-trips into a few parallel waves.
+ * Fetches every work order matching `params` (backend caps a page at 200). The
+ * first page also reports the total, so the remaining pages are fetched
+ * concurrently instead of one-after-another.
+ *
+ * Only call this with a filter that keeps the result small — the labor
+ * scheduler asks for `status: open` / `in_progress`. Unfiltered it now means
+ * ~330 requests for 65k historical rows; screens that show the whole table page
+ * through `fetchWorkOrdersPage` instead.
  */
 export const fetchAllWorkOrders = async (
   params?: Record<string, string>
@@ -59,6 +64,119 @@ export const fetchAllWorkOrders = async (
   for (let skip = pageSize; skip < total; skip += pageSize) skips.push(skip);
   const rest = await Promise.all(skips.map((skip) => getPage(skip).then((d) => d.items ?? [])));
   return [firstItems, ...rest].flat();
+};
+
+// The list endpoint caps a page at 200 rows server-side.
+export const WO_PAGE_MAX = 200;
+
+/**
+ * Filters the work-order list can push down to the server.
+ *
+ * The `*_in` entries are the grid's checkbox (set) filters, the single-value
+ * ones are the toolbar selects. The backend applies them as separate WHERE
+ * clauses, so a toolbar select and a checkbox filter on the same column
+ * INTERSECT rather than one overriding the other.
+ */
+export interface WorkOrderQuery {
+  search?: string;
+  /** The two text columns filter independently of the toolbar's search box. */
+  wo_number_contains?: string;
+  title_contains?: string;
+  /** due_date IS NULL / IS NOT NULL, behind the date column's blank filters. */
+  due_is_null?: boolean;
+  status?: string;
+  type?: string;
+  priority?: string;
+  status_in?: string[];
+  type_in?: string[];
+  priority_in?: string[];
+  equipment_name_in?: string[];
+  location_in?: string[];
+  technician_in?: string[];
+}
+
+export interface WorkOrderPageParams extends WorkOrderQuery {
+  skip?: number;
+  limit?: number;
+  /** yyyy-mm-dd, inclusive on both ends */
+  opened_from?: string;
+  opened_to?: string;
+  due_from?: string;
+  due_to?: string;
+  /** opened_at | wo_number | title | type | priority | status | due_date | completed_at */
+  sort_by?: string;
+  sort_dir?: 'asc' | 'desc';
+}
+
+/**
+ * One page of work orders, with the server's total for the same filter set.
+ *
+ * This is what the list page runs on: at 65k rows pulling everything down and
+ * filtering in the browser is not an option, so paging, sorting, searching and
+ * filtering all happen in SQL.
+ *
+ * Array params are repeated (`?status_in=open&status_in=on_hold`) rather than
+ * joined with commas, because the values are real data — equipment is named
+ * "Ima 5, Plaqueuse de chants [Edgebander]" and joining would split it into two
+ * values that match nothing. Empty arrays and empty strings are dropped, so an
+ * unset filter never narrows the query.
+ */
+export const fetchWorkOrdersPage = async (
+  params: WorkOrderPageParams = {}
+): Promise<PaginatedResponse<WorkOrder>> => {
+  const query: Record<string, string | string[]> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (value == null) continue;
+    if (Array.isArray(value)) {
+      if (value.length) query[key] = value;
+      continue;
+    }
+    const raw = String(value);
+    if (raw !== '') query[key] = raw;
+  }
+  const { data } = await api.get<PaginatedResponse<WorkOrder>>('/api/wo/', {
+    params: query,
+    // repeat the key instead of axios' default `key[]=a&key[]=b`
+    paramsSerializer: { indexes: null },
+  });
+  return { total: data.total ?? 0, items: data.items ?? [] };
+};
+
+/**
+ * Distinct values for the list's checkbox columns, over the whole plant scope.
+ * The checkbox filters used to build their lists by walking every loaded row,
+ * which only works when every row is loaded — with a paged grid the values have
+ * to come from the database instead.
+ */
+export interface WorkOrderFacets {
+  equipment_name: string[];
+  location: string[];
+  technician: string[];
+  type: string[];
+  priority: string[];
+  status: string[];
+}
+
+/** Stable identity so consumers can use it as a memo dependency. */
+export const EMPTY_WO_FACETS: WorkOrderFacets = Object.freeze({
+  equipment_name: [],
+  location: [],
+  technician: [],
+  type: [],
+  priority: [],
+  status: [],
+}) as WorkOrderFacets;
+
+export const fetchWorkOrderFacets = async (): Promise<WorkOrderFacets> => {
+  const { data } = await api.get<Partial<WorkOrderFacets>>('/api/wo/facets');
+  return {
+    equipment_name: data.equipment_name ?? [],
+    location: data.location ?? [],
+    technician: data.technician ?? [],
+    type: data.type ?? [],
+    priority: data.priority ?? [],
+    status: data.status ?? [],
+  };
 };
 
 export const fetchMyWorkOrders = async (

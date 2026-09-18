@@ -1317,6 +1317,23 @@ async def _run_migrations() -> None:
         """,
         # ── Indexes for plant-scoped queries (composites on the hot time-ordered lists)
         "CREATE INDEX IF NOT EXISTS idx_wo_plant_opened ON work_orders (plant_id, opened_at DESC)",
+        # Phase: Interal work-order history import (2026-09-18)
+        ('work_orders', 'import_source', 'VARCHAR(40)'),
+        ('work_orders', 'import_ref', 'VARCHAR(40)'),
+        ('work_orders', 'legacy_technician', 'VARCHAR(200)'),
+        ('work_orders', 'legacy_location', 'VARCHAR(200)'),
+        ('work_orders', 'legacy_meta', 'JSONB'),
+        ('equipment', 'import_source', 'VARCHAR(40)'),
+        ('equipment', 'import_ref', 'VARCHAR(40)'),
+        # re-importing the same export must upsert, never duplicate
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_work_orders_import_ref "
+        "ON work_orders (import_source, import_ref) WHERE import_source IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_equipment_import_ref "
+        "ON equipment (import_source, import_ref) WHERE import_source IS NOT NULL",
+        # the list pages through opened_at DESC; id is the tiebreaker that keeps
+        # that ordering stable across pages at 65k rows
+        "CREATE INDEX IF NOT EXISTS idx_wo_opened_id ON work_orders (opened_at DESC, id)",
+        "CREATE INDEX IF NOT EXISTS idx_wo_plant_status ON work_orders (plant_id, status)",
         "CREATE INDEX IF NOT EXISTS idx_tickets_plant_opened ON maintenance_tickets (plant_id, opened_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_malerts_plant_created ON maintenance_alerts (plant_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_stops_plant_started ON machine_stops (plant_id, started_at DESC)",

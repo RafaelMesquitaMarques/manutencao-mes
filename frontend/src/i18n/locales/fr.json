@@ -1350,6 +1350,7 @@
     "solutionApplied": "Solution appliquée",
     "diagnostic": "Diagnostic",
     "resolution": "Résolution",
+    "requestedWork": "Travail demandé",
     "executionMode": "Mode d'exécution",
     "classification": "Classification",
     "failureCode": "Code de défaillance",
@@ -3371,5 +3372,11 @@
       "end_before_start": "La fin doit suivre le début",
       "window_in_future": "Cette fenêtre n'a pas encore eu lieu"
     }
+  },
+  "grid": {
+    "blanks": "(vides)",
+    "searchValues": "Rechercher…",
+    "selectAll": "Tout cocher",
+    "clearAll": "Tout décocher"
   }
 }

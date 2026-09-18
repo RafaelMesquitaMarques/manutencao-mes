@@ -8,7 +8,7 @@ from sqlalchemy import (
     Column, String, Integer, BigInteger, Float, Boolean, DateTime, Date,
     ForeignKey, Text, Enum as SAEnum, JSON, UniqueConstraint, Index, text
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
@@ -425,6 +425,10 @@ class Equipment(Base):
     qr_code            = Column(Text)
     active             = Column(Boolean, default=True)
     created_at         = Column(DateTime(timezone=True), server_default=func.now())
+    # Historical import (Interal): assets that appear in the work-order history
+    # but not in the live catalogue are created inactive and tagged here.
+    import_source = Column(String(40), nullable=True, index=True)
+    import_ref    = Column(String(40), nullable=True)
 
     plant           = relationship("Plant", back_populates="equipment")
     work_orders     = relationship("WorkOrder", back_populates="equipment")
@@ -517,6 +521,17 @@ class WorkOrder(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Historical import (Interal). import_ref is the source ID_WORK_ORDER_HEADER and
+    # makes a re-import an upsert instead of a duplicate. legacy_technician /
+    # legacy_location keep the name and place the order was filed under when the
+    # person has no account or the machine is not in the current catalogue — the
+    # list falls back to them so those columns never go blank on real history.
+    import_source     = Column(String(40), nullable=True, index=True)
+    import_ref        = Column(String(40), nullable=True)
+    legacy_technician = Column(String(200), nullable=True)
+    legacy_location   = Column(String(200), nullable=True)
+    legacy_meta       = Column(JSONB, nullable=True)
 
     # WO-level approval — supervisor / maintenance director signs off completed work
     # (mirrors MachineIntervention so office-created WOs also flow through approval).

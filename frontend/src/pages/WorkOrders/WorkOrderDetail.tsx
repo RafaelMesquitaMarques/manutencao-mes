@@ -461,10 +461,16 @@ const OverviewTab = ({
 }) => {
   const { t } = useTranslation();
 
+  // Reading order follows the life of the job: what was asked for, what was
+  // found, what was done. diagnostic/resolution are the imported Interal history
+  // blocks -- verbatim text belonging to the work order itself, not a note
+  // written by whoever is looking at it, so they carry no author or timestamp.
   const textFields = [
     { key: 'short_description', label: t('workOrders.shortDescription'), val: wo.short_description },
-    { key: 'description', label: t('common.description'), val: wo.description },
+    { key: 'description', label: t('workOrders.requestedWork'), val: wo.description },
+    { key: 'diagnostic', label: t('workOrders.diagnostic'), val: wo.diagnostic },
     { key: 'root_cause', label: t('workOrders.rootCause'), val: wo.root_cause },
+    { key: 'resolution', label: t('workOrders.resolution'), val: wo.resolution },
     { key: 'solution_applied', label: t('workOrders.solutionApplied'), val: wo.solution_applied },
   ].filter((f) => f.val);
 

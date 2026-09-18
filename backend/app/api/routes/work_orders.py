@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
-from typing import Optional
+from sqlalchemy.orm import aliased
+from typing import List, Optional
 from uuid import UUID
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from app.db.session import get_db
 from app.models.models import (
@@ -233,12 +234,60 @@ async def _sync_wo_technicians(wo: WorkOrder, technician_ids: list, db: AsyncSes
         ticket.assigned_to_id = wo.assigned_to_id
 
 
+def _primary_technician_subq():
+    """One row per work order: the assigned technician the list displays.
+
+    `DISTINCT ON` reproduces the same pick the list makes when it builds the
+    `technicians` array — primary first, then oldest assignment.
+    """
+    wt = WorkOrderTechnician
+    return (
+        select(wt.work_order_id.label("work_order_id"), User.name.label("name"))
+        .join(Technician, Technician.id == wt.technician_id)
+        .join(User, User.id == Technician.user_id, isouter=True)
+        .distinct(wt.work_order_id)
+        .order_by(wt.work_order_id, wt.is_primary.desc(), wt.assigned_at)
+        .subquery()
+    )
+
+
+def _work_orders_shown_under(names):
+    """Rows whose Technician column shows one of `names`.
+
+    The column displays the assigned technician, else the assigned user, else
+    the name the order was imported under. Filtering on only one of those makes
+    rows disappear that the user can plainly see, so all three are matched. Each
+    branch is an IN against an indexed column rather than a correlated lookup.
+    """
+    by_link = (
+        select(WorkOrderTechnician.work_order_id)
+        .join(Technician, Technician.id == WorkOrderTechnician.technician_id)
+        .join(User, User.id == Technician.user_id)
+        .where(User.name.in_(names))
+    )
+    by_executor = (
+        select(Technician.id)
+        .join(User, User.id == Technician.user_id)
+        .where(User.name.in_(names))
+    )
+    return (
+        WorkOrder.legacy_technician.in_(names)
+        | WorkOrder.id.in_(by_link)
+        | WorkOrder.executor_id.in_(by_executor)
+        | WorkOrder.assigned_to_id.in_(select(User.id).where(User.name.in_(names)))
+    )
+
+
 async def _enrich_wo(wo: WorkOrder, db: AsyncSession) -> WorkOrderOut:
     out = WorkOrderOut.model_validate(wo)
     equip = await db.get(Equipment, wo.equipment_id)
     if equip:
         out.equipment_name = equip.name
         out.equipment_location = equip.location
+    # Same fallback as the list: prefer the curated location on the equipment
+    # record, otherwise the place the order was filed under in Interal.
+    if not out.equipment_location:
+        out.equipment_location = wo.legacy_location
     if wo.ticket_id:
         ticket = await db.get(MaintenanceTicket, wo.ticket_id)
         if ticket:
@@ -382,6 +431,31 @@ async def list_work_orders(
     executor_id: Optional[UUID] = None,
     from_iot: Optional[bool] = None,
     search: Optional[str] = None,
+    # The two text columns get their own params. Folding them into `search`
+    # meant the toolbar box and the column filters fought over one slot: one
+    # silently won and the other stayed lit doing nothing.
+    wo_number_contains: Optional[str] = None,
+    title_contains: Optional[str] = None,
+    # `due_date IS NULL` / `IS NOT NULL`, for the date column's blank filters.
+    due_is_null: Optional[bool] = None,
+    # Multi-value variants backing the grid's checkbox column filters. Repeatable
+    # (?status_in=open&status_in=on_hold) rather than comma separated, because the
+    # values are real data: equipment is named "Ima 5, Plaqueuse de chants
+    # [Edgebander]" and a comma split would silently match nothing. The
+    # single-value params above still drive the toolbar selects.
+    status_in: Optional[List[str]] = Query(None),
+    type_in: Optional[List[str]] = Query(None),
+    priority_in: Optional[List[str]] = Query(None),
+    equipment_name_in: Optional[List[str]] = Query(None),
+    location_in: Optional[List[str]] = Query(None),
+    technician_in: Optional[List[str]] = Query(None),
+    # Date-range filters behind the grid's two date columns.
+    opened_from: Optional[date] = None,
+    opened_to: Optional[date] = None,
+    due_from: Optional[date] = None,
+    due_to: Optional[date] = None,
+    sort_by: str = Query("opened_at"),
+    sort_dir: str = Query("desc"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, le=200),
     db: AsyncSession = Depends(get_db),
@@ -409,10 +483,71 @@ async def list_work_orders(
         query = query.where(WorkOrder.executor_id == executor_id)
     if from_iot is not None:
         query = query.where(WorkOrder.from_iot == from_iot)
-    if search:
+    if status_in:
+        query = query.where(WorkOrder.status.in_(status_in))
+    if type_in:
+        query = query.where(WorkOrder.type.in_(type_in))
+    if priority_in:
+        query = query.where(WorkOrder.priority.in_(priority_in))
+    if equipment_name_in:
+        query = query.where(WorkOrder.equipment_id.in_(
+            select(Equipment.id).where(Equipment.name.in_(equipment_name_in))
+        ))
+    if location_in:
+        # Location is the equipment's when it has one, otherwise where the order
+        # was filed in Interal — the filter has to match the same way the column
+        # displays it, or a value in the list would select nothing.
         query = query.where(
-            WorkOrder.title.ilike(f"%{search}%") |
-            WorkOrder.wo_number.ilike(f"%{search}%")
+            WorkOrder.equipment_id.in_(
+                select(Equipment.id).where(Equipment.location.in_(location_in))
+            ) | WorkOrder.legacy_location.in_(location_in)
+        )
+    if technician_in:
+        query = query.where(_work_orders_shown_under(technician_in))
+    if opened_from:
+        query = query.where(WorkOrder.opened_at >= opened_from)
+    if opened_to:
+        query = query.where(WorkOrder.opened_at < opened_to + timedelta(days=1))
+    if due_from:
+        query = query.where(WorkOrder.due_date >= due_from)
+    if due_to:
+        query = query.where(WorkOrder.due_date < due_to + timedelta(days=1))
+
+    if wo_number_contains:
+        query = query.where(WorkOrder.wo_number.ilike(f"%{wo_number_contains}%"))
+    if title_contains:
+        query = query.where(WorkOrder.title.ilike(f"%{title_contains}%"))
+    if due_is_null is not None:
+        query = query.where(
+            WorkOrder.due_date.is_(None) if due_is_null
+            else WorkOrder.due_date.isnot(None)
+        )
+
+    if search:
+        # The list shows Equipment and Technician, so searching has to reach them
+        # too -- at 65k rows the page can no longer filter client-side. Technician
+        # is matched on every source the column can display, same as the filter.
+        term = f"%{search}%"
+        equip_match = select(Equipment.id).where(Equipment.name.ilike(term))
+        tech_link = (
+            select(WorkOrderTechnician.work_order_id)
+            .join(Technician, Technician.id == WorkOrderTechnician.technician_id)
+            .join(User, User.id == Technician.user_id)
+            .where(User.name.ilike(term))
+        )
+        tech_exec = (
+            select(Technician.id)
+            .join(User, User.id == Technician.user_id)
+            .where(User.name.ilike(term))
+        )
+        query = query.where(
+            WorkOrder.title.ilike(term) |
+            WorkOrder.wo_number.ilike(term) |
+            WorkOrder.legacy_technician.ilike(term) |
+            WorkOrder.id.in_(tech_link) |
+            WorkOrder.executor_id.in_(tech_exec) |
+            WorkOrder.assigned_to_id.in_(select(User.id).where(User.name.ilike(term))) |
+            WorkOrder.equipment_id.in_(equip_match)
         )
     # Legacy explicit ?plant_id= narrows further, but only within the caller's
     # active plant (the ctx filter above is the security boundary).
@@ -422,7 +557,50 @@ async def list_work_orders(
     total_result = await db.execute(select(func.count()).select_from(query.subquery()))
     total = total_result.scalar()
 
-    query = query.offset(skip).limit(limit).order_by(WorkOrder.opened_at.desc())
+    # Ordering must be total, not just by opened_at: 65k imported orders share a
+    # handful of dates, and an ambiguous ORDER BY lets the same row appear on two
+    # pages and another on none. `id` is the tiebreaker.
+    sortable = {
+        "opened_at": WorkOrder.opened_at,
+        "wo_number": WorkOrder.wo_number,
+        "title": WorkOrder.title,
+        "type": WorkOrder.type,
+        "priority": WorkOrder.priority,
+        "status": WorkOrder.status,
+        "due_date": WorkOrder.due_date,
+        "completed_at": WorkOrder.completed_at,
+    }
+    # Equipment, Location and Technician are sortable too, but they are not
+    # columns on work_orders: two come off the joined equipment row and one off
+    # the imported name. The join is 1:1 on a NOT NULL FK, so it adds no rows and
+    # the count above stays correct.
+    if sort_by in ("equipment_name", "location", "technician"):
+        if sort_by == "technician":
+            # Ordered by the name the column actually shows, not by the import
+            # field alone -- otherwise every app-created order sorts as NULL
+            # while displaying a name.
+            primary_tech = _primary_technician_subq()
+            assigned_user = aliased(User)
+            query = (
+                query
+                .join(primary_tech, primary_tech.c.work_order_id == WorkOrder.id, isouter=True)
+                .join(assigned_user, assigned_user.id == WorkOrder.assigned_to_id, isouter=True)
+            )
+            column = func.coalesce(
+                primary_tech.c.name, assigned_user.name, WorkOrder.legacy_technician
+            )
+        else:
+            query = query.join(
+                Equipment, Equipment.id == WorkOrder.equipment_id, isouter=True
+            )
+            column = (
+                Equipment.name if sort_by == "equipment_name"
+                else func.coalesce(Equipment.location, WorkOrder.legacy_location)
+            )
+    else:
+        column = sortable.get(sort_by, WorkOrder.opened_at)
+    direction = (column.asc() if sort_dir == "asc" else column.desc())
+    query = query.order_by(direction, WorkOrder.id).offset(skip).limit(limit)
     result = await db.execute(query)
     items = result.scalars().all()
 
@@ -480,12 +658,95 @@ async def list_work_orders(
         equip = equip_map.get(wo.equipment_id)
         if equip:
             wo_data.equipment_name, wo_data.equipment_location = equip
+        # Prefer the curated location on the equipment record; fall back to the
+        # place the order was actually filed under in Interal.
+        if not wo_data.equipment_location:
+            wo_data.equipment_location = wo.legacy_location
         wo_data.technicians = tech_map.get(wo.id, [])
         if not wo_data.technicians and wo.executor_id in exec_map:
             wo_data.technicians = [exec_map[wo.executor_id]]
         wo_list.append(wo_data)
 
     return WorkOrderListResponse(total=total, items=wo_list)
+
+
+@router.get("/facets", summary="Distinct values for the list's column filters")
+async def wo_facets(
+    db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
+):
+    """Checkbox filters used to build their value list by walking every loaded
+    row. With 65k work orders the list is paged, so the values come from the
+    database instead. Computed over the whole plant scope, not the current
+    filter, so unchecking a value never makes it disappear from the list."""
+    scope = plant_condition(WorkOrder, ctx)
+
+    equip_rows = await db.execute(
+        select(Equipment.name, Equipment.location)
+        .where(Equipment.id.in_(select(WorkOrder.equipment_id).where(scope)))
+    )
+    equipment_names, locations = set(), set()
+    for name, location in equip_rows.all():
+        if name:
+            equipment_names.add(name)
+        if location:
+            locations.add(location)
+
+    legacy_loc = await db.execute(
+        select(WorkOrder.legacy_location).where(
+            scope, WorkOrder.legacy_location.isnot(None)
+        ).distinct()
+    )
+    for (loc,) in legacy_loc.all():
+        if loc:
+            locations.add(loc)
+
+    # Every name the Technician column can show, from all three sources -- a name
+    # that is displayed but not offered here cannot be filtered on, and
+    # unchecking any other value would silently drop the rows showing it.
+    technicians = set()
+    tech_rows = await db.execute(
+        select(WorkOrder.legacy_technician).where(
+            scope, WorkOrder.legacy_technician.isnot(None)
+        ).distinct()
+    )
+    technicians.update(name for (name,) in tech_rows.all() if name)
+
+    linked = await db.execute(
+        select(User.name)
+        .join(Technician, Technician.user_id == User.id)
+        .join(WorkOrderTechnician, WorkOrderTechnician.technician_id == Technician.id)
+        .where(WorkOrderTechnician.work_order_id.in_(select(WorkOrder.id).where(scope)))
+        .distinct()
+    )
+    technicians.update(name for (name,) in linked.all() if name)
+
+    executors = await db.execute(
+        select(User.name)
+        .join(Technician, Technician.user_id == User.id)
+        .where(Technician.id.in_(
+            select(WorkOrder.executor_id).where(scope, WorkOrder.executor_id.isnot(None))
+        ))
+        .distinct()
+    )
+    technicians.update(name for (name,) in executors.all() if name)
+
+    assignees = await db.execute(
+        select(User.name).where(User.id.in_(
+            select(WorkOrder.assigned_to_id).where(scope, WorkOrder.assigned_to_id.isnot(None))
+        )).distinct()
+    )
+    technicians.update(name for (name,) in assignees.all() if name)
+
+    collate = lambda values: sorted(values, key=lambda v: v.lower())
+    return {
+        "equipment_name": collate(equipment_names),
+        "location": collate(locations),
+        "technician": collate(technicians),
+        "type": [t.value for t in WorkOrderType],
+        "priority": [p.value for p in WorkOrderPriority],
+        "status": [s.value for s in WorkOrderStatus],
+    }
 
 
 @router.get("/dashboard", summary="Counts by status for dashboard")

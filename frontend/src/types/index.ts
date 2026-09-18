@@ -127,6 +127,8 @@ export interface WorkOrder {
   scheduled_end_time?: string;
   root_cause?: string;
   solution_applied?: string;
+  diagnostic?: string;
+  resolution?: string;
   opened_at: string;
   due_date?: string;
   started_at?: string;
@@ -154,6 +156,12 @@ export interface WorkOrder {
   updated_at?: string;
   intervention_parts?: InterventionPartOut[];
   technicians?: WOTechnician[];
+  // Historical import (Interal): the name and place the order was filed under,
+  // shown when the person has no account or the machine left the catalogue.
+  legacy_technician?: string;
+  legacy_location?: string;
+  import_source?: string;
+  import_ref?: string;
 }
 
 export interface WOTechnician {
