@@ -4,7 +4,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, AlertTriangle, Edit2, Save, X,
   MapPin, Tag, Layers, DollarSign, Hash, CircleAlert,
-  CheckCircle2, Minus, Plus, ShoppingCart,
+  CheckCircle2, Minus, Plus, ShoppingCart, Archive, FileWarning, Database,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -69,14 +69,14 @@ export default function InventoryDetail() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full bg-gray-950 text-gray-400">
-        Loading…
+        {t('common.loading', 'Loading…')}
       </div>
     );
   }
   if (!item) {
     return (
       <div className="flex items-center justify-center h-full bg-gray-950 text-gray-400">
-        Item not found.
+        {t('inventory.itemNotFound', 'Item not found.')}
       </div>
     );
   }
@@ -106,14 +106,14 @@ export default function InventoryDetail() {
                 onClick={cancelEdit}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 bg-gray-800 border border-gray-700 hover:bg-gray-700 rounded-lg transition-colors"
               >
-                <X size={14} /> Cancel
+                <X size={14} /> {t('common.cancel', 'Cancel')}
               </button>
               <button
                 onClick={saveEdit}
                 disabled={saving}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors disabled:opacity-50"
               >
-                <Save size={14} /> {saving ? 'Saving…' : 'Save'}
+                <Save size={14} /> {saving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}
               </button>
             </>
           ) : (
@@ -121,7 +121,7 @@ export default function InventoryDetail() {
               onClick={startEdit}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 bg-gray-800 border border-gray-700 hover:bg-gray-700 rounded-lg transition-colors"
             >
-              <Edit2 size={14} /> Edit
+              <Edit2 size={14} /> {t('common.edit', 'Edit')}
             </button>
           )}
         </div>
@@ -129,14 +129,40 @@ export default function InventoryDetail() {
 
       <div className="max-w-5xl mx-auto px-6 pt-6 space-y-6">
 
+        {/* ── Provenance banners ── */}
+        {item.archived && (
+          <div className="flex items-start gap-2 text-sm text-gray-300 bg-gray-900 border border-gray-700 rounded-xl px-4 py-3">
+            <Archive size={16} className="mt-0.5 flex-shrink-0 text-gray-400" />
+            <span>{t('inventory.retiredBanner',
+              'Withdrawn in the source system. Kept so this part number still resolves, but it is out of the catalogue and out of the parts search.')}</span>
+          </div>
+        )}
+        {item.import_incomplete && (
+          <div className="flex items-start gap-2 text-sm text-amber-300 bg-amber-950/30 border border-amber-800/60 rounded-xl px-4 py-3">
+            <FileWarning size={16} className="mt-0.5 flex-shrink-0" />
+            <span>{t('inventory.incompleteBanner',
+              'The last extraction carried this part on a broken row. Its identity was refreshed; quantity, cost, location and supplier are whatever the platform already held.')}</span>
+          </div>
+        )}
+
         {/* ── Hero block ── */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
           <div className="flex items-start justify-between gap-4">
             <div className="flex-1">
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex flex-wrap items-center gap-2 mb-2">
                 <span className="font-mono text-sm text-indigo-400 bg-indigo-950/50 border border-indigo-800 px-2 py-0.5 rounded">
                   {item.code}
                 </span>
+                {item.name && (
+                  <span className="font-mono text-xs text-gray-300 bg-gray-800 border border-gray-700 px-2 py-0.5 rounded">
+                    {item.name}
+                  </span>
+                )}
+                {item.stockable === false && (
+                  <span className="text-xs text-gray-400 bg-gray-800 border border-gray-600 px-2 py-0.5 rounded">
+                    {t('inventory.onDemand', 'On demand')}
+                  </span>
+                )}
                 {item.interal_product_id && (
                   <span className="text-xs text-gray-500 font-mono">
                     ID: {item.interal_product_id}
@@ -152,7 +178,7 @@ export default function InventoryDetail() {
                 />
               ) : (
                 <h2 className="text-xl font-semibold text-white leading-snug">
-                  {item.description || <span className="text-gray-500 italic">No description</span>}
+                  {item.description || <span className="text-gray-500 italic">{t('inventory.noDescription', 'No description')}</span>}
                 </h2>
               )}
             </div>
@@ -191,7 +217,7 @@ export default function InventoryDetail() {
               step="1"
               value={qtyDelta}
               onChange={e => setQtyDelta(e.target.value)}
-              placeholder="Quantity"
+              placeholder={t('inventory.quantityPlaceholder', 'Quantity')}
               className="w-28 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
             />
             <button
@@ -199,20 +225,28 @@ export default function InventoryDetail() {
               disabled={adjusting || !qtyDelta}
               className="flex items-center gap-1 px-3 py-2 bg-red-900/40 border border-red-700 text-red-300 hover:bg-red-900/60 rounded-lg text-sm transition-colors disabled:opacity-40"
             >
-              <Minus size={14} /> Out
+              <Minus size={14} /> {t('inventory.stockOut', 'Out')}
             </button>
             <button
               onClick={() => applyDelta(1)}
               disabled={adjusting || !qtyDelta}
               className="flex items-center gap-1 px-3 py-2 bg-emerald-900/40 border border-emerald-700 text-emerald-300 hover:bg-emerald-900/60 rounded-lg text-sm transition-colors disabled:opacity-40"
             >
-              <Plus size={14} /> In
+              <Plus size={14} /> {t('inventory.stockIn', 'In')}
             </button>
           </div>
-          {isLow && (
-            <div className="mt-3 flex items-center gap-2 text-sm text-amber-400 bg-amber-950/30 border border-amber-800/50 rounded-lg px-3 py-2">
+          {(isZero || item.min_quantity != null) && isLow && (
+            <div className={`mt-3 flex items-center gap-2 text-sm rounded-lg px-3 py-2 ${
+              isZero
+                ? 'text-red-400 bg-red-950/30 border border-red-800/50'
+                : 'text-amber-400 bg-amber-950/30 border border-amber-800/50'
+            }`}>
               <AlertTriangle size={14} />
-              Stock at or below minimum ({item.min_quantity} {item.unit})
+              {isZero
+                ? t('inventory.outOfStockNotice', 'Out of stock')
+                : t('inventory.atOrBelowMin', 'At or below its minimum ({{min}} {{unit}})', {
+                    min: item.min_quantity, unit: item.unit,
+                  })}
             </div>
           )}
         </div>
@@ -220,7 +254,7 @@ export default function InventoryDetail() {
         {/* ── Details grid ── */}
         <div className="grid grid-cols-2 gap-4">
           {/* Classification */}
-          <DetailCard title="Classification" icon={<Tag size={14} className="text-indigo-400" />}>
+          <DetailCard title={t('inventory.classification', 'Classification')} icon={<Tag size={14} className="text-indigo-400" />}>
             <Field label={t('inventory.category', 'Category')}>
               {editing ? (
                 <input className={inputCls} value={draft.category ?? ''} onChange={e => setDraft(d => ({ ...d, category: e.target.value }))} />
@@ -247,7 +281,7 @@ export default function InventoryDetail() {
           </DetailCard>
 
           {/* Location */}
-          <DetailCard title="Location" icon={<MapPin size={14} className="text-emerald-400" />}>
+          <DetailCard title={t('inventory.location', 'Location')} icon={<MapPin size={14} className="text-emerald-400" />}>
             <Field label={t('inventory.warehouse', 'Warehouse')}>
               {editing ? (
                 <input className={inputCls} value={draft.warehouse ?? ''} onChange={e => setDraft(d => ({ ...d, warehouse: e.target.value }))} />
@@ -270,7 +304,7 @@ export default function InventoryDetail() {
               {editing ? (
                 <input type="number" className={inputCls} value={draft.min_quantity ?? ''} onChange={e => setDraft(d => ({ ...d, min_quantity: e.target.value ? parseFloat(e.target.value) : null }))} />
               ) : (
-                <span className={item.min_quantity != null ? 'font-semibold' : 'text-gray-500'}>{item.min_quantity ?? 'Not set'}</span>
+                <span className={item.min_quantity != null ? 'font-semibold' : 'text-gray-500'}>{item.min_quantity ?? t('common.notSet', 'Not set')}</span>
               )}
             </Field>
           </DetailCard>
@@ -306,7 +340,7 @@ export default function InventoryDetail() {
                   value={draft.supplier_id ?? ''}
                   onChange={e => setDraft(d => ({ ...d, supplier_id: e.target.value || null }))}
                 >
-                  <option value="">— None —</option>
+                  <option value="">{t('inventory.noSupplier', '— None —')}</option>
                   {suppliers.map(s => (
                     <option key={s.id} value={s.id}>{s.code ? `${s.code} · ` : ''}{s.name}</option>
                   ))}
@@ -329,6 +363,20 @@ export default function InventoryDetail() {
                 <span className="font-mono text-xs">{item.supplier_code || '—'}</span>
               )}
             </Field>
+            {/* A separate relation from the supplier above, and not always the
+                same one — kept visible rather than collapsed into it. */}
+            {!editing && (
+              <Field label={t('inventory.preferredSupplier', 'Preferred supplier')}>
+                <span>
+                  {item.preferred_supplier || '—'}
+                  {item.preferred_supplier_code && (
+                    <span className="text-gray-500 font-mono text-xs ml-1">
+                      ({item.preferred_supplier_code})
+                    </span>
+                  )}
+                </span>
+              </Field>
+            )}
             {isLow && item.supplier_id && !editing && (
               <button
                 onClick={() => navigate(`/supplier-orders/new?supplier_id=${item.supplier_id}&item_id=${item.id}`)}
@@ -340,11 +388,63 @@ export default function InventoryDetail() {
           </DetailCard>
         </div>
 
+        {/* ── What the source system carries ──
+            Read-only on purpose: the next extraction owns these, so an edit here
+            would be silently undone. */}
+        <DetailCard
+          title={t('inventory.sourceData', 'Source data (Interal)')}
+          icon={<Database size={14} className="text-sky-400" />}
+        >
+          <Field label={t('inventory.productName', 'Product name')}>
+            <span className="font-mono text-xs">{item.name || '—'}</span>
+          </Field>
+          <Field label={t('inventory.inventoryCode', 'Inventory code')}>
+            <span className="font-mono text-xs">{item.inventory_code || '—'}</span>
+          </Field>
+          <Field label={t('inventory.interalId', 'Interal ID')}>
+            <span className="font-mono text-xs">{item.interal_product_id || '—'}</span>
+          </Field>
+          <Field label={t('inventory.stockable', 'Stocking')}>
+            <span>
+              {item.stockable == null
+                ? '—'
+                : item.stockable
+                ? t('inventory.stocked', 'Stocked')
+                : t('inventory.onDemand', 'On demand')}
+            </span>
+          </Field>
+          {item.has_reserved_stock && (
+            <Field label={t('inventory.available', 'Available')}>
+              <span className="font-mono">{item.quantity_available}</span>
+            </Field>
+          )}
+          <Field label={t('inventory.drawingRevision', 'Drawing / PO ref.')}>
+            <span className="text-xs">{item.drawing_revision || '—'}</span>
+          </Field>
+          <Field label={t('inventory.sourceNote', 'Source note')}>
+            <span className="text-xs">{item.source_note || '—'}</span>
+          </Field>
+          <Field label={t('inventory.saleMarkup', 'Charge-out markup')}>
+            {/* A markup of 0 is the source's "none set", not a part that is given
+                away, so it reads as blank rather than "×0" on 86% of the catalogue. */}
+            <span className="font-mono text-xs">
+              {item.sale_markup ? `×${item.sale_markup}` : '—'}
+            </span>
+          </Field>
+          <Field label={t('inventory.lastSync', 'Last refreshed from source')}>
+            <span className="text-xs text-gray-400">
+              {item.source_synced_at
+                ? new Date(item.source_synced_at).toLocaleString()
+                : t('inventory.neverSynced', 'Never')}
+            </span>
+          </Field>
+        </DetailCard>
+
         {/* Notes */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
           <h3 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
             <Hash size={14} className="text-gray-400" />
-            Notes
+            {t('inventory.notes', 'Notes')}
           </h3>
           {editing ? (
             <textarea
@@ -352,11 +452,11 @@ export default function InventoryDetail() {
               rows={4}
               value={draft.notes ?? ''}
               onChange={e => setDraft(d => ({ ...d, notes: e.target.value }))}
-              placeholder="Internal notes…"
+              placeholder={t('inventory.notesPlaceholder', 'Internal notes…')}
             />
           ) : (
             <p className="text-sm text-gray-400 whitespace-pre-wrap">
-              {item.notes || <span className="italic text-gray-600">No notes</span>}
+              {item.notes || <span className="italic text-gray-600">{t('inventory.noNotes', 'No notes')}</span>}
             </p>
           )}
         </div>

@@ -746,6 +746,12 @@ class StockItem(Base):
     part_class   = Column(String(200), nullable=True)
     unit         = Column(String(50),  default="Unitaire")
     quantity     = Column(Float, default=0)
+    # What Interal calls AVAILABLE, kept apart from the count on hand. The two
+    # agree in every row of the 2026-09-17 extraction, but they are not the same
+    # question — available is what may still be committed, quantity is what sits
+    # on the shelf — so collapsing them would silently destroy the distinction
+    # the day a reservation makes them diverge.
+    quantity_available = Column(Float, nullable=True)
     min_quantity = Column(Float, nullable=True)
     unit_cost    = Column(Float)                      # standard cost (manual) — used to value WO/ticket consumption
     average_cost       = Column(Float, nullable=True) # weighted average of all received purchases
@@ -756,7 +762,35 @@ class StockItem(Base):
     supplier_id  = Column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=True)
     supplier     = Column(String(300))
     supplier_code      = Column(String(100), nullable=True)
+    # The supplier Interal marks as PREFERRED, which is a different relation from
+    # the one above: 489 items name one supplier and prefer another.
+    preferred_supplier      = Column(String(300), nullable=True)
+    preferred_supplier_code = Column(String(50),  nullable=True)
     interal_product_id = Column(String(50),  nullable=True)
+    # Interal's structured part code (BEAR-GUID-0001). Distinct from `name`,
+    # which carries its own product label — 242 items have both, and different.
+    inventory_code = Column(String(100), nullable=True)
+    # Carried on stock vs. bought on demand ("Sur Demande"). Source: F_STOCKABLE.
+    stockable      = Column(Boolean, nullable=True)
+    # Markup Interal applies when the part is charged out (QUOTED_PROFIT). The
+    # sale price itself is not stored: it is exactly average_cost × this.
+    sale_markup    = Column(Float, nullable=True)
+    # Free-text references the source keeps next to the part: quote numbers,
+    # PO numbers, rebuild dates. Deliberately NOT parsed into last_purchase_*:
+    # the extraction has no unambiguous last-purchase column.
+    drawing_revision = Column(String(200), nullable=True)
+    source_note      = Column(String(300), nullable=True)
+    # Retired in the source (Interal renames a retired product to xPA-…): no
+    # stock, no location, not stockable, and 3 727 of them shadow a live part.
+    # Kept rather than dropped so an old part number still resolves, but out of
+    # the default catalogue view and out of the kiosk search.
+    archived     = Column(Boolean, nullable=False, default=False)
+    # The source row was structurally broken (a line break inside DESCRIPTION
+    # split it across physical rows) and could not be fully reconstructed, so
+    # the import refused to touch this item's numbers. Flag is cleared as soon
+    # as a clean row arrives for it.
+    import_incomplete = Column(Boolean, nullable=False, default=False)
+    source_synced_at  = Column(DateTime(timezone=True), nullable=True)
     notes        = Column(Text, nullable=True)
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
 

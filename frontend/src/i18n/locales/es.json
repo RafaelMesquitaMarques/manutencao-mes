@@ -240,7 +240,8 @@
     "displayOrder": "Orden de visualización",
     "remove": "Quitar",
     "previous": "Anterior",
-    "next": "Siguiente"
+    "next": "Siguiente",
+    "notSet": "Sin definir"
   },
   "settings": {
     "profileTitle": "Mi perfil",
@@ -2183,7 +2184,7 @@
     "costs": "Costos",
     "reorder": "Reabastecer",
     "avgCost": "Costo prom.",
-    "avgCostHint": "Promedio ponderado de todas las compras recibidas",
+    "avgCostHint": "Precio unitario medio del sistema de origen, o la media ponderada de las compras recibidas cuando no lo tiene",
     "lastPurchase": "Última compra",
     "lastPurchaseHint": "Costo unitario de la recepción más reciente",
     "subtitle": "Piezas y materiales · Saint-Jérôme",
@@ -2191,14 +2192,54 @@
     "lowStock": "Stock bajo",
     "zeroStock": "Sin stock",
     "categories": "Categorías",
-    "lowStockOnly": "Solo stock bajo",
+    "lowStockOnly": "Por reponer",
     "newItem": "Nueva pieza",
     "searchPlaceholder": "Buscar por código, descripción…",
     "results": "resultados",
     "adjustQty": "Ajustar stock",
     "supplier": "Proveedor",
     "orderFromSupplier": "Pedir al proveedor",
-    "editHint": "Doble clic para editar"
+    "editHint": "Doble clic para editar",
+    "productName": "Nombre del producto",
+    "productNameHint": "Nombre abreviado del producto en Interal",
+    "inventoryCode": "Código de inventario",
+    "available": "Disponible",
+    "availableHint": "Cantidad disponible en Interal: igual al stock en mano salvo que haya unidades reservadas",
+    "stockable": "Almacenamiento",
+    "stocked": "En stock",
+    "onDemand": "Bajo pedido",
+    "preferredSupplier": "Proveedor preferido",
+    "preferredSupplierHint": "El proveedor que indica la fuente, no siempre el asignado al artículo",
+    "drawingRevision": "Ref. plano / OC",
+    "sourceNote": "Nota de origen",
+    "interalId": "ID Interal",
+    "columns": "Columnas",
+    "belowMin": "Bajo el mínimo",
+    "belowMinHint": "Con stock, pero en el mínimo o por debajo",
+    "belowMinEmptyHint": "Ningún artículo tiene todavía una cantidad mínima definida",
+    "retired": "Retirados",
+    "retiredHint": "Retirados en la fuente: se conservan para que los números de pieza antiguos sigan encontrándose",
+    "includeRetired": "Incluir piezas retiradas",
+    "retiredBanner": "Pieza retirada en el sistema de origen. Se conserva para que este número siga encontrándose, pero queda fuera del catálogo y de la búsqueda de piezas.",
+    "incompleteBanner": "La última extracción traía esta pieza en una fila rota. Se actualizó su identidad; la cantidad, el costo, la ubicación y el proveedor son los que ya tenía la plataforma.",
+    "sourceData": "Datos de origen (Interal)",
+    "saleMarkup": "Margen de refacturación",
+    "lastSync": "Última actualización desde la fuente",
+    "neverSynced": "Nunca",
+    "exportCsv": "Exportar CSV",
+    "noItems": "No se encontraron artículos",
+    "notes": "Notas",
+    "classification": "Clasificación",
+    "noDescription": "Sin descripción",
+    "noNotes": "Sin notas",
+    "notesPlaceholder": "Notas internas…",
+    "quantityPlaceholder": "Cantidad",
+    "stockOut": "Salida",
+    "stockIn": "Entrada",
+    "itemNotFound": "Artículo no encontrado.",
+    "noSupplier": "— Ninguno —",
+    "outOfStockNotice": "Sin stock",
+    "atOrBelowMin": "En el mínimo o por debajo ({{min}} {{unit}})"
   },
   "maintenanceDash": {
     "title": "Panel de mantenimiento",
@@ -3073,7 +3114,12 @@
     "subtitle": "Riesgo de máquina explicable, aprendido de sensores e historial de fallas",
     "tabHealth": "Salud predictiva",
     "modeLabel": "Modo",
-    "mode": { "off": "Desactivado", "silent": "Silencioso (registro)", "admin": "Solo admins", "active": "Activo" },
+    "mode": {
+      "off": "Desactivado",
+      "silent": "Silencioso (registro)",
+      "admin": "Solo admins",
+      "active": "Activo"
+    },
     "notVisible": "El módulo predictivo aún no es visible para su nivel de acceso.",
     "noSnapshot": "Sin evaluación para esta máquina — el motor la procesará en el próximo ciclo.",
     "evaluateNow": "Evaluar ahora",
@@ -3116,22 +3162,46 @@
     "giveFeedback": "Dar retroalimentación",
     "createTicket": "Crear ticket de inspección",
     "viewTicket": "Ver ticket",
-    "level": { "normal": "Normal", "watch": "Atención", "alert": "Alerta", "critical": "Crítico", "no_data": "Sin datos" },
-    "maturity": {
-      "no_data": "Sin datos", "collecting": "Recolectando datos", "baseline_building": "Construyendo baseline",
-      "rules_monitoring": "Monitoreo por reglas", "anomaly_active": "Detección de anomalías activa",
-      "model_validating": "Modelo en validación", "model_active": "Modelo activo"
+    "level": {
+      "normal": "Normal",
+      "watch": "Atención",
+      "alert": "Alerta",
+      "critical": "Crítico",
+      "no_data": "Sin datos"
     },
-    "context": { "run": "En producción", "idle": "Detenida", "all": "Todas las condiciones" },
+    "maturity": {
+      "no_data": "Sin datos",
+      "collecting": "Recolectando datos",
+      "baseline_building": "Construyendo baseline",
+      "rules_monitoring": "Monitoreo por reglas",
+      "anomaly_active": "Detección de anomalías activa",
+      "model_validating": "Modelo en validación",
+      "model_active": "Modelo activo"
+    },
+    "context": {
+      "run": "En producción",
+      "idle": "Detenida",
+      "all": "Todas las condiciones"
+    },
     "status": {
-      "new": "Nueva", "in_review": "En análisis", "inspection_planned": "Inspección planificada",
-      "intervention_required": "Intervención requerida", "intervention_done": "Intervención realizada",
-      "false_positive": "Falso positivo", "monitoring": "En seguimiento", "closed": "Cerrada"
+      "new": "Nueva",
+      "in_review": "En análisis",
+      "inspection_planned": "Inspección planificada",
+      "intervention_required": "Intervención requerida",
+      "intervention_done": "Intervención realizada",
+      "false_positive": "Falso positivo",
+      "monitoring": "En seguimiento",
+      "closed": "Cerrada"
     },
     "kind": {
-      "vibration": "Vibración", "temperature": "Temperatura", "pressure": "Presión",
-      "operational": "Operacional", "reliability": "Confiabilidad", "pattern": "Patrón conocido",
-      "rule": "Regla", "general": "General"
+      "vibration": "Vibración",
+      "temperature": "Temperatura",
+      "pressure": "Presión",
+      "operational": "Operacional",
+      "reliability": "Confiabilidad",
+      "pattern": "Patrón conocido",
+      "rule": "Regla",
+      "general": "General"
     },
     "recommendation": {
       "inspect_rotating_parts": "Inspeccionar rodamientos, alineación y lubricación de partes rotativas",
@@ -3171,11 +3241,20 @@
       "pattern_similarity": "Similar a fallas pasadas",
       "rule_triggered": "Regla configurada"
     },
-    "sensorStatus": { "ok": "OK", "degraded": "Degradado", "faulty": "Con falla", "no_data": "Sin datos" },
+    "sensorStatus": {
+      "ok": "OK",
+      "degraded": "Degradado",
+      "faulty": "Con falla",
+      "no_data": "Sin datos"
+    },
     "sensorIssue": {
-      "stale": "sin datos recientes", "frozen": "valor congelado", "impossible_value": "valor imposible",
-      "bad_quality_flags": "calidad de lectura baja", "irregular_gaps": "huecos irregulares",
-      "spike_suspect": "pico aislado", "no_readings": "sin lecturas"
+      "stale": "sin datos recientes",
+      "frozen": "valor congelado",
+      "impossible_value": "valor imposible",
+      "bad_quality_flags": "calidad de lectura baja",
+      "irregular_gaps": "huecos irregulares",
+      "spike_suspect": "pico aislado",
+      "no_readings": "sin lecturas"
     },
     "fbTitle": "Retroalimentación del técnico",
     "fbSubtitle": "Su veredicto entrena el sistema — queda registrado y auditado, nunca se aplica a ciegas.",

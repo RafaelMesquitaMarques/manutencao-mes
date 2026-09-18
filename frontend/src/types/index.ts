@@ -1340,6 +1340,8 @@ export interface StockItem {
   part_class:           string;
   unit:                 string;
   quantity:             number;
+  /** Interal's AVAILABLE count. Equal to `quantity` unless stock is reserved. */
+  quantity_available:   number | null;
   min_quantity:         number | null;
   unit_cost:            number | null;
   average_cost:         number | null;
@@ -1349,16 +1351,38 @@ export interface StockItem {
   location:             string;
   supplier_id:          string | null;
   supplier_name:        string | null;
+  /** The supplier name the source carries, used when no supplier record matched. */
+  supplier:             string;
   supplier_code:        string | null;
+  /** The supplier Interal marks as preferred — a different relation from `supplier`. */
+  preferred_supplier:      string;
+  preferred_supplier_code: string;
   interal_product_id:   string | null;
+  /** Interal's structured part code (BEAR-GUID-0001), distinct from `name`. */
+  inventory_code:       string;
+  /** Carried on stock (true) vs. bought on demand (false). */
+  stockable:            boolean | null;
+  /** Markup Interal applies when the part is charged out. */
+  sale_markup:          number | null;
+  drawing_revision:     string;
+  source_note:          string;
+  /** Retired in the source: kept so an old part number resolves, hidden by default. */
+  archived:             boolean;
+  /** The source row was broken, so this item's numbers were not refreshed. */
+  import_incomplete:    boolean;
+  source_synced_at:     string | null;
+  has_reserved_stock:   boolean;
   notes:                string;
   is_low_stock:         boolean;
 }
 
 export interface StockItemListResponse {
-  total:           number;
-  low_stock_count: number;
-  items:           StockItem[];
+  total:            number;
+  /** Needs reordering: out of stock OR at/below a minimum that was set. */
+  low_stock_count:  number;
+  zero_stock_count: number;
+  below_min_count:  number;
+  items:            StockItem[];
 }
 
 export interface Supplier {
@@ -1453,6 +1477,9 @@ export interface InventoryDashboard {
   total_items:      number;
   low_stock_count:  number;
   zero_stock_count: number;
+  below_min_count:  number;
+  archived_count:   number;
+  incomplete_count: number;
   by_category:      { category: string; count: number }[];
 }
 

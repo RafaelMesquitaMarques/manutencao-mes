@@ -117,6 +117,32 @@ def _supplier_out(s: Supplier) -> dict:
 
 # ─── STOCK ITEMS ──────────────────────────────────────────────────────────────
 
+# ─── Stock-level predicates ───────────────────────────────────────────────────
+#
+# "Out of stock" and "below minimum" are two different questions, and with no
+# minimum set anywhere they used to be answered by the same number — both KPI
+# cards read 1 416 because the low-stock rule is the UNION of the two. Kept as
+# three separate predicates so each card counts what its label says.
+
+OUT_OF_STOCK = StockItem.quantity <= 0
+BELOW_MIN = and_(
+    StockItem.min_quantity.isnot(None),
+    StockItem.quantity > 0,
+    StockItem.quantity <= StockItem.min_quantity,
+)
+# What flags a row for reordering, and what `low_stock_only` has always meant.
+NEEDS_REORDER = or_(OUT_OF_STOCK, BELOW_MIN)
+
+
+async def _count(db, ctx, *conditions) -> int:
+    """Count stock items in the caller's plant group matching `conditions`."""
+    return (await db.execute(
+        select(func.count()).select_from(
+            select(StockItem).where(plant_condition(StockItem, ctx), *conditions).subquery()
+        )
+    )).scalar_one()
+
+
 @router.get("/items")
 async def list_stock_items(
     search: Optional[str] = None,
@@ -125,20 +151,33 @@ async def list_stock_items(
     warehouse: Optional[str] = None,
     supplier_id: Optional[uuid.UUID] = None,
     low_stock_only: bool = False,
+    out_of_stock_only: bool = False,
+    below_min_only: bool = False,
+    stockable: Optional[bool] = None,
+    # Products Interal has retired are kept (an old part number still resolves)
+    # but stay out of the catalogue unless asked for.
+    include_archived: bool = False,
+    archived_only: bool = False,
     skip: int = 0,
-    limit: int = Query(default=50, le=6000),
+    limit: int = Query(default=50, le=12000),
     db: AsyncSession = Depends(get_db),
     ctx: PlantContext = Depends(get_plant_context),
 ):
     q = plant_scoped(select(StockItem), StockItem, ctx)   # group-scoped: QC pool
 
     filters = []
+    if archived_only:
+        filters.append(StockItem.archived.is_(True))
+    elif not include_archived:
+        filters.append(StockItem.archived.is_(False))
     if search:
         filters.append(
             or_(
                 StockItem.code.ilike(f"%{search}%"),
                 StockItem.description.ilike(f"%{search}%"),
                 StockItem.name.ilike(f"%{search}%"),
+                StockItem.inventory_code.ilike(f"%{search}%"),
+                StockItem.supplier.ilike(f"%{search}%"),
             )
         )
     if category:
@@ -147,16 +186,14 @@ async def list_stock_items(
         filters.append(StockItem.part_class.ilike(f"%{part_class}%"))
     if warehouse:
         filters.append(StockItem.warehouse.ilike(f"%{warehouse}%"))
+    if stockable is not None:
+        filters.append(StockItem.stockable.is_(stockable))
     if low_stock_only:
-        filters.append(
-            or_(
-                StockItem.quantity <= 0,
-                and_(
-                    StockItem.min_quantity.isnot(None),
-                    StockItem.quantity <= StockItem.min_quantity,
-                ),
-            )
-        )
+        filters.append(NEEDS_REORDER)
+    if out_of_stock_only:
+        filters.append(OUT_OF_STOCK)
+    if below_min_only:
+        filters.append(BELOW_MIN)
     if supplier_id:
         filters.append(StockItem.supplier_id == supplier_id)
     if filters:
@@ -165,20 +202,15 @@ async def list_stock_items(
     total_q = select(func.count()).select_from(q.subquery())
     total = (await db.execute(total_q)).scalar_one()
 
-    # Low stock count: quantity <= 0 OR (min set AND quantity <= min)
-    low_q = select(func.count()).select_from(
-        select(StockItem).where(
-            plant_condition(StockItem, ctx),
-            or_(
-                StockItem.quantity <= 0,
-                and_(
-                    StockItem.min_quantity.isnot(None),
-                    StockItem.quantity <= StockItem.min_quantity,
-                ),
-            )
-        ).subquery()
-    )
-    low_count = (await db.execute(low_q)).scalar_one()
+    # The KPI counts describe the same population the list shows, so they follow
+    # the archived toggle — otherwise "out of stock" would count 3 729 retired
+    # products the table never displays.
+    scope = [] if include_archived or archived_only else [StockItem.archived.is_(False)]
+    if archived_only:
+        scope = [StockItem.archived.is_(True)]
+    low_count = await _count(db, ctx, NEEDS_REORDER, *scope)
+    zero_count = await _count(db, ctx, OUT_OF_STOCK, *scope)
+    below_min_count = await _count(db, ctx, BELOW_MIN, *scope)
 
     items = (
         await db.execute(
@@ -196,28 +228,39 @@ async def list_stock_items(
     return {
         "total": total,
         "low_stock_count": low_count,
+        "zero_stock_count": zero_count,
+        "below_min_count": below_min_count,
         "items": [_item_out(i, sup_map.get(str(i.supplier_id)) if i.supplier_id else None) for i in items],
     }
 
 
 @router.get("/items/categories")
 async def list_categories(
+    include_archived: bool = False,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    """Return distinct categories and part classes for filter dropdowns."""
-    cats_q = select(StockItem.category).where(StockItem.category.isnot(None)).distinct()
-    cls_q = select(StockItem.part_class).where(StockItem.part_class.isnot(None)).distinct()
-    wh_q = select(StockItem.warehouse).where(StockItem.warehouse.isnot(None)).distinct()
+    """Distinct categories, part classes and warehouses for the filter dropdowns.
 
-    cats = [r[0] for r in (await db.execute(cats_q)).all() if r[0]]
-    classes = [r[0] for r in (await db.execute(cls_q)).all() if r[0]]
-    warehouses = [r[0] for r in (await db.execute(wh_q)).all() if r[0]]
+    Scoped to the caller's plant group and, like the list, to the live catalogue:
+    these feed the Categories KPI and the filter options, so they must describe
+    the rows the table can actually show.
+    """
+    scope = [plant_condition(StockItem, ctx)]
+    if not include_archived:
+        scope.append(StockItem.archived.is_(False))
+
+    async def distinct(column):
+        rows = await db.execute(
+            select(column).where(*scope, column.isnot(None)).distinct()
+        )
+        return sorted({r[0] for r in rows.all() if r[0]})
 
     return {
-        "categories": sorted(set(cats)),
-        "part_classes": sorted(set(classes)),
-        "warehouses": sorted(set(warehouses)),
+        "categories": await distinct(StockItem.category),
+        "part_classes": await distinct(StockItem.part_class),
+        "warehouses": await distinct(StockItem.warehouse),
     }
 
 
@@ -331,32 +374,25 @@ async def delete_stock_item(
 
 @router.get("/dashboard")
 async def inventory_dashboard(
+    include_archived: bool = False,
     db: AsyncSession = Depends(get_db),
+    ctx: PlantContext = Depends(get_plant_context),
     current_user: User = Depends(get_current_user),
 ):
-    total_items = (await db.execute(select(func.count()).select_from(StockItem))).scalar_one()
+    """Catalogue-wide counts. Plant-group scoped, live products only by default."""
+    scope = [] if include_archived else [StockItem.archived.is_(False)]
 
-    low_stock = (await db.execute(
-        select(func.count()).select_from(
-            select(StockItem).where(
-                or_(
-                    StockItem.quantity <= 0,
-                    and_(StockItem.min_quantity.isnot(None), StockItem.quantity <= StockItem.min_quantity),
-                )
-            ).subquery()
-        )
-    )).scalar_one()
-
-    zero_stock = (await db.execute(
-        select(func.count()).select_from(
-            select(StockItem).where(StockItem.quantity <= 0).subquery()
-        )
-    )).scalar_one()
+    total_items = await _count(db, ctx, *scope)
+    low_stock = await _count(db, ctx, NEEDS_REORDER, *scope)
+    zero_stock = await _count(db, ctx, OUT_OF_STOCK, *scope)
+    below_min = await _count(db, ctx, BELOW_MIN, *scope)
+    archived = await _count(db, ctx, StockItem.archived.is_(True))
+    incomplete = await _count(db, ctx, StockItem.import_incomplete.is_(True))
 
     # Category breakdown
     cat_q = (
         select(StockItem.category, func.count().label("cnt"))
-        .where(StockItem.category.isnot(None))
+        .where(plant_condition(StockItem, ctx), StockItem.category.isnot(None), *scope)
         .group_by(StockItem.category)
         .order_by(func.count().desc())
         .limit(10)
@@ -367,6 +403,9 @@ async def inventory_dashboard(
         "total_items": total_items,
         "low_stock_count": low_stock,
         "zero_stock_count": zero_stock,
+        "below_min_count": below_min,
+        "archived_count": archived,
+        "incomplete_count": incomplete,
         "by_category": by_category,
     }
 
@@ -390,13 +429,16 @@ async def search_stock_items(
             or_(
                 StockItem.code.ilike(like),
                 StockItem.name.ilike(like),
+                StockItem.inventory_code.ilike(like),
                 StockItem.description.ilike(like),
                 StockItem.supplier_code.ilike(like),
                 StockItem.supplier.ilike(like),
                 StockItem.category.ilike(like),
             )
         )
-    stmt = select(StockItem)
+    # Retired products never reach the floor: a technician picking parts for a
+    # repair must not be offered a part number Interal has withdrawn.
+    stmt = select(StockItem).where(StockItem.archived.is_(False))
     if filters:
         stmt = stmt.where(and_(*filters))
     if q:
@@ -433,6 +475,7 @@ def _item_out(i: StockItem, supplier_name: Optional[str] = None) -> dict:
     is_low = qty <= 0 or (
         i.min_quantity is not None and qty <= float(i.min_quantity)
     )
+    available = float(i.quantity_available) if i.quantity_available is not None else None
     return {
         "id": str(i.id),
         "plant_id": str(i.plant_id) if i.plant_id else None,
@@ -443,6 +486,7 @@ def _item_out(i: StockItem, supplier_name: Optional[str] = None) -> dict:
         "part_class": i.part_class or "",
         "unit": i.unit or "Unitaire",
         "quantity": qty,
+        "quantity_available": available,
         "min_quantity": float(i.min_quantity) if i.min_quantity is not None else None,
         "unit_cost": float(i.unit_cost) if i.unit_cost is not None else None,
         "average_cost": float(i.average_cost) if i.average_cost is not None else None,
@@ -452,8 +496,25 @@ def _item_out(i: StockItem, supplier_name: Optional[str] = None) -> dict:
         "location": i.location or "",
         "supplier_id": str(i.supplier_id) if i.supplier_id else None,
         "supplier_name": supplier_name,
+        # The name the source carries, which stands in when no supplier record
+        # matched its code and the link could not be made.
+        "supplier": i.supplier or "",
         "supplier_code": i.supplier_code if hasattr(i, "supplier_code") else None,
+        # Kept apart from `supplier`: the two disagree on 489 items.
+        "preferred_supplier": i.preferred_supplier or "",
+        "preferred_supplier_code": i.preferred_supplier_code or "",
         "interal_product_id": i.interal_product_id,
+        "inventory_code": i.inventory_code or "",
+        "stockable": i.stockable,
+        "sale_markup": float(i.sale_markup) if i.sale_markup is not None else None,
+        "drawing_revision": i.drawing_revision or "",
+        "source_note": i.source_note or "",
+        "archived": bool(i.archived),
+        "import_incomplete": bool(i.import_incomplete),
+        "source_synced_at": i.source_synced_at.isoformat() if i.source_synced_at else None,
         "notes": i.notes or "",
         "is_low_stock": is_low,
+        # Only meaningful once a reservation makes the two diverge; the UI hides
+        # it when they agree, which is every row of the current extraction.
+        "has_reserved_stock": available is not None and abs(available - qty) > 1e-9,
     }

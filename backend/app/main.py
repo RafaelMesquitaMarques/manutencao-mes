@@ -1527,6 +1527,26 @@ async def _run_migrations() -> None:
         UPDATE wo_parts SET stock_deducted = COALESCE(quantity, 0)
         WHERE stock_deducted IS NULL AND stock_item_id IS NOT NULL
         """,
+        # ── Phase: Interal inventory extraction (xlsx) — columns the previous
+        # XML import had no source for. See scripts/import_inventory_xlsx.py for
+        # what each one is mapped from and why the rest of the sheet is skipped.
+        ('stock_items', 'quantity_available', 'DOUBLE PRECISION'),
+        ('stock_items', 'preferred_supplier', 'VARCHAR(300)'),
+        ('stock_items', 'preferred_supplier_code', 'VARCHAR(50)'),
+        ('stock_items', 'inventory_code', 'VARCHAR(100)'),
+        ('stock_items', 'stockable', 'BOOLEAN'),
+        ('stock_items', 'sale_markup', 'DOUBLE PRECISION'),
+        ('stock_items', 'drawing_revision', 'VARCHAR(200)'),
+        ('stock_items', 'source_note', 'VARCHAR(300)'),
+        ('stock_items', 'archived', 'BOOLEAN NOT NULL DEFAULT FALSE'),
+        ('stock_items', 'import_incomplete', 'BOOLEAN NOT NULL DEFAULT FALSE'),
+        ('stock_items', 'source_synced_at', 'TIMESTAMPTZ'),
+        # The importer looks every row up by (plant, code) — 10 000 lookups per
+        # run against a table that had no index on code at all.
+        "CREATE INDEX IF NOT EXISTS idx_stock_items_plant_code ON stock_items (plant_id, code)",
+        # Every list, KPI and search now filters archived rows out; without this
+        # the default catalogue view scans the retired half of the table too.
+        "CREATE INDEX IF NOT EXISTS idx_stock_items_archived ON stock_items (archived)",
     ]
     # `ADD COLUMN IF NOT EXISTS` is statement-level idempotency, NOT lock avoidance.
     # Taking an AccessExclusiveLock is the FIRST step of executing any ALTER TABLE,

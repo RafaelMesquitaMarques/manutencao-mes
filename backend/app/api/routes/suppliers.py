@@ -180,7 +180,9 @@ async def list_suppliers(
     if supplier_ids:
         ic = await db.execute(
             select(StockItem.supplier_id, func.count())
-            .where(StockItem.supplier_id.in_(supplier_ids))
+            # Parts retired in the source are not part of what a supplier
+            # currently supplies, so they stay out of every count and list here.
+            .where(StockItem.supplier_id.in_(supplier_ids), StockItem.archived.is_(False))
             .group_by(StockItem.supplier_id)
         )
         item_counts = {str(r[0]): r[1] for r in ic.all()}
@@ -262,7 +264,8 @@ async def get_supplier(
     current_user: User = Depends(get_current_user),
 ):
     s = await _scoped_supplier(supplier_id, db, ctx)
-    ic = (await db.execute(select(func.count()).select_from(StockItem).where(StockItem.supplier_id == supplier_id))).scalar_one()
+    ic = (await db.execute(select(func.count()).select_from(StockItem).where(
+        StockItem.supplier_id == supplier_id, StockItem.archived.is_(False)))).scalar_one()
     oc = (await db.execute(select(func.count()).select_from(PurchaseOrder).where(PurchaseOrder.supplier_id == supplier_id))).scalar_one()
     ooc = (await db.execute(
         select(func.count()).select_from(PurchaseOrder).where(and_(
@@ -352,7 +355,7 @@ async def supplier_items(
     current_user: User = Depends(get_current_user),
 ):
     await _scoped_supplier(supplier_id, db, ctx)      # 404 outside the caller's group
-    q = select(StockItem).where(StockItem.supplier_id == supplier_id)
+    q = select(StockItem).where(StockItem.supplier_id == supplier_id, StockItem.archived.is_(False))
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
     rows  = (await db.execute(q.order_by(StockItem.code).offset(skip).limit(limit))).scalars().all()
     return {"total": total, "items": [

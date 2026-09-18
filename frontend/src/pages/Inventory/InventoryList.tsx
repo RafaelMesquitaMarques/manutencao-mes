@@ -8,7 +8,7 @@ import type { CellClickedEvent, CellValueChangedEvent, ColDef, ICellRendererPara
 import {
   Package, AlertTriangle, Search, Filter, Plus,
   RefreshCw, Download, ChevronDown, X, Boxes,
-  TrendingDown, CircleAlert,
+  TrendingDown, CircleAlert, Columns3, Archive,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -77,7 +77,31 @@ function LocationCellRenderer({ data }: ICellRendererParams<StockItem>) {
   );
 }
 
+// Carried on stock vs. ordered when needed — the "Sur Demande" distinction
+// Interal keeps, which decides whether an empty shelf is a problem at all.
+function StockableCellRenderer({ value }: ICellRendererParams) {
+  const { t } = useTranslation();
+  if (value == null) return <span className="text-gray-500 text-xs italic">—</span>;
+  return (
+    <span className={`px-2 py-0.5 rounded border text-xs font-medium ${
+      value
+        ? 'bg-emerald-900/40 text-emerald-300 border-emerald-700'
+        : 'bg-gray-800 text-gray-400 border-gray-600'
+    }`}>
+      {value ? t('inventory.stocked', 'Stocked') : t('inventory.onDemand', 'On demand')}
+    </span>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
+
+// The extraction fills more about a part than a readable table can hold at once.
+// These start hidden and are one click away in the column picker; the CSV export
+// carries every column regardless.
+const SECONDARY_COLUMNS = [
+  'inventory_code', 'quantity_available', 'stockable', 'preferred_supplier',
+  'drawing_revision', 'source_note', 'interal_product_id',
+];
 
 export default function InventoryList() {
   const { t } = useTranslation();
@@ -93,6 +117,10 @@ export default function InventoryList() {
   const [warehouses, setWarehouses] = useState<string[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [showFilters, setShowFilters] = useState(false);
+  const [showColumns, setShowColumns] = useState(false);
+  const [hiddenCols, setHiddenCols] = useState<string[]>(() => [...SECONDARY_COLUMNS]);
+  const [zeroStockCount, setZeroStockCount] = useState(0);
+  const [belowMinCount, setBelowMinCount] = useState(0);
 
   const [filters, setFilters] = useState<StockItemFilters>({
     search: '',
@@ -100,7 +128,12 @@ export default function InventoryList() {
     warehouse: '',
     supplier_id: '',
     low_stock_only: false,
-    limit: 5500,
+    out_of_stock_only: false,
+    below_min_only: false,
+    include_archived: false,
+    // The catalogue is ~6 300 live products; the ceiling leaves room for the
+    // retired ones when they are switched on.
+    limit: 11000,
     skip: 0,
   });
 
@@ -109,8 +142,10 @@ export default function InventoryList() {
     try {
       const [res, dash, cats, sups] = await Promise.allSettled([
         fetchStockItems(filters),
-        fetchInventoryDashboard(),
-        fetchInventoryCategories(),
+        // Both follow whichever population the table is showing, so the
+        // Categories card never describes rows the grid is hiding.
+        fetchInventoryDashboard(filters.include_archived || filters.archived_only),
+        fetchInventoryCategories(filters.include_archived || filters.archived_only),
         fetchSupplierList({ active_only: true, limit: 200 }),
       ]);
 
@@ -118,6 +153,8 @@ export default function InventoryList() {
         setItems(res.value.items);
         setTotal(res.value.total);
         setLowStockCount(res.value.low_stock_count);
+        setZeroStockCount(res.value.zero_stock_count);
+        setBelowMinCount(res.value.below_min_count);
       }
       if (dash.status === 'fulfilled') setDashboard(dash.value);
       if (cats.status === 'fulfilled') {
@@ -135,7 +172,7 @@ export default function InventoryList() {
   // Columns flex to fill the viewport; when their minimum widths don't fit,
   // the grid's own horizontal scrollbar (always visible at the bottom of the
   // table area) takes over.
-  const colDefs = useMemo<ColDef<StockItem>[]>(() => [
+  const baseColDefs = useMemo<ColDef<StockItem>[]>(() => [
     {
       field: 'code',
       headerName: t('inventory.code', 'Part No.'),
@@ -145,6 +182,16 @@ export default function InventoryList() {
       filter: 'agTextColumnFilter',
     },
     {
+      field: 'name',
+      headerName: t('inventory.productName', 'Product name'),
+      flex: 1,
+      minWidth: 128,
+      cellClass: 'font-mono text-xs text-gray-300',
+      filter: 'agTextColumnFilter',
+      valueFormatter: ({ value }) => value || '—',
+      headerTooltip: t('inventory.productNameHint', "The product's short name in Interal"),
+    },
+    {
       field: 'description',
       headerName: t('inventory.description', 'Description'),
       flex: 2,
@@ -152,6 +199,16 @@ export default function InventoryList() {
       filter: 'agTextColumnFilter',
       cellClass: 'text-sm text-gray-200',
       tooltipField: 'description',
+    },
+    {
+      field: 'inventory_code',
+      headerName: t('inventory.inventoryCode', 'Inventory code'),
+      flex: 1,
+      minWidth: 120,
+      hide: true,
+      cellClass: 'font-mono text-xs text-gray-400',
+      filter: 'agTextColumnFilter',
+      valueFormatter: ({ value }) => value || '—',
     },
     {
       field: 'category',
@@ -180,6 +237,20 @@ export default function InventoryList() {
       sort: 'asc',
       comparator: (a, b) => a - b,
       filter: 'agNumberColumnFilter',
+    },
+    {
+      field: 'quantity_available',
+      headerName: t('inventory.available', 'Available'),
+      flex: 0.8,
+      minWidth: 100,
+      hide: true,
+      filter: 'agNumberColumnFilter',
+      cellClass: 'text-xs font-mono text-gray-300',
+      valueFormatter: ({ value }) => (value != null ? String(value) : '—'),
+      headerTooltip: t(
+        'inventory.availableHint',
+        "Interal's available count — equal to the stock on hand unless units are reserved",
+      ),
     },
     {
       field: 'min_quantity',
@@ -221,7 +292,7 @@ export default function InventoryList() {
       cellClass: 'text-xs font-mono text-sky-300',
       valueFormatter: ({ value }) =>
         value != null ? `$${Number(value).toFixed(2)}` : '—',
-      headerTooltip: t('inventory.avgCostHint', 'Weighted average of all received purchases'),
+      headerTooltip: t('inventory.avgCostHint', "The source system's average unit price, or the weighted average of received purchases when it has none"),
     },
     {
       field: 'last_purchase_cost',
@@ -256,11 +327,85 @@ export default function InventoryList() {
       cellEditor: 'agSelectCellEditor',
       cellEditorParams: { values: ['', ...suppliers.map(s => s.name)] },
       cellClass: 'text-xs text-gray-300',
+      // The linked supplier when there is one, otherwise the name the source
+      // carries — 5 452 items name a supplier, and every code resolved.
+      valueGetter: (p) => p.data?.supplier_name || p.data?.supplier || '',
       valueFormatter: ({ value }) => value || '—',
       filter: ExcelSetFilter,
       headerTooltip: t('inventory.editHint', 'Double-click to edit'),
     },
+    {
+      field: 'preferred_supplier',
+      headerName: t('inventory.preferredSupplier', 'Preferred supplier'),
+      flex: 1.2,
+      minWidth: 140,
+      hide: true,
+      cellClass: 'text-xs text-gray-300',
+      valueFormatter: ({ value }) => value || '—',
+      filter: ExcelSetFilter,
+      headerTooltip: t(
+        'inventory.preferredSupplierHint',
+        'Who the source says to buy from — not always the supplier on the item',
+      ),
+    },
+    {
+      field: 'stockable',
+      headerName: t('inventory.stockable', 'Stocking'),
+      flex: 0.8,
+      minWidth: 108,
+      hide: true,
+      cellRenderer: StockableCellRenderer,
+      filter: ExcelSetFilter,
+      valueGetter: (p) =>
+        p.data?.stockable == null
+          ? ''
+          : p.data.stockable
+          ? t('inventory.stocked', 'Stocked')
+          : t('inventory.onDemand', 'On demand'),
+    },
+    {
+      field: 'drawing_revision',
+      headerName: t('inventory.drawingRevision', 'Drawing / PO ref.'),
+      flex: 1,
+      minWidth: 130,
+      hide: true,
+      cellClass: 'text-xs text-gray-400',
+      filter: 'agTextColumnFilter',
+      valueFormatter: ({ value }) => value || '—',
+    },
+    {
+      field: 'source_note',
+      headerName: t('inventory.sourceNote', 'Source note'),
+      flex: 1,
+      minWidth: 130,
+      hide: true,
+      cellClass: 'text-xs text-gray-400',
+      filter: 'agTextColumnFilter',
+      tooltipField: 'source_note',
+      valueFormatter: ({ value }) => value || '—',
+    },
+    {
+      field: 'interal_product_id',
+      headerName: t('inventory.interalId', 'Interal ID'),
+      flex: 0.7,
+      minWidth: 96,
+      hide: true,
+      cellClass: 'font-mono text-xs text-gray-500',
+      filter: 'agTextColumnFilter',
+      valueFormatter: ({ value }) => value || '—',
+    },
   ], [t, suppliers]);
+
+  // Visibility lives in state, not in the column defs: `suppliers` arriving (or a
+  // language switch) rebuilds the defs, and a literal `hide: true` would snap the
+  // picker's choices back every time.
+  const colDefs = useMemo<ColDef<StockItem>[]>(
+    () => baseColDefs.map(col => ({
+      ...col,
+      hide: hiddenCols.includes((col.colId ?? col.field) as string),
+    })),
+    [baseColDefs, hiddenCols],
+  );
 
   const defaultColDef = useMemo<ColDef>(() => ({
     sortable: true,
@@ -297,14 +442,29 @@ export default function InventoryList() {
     }
   };
 
-  const exportCSV = () => gridRef.current?.api.exportDataAsCsv();
+  // allColumns so the export carries everything the extraction filled in, not
+  // just the columns that happen to be on screen.
+  const exportCSV = () => gridRef.current?.api.exportDataAsCsv({ allColumns: true });
+
+  const toggleColumn = (colId: string) =>
+    setHiddenCols(current =>
+      current.includes(colId) ? current.filter(id => id !== colId) : [...current, colId],
+    );
 
   const clearFilters = () =>
-    setFilters({ search: '', category: '', warehouse: '', supplier_id: '', low_stock_only: false, limit: 5500, skip: 0 });
+    setFilters(f => ({
+      ...f, search: '', category: '', warehouse: '', supplier_id: '',
+      low_stock_only: false, out_of_stock_only: false, below_min_only: false,
+      stockable: undefined, include_archived: false, archived_only: false, skip: 0,
+    }));
 
-  const activeFilterCount = [
-    filters.search, filters.category, filters.warehouse, filters.supplier_id,
-  ].filter(Boolean).length + (filters.low_stock_only ? 1 : 0);
+  const activeFilterCount =
+    [filters.search, filters.category, filters.warehouse, filters.supplier_id]
+      .filter(Boolean).length
+    + [
+        filters.low_stock_only, filters.out_of_stock_only, filters.below_min_only,
+        filters.include_archived, filters.archived_only, filters.stockable != null,
+      ].filter(Boolean).length;
 
   return (
     <div className="flex flex-col bg-gray-950 text-gray-100">
@@ -330,7 +490,7 @@ export default function InventoryList() {
               onClick={exportCSV}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
             >
-              <Download size={14} /> Export CSV
+              <Download size={14} /> {t('inventory.exportCsv', 'Export CSV')}
             </button>
             <button
               onClick={() => navigate('/inventory/new')}
@@ -341,8 +501,11 @@ export default function InventoryList() {
           </div>
         </div>
 
-        {/* ── KPI cards ── */}
-        <div className="grid grid-cols-4 gap-3 mb-5">
+        {/* ── KPI cards ──
+            "Out of stock" and "Below minimum" used to be one rule (their union)
+            shown twice, so both cards read the same number for a catalogue where
+            no minimum has ever been set. They now count what they say. */}
+        <div className="grid grid-cols-5 gap-3 mb-5">
           <KpiCard
             icon={<Package size={16} className="text-indigo-400" />}
             label={t('inventory.totalItems', 'Total items')}
@@ -350,25 +513,39 @@ export default function InventoryList() {
             color="indigo"
           />
           <KpiCard
-            icon={<AlertTriangle size={16} className="text-amber-400" />}
-            label={t('inventory.lowStock', 'Low stock')}
-            value={lowStockCount.toLocaleString()}
-            color="amber"
-            alert={lowStockCount > 0}
-            onClick={() => setFilters(f => ({ ...f, low_stock_only: !f.low_stock_only }))}
-            active={filters.low_stock_only}
-          />
-          <KpiCard
             icon={<TrendingDown size={16} className="text-red-400" />}
             label={t('inventory.zeroStock', 'Out of stock')}
-            value={dashboard?.zero_stock_count?.toLocaleString() ?? '—'}
+            value={zeroStockCount.toLocaleString()}
             color="red"
+            alert={zeroStockCount > 0}
+            onClick={() => setFilters(f => ({ ...f, out_of_stock_only: !f.out_of_stock_only, below_min_only: false }))}
+            active={filters.out_of_stock_only}
+          />
+          <KpiCard
+            icon={<AlertTriangle size={16} className="text-amber-400" />}
+            label={t('inventory.belowMin', 'Below minimum')}
+            value={belowMinCount.toLocaleString()}
+            color="amber"
+            hint={belowMinCount === 0
+              ? t('inventory.belowMinEmptyHint', 'No item has a minimum quantity set yet')
+              : t('inventory.belowMinHint', 'In stock, but at or under its minimum quantity')}
+            onClick={() => setFilters(f => ({ ...f, below_min_only: !f.below_min_only, out_of_stock_only: false }))}
+            active={filters.below_min_only}
           />
           <KpiCard
             icon={<Boxes size={16} className="text-emerald-400" />}
             label={t('inventory.categories', 'Categories')}
             value={categories.length.toLocaleString()}
             color="emerald"
+          />
+          <KpiCard
+            icon={<Archive size={16} className="text-gray-400" />}
+            label={t('inventory.retired', 'Retired')}
+            value={dashboard?.archived_count?.toLocaleString() ?? '—'}
+            color="gray"
+            hint={t('inventory.retiredHint', 'Withdrawn in the source — kept so old part numbers still resolve')}
+            onClick={() => setFilters(f => ({ ...f, archived_only: !f.archived_only, include_archived: false }))}
+            active={filters.archived_only}
           />
         </div>
 
@@ -402,12 +579,51 @@ export default function InventoryList() {
             <ChevronDown size={12} className={`transition-transform ${showFilters ? 'rotate-180' : ''}`} />
           </button>
 
+          <div className="relative">
+            <button
+              onClick={() => setShowColumns(v => !v)}
+              className={`flex items-center gap-1.5 px-3 py-2 text-sm border rounded-lg transition-colors ${
+                showColumns
+                  ? 'bg-indigo-600/20 border-indigo-500/50 text-indigo-300'
+                  : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
+              }`}
+            >
+              <Columns3 size={14} />
+              {t('inventory.columns', 'Columns')}
+              <ChevronDown size={12} className={`transition-transform ${showColumns ? 'rotate-180' : ''}`} />
+            </button>
+            {showColumns && (
+              <div className="absolute right-0 z-20 mt-1 w-60 max-h-80 overflow-y-auto bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-2">
+                {colDefs
+                  .map(col => ({
+                    id: (col.colId ?? col.field) as string,
+                    name: col.headerName as string,
+                  }))
+                  .filter(col => col.id && col.id !== 'code')
+                  .map(col => (
+                    <label
+                      key={col.id}
+                      className="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-300 hover:bg-gray-800 rounded cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!hiddenCols.includes(col.id)}
+                        onChange={() => toggleColumn(col.id)}
+                        className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-indigo-500 focus:ring-indigo-500"
+                      />
+                      {col.name}
+                    </label>
+                  ))}
+              </div>
+            )}
+          </div>
+
           {activeFilterCount > 0 && (
             <button
               onClick={clearFilters}
               className="flex items-center gap-1 px-2 py-2 text-xs text-gray-400 hover:text-gray-200 transition-colors"
             >
-              <X size={13} /> Clear
+              <X size={13} /> {t('common.clear', 'Clear')}
             </button>
           )}
 
@@ -425,7 +641,7 @@ export default function InventoryList() {
 
         {/* ── Expanded filters ── */}
         {showFilters && (
-          <div className="mt-3 flex items-center gap-3 pt-3 border-t border-gray-800">
+          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 pt-3 border-t border-gray-800">
             <FilterSelect
               label={t('inventory.category', 'Category')}
               value={filters.category ?? ''}
@@ -445,8 +661,22 @@ export default function InventoryList() {
                 onChange={e => setFilters(f => ({ ...f, supplier_id: e.target.value }))}
                 className="bg-gray-800 border border-gray-700 text-sm text-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:border-indigo-500"
               >
-                <option value="">All</option>
+                <option value="">{t('common.all', 'All')}</option>
                 {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500 whitespace-nowrap">{t('inventory.stockable', 'Stocking')}:</span>
+              <select
+                value={filters.stockable == null ? '' : String(filters.stockable)}
+                onChange={e => setFilters(f => ({
+                  ...f, stockable: e.target.value === '' ? undefined : e.target.value === 'true',
+                }))}
+                className="bg-gray-800 border border-gray-700 text-sm text-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:border-indigo-500"
+              >
+                <option value="">{t('common.all', 'All')}</option>
+                <option value="true">{t('inventory.stocked', 'Stocked')}</option>
+                <option value="false">{t('inventory.onDemand', 'On demand')}</option>
               </select>
             </div>
             <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
@@ -456,7 +686,21 @@ export default function InventoryList() {
                 onChange={e => setFilters(f => ({ ...f, low_stock_only: e.target.checked }))}
                 className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-indigo-500 focus:ring-indigo-500"
               />
-              {t('inventory.lowStockOnly', 'Low stock only')}
+              {t('inventory.lowStockOnly', 'Needs reordering')}
+            </label>
+            <label
+              className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer"
+              title={t('inventory.retiredHint', 'Withdrawn in the source — kept so old part numbers still resolve')}
+            >
+              <input
+                type="checkbox"
+                checked={filters.include_archived ?? false}
+                onChange={e => setFilters(f => ({
+                  ...f, include_archived: e.target.checked, archived_only: false,
+                }))}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-indigo-500 focus:ring-indigo-500"
+              />
+              {t('inventory.includeRetired', 'Include retired parts')}
             </label>
           </div>
         )}
@@ -480,9 +724,12 @@ export default function InventoryList() {
           rowClass="cursor-pointer"
           rowClassRules={{
             'ag-row-low-stock': (params) => params.data?.is_low_stock ?? false,
+            // Retired products read back dimmed, so a row that only shows up
+            // because the retired filter is on cannot be mistaken for live stock.
+            'opacity-50': (params) => params.data?.archived ?? false,
           }}
-          overlayLoadingTemplate='<span class="text-gray-400 text-sm">Loading…</span>'
-          overlayNoRowsTemplate='<span class="text-gray-500 text-sm">No items found</span>'
+          overlayLoadingTemplate={`<span class="text-gray-400 text-sm">${t('common.loading', 'Loading…')}</span>`}
+          overlayNoRowsTemplate={`<span class="text-gray-500 text-sm">${t('inventory.noItems', 'No items found')}</span>`}
           getRowId={({ data }) => data.id}
           alwaysShowHorizontalScroll
           pagination
@@ -497,25 +744,28 @@ export default function InventoryList() {
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function KpiCard({
-  icon, label, value, color, alert, onClick, active,
+  icon, label, value, color, alert, onClick, active, hint,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
-  color: 'indigo' | 'amber' | 'red' | 'emerald';
+  color: 'indigo' | 'amber' | 'red' | 'emerald' | 'gray';
   alert?: boolean;
   onClick?: () => void;
   active?: boolean;
+  hint?: string;
 }) {
   const colorMap = {
     indigo:  'border-indigo-800  bg-indigo-950/40',
     amber:   'border-amber-800   bg-amber-950/40',
     red:     'border-red-800     bg-red-950/40',
     emerald: 'border-emerald-800 bg-emerald-950/40',
+    gray:    'border-gray-700    bg-gray-900/60',
   };
   return (
     <div
       onClick={onClick}
+      title={hint}
       className={`p-4 rounded-xl border transition-all ${colorMap[color]} ${
         onClick ? 'cursor-pointer hover:scale-[1.02]' : ''
       } ${active ? 'ring-1 ring-amber-500' : ''} ${alert && !active ? 'animate-pulse-subtle' : ''}`}

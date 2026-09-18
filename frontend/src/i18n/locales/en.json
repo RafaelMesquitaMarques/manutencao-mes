@@ -240,7 +240,8 @@
     "displayOrder": "Display order",
     "remove": "Remove",
     "previous": "Previous",
-    "next": "Next"
+    "next": "Next",
+    "notSet": "Not set"
   },
   "settings": {
     "profileTitle": "My Profile",
@@ -2183,7 +2184,7 @@
     "costs": "Costs",
     "reorder": "Reorder",
     "avgCost": "Avg. cost",
-    "avgCostHint": "Weighted average of all received purchases",
+    "avgCostHint": "The source system's average unit price, or the weighted average of received purchases when it has none",
     "lastPurchase": "Last purchase",
     "lastPurchaseHint": "Unit cost of the most recent receipt",
     "subtitle": "Parts & materials · Saint-Jérôme",
@@ -2191,14 +2192,54 @@
     "lowStock": "Low stock",
     "zeroStock": "Out of stock",
     "categories": "Categories",
-    "lowStockOnly": "Low stock only",
+    "lowStockOnly": "Needs reordering",
     "newItem": "New item",
     "searchPlaceholder": "Search by code, description…",
     "results": "results",
     "adjustQty": "Adjust stock",
     "supplier": "Supplier",
     "orderFromSupplier": "Order from Supplier",
-    "editHint": "Double-click to edit"
+    "editHint": "Double-click to edit",
+    "productName": "Product name",
+    "productNameHint": "The product's short name in Interal",
+    "inventoryCode": "Inventory code",
+    "available": "Available",
+    "availableHint": "Interal's available count — equal to the stock on hand unless units are reserved",
+    "stockable": "Stocking",
+    "stocked": "Stocked",
+    "onDemand": "On demand",
+    "preferredSupplier": "Preferred supplier",
+    "preferredSupplierHint": "Who the source says to buy from — not always the supplier on the item",
+    "drawingRevision": "Drawing / PO ref.",
+    "sourceNote": "Source note",
+    "interalId": "Interal ID",
+    "columns": "Columns",
+    "belowMin": "Below minimum",
+    "belowMinHint": "In stock, but at or under its minimum quantity",
+    "belowMinEmptyHint": "No item has a minimum quantity set yet",
+    "retired": "Retired",
+    "retiredHint": "Withdrawn in the source — kept so old part numbers still resolve",
+    "includeRetired": "Include retired parts",
+    "retiredBanner": "Withdrawn in the source system. Kept so this part number still resolves, but it is out of the catalogue and out of the parts search.",
+    "incompleteBanner": "The last extraction carried this part on a broken row. Its identity was refreshed; quantity, cost, location and supplier are whatever the platform already held.",
+    "sourceData": "Source data (Interal)",
+    "saleMarkup": "Charge-out markup",
+    "lastSync": "Last refreshed from source",
+    "neverSynced": "Never",
+    "exportCsv": "Export CSV",
+    "noItems": "No items found",
+    "notes": "Notes",
+    "classification": "Classification",
+    "noDescription": "No description",
+    "noNotes": "No notes",
+    "notesPlaceholder": "Internal notes…",
+    "quantityPlaceholder": "Quantity",
+    "stockOut": "Out",
+    "stockIn": "In",
+    "itemNotFound": "Item not found.",
+    "noSupplier": "— None —",
+    "outOfStockNotice": "Out of stock",
+    "atOrBelowMin": "At or below its minimum ({{min}} {{unit}})"
   },
   "suppliers": {
     "title": "Suppliers",
@@ -3073,7 +3114,12 @@
     "subtitle": "Explainable machine-health risk learned from sensors and failure history",
     "tabHealth": "Predictive health",
     "modeLabel": "Mode",
-    "mode": { "off": "Off", "silent": "Silent (recording)", "admin": "Admins only", "active": "Active" },
+    "mode": {
+      "off": "Off",
+      "silent": "Silent (recording)",
+      "admin": "Admins only",
+      "active": "Active"
+    },
     "notVisible": "The predictive module is not visible at your access level yet.",
     "noSnapshot": "No evaluation yet for this machine — the engine will pick it up on its next cycle.",
     "evaluateNow": "Evaluate now",
@@ -3116,22 +3162,46 @@
     "giveFeedback": "Give feedback",
     "createTicket": "Create inspection ticket",
     "viewTicket": "View ticket",
-    "level": { "normal": "Normal", "watch": "Watch", "alert": "Alert", "critical": "Critical", "no_data": "No data" },
-    "maturity": {
-      "no_data": "No data", "collecting": "Collecting data", "baseline_building": "Building baseline",
-      "rules_monitoring": "Rules monitoring", "anomaly_active": "Anomaly detection active",
-      "model_validating": "Model in validation", "model_active": "Model active"
+    "level": {
+      "normal": "Normal",
+      "watch": "Watch",
+      "alert": "Alert",
+      "critical": "Critical",
+      "no_data": "No data"
     },
-    "context": { "run": "In production", "idle": "Idle", "all": "All conditions" },
+    "maturity": {
+      "no_data": "No data",
+      "collecting": "Collecting data",
+      "baseline_building": "Building baseline",
+      "rules_monitoring": "Rules monitoring",
+      "anomaly_active": "Anomaly detection active",
+      "model_validating": "Model in validation",
+      "model_active": "Model active"
+    },
+    "context": {
+      "run": "In production",
+      "idle": "Idle",
+      "all": "All conditions"
+    },
     "status": {
-      "new": "New", "in_review": "In review", "inspection_planned": "Inspection planned",
-      "intervention_required": "Intervention required", "intervention_done": "Intervention done",
-      "false_positive": "False positive", "monitoring": "Monitoring", "closed": "Closed"
+      "new": "New",
+      "in_review": "In review",
+      "inspection_planned": "Inspection planned",
+      "intervention_required": "Intervention required",
+      "intervention_done": "Intervention done",
+      "false_positive": "False positive",
+      "monitoring": "Monitoring",
+      "closed": "Closed"
     },
     "kind": {
-      "vibration": "Vibration", "temperature": "Temperature", "pressure": "Pressure",
-      "operational": "Operational", "reliability": "Reliability", "pattern": "Known pattern",
-      "rule": "Rule", "general": "General"
+      "vibration": "Vibration",
+      "temperature": "Temperature",
+      "pressure": "Pressure",
+      "operational": "Operational",
+      "reliability": "Reliability",
+      "pattern": "Known pattern",
+      "rule": "Rule",
+      "general": "General"
     },
     "recommendation": {
       "inspect_rotating_parts": "Inspect bearings, alignment and lubrication of rotating parts",
@@ -3171,11 +3241,20 @@
       "pattern_similarity": "Similar to past failures",
       "rule_triggered": "Configured rule"
     },
-    "sensorStatus": { "ok": "OK", "degraded": "Degraded", "faulty": "Faulty", "no_data": "No data" },
+    "sensorStatus": {
+      "ok": "OK",
+      "degraded": "Degraded",
+      "faulty": "Faulty",
+      "no_data": "No data"
+    },
     "sensorIssue": {
-      "stale": "no recent data", "frozen": "frozen value", "impossible_value": "impossible value",
-      "bad_quality_flags": "poor reading quality", "irregular_gaps": "irregular gaps",
-      "spike_suspect": "isolated spike", "no_readings": "no readings"
+      "stale": "no recent data",
+      "frozen": "frozen value",
+      "impossible_value": "impossible value",
+      "bad_quality_flags": "poor reading quality",
+      "irregular_gaps": "irregular gaps",
+      "spike_suspect": "isolated spike",
+      "no_readings": "no readings"
     },
     "fbTitle": "Technician feedback",
     "fbSubtitle": "Your verdict trains the system — it is recorded and audited, never applied blindly.",
