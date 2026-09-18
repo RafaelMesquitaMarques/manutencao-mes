@@ -131,6 +131,7 @@ function errDetail(e: unknown): string {
 function CategoryCard({ cat, selected, onSelect, onDelete }: {
   cat: AnyCategory; selected: boolean; onSelect: () => void; onDelete: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div
       onClick={onSelect}
@@ -142,7 +143,7 @@ function CategoryCard({ cat, selected, onSelect, onDelete }: {
         <IconRenderer icon={cat.icon || 'wrench'} color={cat.color || '#6b7280'} size={22} />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-bold text-white truncate">{cat.name}</p>
-          <p className="text-xs text-gray-600">{(cat.subcategories as unknown[])?.length ?? 0} subcategories</p>
+          <p className="text-xs text-gray-600">{t('equipment.subcategoryCount', { count: (cat.subcategories as unknown[])?.length ?? 0 })}</p>
         </div>
         <ChevronRight size={14} className="text-gray-600" />
       </div>
@@ -2015,8 +2016,7 @@ function ConfigurationPanel({ equipment }: { equipment: Equipment }) {
         <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-teal-500/20 bg-teal-500/5 text-sm">
           <Power size={15} className="text-teal-400 flex-shrink-0" />
           <span className="text-teal-300">
-            Auxiliary (utility) asset — maintenance only. No kiosk page, stop/reject categories,
-            operators or MES/OEE. Configure intervention types and the safety checklist used during work orders.
+            {t('equipment.auxConfigHint')}
           </span>
         </div>
       ) : (
@@ -3363,7 +3363,7 @@ function EditableSpecRow({
         </div>
       ) : (
         <button onClick={startEdit} className="group flex items-center gap-1.5 text-sm text-gray-300 hover:text-white">
-          <span>{value || '—'}</span>
+          <span>{(type === 'select' ? options?.find((o) => o.value === value)?.label : undefined) || value || '—'}</span>
           <Pencil size={11} className="text-gray-600 group-hover:text-blue-400" />
         </button>
       )}

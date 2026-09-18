@@ -1665,7 +1665,10 @@
     "descriptionPlaceholder": "Notas opcionales sobre este activo",
     "creating": "Creando...",
     "createEquipment": "Crear equipo",
-    "height3dPlaceholder": "ej. 4.5"
+    "height3dPlaceholder": "ej. 4.5",
+    "subcategoryCount_one": "{{count}} subcategoría",
+    "subcategoryCount_other": "{{count}} subcategorías",
+    "auxConfigHint": "Activo auxiliar (utilidades) — solo mantenimiento. Sin página de quiosco, categorías de parada o rechazo, operadores ni MES/OEE. Configure los tipos de intervención y la lista de seguridad utilizada durante las órdenes de trabajo."
   },
   "kpis": {
     "title": "KPIs",

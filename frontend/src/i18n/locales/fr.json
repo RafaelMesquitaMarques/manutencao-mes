@@ -1665,7 +1665,10 @@
     "descriptionPlaceholder": "Notes facultatives sur cet actif",
     "creating": "Création...",
     "createEquipment": "Créer l'équipement",
-    "height3dPlaceholder": "ex. 4.5"
+    "height3dPlaceholder": "ex. 4.5",
+    "subcategoryCount_one": "{{count}} sous-catégorie",
+    "subcategoryCount_other": "{{count}} sous-catégories",
+    "auxConfigHint": "Actif auxiliaire (utilités) — maintenance seulement. Aucune page kiosque, ni catégories d'arrêt ou de rejet, ni opérateurs, ni MES/OEE. Configurez les types d'intervention et la checklist de sécurité utilisée pendant les bons de travail."
   },
   "kpis": {
     "title": "KPIs",

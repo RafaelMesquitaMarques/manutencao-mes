@@ -1665,7 +1665,10 @@
     "descriptionPlaceholder": "Optional notes about this asset",
     "creating": "Creating...",
     "createEquipment": "Create Equipment",
-    "height3dPlaceholder": "e.g. 4.5"
+    "height3dPlaceholder": "e.g. 4.5",
+    "subcategoryCount_one": "{{count}} subcategory",
+    "subcategoryCount_other": "{{count}} subcategories",
+    "auxConfigHint": "Auxiliary (utility) asset — maintenance only. No kiosk page, stop/reject categories, operators or MES/OEE. Configure intervention types and the safety checklist used during work orders."
   },
   "kpis": {
     "title": "KPIs",
