@@ -1564,6 +1564,19 @@ async def _run_migrations() -> None:
         # Every list, KPI and search now filters archived rows out; without this
         # the default catalogue view scans the retired half of the table too.
         "CREATE INDEX IF NOT EXISTS idx_stock_items_archived ON stock_items (archived)",
+        # Phase: Interal purchase-order import — provenance + the two money
+        # figures the ERP keeps apart. All nullable: existing POs are untouched
+        # and every one of these reads as "not imported".
+        ('purchase_orders', 'subtotal_amount', 'DOUBLE PRECISION'),
+        ('purchase_orders', 'external_ref', 'VARCHAR(100)'),
+        ('purchase_orders', 'import_source', 'VARCHAR(30)'),
+        ('purchase_orders', 'import_ref', 'VARCHAR(80)'),
+        ('purchase_orders', 'legacy_meta', 'JSON'),
+        # The idempotency key itself. Partial, so the millions of hand-made POs
+        # with no provenance never collide with each other on (NULL, NULL) —
+        # and re-running a loader can only ever hit the row it already wrote.
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pos_import_ref ON purchase_orders "
+        "(import_source, import_ref) WHERE import_source IS NOT NULL",
     ]
     # `ADD COLUMN IF NOT EXISTS` is statement-level idempotency, NOT lock avoidance.
     # Taking an AccessExclusiveLock is the FIRST step of executing any ALTER TABLE,

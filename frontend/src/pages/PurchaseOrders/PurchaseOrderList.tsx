@@ -184,7 +184,9 @@ export default function PurchaseOrderList() {
                     {po.total_amount != null ? `${po.currency} $${po.total_amount.toFixed(2)}` : '—'}
                   </td>
                   <td className="px-4 py-3 text-center">
-                    {(po.status === 'confirmed' || po.status === 'sent') && (
+                    {/* No lines, nothing to receive — and receiving anyway would
+                        overwrite the order total with 0.00. */}
+                    {(po.status === 'confirmed' || po.status === 'sent') && po.item_count > 0 && (
                       <button
                         onClick={() => openReceive(po)}
                         className="flex items-center gap-1 px-2.5 py-1 text-xs text-teal-300 bg-teal-900/30 border border-teal-800 hover:bg-teal-900/50 rounded-lg mx-auto"

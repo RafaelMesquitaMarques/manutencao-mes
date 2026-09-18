@@ -2371,7 +2371,30 @@
       "po_status_invalid": "Statut invalide",
       "po_use_receive_endpoint": "Utilisez l'action Réceptionner pour marquer la commande comme reçue",
       "po_supplier_change_draft_only": "Le fournisseur ne peut être changé que sur un brouillon",
-      "po_item_not_found": "Ligne introuvable sur cette commande"
+      "po_item_not_found": "Ligne introuvable sur cette commande",
+      "po_no_items_to_receive": "Cette commande n'a aucune ligne à recevoir. Ajoutez d'abord les lignes."
+    },
+    "subtotal": "Sous-total",
+    "internalNotes": "Notes internes",
+    "internalNotesHint": "Visible uniquement par votre équipe",
+    "source": {
+      "title": "Enregistrement source",
+      "subtitle": "Importé d'un système externe et affiché tel qu'extrait.",
+      "sourceId": "Identifiant source",
+      "externalRef": "Référence externe",
+      "sourceStatus": "Statut à la source",
+      "approved": "Approuvé",
+      "approver": "Approbateur",
+      "issuer": "Émis par",
+      "buyer": "Acheteur",
+      "accountingDate": "Date comptable",
+      "createdAtSource": "Créé à la source",
+      "grandTotal": "Total général",
+      "grandTotalHome": "Total général (devise locale)",
+      "contact": "Contact",
+      "supplierAtSource": "Fournisseur à la source",
+      "plantAtSource": "Unité à la source",
+      "noLinesNotice": "L'extraction ne contient aucune ligne d'article, quantité, prix unitaire ni date de réception. Le total de la commande est le montant enregistré à la source."
     }
   },
   "poStatus": {

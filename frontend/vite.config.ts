@@ -24,7 +24,11 @@ export default defineConfig({
     // Harmless in the container: nginx routes /api straight to backend, so the
     // container's Vite never actually receives /api requests.
     // ws: true so the live-update WebSocket (/api/live/ws) also proxies in dev.
-    proxy: { '/api': { target: 'http://localhost:8000', ws: true } },
+    // API_TARGET overrides it so a second checkout (a worktree) can preview
+    // against its own backend on another port instead of the shared one.
+    proxy: {
+      '/api': { target: process.env.API_TARGET || 'http://localhost:8000', ws: true },
+    },
   },
   build: {
     rollupOptions: {

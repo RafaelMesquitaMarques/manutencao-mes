@@ -2839,7 +2839,30 @@
       "po_status_invalid": "Estado no válido",
       "po_use_receive_endpoint": "Use la acción Recibir para marcar la orden como recibida",
       "po_supplier_change_draft_only": "El proveedor solo se puede cambiar en un borrador",
-      "po_item_not_found": "Línea no encontrada en esta orden"
+      "po_item_not_found": "Línea no encontrada en esta orden",
+      "po_no_items_to_receive": "Este pedido no tiene líneas que recibir. Añada primero las líneas."
+    },
+    "subtotal": "Subtotal",
+    "internalNotes": "Notas internas",
+    "internalNotesHint": "Visible solo para su equipo",
+    "source": {
+      "title": "Registro de origen",
+      "subtitle": "Importado de un sistema externo y mostrado tal como fue extraído.",
+      "sourceId": "ID de origen",
+      "externalRef": "Referencia externa",
+      "sourceStatus": "Estado en el origen",
+      "approved": "Aprobado",
+      "approver": "Aprobador",
+      "issuer": "Emitido por",
+      "buyer": "Comprador",
+      "accountingDate": "Fecha contable",
+      "createdAtSource": "Creado en el origen",
+      "grandTotal": "Total general",
+      "grandTotalHome": "Total general (moneda local)",
+      "contact": "Contacto",
+      "supplierAtSource": "Proveedor en el origen",
+      "plantAtSource": "Unidad en el origen",
+      "noLinesNotice": "La extracción no contiene líneas de artículos, cantidades, precios unitarios ni fechas de recepción. El total del pedido es el importe registrado en el origen."
     }
   },
   "poStatus": {

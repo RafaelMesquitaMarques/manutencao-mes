@@ -112,7 +112,12 @@ def _po_out(po: PurchaseOrder, include_items: bool = False) -> dict:
         "expected_date": str(po.expected_date) if po.expected_date else None,
         "received_date": str(po.received_date) if po.received_date else None,
         "total_amount":  po.total_amount,
+        "subtotal_amount": po.subtotal_amount,
         "currency":      po.currency or "CAD",
+        "external_ref":  po.external_ref,
+        "import_source": po.import_source,
+        "import_ref":    po.import_ref,
+        "legacy_meta":   po.legacy_meta,
         "cost_center":   po.cost_center,
         "scope":         po.scope or "opex",
         "notes":         po.notes,
@@ -806,6 +811,13 @@ async def receive_purchase_order(
         raise HTTPException(400, "Cannot receive a cancelled order")
     if po.status == PurchaseOrderStatus.received:
         raise HTTPException(400, "Order already received")
+    # An order with no lines has nothing to receive, and going through with it
+    # would be actively destructive: the recompute below sums the (empty) lines
+    # and would overwrite a real total with 0.00. That is exactly the shape of
+    # the ERP-imported orders, whose header total is the only figure we have —
+    # the extraction carries no lines at all. Add the lines first, then receive.
+    if not po.items:
+        raise HTTPException(400, "po_no_items_to_receive")
 
     receive_map = {item["id"]: float(item["received_quantity"]) for item in body.get("items", [])}
 

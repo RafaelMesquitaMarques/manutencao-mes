@@ -2371,7 +2371,30 @@
       "po_status_invalid": "Invalid status",
       "po_use_receive_endpoint": "Use the Receive action to mark an order as received",
       "po_supplier_change_draft_only": "The supplier can only be changed on a draft order",
-      "po_item_not_found": "Line not found on this order"
+      "po_item_not_found": "Line not found on this order",
+      "po_no_items_to_receive": "This order has no lines to receive. Add the lines first."
+    },
+    "subtotal": "Subtotal",
+    "internalNotes": "Internal notes",
+    "internalNotesHint": "Visible to your team only",
+    "source": {
+      "title": "Source record",
+      "subtitle": "Imported from an external system and shown as extracted.",
+      "sourceId": "Source ID",
+      "externalRef": "External reference",
+      "sourceStatus": "Status at source",
+      "approved": "Approved",
+      "approver": "Approver",
+      "issuer": "Issued by",
+      "buyer": "Buyer",
+      "accountingDate": "Accounting date",
+      "createdAtSource": "Created at source",
+      "grandTotal": "Grand total",
+      "grandTotalHome": "Grand total (home currency)",
+      "contact": "Contact",
+      "supplierAtSource": "Supplier at source",
+      "plantAtSource": "Unit at source",
+      "noLinesNotice": "The extraction carries no line items, quantities, unit prices or receipt dates. The order total is the amount recorded at source."
     }
   },
   "poStatus": {

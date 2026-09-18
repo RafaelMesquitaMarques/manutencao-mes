@@ -2178,8 +2178,28 @@ class PurchaseOrder(Base):
     expected_date = Column(Date, nullable=True)
     received_date = Column(Date, nullable=True)
     total_amount  = Column(Float, nullable=True)
+    # Order total BEFORE whatever the source system added on top (tax, freight,
+    # …). The ERP extraction carries both figures and they genuinely differ
+    # (PO-0002168: 281.00 sub, 323.08 grand), so they are stored apart rather
+    # than one being recomputed from the other — we do not know what the
+    # difference is made of and must not guess.
+    subtotal_amount = Column(Float, nullable=True)
     currency      = Column(String(10), default="CAD")
+    # The buyer's own reference at the far end (Interal CUSTOMER_ORDER_NO —
+    # the 45000xxxxx SAP requisition), kept apart from order_number: that one
+    # stays the platform's document number.
+    external_ref  = Column(String(100), nullable=True)
     notes         = Column(Text, nullable=True)
+    # ── Provenance (rows that came from an ERP extraction, not from this app) ──
+    # import_source + import_ref are the idempotency key: re-running a loader
+    # updates the row it already created instead of minting a duplicate.
+    import_source = Column(String(30), nullable=True)   # e.g. 'interal'
+    import_ref    = Column(String(80), nullable=True)   # source PK (Interal ID_ORDER)
+    # Source fields with no column of their own — buyer/issuer/approver names,
+    # the source status verbatim, the accounting date, the home-currency total.
+    # Kept whole so nothing in the extraction is lost just because the platform
+    # has nowhere to put it yet.
+    legacy_meta   = Column(JSON, nullable=True)
     # Cost control: which cost center this purchase books to (SAP cost-center
     # name) and whether it's OPEX or CAPEX. An open PO (sent/confirmed, not yet
     # received) is a committed spend that feeds the forecast in its expected month.

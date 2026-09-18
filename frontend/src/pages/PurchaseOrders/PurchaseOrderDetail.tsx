@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft, Paperclip, Plus, Trash2, Save, Package, Send, CheckCircle2, XCircle,
-  RotateCcw, ExternalLink, Check, Download,
+  RotateCcw, ExternalLink, Check, Download, Database,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -24,7 +24,7 @@ const STATUS_STYLE: Record<string, string> = {
 
 const inputCls  = 'w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed';
 const selectCls = inputCls;
-const KNOWN_ERRORS = ['po_received_locked', 'po_status_invalid', 'po_use_receive_endpoint', 'po_supplier_change_draft_only', 'po_item_not_found'];
+const KNOWN_ERRORS = ['po_received_locked', 'po_status_invalid', 'po_use_receive_endpoint', 'po_supplier_change_draft_only', 'po_item_not_found', 'po_no_items_to_receive'];
 
 function FormField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -355,7 +355,10 @@ export default function PurchaseOrderDetail() {
               <CheckCircle2 size={14} /> {t('purchaseOrders.confirmOrder', 'Confirm order')}
             </button>
           )}
-          {(po.status === 'sent' || po.status === 'confirmed') && (
+          {/* An order with no lines has nothing to receive, and going through
+              with it would overwrite its total with 0.00 — so the action is only
+              offered once there is something to receive. */}
+          {(po.status === 'sent' || po.status === 'confirmed') && (po.items ?? []).length > 0 && (
             <button onClick={openReceive} disabled={statusBusy} className={`${btnBase} text-teal-300 bg-teal-900/30 border-teal-800 hover:bg-teal-900/50`}>
               <Package size={14} /> {t('purchaseOrders.receive', 'Receive')}
             </button>
@@ -444,7 +447,7 @@ export default function PurchaseOrderDetail() {
             </FormField>
           </div>
 
-          <div className="grid grid-cols-4 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <FormField label={t('purchaseOrders.costCenter', 'Cost center')}>
               <select disabled={!editable} value={form.cost_center} onChange={e => setF('cost_center', e.target.value)} className={selectCls}>
                 <option value="">— {t('purchaseOrders.selectCostCenter', 'Select a cost center')} —</option>
@@ -466,10 +469,21 @@ export default function PurchaseOrderDetail() {
                 {!['CAD', 'USD', 'EUR'].includes(form.currency) && <option value={form.currency}>{form.currency}</option>}
               </select>
             </FormField>
-            <FormField label={t('common.notes', 'Notes')}>
-              <input disabled={!editable} value={form.notes} onChange={e => setF('notes', e.target.value)} className={inputCls} />
-            </FormField>
           </div>
+
+          {/* Internal remark. A textarea, not an input: remarks arrive from the
+              source system with real line breaks and a single-line input hides
+              every line but the first. */}
+          <FormField label={t('purchaseOrders.internalNotes')}>
+            <textarea
+              disabled={!editable}
+              rows={3}
+              value={form.notes}
+              onChange={e => setF('notes', e.target.value)}
+              className={`${inputCls} resize-y min-h-[68px]`}
+              placeholder={t('purchaseOrders.internalNotesHint')}
+            />
+          </FormField>
         </div>
 
         {/* Items */}
@@ -622,7 +636,15 @@ export default function PurchaseOrderDetail() {
 
           {/* Total */}
           <div className="flex justify-end mt-4 pt-4 border-t border-gray-800">
-            <div className="text-right">
+            <div className="text-right space-y-1">
+              {po.subtotal_amount != null && po.subtotal_amount !== po.total_amount && (
+                <div className="text-xs text-gray-500">
+                  {t('purchaseOrders.subtotal')}:{' '}
+                  <span className="font-mono text-gray-400">
+                    {po.currency} ${po.subtotal_amount.toFixed(2)}
+                  </span>
+                </div>
+              )}
               <div className="text-xs text-gray-500">{t('purchaseOrders.orderTotal', 'Order total')}</div>
               <div className="text-lg font-bold text-white font-mono">
                 {po.currency} ${po.total_amount != null ? po.total_amount.toFixed(2) : '0.00'}
@@ -630,6 +652,9 @@ export default function PurchaseOrderDetail() {
             </div>
           </div>
         </div>
+
+        {/* Source record — only for orders that came from an ERP extraction */}
+        {po.import_source && <ImportedSourcePanel po={po} />}
 
         {/* Attachments — quotes / estimates / invoices */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
@@ -752,6 +777,89 @@ export default function PurchaseOrderDetail() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Source record ─────────────────────────────────────────────────────────────
+
+/** What the ERP extraction said, shown next to what the platform made of it.
+ *
+ *  Two things it is careful about:
+ *   - the source status is displayed verbatim ('PARTIAL'), because the platform
+ *     has no partially-received state and the mapped status alone would lose it;
+ *   - approval is shown apart from the status, since being approved and having
+ *     had part of the order delivered are different facts.
+ */
+function ImportedSourcePanel({ po }: { po: PurchaseOrder }) {
+  const { t } = useTranslation();
+  const m = po.legacy_meta ?? {};
+
+  const money = (v: number | null | undefined) => (v == null ? '—' : `$${v.toFixed(2)}`);
+  const day   = (v: string | null | undefined) => (v ? v.slice(0, 10) : '—');
+
+  // The home-currency total is the same order restated, so it only earns a row
+  // when it actually differs from the total charged in the order's currency.
+  const homeDiffers =
+    m.grand_total_home_currency != null &&
+    m.grand_total != null &&
+    m.grand_total_home_currency !== m.grand_total;
+
+  const rows: Array<[string, React.ReactNode]> = [
+    [t('purchaseOrders.source.sourceId'), <span className="font-mono">{m.source_id || po.import_ref || '—'}</span>],
+    [t('purchaseOrders.source.externalRef'), <span className="font-mono">{po.external_ref || '—'}</span>],
+    [t('purchaseOrders.source.sourceStatus'), <span className="font-mono">{m.source_status || '—'}</span>],
+    [t('purchaseOrders.source.approved'),
+      m.approved == null ? '—'
+        : m.approved
+          ? <span className="text-green-300">{t('common.yes')}</span>
+          : <span className="text-gray-400">{t('common.no')}</span>],
+    [t('purchaseOrders.source.approver'), m.employee_approval || '—'],
+    [t('purchaseOrders.source.issuer'), m.employee_issuer || '—'],
+    [t('purchaseOrders.source.buyer'), m.employee_buyer || '—'],
+    [t('purchaseOrders.source.accountingDate'), <span className="font-mono">{day(m.accounting_date)}</span>],
+    [t('purchaseOrders.source.createdAtSource'),
+      <span className="font-mono">{m.created_at_source ? m.created_at_source.replace('T', ' ').slice(0, 16) : '—'}</span>],
+    [t('purchaseOrders.subtotal'), <span className="font-mono">{money(m.sub_total)}</span>],
+    [t('purchaseOrders.source.grandTotal'), <span className="font-mono">{money(m.grand_total)}</span>],
+    ...(homeDiffers
+      ? [[t('purchaseOrders.source.grandTotalHome'),
+          <span className="font-mono">{money(m.grand_total_home_currency)}</span>] as [string, React.ReactNode]]
+      : []),
+    [t('purchaseOrders.source.contact'),
+      [m.contact_phone, m.contact_email].filter(Boolean).join(' · ') || '—'],
+    [t('purchaseOrders.source.supplierAtSource'),
+      m.supplier_name_at_source
+        ? `${m.supplier_name_at_source}${m.supplier_source_id ? ` (#${m.supplier_source_id})` : ''}`
+        : '—'],
+    [t('purchaseOrders.source.plantAtSource'), m.plant_name_at_source || '—'],
+  ];
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+      <div className="flex items-center justify-between mb-1">
+        <h2 className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+          <Database size={14} className="text-gray-500" />
+          {t('purchaseOrders.source.title')}
+        </h2>
+        <span className="text-[10px] uppercase tracking-wider text-gray-500 bg-gray-800 border border-gray-700 rounded px-2 py-0.5 font-mono">
+          {po.import_source}
+        </span>
+      </div>
+      <p className="text-xs text-gray-500 mb-4">{t('purchaseOrders.source.subtitle')}</p>
+
+      <div className="grid grid-cols-2 gap-x-8 gap-y-2">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex items-baseline justify-between gap-3 border-b border-gray-800/60 py-1.5">
+            <span className="text-xs text-gray-500 flex-shrink-0">{label}</span>
+            <span className="text-xs text-gray-300 text-right break-words min-w-0">{value}</span>
+          </div>
+        ))}
+      </div>
+
+      <p className="text-[11px] text-amber-200/70 bg-amber-950/20 border border-amber-900/40 rounded-lg px-3 py-2 mt-4">
+        {t('purchaseOrders.source.noLinesNotice')}
+      </p>
     </div>
   );
 }

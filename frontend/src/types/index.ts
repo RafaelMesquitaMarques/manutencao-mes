@@ -1454,7 +1454,9 @@ export interface PurchaseOrder {
   expected_date: string | null;
   received_date: string | null;
   total_amount:  number | null;
+  subtotal_amount: number | null;
   currency:      string;
+  external_ref:  string | null;
   cost_center:   string | null;
   scope:         'opex' | 'capex';
   notes:         string | null;
@@ -1465,6 +1467,38 @@ export interface PurchaseOrder {
   attachment_count?: number;
   items?:        PurchaseOrderItem[];
   attachments?:  POAttachment[];
+  // Set only on orders that came from an ERP extraction rather than from this app.
+  import_source: string | null;
+  import_ref:    string | null;
+  legacy_meta:   POLegacyMeta | null;
+}
+
+/** Source fields preserved verbatim from an ERP extraction (see interal_po_load.py). */
+export interface POLegacyMeta {
+  source?:            string;
+  source_id?:         string;
+  /** The source system's own status word — the authority on what the ERP said. */
+  source_status?:     string;
+  /** F_APPROUVED: approval, which is NOT the operational status. */
+  approved?:          boolean | null;
+  employee_approval?: string | null;
+  employee_issuer?:   string | null;
+  employee_buyer?:    string | null;
+  /** Accounting date — not a due date and not a delivery forecast. */
+  accounting_date?:   string | null;
+  created_at_source?: string | null;
+  sub_total?:         number | null;
+  grand_total?:       number | null;
+  /** The same total restated in the plant's home currency — never a second charge. */
+  grand_total_home_currency?: number | null;
+  currency_symbol?:   string | null;
+  contact_phone?:     string | null;
+  contact_email?:     string | null;
+  supplier_source_id?: string | null;
+  supplier_name_at_source?: string | null;
+  plant_name_at_source?: string | null;
+  plant_source_id?:   string | null;
+  imported_at?:       string;
 }
 
 export interface SupplierDashboard {
