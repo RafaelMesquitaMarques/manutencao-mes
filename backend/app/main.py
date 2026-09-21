@@ -1334,6 +1334,12 @@ async def _run_migrations() -> None:
         # that ordering stable across pages at 65k rows
         "CREATE INDEX IF NOT EXISTS idx_wo_opened_id ON work_orders (opened_at DESC, id)",
         "CREATE INDEX IF NOT EXISTS idx_wo_plant_status ON work_orders (plant_id, status)",
+        # one machine's orders: the equipment page's list and count, machine
+        # reports and KPIs for picked machines each read the whole table without it
+        "CREATE INDEX IF NOT EXISTS idx_wo_equipment_opened ON work_orders (equipment_id, opened_at DESC)",
+        # reports and KPIs OR machine_id with equipment_id, and a BitmapOr needs
+        # both sides indexed; machine_id is NULL on every order today, so it is empty
+        "CREATE INDEX IF NOT EXISTS idx_wo_machine ON work_orders (machine_id) WHERE machine_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_tickets_plant_opened ON maintenance_tickets (plant_id, opened_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_malerts_plant_created ON maintenance_alerts (plant_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_stops_plant_started ON machine_stops (plant_id, started_at DESC)",
