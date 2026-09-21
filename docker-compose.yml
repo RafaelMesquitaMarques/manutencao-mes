@@ -202,8 +202,16 @@ services:
       - frontend
 
   # ─── Automatic daily backup ──────────────────────────────────────────────────
+  # Dumps go to ./backups/{last,daily,weekly,monthly} on the host (gitignored),
+  # outside Docker's disk. ./backups must be on a LOCAL drive: Docker Desktop
+  # cannot bind-mount a mapped network drive, the folder shows up read-only and
+  # the container restart-loops on "BACKUP_DIR ... insufficient permissions"
+  # (happened while the stack still ran from Z:\). Recreate this service
+  # whenever the checkout moves: `docker compose up -d --no-deps backup`.
+  # Tag = the db's PostgreSQL major (pg_dump 18 output does not restore cleanly
+  # into 16, e.g. `SET transaction_timeout`) — bump both together.
   backup:
-    image: prodrigestivill/postgres-backup-local
+    image: prodrigestivill/postgres-backup-local:16
     container_name: mes_backup
     restart: unless-stopped
     environment:
