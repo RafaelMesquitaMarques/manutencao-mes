@@ -78,7 +78,7 @@ instances (the old note here is superseded).** See **Section 15** for the full m
 | Container | Docker Compose, all services in one stack |
 | Auth | JWT (Bearer), FastAPI OAuth2, bcrypt 4.1.3 direct (no passlib); permission enforcement (`resource_guard` backend, `RequireView`/`can()` frontend) |
 | AI | Anthropic SDK (`claude-opus-4-8`) — Intelligence tool-use agent + insights/risk cron |
-| Backups | `prodrigestivill/postgres-backup-local` (`mes_backup` service) |
+| Backups | `prodrigestivill/postgres-backup-local:16` (`mes_backup` service): nightly plain-SQL dumps in `backups/`. Restore runbook: `docs/backup-restore.md` |
 
 ---
 

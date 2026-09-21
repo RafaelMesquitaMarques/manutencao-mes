@@ -184,3 +184,4 @@ docker exec -it mes_db psql -U mesadmin -d manutencao
 - [CONTEXT.md](CONTEXT.md) — architecture, data model and module notes
 - [CLAUDE.md](CLAUDE.md) — conventions for AI coding agents (English-only repository, i18n rules)
 - [docs/](docs/) — integration contracts and design notes
+- [docs/backup-restore.md](docs/backup-restore.md) — database backups: check them, rehearse a restore, restore production
