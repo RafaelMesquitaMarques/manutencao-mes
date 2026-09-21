@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     MQTT_PORT: int = 1883
 
     # TODO: set SECRET_KEY environment variable in production — never use this default
-    SECRET_KEY: str = "troque-em-producao"
+    SECRET_KEY: str = "change-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480  # 8 hours
 

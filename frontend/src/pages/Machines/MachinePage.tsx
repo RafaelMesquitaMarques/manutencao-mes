@@ -1290,7 +1290,7 @@ export default function MachinePage() {
       setCurrentStopId(res.id);
       if (res.ticket_number) {
         setConfirmedTicket(res.ticket_number);
-        // "Chamar manutenção" is a stop reason: the stop already opened a ticket; now
+        // "Call maintenance" is a stop reason: the stop already opened a ticket; now
         // create the "waiting for mechanic" intervention (adopts that ticket) so the
         // embedded MaintenancePanel drives the mechanic flow on this same kiosk.
         try { await callMaintenance(machine.id, stopComment || undefined); } catch { /* non-blocking */ }

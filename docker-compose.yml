@@ -5,7 +5,7 @@ name: manutencao-mes
 
 services:
 
-  # ─── Banco de dados principal ───────────────────────────────────────────────
+  # ─── Main database ──────────────────────────────────────────────────────────
   db:
     image: timescale/timescaledb:latest-pg16
     container_name: mes_db
@@ -25,7 +25,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ─── Cache e filas ──────────────────────────────────────────────────────────
+  # ─── Cache and queues ───────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: mes_redis
@@ -38,7 +38,7 @@ services:
       timeout: 3s
       retries: 5
 
-  # ─── Broker MQTT (captores IoT) ─────────────────────────────────────────────
+  # ─── MQTT broker (IoT sensors) ──────────────────────────────────────────────
   mqtt:
     image: eclipse-mosquitto:2
     container_name: mes_mqtt
@@ -61,7 +61,7 @@ services:
       REDIS_URL: redis://redis:6379
       MQTT_BROKER: mqtt
       MQTT_PORT: 1883
-      SECRET_KEY: ${SECRET_KEY:-troque-esta-chave-em-producao}
+      SECRET_KEY: ${SECRET_KEY:-change-this-key-in-production}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
@@ -81,9 +81,9 @@ services:
       # assumption proves wrong on real hardware (see docs/sushi-sensor-contract.md).
       SUSHI_INGEST_TOKEN: ${SUSHI_INGEST_TOKEN:-}
       SUSHI_BYTE_ORDER: ${SUSHI_BYTE_ORDER:-big}
-      # Cortex INBOUND push (/api/v1/cortex/events — leituras de OF por cobot).
-      # Vazio = endpoint desabilitado (503). Aceita vários tokens separados por
-      # vírgula (rotação sem downtime); cada ambiente define o seu no .env.
+      # Cortex INBOUND push (/api/v1/cortex/events — OF reads by cobot).
+      # Empty = endpoint disabled (503). Accepts several comma-separated tokens
+      # (rotation without downtime); each environment sets its own in .env.
       CORTEX_INGEST_TOKEN: ${CORTEX_INGEST_TOKEN:-}
     volumes:
       - uploads_data:/app/uploads
@@ -95,7 +95,7 @@ services:
     ports:
       - "8000:8000"
 
-  # ─── Worker de alertas IoT (consome MQTT, grava TimescaleDB) ─────────────────
+  # ─── IoT alert worker (consumes MQTT, writes to TimescaleDB) ─────────────────
   iot_worker:
     build:
       context: ./backend
@@ -112,14 +112,14 @@ services:
       - backend
       - mqtt
 
-  # ─── Gateway ADAM (lê os módulos Advantech por Modbus/TCP e alimenta a API) ───
-  # Um único serviço lê TODA a frota de ADAMs (tabela adam_devices) e faz push
-  # para os endpoints /production-count e /production-signal. Config e saúde de
-  # cada dispositivo vivem no banco (tela /settings/devices).
-  # REDE: este container precisa de rota Modbus/TCP (porta 502) até os ADAMs no
-  # chão de fábrica. Se os ADAMs não forem alcançáveis a partir da bridge do
-  # Docker, rode este serviço com `network_mode: host` (Linux) ou garanta o
-  # roteamento/VLAN entre o servidor e a rede das máquinas.
+  # ─── ADAM gateway (reads the Advantech modules over Modbus/TCP, feeds the API) ───
+  # A single service reads the WHOLE ADAM fleet (adam_devices table) and pushes
+  # to the /production-count and /production-signal endpoints. Each device's
+  # config and health live in the database (/settings/devices screen).
+  # NETWORK: this container needs a Modbus/TCP route (port 502) to the ADAMs on
+  # the shop floor. If the ADAMs are not reachable from the Docker bridge, run
+  # this service with `network_mode: host` (Linux) or make sure there is
+  # routing/VLAN between the server and the machines' network.
   adam_gateway:
     build:
       context: ./backend
@@ -135,13 +135,14 @@ services:
       - backend
       - db
 
-  # ─── Poller Cortex (puxa os scans de fim de linha da API do Cortex) ───────────
-  # As linhas de montagem (assemblage) tiram as QUANTIDADES da etiqueta escaneada
-  # em cada móvel pronto na saída da linha. Este serviço PUXA os scans novos da
-  # API do Cortex (tabela cortex_stations: estação → linha, tela /settings/devices)
-  # e envia cada um para /api/machines/{ref}/of-unit-scan (+1 no OF + produção).
-  # CORTEX_API_BASE/CORTEX_API_KEY vêm do .env — sem eles as estações aparecem em
-  # erro na tela de devices até a integração ser configurada.
+  # ─── Cortex poller (pulls the end-of-line scans from the Cortex API) ──────────
+  # The assembly lines (assemblage) take their QUANTITIES from the label scanned
+  # on each finished piece of furniture as it leaves the line. This service PULLS
+  # the new scans from the Cortex API (cortex_stations table: station → line,
+  # /settings/devices screen) and sends each one to
+  # /api/machines/{ref}/of-unit-scan (+1 on the OF + production).
+  # CORTEX_API_BASE/CORTEX_API_KEY come from .env — without them the stations
+  # show an error on the devices screen until the integration is configured.
   cortex_poller:
     build:
       context: ./backend
@@ -159,7 +160,7 @@ services:
       - backend
       - db
 
-  # ─── Frontend React ──────────────────────────────────────────────────────────
+  # ─── React frontend ──────────────────────────────────────────────────────────
   frontend:
     build:
       context: ./frontend
@@ -172,7 +173,7 @@ services:
     depends_on:
       - backend
 
-  # ─── Proxy reverso ───────────────────────────────────────────────────────────
+  # ─── Reverse proxy ───────────────────────────────────────────────────────────
   nginx:
     image: nginx:alpine
     container_name: mes_nginx
@@ -200,7 +201,7 @@ services:
       - backend
       - frontend
 
-  # ─── Backup automático diário ────────────────────────────────────────────────
+  # ─── Automatic daily backup ──────────────────────────────────────────────────
   backup:
     image: prodrigestivill/postgres-backup-local
     container_name: mes_backup

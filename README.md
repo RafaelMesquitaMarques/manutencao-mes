@@ -1,108 +1,112 @@
-# MES Manutenção — Plataforma de Gestão e Monitoramento Industrial
+# Kaizo MES — Industrial Maintenance Management & Monitoring Platform
 
-Plataforma completa de manutenção com evolução para MES (Manufacturing Execution System), multi-usina, multi-usuário e multi-idioma. Substitui sistemas externos de monitoramento de captores, centralizando tudo em uma única plataforma sob controle interno.
+A complete maintenance platform evolving into an MES (Manufacturing Execution System): multi-plant, multi-user and multilingual. It replaces external sensor-monitoring services by bringing everything into a single platform under in-house control.
 
-## Arquitetura
+## Architecture
 
 ```
 manutencao-mes/
-├── backend/                  # API FastAPI (Python)
+├── backend/                  # FastAPI API (Python)
 │   └── app/
-│       ├── api/routes/       # Endpoints REST por módulo
-│       ├── core/             # Configurações, segurança, JWT
-│       ├── db/               # Sessão e base SQLAlchemy
-│       ├── models/           # Tabelas do banco (ORM)
-│       ├── schemas/          # Validação Pydantic (input/output)
-│       ├── services/         # Lógica de negócio
+│       ├── api/routes/       # REST endpoints per module
+│       ├── core/             # Settings, security, JWT
+│       ├── db/               # SQLAlchemy session and base
+│       ├── models/           # Database tables (ORM)
+│       ├── schemas/          # Pydantic validation (input/output)
+│       ├── services/         # Business logic
 │       └── workers/
-│           └── iot_consumer.py  # Consome MQTT dos captores → TimescaleDB
+│           └── iot_consumer.py  # Consumes sensor MQTT messages → TimescaleDB
 ├── frontend/                 # React + Vite + Tailwind
 │   └── src/
-│       ├── pages/            # Telas principais
-│       ├── components/       # Componentes reutilizáveis
-│       ├── i18n/             # Traduções PT | EN | FR
-│       └── store/            # Estado global (Zustand)
-├── nginx/                    # Proxy reverso
+│       ├── pages/            # Main screens
+│       ├── components/       # Reusable components
+│       ├── i18n/             # Translations EN | FR | ES
+│       └── store/            # Global state (Zustand)
+├── nginx/                    # Reverse proxy
 ├── scripts/
-│   ├── init_db.sql           # Hypertable TimescaleDB + índices
-│   ├── mosquitto.conf        # Broker MQTT (captores IoT)
-│   └── setup.sh              # Setup com um comando
-├── backups/                  # Backups automáticos diários
+│   ├── init_db.sql           # TimescaleDB hypertable + indexes
+│   ├── mosquitto.conf        # MQTT broker (IoT sensors)
+│   └── setup.sh              # One-command setup
+├── backups/                  # Automatic daily backups
 ├── docker-compose.yml
 └── .env.example
 ```
 
-## Pré-requisitos
+## Prerequisites
 
-- Docker Desktop (Windows/Mac) ou Docker Engine (Linux)
+- Docker Desktop (Windows/Mac) or Docker Engine (Linux)
 - Git
-- 4 GB RAM disponível (recomendado 8 GB)
+- 4 GB of free RAM (8 GB recommended)
 
-## Instalação (um comando)
+## Installation (one command)
 
 ```bash
-git clone https://github.com/seu-usuario/manutencao-mes.git
+git clone https://github.com/RafaelMesquitaMarques/manutencao-mes.git
 cd manutencao-mes
 bash scripts/setup.sh
 ```
 
-Após o setup:
+After the setup:
 
-| Serviço | URL |
+| Service | URL |
 |---------|-----|
-| Plataforma | http://localhost |
-| API REST | http://localhost/api |
-| Documentação API | http://localhost/docs |
-| MQTT Broker | localhost:1883 |
+| Platform | http://localhost |
+| REST API | http://localhost/api |
+| API documentation | http://localhost/docs |
+| MQTT broker | localhost:1883 |
 
-## Módulos
+## Modules
 
-| Módulo | Descrição |
-|--------|-----------|
-| Ordens de Serviço | Corretiva, preventiva, preditiva. Geração automática por alerta IoT |
-| Equipamentos | Ficha técnica, QR Code, horímetro, histórico completo |
-| Planos de Manutenção | Gatilho por calendário, horímetro ou ciclos |
-| Estoque | MRP leve, ponto de reposição, custo por OS |
-| IoT / Captores | Ingestão MQTT, séries temporais, alertas automáticos |
-| KPIs | MTBF, MTTR, OEE, disponibilidade por equipamento |
-| Multi-idioma | Português, Inglês, Francês |
+| Module | Description |
+|--------|-------------|
+| Work Orders | Corrective, preventive, predictive. Generated automatically from IoT alerts |
+| Equipment | Technical data sheet, QR code, hour meter, full history |
+| Maintenance Plans | Triggered by calendar, hour meter or cycles |
+| Inventory | Lightweight MRP, reorder point, cost per work order |
+| IoT / Sensors | MQTT ingestion, time series, automatic alerts |
+| KPIs | MTBF, MTTR, OEE, availability per equipment |
+| Multilingual | English, French, Spanish |
 
-## Evolução planejada
+The platform has since grown well beyond this original core — see [CONTEXT.md](CONTEXT.md) for the current modules, architecture and data model.
+
+## Planned roadmap
 
 ```
-Fase 1 · Agora    → CMMS local (este repositório)
-Fase 2 · 3-6m     → Ingestão IoT dos captores existentes
-Fase 3 · 12m+     → MES completo + preditiva com ML + multi-usina cloud
+Phase 1 · Now      → Local CMMS (this repository)
+Phase 2 · 3–6 mo   → IoT ingestion from the existing sensors
+Phase 3 · 12 mo+   → Full MES + ML-based predictive maintenance + multi-plant cloud
 ```
 
-## Integração com captores
+## Sensor integration
 
-Os captores publicam dados via MQTT no tópico:
+Sensors publish their readings over MQTT on the topic:
 ```
-usinas/{usina_id}/captores/{captor_codigo}/leitura
+usinas/{plant_id}/captores/{sensor_code}/leitura
 ```
 Payload:
 ```json
 { "valor": 12.5, "timestamp": "2024-01-01T10:00:00Z" }
 ```
 
-O `iot_consumer` processa em tempo real, grava no TimescaleDB e gera alertas e OS automáticas quando limites são excedidos — internalizando o que hoje é feito por empresa externa.
+> The topic segments (`usinas`, `captores`, `leitura`) and the `valor` key are Portuguese on purpose: they are the wire contract with the sensor firmware and must not be translated (see `backend/app/workers/iot_consumer.py`).
 
-## Comandos úteis
+The `iot_consumer` processes readings in real time, stores them in TimescaleDB and automatically raises alerts and work orders when limits are exceeded — bringing in-house what an external company does today.
+
+## Useful commands
 
 ```bash
-# Subir
+# Start
 docker compose up -d
 
-# Ver logs em tempo real
+# Follow the logs in real time
 docker compose logs -f
 
-# Parar
+# Stop
 docker compose down
 
-# Recriar após mudanças no código
+# Rebuild after code changes
 docker compose up -d --build
 
-# Acessar banco diretamente
+# Open a shell on the database
 docker exec -it mes_db psql -U mesadmin -d manutencao
 ```

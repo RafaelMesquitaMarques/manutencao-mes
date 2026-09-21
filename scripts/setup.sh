@@ -1,55 +1,55 @@
 #!/bin/bash
-# ─── Setup inicial do projeto MES Manutenção ─────────────────────────────────
-# Execute: bash scripts/setup.sh
+# ─── Initial setup of the Kaizo MES project ──────────────────────────────────
+# Run: bash scripts/setup.sh
 
 set -e
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║        MES Manutenção · Setup inicial                    ║"
+echo "║        Kaizo MES · Initial setup                         ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
-# Verifica dependências
-command -v docker   >/dev/null 2>&1 || { echo "❌  Docker não encontrado. Instale em https://docs.docker.com/get-docker/"; exit 1; }
-command -v git      >/dev/null 2>&1 || { echo "❌  Git não encontrado."; exit 1; }
+# Check dependencies
+command -v docker   >/dev/null 2>&1 || { echo "❌  Docker not found. Install it from https://docs.docker.com/get-docker/"; exit 1; }
+command -v git      >/dev/null 2>&1 || { echo "❌  Git not found."; exit 1; }
 
-echo "✅  Docker e Git encontrados"
+echo "✅  Docker and Git found"
 
-# Cria .env se não existir
+# Create .env if it does not exist
 if [ ! -f .env ]; then
     cp .env.example .env
-    # Gera SECRET_KEY aleatória
+    # Generate a random SECRET_KEY
     SECRET=$(openssl rand -hex 32 2>/dev/null || python3 -c "import secrets; print(secrets.token_hex(32))")
-    sed -i.bak "s/troque-esta-chave-em-producao/$SECRET/" .env && rm -f .env.bak
-    echo "✅  Arquivo .env criado com chave secreta gerada"
+    sed -i.bak "s/change-this-key-in-production/$SECRET/" .env && rm -f .env.bak
+    echo "✅  .env file created with a generated secret key"
 else
-    echo "ℹ️   Arquivo .env já existe, mantendo configurações"
+    echo "ℹ️   .env file already exists, keeping the current settings"
 fi
 
-# Cria diretório de backups
+# Create the backups directory
 mkdir -p backups
-echo "✅  Diretório de backups criado"
+echo "✅  Backups directory created"
 
-# Sobe os containers
+# Start the containers
 echo ""
-echo "🚀  Subindo containers Docker..."
+echo "🚀  Starting Docker containers..."
 docker compose up -d --build
 
 echo ""
-echo "⏳  Aguardando banco de dados ficar pronto..."
+echo "⏳  Waiting for the database to be ready..."
 sleep 8
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║  ✅  Plataforma rodando!                                 ║"
+echo "║  ✅  Platform is running!                                ║"
 echo "║                                                          ║"
 echo "║  🌐  Frontend:  http://localhost                         ║"
 echo "║  📡  API:       http://localhost/api                     ║"
-echo "║  📚  Docs API:  http://localhost/docs                    ║"
+echo "║  📚  API docs:  http://localhost/docs                    ║"
 echo "║  🔌  MQTT:      localhost:1883                           ║"
 echo "║                                                          ║"
-echo "║  Para parar:  docker compose down                        ║"
-echo "║  Para logs:   docker compose logs -f                     ║"
+echo "║  Stop:        docker compose down                        ║"
+echo "║  Logs:        docker compose logs -f                     ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""

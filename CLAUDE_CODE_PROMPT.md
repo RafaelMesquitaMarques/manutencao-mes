@@ -1,27 +1,32 @@
-# FOLIOT MES — IMPLEMENTAÇÃO DO MÓDULO INVENTÁRIO
-# Prompt para Claude Code — Sessão 2026-06-07
+# FOLIOT MES — INVENTORY MODULE IMPLEMENTATION
+# Prompt for Claude Code — Session 2026-06-07
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# CONTEXTO DO PROJETO
+# PROJECT CONTEXT
 # Stack: FastAPI (Python 3.12) + SQLAlchemy async + TimescaleDB + React 18 +
 #        Vite + TypeScript + Tailwind CSS (dark) + AG Grid + Zustand
 # Repo:  manutencao-mes/
 # Auth:  JWT Bearer (get_current_user dependency)
 # PKs:   UUID everywhere
-# Enums: SAEnum(native_enum=False) — VARCHAR, nunca ENUM nativo
-# Nomes: tudo em inglês (tabelas, colunas, funções, rotas)
+# Enums: SAEnum(native_enum=False) — VARCHAR, never a native ENUM
+# Names: everything in English (tables, columns, functions, routes)
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# TAREFA: Implementar o módulo Inventário completo.
-# Todos os arquivos necessários estão neste pacote.
-# Siga as instruções abaixo na ordem indicada.
+# TASK: Implement the complete Inventory module.
+# All the required files are in this package.
+# Follow the instructions below in the order given.
 # ─────────────────────────────────────────────────────────────────────────────
 
-## PASSO 1 — BACKEND: Modelos ORM
+> **Historical document — already executed on 2026-06-07. Do not run it again.**
+> It is kept as a record of how the Inventory module was bootstrapped; the
+> module has evolved a lot since then. Step 11 drops the entire `public`
+> schema, which would now wipe all production data.
 
-Edite `backend/app/models/models.py`:
+## STEP 1 — BACKEND: ORM models
 
-### 1a. Adicione a classe Supplier (ANTES da classe StockItem existente):
+Edit `backend/app/models/models.py`:
+
+### 1a. Add the Supplier class (BEFORE the existing StockItem class):
 
 ```python
 class Supplier(Base):
@@ -39,7 +44,7 @@ class Supplier(Base):
     is_active = Column(Boolean, default=True)
 ```
 
-### 1b. SUBSTITUA a classe StockItem existente por esta versão expandida:
+### 1b. REPLACE the existing StockItem class with this expanded version:
 
 ```python
 class StockItem(Base):
@@ -66,39 +71,39 @@ class StockItem(Base):
 
 ---
 
-## PASSO 2 — BACKEND: Rota de inventário
+## STEP 2 — BACKEND: Inventory route
 
-Copie o arquivo `inventory.py` deste pacote para:
+Copy the `inventory.py` file from this package to:
 → `backend/app/api/routes/inventory.py`
-(substitui o stub existente que retornava [])
+(replaces the existing stub that returned [])
 
 ---
 
-## PASSO 3 — BACKEND: Registrar rota no main.py
+## STEP 3 — BACKEND: Register the route in main.py
 
-Edite `backend/app/main.py`. Localize onde os routers são registrados e
-SUBSTITUA o include do router de inventory pelo novo:
+Edit `backend/app/main.py`. Find where the routers are registered and
+REPLACE the inventory router include with the new one:
 
 ```python
 from app.api.routes.inventory import router as inventory_router
-# Se já existir: app.include_router(inventory_router) com o stub antigo,
-# apenas recarregar o módulo já resolve após copiar o arquivo novo.
-# Confirme que esta linha existe:
+# If it already exists (app.include_router(inventory_router) with the old stub),
+# just reloading the module is enough once the new file is copied.
+# Make sure this line exists:
 app.include_router(inventory_router)
 ```
 
 ---
 
-## PASSO 4 — SCRIPT DE IMPORTAÇÃO
+## STEP 4 — IMPORT SCRIPT
 
-Copie o arquivo `import_inventory.py` deste pacote para:
+Copy the `import_inventory.py` file from this package to:
 → `backend/scripts/import_inventory.py`
 
 ---
 
-## PASSO 5 — FRONTEND: Tipos TypeScript
+## STEP 5 — FRONTEND: TypeScript types
 
-Edite `frontend/src/types/index.ts` e ADICIONE ao final do arquivo:
+Edit `frontend/src/types/index.ts` and ADD at the end of the file:
 
 ```typescript
 export interface StockItem {
@@ -156,34 +161,34 @@ export interface InventoryDashboard {
 
 ---
 
-## PASSO 6 — FRONTEND: API client
+## STEP 6 — FRONTEND: API client
 
-Copie o arquivo `inventory_api.ts` deste pacote para:
+Copy the `inventory_api.ts` file from this package to:
 → `frontend/src/api/inventory.ts`
 
 ---
 
-## PASSO 7 — FRONTEND: Páginas
+## STEP 7 — FRONTEND: Pages
 
-Crie a pasta `frontend/src/pages/Inventory/` e copie:
+Create the `frontend/src/pages/Inventory/` folder and copy:
 - `InventoryList.tsx`    → `frontend/src/pages/Inventory/InventoryList.tsx`
 - `InventoryDetail.tsx`  → `frontend/src/pages/Inventory/InventoryDetail.tsx`
 - `NewInventoryItem.tsx` → `frontend/src/pages/Inventory/NewInventoryItem.tsx`
 
 ---
 
-## PASSO 8 — FRONTEND: Rotas (App.tsx)
+## STEP 8 — FRONTEND: Routes (App.tsx)
 
-Edite `frontend/src/App.tsx`:
+Edit `frontend/src/App.tsx`:
 
-### 8a. Adicione os imports:
+### 8a. Add the imports:
 ```tsx
 import InventoryList    from './pages/Inventory/InventoryList';
 import InventoryDetail  from './pages/Inventory/InventoryDetail';
 import NewInventoryItem from './pages/Inventory/NewInventoryItem';
 ```
 
-### 8b. Adicione as rotas dentro do <Routes>:
+### 8b. Add the routes inside <Routes>:
 ```tsx
 <Route path="/inventory"      element={<InventoryList />} />
 <Route path="/inventory/new"  element={<NewInventoryItem />} />
@@ -192,26 +197,26 @@ import NewInventoryItem from './pages/Inventory/NewInventoryItem';
 
 ---
 
-## PASSO 9 — FRONTEND: Sidebar
+## STEP 9 — FRONTEND: Sidebar
 
-Edite `frontend/src/components/layout/Sidebar.tsx`:
+Edit `frontend/src/components/layout/Sidebar.tsx`:
 
-### 9a. Adicione o import do ícone (se não existir):
+### 9a. Add the icon import (if it does not exist yet):
 ```tsx
 import { Package } from 'lucide-react';
 ```
 
-### 9b. Adicione no grupo de navegação "Core" (junto com Work Orders, Equipment etc.):
+### 9b. Add it to the "Core" navigation group (next to Work Orders, Equipment etc.):
 ```tsx
 { path: '/inventory', icon: Package, label: t('nav.inventory', 'Inventaire') }
 ```
 
 ---
 
-## PASSO 10 — FRONTEND: i18n
+## STEP 10 — FRONTEND: i18n
 
 ### frontend/src/i18n/locales/en.json
-Adicione dentro do objeto raiz:
+Add inside the root object:
 ```json
 "inventory": {
   "code": "Part No.",
@@ -291,27 +296,27 @@ Adicione dentro do objeto raiz:
 
 ---
 
-## PASSO 11 — RESET DO BANCO E REBUILD
+## STEP 11 — DATABASE RESET AND REBUILD
 
-Execute na ordem:
+Run in this order:
 
 ```bash
-# 1. Reset schema (necessário por causa das novas colunas em stock_items)
+# 1. Reset schema (needed because of the new columns in stock_items)
 docker exec mes_db psql -U mesadmin -d manutencao \
   -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
 
-# 2. Rebuild e seed
+# 2. Rebuild and seed
 docker compose up --build --no-deps -d backend
 docker exec mes_backend python /app/scripts/seed.py
 
-# 3. Copiar XMLs para dentro do container
+# 3. Copy the XMLs into the container
 docker cp Inventory.xml mes_backend:/app/data/Inventory.xml
 docker cp Suppliers.xml mes_backend:/app/data/Suppliers.xml
 
-# (criar pasta /app/data se necessário)
+# (create the /app/data folder if needed)
 docker exec mes_backend mkdir -p /app/data
 
-# 4. Rodar importação
+# 4. Run the import
 docker exec mes_backend python /app/scripts/import_inventory.py \
   --inventory /app/data/Inventory.xml \
   --suppliers /app/data/Suppliers.xml
@@ -320,7 +325,7 @@ docker exec mes_backend python /app/scripts/import_inventory.py \
 docker compose up --build --no-deps -d frontend
 ```
 
-### Saída esperada do import:
+### Expected import output:
 ```
 === Foliot MES — Inventory Import ===
   Tables/columns ready.
@@ -334,14 +339,14 @@ docker compose up --build --no-deps -d frontend
 
 ---
 
-## PASSO 12 — VERIFICAÇÃO
+## STEP 12 — VERIFICATION
 
 ```bash
-# Confirmar itens importados
+# Confirm the imported items
 docker exec mes_db psql -U mesadmin -d manutencao \
   -c "SELECT COUNT(*) FROM stock_items; SELECT COUNT(*) FROM suppliers;"
 
-# Testar API
+# Test the API
 curl http://localhost/api/inventory/items?limit=5
 curl http://localhost/api/inventory/dashboard
 curl http://localhost/api/inventory/suppliers?limit=5
@@ -349,28 +354,28 @@ curl http://localhost/api/inventory/suppliers?limit=5
 
 ---
 
-## ARQUIVOS NESTE PACOTE
+## FILES IN THIS PACKAGE
 
-| Arquivo                | Destino                                          |
+| File                   | Destination                                      |
 |------------------------|--------------------------------------------------|
 | `inventory.py`         | `backend/app/api/routes/inventory.py`            |
 | `import_inventory.py`  | `backend/scripts/import_inventory.py`            |
-| `models_additions.py`  | Referência — editar `models/models.py` manualmente |
+| `models_additions.py`  | Reference — edit `models/models.py` manually     |
 | `inventory_api.ts`     | `frontend/src/api/inventory.ts`                  |
-| `inventory_types.ts`   | Adicionar ao final de `frontend/src/types/index.ts` |
+| `inventory_types.ts`   | Append to the end of `frontend/src/types/index.ts` |
 | `InventoryList.tsx`    | `frontend/src/pages/Inventory/InventoryList.tsx`  |
 | `InventoryDetail.tsx`  | `frontend/src/pages/Inventory/InventoryDetail.tsx`|
 | `NewInventoryItem.tsx` | `frontend/src/pages/Inventory/NewInventoryItem.tsx`|
 
 ---
 
-## NOTAS IMPORTANTES PARA CLAUDE CODE
+## IMPORTANT NOTES FOR CLAUDE CODE
 
-1. **Não use `native_enum=True`** no SQLAlchemy — todos os enums são `SAEnum(native_enum=False)`
-2. **O DB já existe** — não recriar tabelas que já existem (plants, users, equipment etc.)
-3. **O script de importação é idempotente** — pode ser rodado múltiplas vezes com segurança
-4. **A rota `/api/inventory/` já estava registrada** no main.py apontando para um stub — apenas substituir o arquivo de rota já resolve
-5. **AG Grid Community** já está instalado no projeto (`ag-grid-community`, `ag-grid-react`)
-6. **Os imports de `lucide-react`** já funcionam no projeto
-7. **Tailwind dark mode** está configurado — usar classes dark: não é necessário, o tema é sempre dark
-8. **`from app.db.session import get_db`** e **`from app.core.security import get_current_user`** são as dependências padrão do projeto
+1. **Do not use `native_enum=True`** in SQLAlchemy — all enums are `SAEnum(native_enum=False)`
+2. **The DB already exists** — do not recreate tables that already exist (plants, users, equipment etc.)
+3. **The import script is idempotent** — it can safely be run multiple times
+4. **The `/api/inventory/` route was already registered** in main.py, pointing to a stub — just replacing the route file is enough
+5. **AG Grid Community** is already installed in the project (`ag-grid-community`, `ag-grid-react`)
+6. **The `lucide-react` imports** already work in the project
+7. **Tailwind dark mode** is configured — `dark:` classes are not needed, the theme is always dark
+8. **`from app.db.session import get_db`** and **`from app.core.security import get_current_user`** are the project's standard dependencies

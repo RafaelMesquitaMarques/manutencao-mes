@@ -533,10 +533,10 @@ export default function FactoryMap() {
   // machine (or by the OF search; `highlight` rings the searched OF in the list).
   const [ofPanel, setOfPanel] = useState<{ machineId: string; name: string; role: string | null; highlight?: string } | null>(null);
   const [ofList, setOfList] = useState<JobOrder[] | null>(null);
-  // ── Replay do turno ──
-  // Modo alternativo do MESMO mapa: enquanto está ligado, o WS ao vivo e os polls
-  // ficam suspensos e quem pinta os nós é o overlay reconstruído do histórico.
-  // Sair volta a ligar o live e recarrega o mapa — o modo ao vivo é intocado.
+  // ── Shift replay ──
+  // Alternative mode of the SAME map: while it is on, the live WS and the polls
+  // are suspended and the nodes are painted by the overlay rebuilt from history.
+  // Leaving turns live back on and reloads the map — live mode is left untouched.
   const [replayOn, setReplayOn] = useState(false);
   const [replayOfId, setReplayOfId] = useState<string | null>(null);
   const [mapAssets, setMapAssets] = useState<ReplayAsset[]>([]);
@@ -744,8 +744,8 @@ export default function FactoryMap() {
         }
       }
       setNodes(buildNodes(data));
-      // Parentesco/tipo dos ativos — estável entre pushes de estado, é o que o
-      // replay usa para herdar o estado da máquina-mãe sem re-render em cascata.
+      // Asset parentage/type — stable across status pushes; it is what the replay
+      // uses to inherit the parent machine's state without cascading re-renders.
       setMapAssets(data.machines.map((m) => ({
         id: m.id, parent_equipment_id: m.parent_equipment_id,
         block_kind: m.block_kind, subtype: m.subtype,
@@ -770,7 +770,7 @@ export default function FactoryMap() {
   }, [plantId]);
 
   useEffect(() => {
-    if (editMode || !plantId || replayOn) return;   // replay pinta o mapa a partir do histórico
+    if (editMode || !plantId || replayOn) return;   // replay paints the map from history
     const t = setInterval(() => load(plantId), 30000);   // slow fallback; WS does the live push
     return () => clearInterval(t);
   }, [editMode, plantId, load, replayOn]);
@@ -815,7 +815,7 @@ export default function FactoryMap() {
     });
   }, [setNodes]);
 
-  // Live status push over WebSocket (view mode only; nunca durante o replay)
+  // Live status push over WebSocket (view mode only; never during the replay)
   useEffect(() => {
     if (editMode || !plantId || !token || replayOn) return;
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -832,17 +832,17 @@ export default function FactoryMap() {
     return () => { closed = true; if (retry) clearTimeout(retry); ws?.close(); };
   }, [editMode, plantId, token, applyStatus, replayOn]);
 
-  // ── O replay pinta o mapa ────────────────────────────────────────────────
-  // Mesmo caminho do push ao vivo (`applyStatus`), só que o overlay vem do
-  // histórico reconstruído em vez do WebSocket: 2D, 3D, legenda e badges
-  // seguem todos sem nenhuma alteração neles.
+  // ── The replay paints the map ─────────────────────────────────────────────
+  // Same path as the live push (`applyStatus`), except the overlay comes from
+  // the reconstructed history instead of the WebSocket: 2D, 3D, legend and
+  // badges all carry on without any change to them.
   useEffect(() => {
     if (!replayOn || !replay.index || mapAssets.length === 0) return;
     applyStatus(replay.index.overlayAt(replay.cursor, mapAssets));
   }, [replayOn, replay.index, replay.cursor, mapAssets, applyStatus]);
 
-  // Replay ligado mas ainda sem janela carregada: o mapa fica neutro em vez de
-  // continuar a exibir o último estado AO VIVO como se fosse o passado.
+  // Replay on but no window loaded yet: the map goes neutral instead of still
+  // showing the last LIVE state as if it were the past.
   useEffect(() => {
     if (!replayOn || replay.index || mapAssets.length === 0) return;
     applyStatus(mapAssets.map((a) => ({
@@ -864,22 +864,22 @@ export default function FactoryMap() {
   }, []);
 
   const exitReplay = useCallback(() => {
-    if (!replayOnRef.current) return;   // já estamos ao vivo — não recarregar à toa
+    if (!replayOnRef.current) return;   // already live — don't reload needlessly
     setReplayOn(false);
     setReplayOfId(null);
     setDetail(null); setOfPanel(null);
     replay.exit();
-    if (plantId) load(plantId);   // repõe o estado AO VIVO imediatamente
+    if (plantId) load(plantId);   // restore the LIVE state immediately
   }, [replay.exit, plantId, load]);   // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fuso da planta ativa — o replay lê e escreve horas de parede da fábrica.
+  // Active plant's timezone — the replay reads and writes factory wall-clock times.
   const activePlant = useMemo(() => plants.find((p) => p.id === plantId) ?? null, [plants, plantId]);
 
-  // Trocar de planta enquanto o replay corre invalida a janela carregada — ela
-  // pertence à planta anterior. Voltamos ao live; o `load` da troca de planta já
-  // repõe o mapa, por isso aqui só limpamos o estado do replay.
-  // `replay.exit` é estável (useCallback sem deps) — o objeto `replay` NÃO é, e
-  // usá-lo como dependência faria o efeito disparar a cada render, matando o replay.
+  // Switching plants while the replay runs invalidates the loaded window — it
+  // belongs to the previous plant. We go back to live; the plant switch's `load`
+  // already restores the map, so here we only clear the replay state.
+  // `replay.exit` is stable (useCallback, no deps) — the `replay` object is NOT,
+  // and depending on it would fire the effect on every render, killing the replay.
   const replayExit = replay.exit;
   useEffect(() => {
     if (!replayOnRef.current) return;
@@ -1401,9 +1401,9 @@ export default function FactoryMap() {
     return m;
   }, [nodes, unplaced]);
 
-  // Durante o replay o painel de detalhe segue o CURSOR: relemos a máquina do nó
-  // que o overlay acabou de repintar, em vez de manter o instantâneo tirado no
-  // momento do clique. Ao vivo o comportamento fica exatamente como era.
+  // During the replay the detail panel follows the CURSOR: we re-read the machine
+  // from the node the overlay just repainted, instead of keeping the snapshot
+  // taken at click time. In live mode the behaviour stays exactly as it was.
   const detailNow = useMemo(() => {
     if (!detail) return null;
     return replayActive ? (equipById.get(detail.id) ?? detail) : detail;
@@ -1466,8 +1466,8 @@ export default function FactoryMap() {
   // Dedicated slow poll (~15 s) — deliberately OUTSIDE the 4 s status WS: buffer
   // data is heavier and does not need machine-status latency.
   useEffect(() => {
-    // Durante o replay o buffer fica vazio em vez de mostrar o conteúdo ATUAL:
-    // as pilhas do Pit Stop ainda não são reconstruídas no tempo (ver limitações).
+    // During the replay the buffer stays empty instead of showing its CURRENT
+    // contents: the Pit Stop stacks are not rebuilt over time yet (see limitations).
     if (!plantId || editMode || !pitStopEqId || replayOn) { setPitStop(null); return; }
     let cancelled = false;
     const tick = () => fetchPitStopState(plantId)
@@ -1532,7 +1532,7 @@ export default function FactoryMap() {
   // ── OF watches ("spots") ──
   // Slow poll (~30 s), view mode only — inactivity clocks move by the minute.
   useEffect(() => {
-    // "Spots" e relógios de inatividade são conceitos do AGORA — fora do replay.
+    // "Spots" and inactivity clocks are about NOW — they stay out of the replay.
     if (!plantId || editMode || replayOn) { setOfWatches(null); return; }
     let cancelled = false;
     const tick = () => fetchOfWatches(plantId)
@@ -1707,8 +1707,8 @@ export default function FactoryMap() {
       // A conveyor tied to a machine opens that machine's OFs (Ordres de fabrication).
       if (pr?.machine_id) {
         const mm = Array.from(equipByIdRef.current.values()).find((e) => e.machine_id === pr.machine_id);
-        // No replay a lista de OFs do transportador seria o estado AO VIVO —
-        // abrimos antes a máquina, cujo painel mostra a OF do instante.
+        // In replay the conveyor's OF list would be the LIVE state — we open
+        // the machine instead, whose panel shows the OF at that instant.
         if (replayOnRef.current) { setOfPanel(null); setReplayOfId(null); if (mm) setDetail(mm); return; }
         setDetail(null);
         setOfPanel({ machineId: pr.machine_id, name: mm?.name ?? '', role: pr.role ?? null });
@@ -1819,8 +1819,8 @@ export default function FactoryMap() {
       id: s.id, name: s.name, department: s.department,
       pos_x: s.pos_x ?? 0, pos_y: s.pos_y ?? 0,
       height_3d: s.height_3d,
-      // Sem histórico de temperatura, o termómetro fica sem leitura no replay
-      // em vez de mostrar o valor de agora.
+      // With no temperature history, the thermometer has no reading in replay
+      // instead of showing the current value.
       last_value_c: replayOn ? null : s.last_value_c,
     })),
     [sensors, replayOn],
@@ -1926,8 +1926,8 @@ export default function FactoryMap() {
 
   // Cached outdoor weather for the overview badge — refreshed on plant change + every 10 min.
   useEffect(() => {
-    // O tempo lá fora é do AGORA: durante o replay o badge fica sem valor em vez
-    // de anunciar a meteorologia de hoje sobre o turno de ontem.
+    // Outdoor weather is about NOW: during the replay the badge has no value
+    // instead of announcing today's weather over yesterday's shift.
     if (!plantId || replayOn) { setWeather(null); return; }
     let alive = true;
     const pull = () => fetchPlantWeather(plantId).then((w) => { if (alive) setWeather(w); }).catch(() => {});
@@ -1939,7 +1939,7 @@ export default function FactoryMap() {
   // Keep the thermometer readings live (values change every ~30s server-side).
   // Merge only the reading fields so an in-progress drag position is never yanked.
   useEffect(() => {
-    if (!plantId || !mode3d || replayOn) return;   // temperatura não é historizada
+    if (!plantId || !mode3d || replayOn) return;   // temperature history is not stored
     let alive = true;
     const pull = () => fetchMapSensors(plantId).then((fresh) => {
       if (!alive) return;
@@ -1987,7 +1987,7 @@ export default function FactoryMap() {
   // Live maintenance KPIs for the selected machine (real data from /api/kpis)
   useEffect(() => {
     const mid = detail?.machine_id;
-    if (!mid || replayOn) { setKpi(null); return; }   // 30 dias "até agora" não é o passado que se revê
+    if (!mid || replayOn) { setKpi(null); return; }   // 30 days "up to now" is not the past being reviewed
     let cancelled = false;
     setKpiLoading(true);
     setKpi(null);
@@ -2188,7 +2188,7 @@ export default function FactoryMap() {
           <button onClick={() => { setMode3d(true); setSel3d(null); }} className={`px-3 py-1.5 ${mode3d ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>3D</button>
         </span>
 
-        {/* Ao vivo ↔ Replay do turno — o mesmo mapa, outra fonte de tempo. */}
+        {/* Live ↔ Shift replay — the same map, a different time source. */}
         <span className="inline-flex rounded-lg border border-gray-700 overflow-hidden text-sm">
           <button onClick={exitReplay} title={t('replay.liveHint')}
             className={`flex items-center gap-1.5 px-3 py-1.5 ${!replayOn ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
@@ -2431,8 +2431,8 @@ export default function FactoryMap() {
           })()}
           {/* OF search (whole map: buffer + machines + backend locator), the
               search-result card (an OF found but with nowhere to fly to) and the
-              watch widget — one column under the fullscreen button. Busca e
-              "spots" interrogam o estado AO VIVO, por isso saem no replay. */}
+              watch widget — one column under the fullscreen button. Search and
+              "spots" query the LIVE state, so they are hidden in the replay. */}
           {mode3d && !editMode && !replayOn && (
           <div className="absolute top-14 right-3 z-10 flex flex-col items-end gap-2">
             <form onSubmit={submitPitStopSearch}
@@ -2712,7 +2712,7 @@ export default function FactoryMap() {
             </div>
           )}
 
-          {/* Barra de transporte do replay — rodapé da área do mapa */}
+          {/* Replay transport bar — footer of the map area */}
           {replayOn && plantId && (
             <ReplayBar
               plantId={plantId}
@@ -2859,7 +2859,7 @@ export default function FactoryMap() {
             )}
 
             {/* Live maintenance KPIs (last 30 days) — only for items linked to a machine.
-                No replay dão lugar ao estado reconstruído do instante. */}
+                In replay they give way to the reconstructed state at the instant. */}
             {!replayActive && detailNow.machine_id && (
               <div className="mt-4 pt-3 border-t border-gray-800">
                 <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-2">{t('factoryMap.liveKpis')}</p>
@@ -2927,7 +2927,7 @@ export default function FactoryMap() {
           </aside>
         )}
 
-        {/* Painel da OF no replay — percurso na janela + onde estava no instante */}
+        {/* OF panel in replay — path through the window + where it was at the instant */}
         {replayActive && replayOfId && replay.index && (() => {
           const snap = replay.index.ofAt(replayOfId, replay.cursor);
           if (!snap) return null;

@@ -1,16 +1,16 @@
-"""Replay do turno — endpoints de LEITURA sobre o histórico que já existe.
+"""Shift replay — READ endpoints over the history that already exists.
 
-  GET /{plant_id}/windows?date=YYYY-MM-DD   turnos selecionáveis do dia + dia inteiro
-  GET /{plant_id}/timeline?start=&end=      material do replay para uma janela
+  GET /{plant_id}/windows?date=YYYY-MM-DD   the day's selectable shifts + whole day
+  GET /{plant_id}/timeline?start=&end=      replay material for a window
 
-Nada aqui escreve: o replay é reconstruído de `machine_stops`,
+Nothing here writes: the replay is rebuilt from `machine_stops`,
 `machine_interventions`, `maintenance_tickets`, `job_order_runs`,
-`machine_production_hourly`, `pit_stop_movements`, `maintenance_alerts` e
-`reject_logs`. Ver `app/services/factory_replay.py` para a precedência de
-estados e as limitações conhecidas.
+`machine_production_hourly`, `pit_stop_movements`, `maintenance_alerts` and
+`reject_logs`. See `app/services/factory_replay.py` for the state
+precedence and the known limitations.
 
-Acesso: mesmo nível do mapa (`factory_map:view` + pertencer à planta) — quem vê
-a fábrica ao vivo pode revê-la.
+Access: same level as the map (`factory_map:view` + belonging to the plant) —
+whoever sees the factory live can review it.
 """
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -49,9 +49,9 @@ async def list_windows(
     db: AsyncSession = Depends(get_db),
     ctx: PlantContext = Depends(get_plant_context),
 ):
-    """Turnos que a planta realmente opera nesse dia local (a partir dos
-    `shifts_config` das máquinas), agregados: um turno partilhado por 12
-    máquinas é UMA opção com `machine_count: 12`."""
+    """Shifts the plant actually runs on that local day (from the machines'
+    `shifts_config`), aggregated: a shift shared by 12 machines is ONE
+    option with `machine_count: 12`."""
     plant = await _checked_plant(db, plant_id, ctx)
     tz = replay_service.tz_of(plant.timezone)
     if date_str:
@@ -78,8 +78,8 @@ async def get_timeline(
         raise HTTPException(status_code=422, detail="end_before_start")
     if w_end - w_start > timedelta(hours=replay_service.MAX_WINDOW_HOURS):
         raise HTTPException(status_code=422, detail="window_too_long")
-    # O futuro não tem histórico: cortar em "agora" mantém o cursor honesto em
-    # vez de pintar verde de base num tempo que ainda não aconteceu.
+    # The future has no history: cutting at "now" keeps the cursor honest instead
+    # of painting baseline green over a time that has not happened yet.
     now = datetime.now(timezone.utc)
     if w_start >= now:
         raise HTTPException(status_code=422, detail="window_in_future")

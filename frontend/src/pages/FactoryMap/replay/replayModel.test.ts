@@ -1,11 +1,11 @@
 /**
- * Testes do modelo do Replay do Turno.
+ * Tests for the Shift Replay model.
  *
- * O que se verifica é a fidelidade da reprodução: o estado num instante tem de
- * sair dos MESMOS intervalos que o backend reconstruiu, a herança de estado tem
- * de seguir a máquina-mãe como no modo ao vivo, e a fila de OFs parqueadas tem
- * de refletir o ledger de passagens (incluindo o que já tinha seguido para o
- * buffer). O overlay produzido é exatamente a forma que `applyStatus` consome.
+ * What is checked is the fidelity of the playback: the state at an instant must
+ * come from the SAME intervals the backend reconstructed, state inheritance must
+ * follow the parent machine as in live mode, and the queue of parked OFs must
+ * reflect the runs ledger (including what had already moved on to the
+ * buffer). The overlay produced is exactly the shape `applyStatus` consumes.
  */
 import { describe, it, expect } from 'vitest';
 import { ReplayIndex } from './replayModel';
@@ -52,7 +52,7 @@ const ASSETS = [
   { id: 'edge', parent_equipment_id: null, block_kind: null, subtype: null },
 ];
 
-describe('ReplayIndex — estado num instante', () => {
+describe('ReplayIndex — state at an instant', () => {
   const idx = new ReplayIndex(timeline({
     tracks: [
       track('saw', [
@@ -65,32 +65,32 @@ describe('ReplayIndex — estado num instante', () => {
     ],
   }));
 
-  it('devolve o segmento que cobre o instante, inclusive nas fronteiras', () => {
+  it('returns the segment covering the instant, including at the boundaries', () => {
     const at = (h: number) => idx.overlayAt(T0 + h * H, ASSETS).find((o) => o.id === 'saw')!;
     expect(at(1).status).toBe('running');
-    expect(at(2).status).toBe('stopped');          // início do segmento é inclusivo
+    expect(at(2).status).toBe('stopped');          // segment start is inclusive
     expect(at(2.5).status).toBe('stopped');
-    expect(at(3).status).toBe('running');          // fim é exclusivo
+    expect(at(3).status).toBe('running');          // end is exclusive
     expect(at(2.5).stop_reason).toBe('Bris de lame');
   });
 
-  it('prende o cursor nas extremidades da janela', () => {
+  it('clamps the cursor to the ends of the window', () => {
     const before = idx.overlayAt(T0 - 5 * H, ASSETS).find((o) => o.id === 'saw')!;
     const after = idx.overlayAt(T0 + 50 * H, ASSETS).find((o) => o.id === 'saw')!;
     expect(before.status).toBe('running');
     expect(after.status).toBe('running');
   });
 
-  it('o transportador herda o estado da máquina-mãe, como no modo ao vivo', () => {
+  it('the conveyor inherits the parent machine state, as in live mode', () => {
     const at = (h: number) => idx.overlayAt(T0 + h * H, ASSETS).find((o) => o.id === 'conv')!;
     expect(at(1).status).toBe('running');
-    expect(at(2.5).status).toBe('stopped');        // a serra parou → o transportador cai com ela
+    expect(at(2.5).status).toBe('stopped');        // the saw stopped → the conveyor goes down with it
     expect(at(4).status).toBe('running');
-    // Um ativo sem pai mantém o seu próprio estado.
+    // An asset with no parent keeps its own state.
     expect(idx.overlayAt(T0 + 2.5 * H, ASSETS).find((o) => o.id === 'edge')!.status).toBe('running');
   });
 
-  it('não inventa estado para ativos sem histórico MES', () => {
+  it('does not invent a state for assets without MES history', () => {
     const bare = new ReplayIndex(timeline({
       tracks: [track('hvac', [seg(T0, T0 + 8 * H, 'idle', { source: 'no_history' })], { machine_id: null })],
     }));
@@ -100,7 +100,7 @@ describe('ReplayIndex — estado num instante', () => {
   });
 });
 
-describe('ReplayIndex — técnicos e ticket no instante', () => {
+describe('ReplayIndex — technicians and ticket at the instant', () => {
   const idx = new ReplayIndex(timeline({
     tracks: [track('saw', [
       seg(T0, T0 + 1 * H, 'running'),
@@ -120,24 +120,24 @@ describe('ReplayIndex — técnicos e ticket no instante', () => {
   }));
   const at = (h: number) => idx.overlayAt(T0 + h * H, ASSETS).find((o) => o.id === 'saw')!;
 
-  it('mostra apenas os técnicos presentes naquele minuto', () => {
+  it('shows only the technicians present at that minute', () => {
     expect(at(1.2).technicians?.map((x) => x.name)).toEqual(['Ana']);
     expect(at(1.8).technicians?.map((x) => x.name)).toEqual(['Bo']);
-    expect(at(0.5).technicians).toBeNull();        // fora da intervenção
+    expect(at(0.5).technicians).toBeNull();        // outside the intervention
   });
 
-  it('o badge de ticket é exato mesmo quando outra camada ganha a cor', () => {
-    expect(at(1.2).status).toBe('intervention');   // roxo ganha
-    expect(at(1.2).open_ticket).toBe(true);        // …e o ticket continua aberto
+  it('the ticket badge is exact even when another layer wins the colour', () => {
+    expect(at(1.2).status).toBe('intervention');   // purple wins
+    expect(at(1.2).open_ticket).toBe(true);        // …and the ticket is still open
     expect(at(1.2).open_ticket_number).toBe('TK-9');
     expect(at(4).open_ticket).toBe(false);
   });
 });
 
-describe('ReplayIndex — OFs no tempo', () => {
-  //   OF-A: serra 12:00→14:00, depois edge 15:00→(aberta)
-  //   OF-B: serra 14:00→(aberta)
-  //   OF-C: passagem de arrasto fechada antes da janela (já estava parqueada)
+describe('ReplayIndex — OFs over time', () => {
+  //   OF-A: saw 12:00→14:00, then edge 15:00→(open)
+  //   OF-B: saw 14:00→(open)
+  //   OF-C: carry-in run closed before the window (was already parked)
   const idx = new ReplayIndex(timeline({
     tracks: [track('saw', [seg(T0, T0 + 8 * H, 'running')]), track('edge', [seg(T0, T0 + 8 * H, 'running')])],
     of_runs: [
@@ -149,29 +149,29 @@ describe('ReplayIndex — OFs no tempo', () => {
   }));
   const saw = (h: number) => idx.overlayAt(T0 + h * H, ASSETS).find((o) => o.id === 'saw')!;
 
-  it('a OF carregada vem da passagem aberta naquele instante', () => {
+  it('the loaded OF comes from the run open at that instant', () => {
     expect(saw(1).current_job_number).toBe('OF-A');
     expect(saw(3).current_job_number).toBe('OF-B');
     const edgeAt4 = idx.overlayAt(T0 + 4 * H, ASSETS).find((o) => o.id === 'edge')!;
     expect(edgeAt4.current_job_number).toBe('OF-A');
   });
 
-  it('uma OF cuja passagem fechou fica parqueada à saída, com a idade certa', () => {
-    // Às 14:30 a OF-A já saiu da serra (14:00) e ainda não foi scaneada no edge (15:00).
+  it('an OF whose run has closed stays parked at the output, with the right age', () => {
+    // At 14:30 OF-A has already left the saw (14:00) and is not yet scanned at the edge (15:00).
     const s = saw(2.5);
     const parked = s.queued_ofs!.map((p) => p.job_number);
     expect(parked).toContain('OF-A');
     expect(s.queued_ofs!.find((p) => p.job_number === 'OF-A')!.age_minutes).toBe(30);
-    // Às 15:30 já está no edge → sai da fila da serra.
+    // At 15:30 it is already at the edge → it leaves the saw's queue.
     expect((saw(3.5).queued_ofs ?? []).map((p) => p.job_number)).not.toContain('OF-A');
   });
 
-  it('a fila de arrasto conta o que já estava parqueado quando a janela começou', () => {
+  it('the carry-in queue counts what was already parked when the window began', () => {
     expect(saw(0).queued_ofs!.map((p) => p.job_number)).toContain('OF-C');
     expect(saw(0).queued_total).toBeGreaterThan(0);
   });
 
-  it('uma OF que já entrou no buffer deixa de contar como parqueada', () => {
+  it('an OF that has already entered the buffer no longer counts as parked', () => {
     const moved = new ReplayIndex(timeline({
       tracks: [track('saw', [seg(T0, T0 + 8 * H, 'running')])],
       of_runs: [run('r1', 'of-a', 'OF-A', 'saw', T0, T0 + 1 * H)],
@@ -181,18 +181,18 @@ describe('ReplayIndex — OFs no tempo', () => {
       }],
     }));
     const q = (h: number) => moved.overlayAt(T0 + h * H, ASSETS).find((o) => o.id === 'saw')!.queued_total;
-    expect(q(1.2)).toBe(1);   // já saiu da serra, ainda não chegou ao buffer
-    expect(q(2)).toBe(0);     // entrou no buffer → seguiu em frente
+    expect(q(1.2)).toBe(1);   // already left the saw, not yet in the buffer
+    expect(q(2)).toBe(0);     // entered the buffer → moved on
   });
 
-  it('o percurso da OF distingue passado, presente e futuro do cursor', () => {
+  it('the OF path tells apart the past, present and future of the cursor', () => {
     const a1 = idx.ofAt('of-a', T0 + 1 * H)!;
     expect(a1.currentRun?.equipment_id).toBe('saw');
     expect(a1.runs).toHaveLength(2);
-    expect(a1.piecesSoFar).toBe(12);          // só a passagem já iniciada conta
+    expect(a1.piecesSoFar).toBe(12);          // only the run already started counts
 
     const a2 = idx.ofAt('of-a', T0 + 2.5 * H)!;
-    expect(a2.currentRun).toBeNull();         // entre duas passagens: parqueada
+    expect(a2.currentRun).toBeNull();         // between two runs: parked
     expect(a2.lastRun?.equipment_id).toBe('saw');
 
     const a3 = idx.ofAt('of-a', T0 + 4 * H)!;
@@ -200,7 +200,7 @@ describe('ReplayIndex — OFs no tempo', () => {
     expect(a3.piecesSoFar).toBe(16);
   });
 
-  it('reconhece a OF dentro do buffer pelo saldo do ledger', () => {
+  it('recognises the OF inside the buffer from the ledger balance', () => {
     const buf = new ReplayIndex(timeline({
       of_runs: [run('r1', 'of-a', 'OF-A', 'saw', T0, T0 + 1 * H)],
       pit_events: [
@@ -214,7 +214,7 @@ describe('ReplayIndex — OFs no tempo', () => {
   });
 });
 
-describe('ReplayIndex — produção acumulada', () => {
+describe('ReplayIndex — cumulative production', () => {
   const idx = new ReplayIndex(timeline({
     tracks: [track('saw', [seg(T0, T0 + 8 * H, 'running')])],
     production: [
@@ -223,7 +223,7 @@ describe('ReplayIndex — produção acumulada', () => {
     ],
   }));
 
-  it('só soma horas JÁ COMPLETAS — nunca reparte a hora em curso', () => {
+  it('only adds up ALREADY COMPLETED hours — never splits the hour in progress', () => {
     expect(idx.machineAt('saw', T0 + 0.5 * H, ASSETS).piecesSoFar).toBe(0);
     expect(idx.machineAt('saw', T0 + 1 * H, ASSETS).piecesSoFar).toBe(10);
     expect(idx.machineAt('saw', T0 + 1.5 * H, ASSETS).piecesSoFar).toBe(10);
@@ -232,8 +232,8 @@ describe('ReplayIndex — produção acumulada', () => {
   });
 });
 
-describe('ReplayIndex — marcadores da régua', () => {
-  it('posiciona cada evento entre 0 e 1 e descarta o que cai fora da janela', () => {
+describe('ReplayIndex — timeline markers', () => {
+  it('places each event between 0 and 1 and drops what falls outside the window', () => {
     const idx = new ReplayIndex(timeline({
       events: [
         { ts: iso(T0 + 2 * H), kind: 'alert', machine_id: 'm-saw', equipment_id: 'saw', label: 'AL-1', ref_id: 'a1' },

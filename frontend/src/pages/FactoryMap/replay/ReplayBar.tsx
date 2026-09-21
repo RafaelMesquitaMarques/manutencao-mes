@@ -1,9 +1,9 @@
 /**
- * Barra de transporte do Replay do Turno.
+ * Shift Replay transport bar.
  *
- * Fica no rodapé da área do mapa enquanto o modo replay está ativo: escolher o
- * dia e o turno, reproduzir/pausar, acelerar, saltar para um horário e ver os
- * marcadores de eventos (alertas, tickets, rejeitos) da janela.
+ * Sits at the bottom of the map area while replay mode is active: pick the
+ * day and the shift, play/pause, speed up, jump to a time and see the
+ * window's event markers (alerts, tickets, rejects).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -15,7 +15,7 @@ import { REPLAY_SPEEDS, type ReplayController, type ReplayRange } from './useRep
 
 const KNOWN_SHIFTS = new Set(['morning', 'afternoon', 'night', 'day', 'evening']);
 
-/** Cor do marcador na régua, por tipo de evento. */
+/** Marker colour on the timeline, per event type. */
 const MARKER_HEX: Record<string, string> = {
   alert: '#f97316',
   ticket_opened: '#eab308',
@@ -23,8 +23,8 @@ const MARKER_HEX: Record<string, string> = {
   reject: '#ec4899',
 };
 
-// Formatadores por fuso são caros de construir e a régua formata cada marcador
-// a cada render — daí o cache.
+// Per-timezone formatters are expensive to build and the timeline formats every
+// marker on every render — hence the cache.
 const fmtCache = new Map<string, Intl.DateTimeFormat>();
 function formatter(key: string, opts: Intl.DateTimeFormatOptions): Intl.DateTimeFormat | null {
   const hit = fmtCache.get(key);
@@ -38,7 +38,7 @@ function formatter(key: string, opts: Intl.DateTimeFormatOptions): Intl.DateTime
 
 const todayIn = (tz: string): string => {
   const f = formatter(`day:${tz}`, { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
-  // en-CA dá YYYY-MM-DD; en-GB dá DD/MM/YYYY, então reordenamos a partir das partes.
+  // en-CA gives YYYY-MM-DD; en-GB gives DD/MM/YYYY, so we reorder it from the parts.
   if (!f) return new Date().toISOString().slice(0, 10);
   const parts = f.formatToParts(new Date());
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
@@ -49,15 +49,15 @@ export const formatInTz = (at: number, tz: string, withSeconds = true): string =
   const f = formatter(`t${withSeconds ? 's' : ''}:${tz}`, {
     timeZone: tz, hour: '2-digit', minute: '2-digit',
     ...(withSeconds ? { second: '2-digit' } : {}),
-    // h23 explícito: `hour12: false` sozinho rende "24:00" à meia-noite em
-    // alguns runtimes, o que partiria o salto para um horário.
+    // Explicit h23: `hour12: false` alone yields "24:00" at midnight in
+    // some runtimes, which would break jumping to a time.
     hourCycle: 'h23',
   });
   if (!f) return new Date(at).toISOString().slice(11, withSeconds ? 19 : 16);
   return f.format(new Date(at));
 };
 
-/** Minutos desde a meia-noite local da planta, para um instante UTC. */
+/** Minutes since the plant's local midnight, for a UTC instant. */
 function localMinutes(at: number, tz: string): number {
   const hhmm = formatInTz(at, tz, false);
   const [h, m] = hhmm.split(':').map(Number);
@@ -76,7 +76,7 @@ export default function ReplayBar({ plantId, plantTimezone, replay, onExit }: Pr
   const [day, setDay] = useState(() => todayIn(plantTimezone));
   const [windows, setWindows] = useState<ReplayWindow[] | null>(null);
   const [dayRange, setDayRange] = useState<{ start: string; end: string } | null>(null);
-  const [selected, setSelected] = useState<string>('');     // '' = dia inteiro
+  const [selected, setSelected] = useState<string>('');     // '' = whole day
   const [windowsError, setWindowsError] = useState(false);
   const trackRef = useRef<HTMLDivElement>(null);
 
@@ -92,9 +92,9 @@ export default function ReplayBar({ plantId, plantTimezone, replay, onExit }: Pr
         if (cancelled) return;
         setWindows(res.windows);
         setDayRange(res.day);
-        // Pré-seleciona o turno mais recente que JÁ COMEÇOU — é quase sempre o que
-        // se quer rever numa reunião de produção. Nenhum começou ainda (dia
-        // futuro/madrugada) → o primeiro da lista.
+        // Preselect the most recent shift that HAS ALREADY STARTED — it is almost
+        // always the one to review in a production meeting. None started yet
+        // (future day / small hours) → the first one in the list.
         setSelected((cur) => {
           if (res.windows.some((w) => w.start === cur)) return cur;
           const now = Date.now();
@@ -205,13 +205,13 @@ export default function ReplayBar({ plantId, plantTimezone, replay, onExit }: Pr
               const v = e.target.value;
               if (!v || !replay.index) return;
               const [h, m] = v.split(':').map(Number);
-              // O horário digitado é hora de parede da planta. Deslocamos a partir
-              // do início da janela; se cair antes dele, o turno virou a
-              // meia-noite e o instante pedido está no dia seguinte.
+              // The typed time is plant wall-clock time. We offset from the
+              // window start; if it lands before it, the shift crossed
+              // midnight and the requested instant is on the next day.
               const wanted = (h || 0) * 60 + (m || 0);
               let target = replay.startMs + (wanted - localMinutes(replay.startMs, tz)) * 60_000;
               if (target < replay.startMs) target += 86_400_000;
-              replay.seek(target);   // seek já limita o cursor à janela
+              replay.seek(target);   // seek already clamps the cursor to the window
             }}
             className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-gray-200 focus:outline-none focus:border-amber-500 disabled:opacity-40"
           />
@@ -223,7 +223,7 @@ export default function ReplayBar({ plantId, plantTimezone, replay, onExit }: Pr
         </button>
       </div>
 
-      {/* Régua: progresso + marcadores de eventos da janela */}
+      {/* Timeline: progress + the window's event markers */}
       <div className="flex items-center gap-2 mt-2">
         <span className="font-mono text-[10px] text-gray-500 tabular-nums w-10">
           {loaded ? formatInTz(replay.startMs, tz, false) : '—'}

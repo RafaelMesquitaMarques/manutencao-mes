@@ -1,7 +1,7 @@
 /**
- * Painel de uma OF durante o replay: onde ela estava no instante do cursor e
- * todo o percurso que fez dentro da janela (passagens por máquina + entradas e
- * saídas do buffer Pit Stop).
+ * Panel for an OF during the replay: where it was at the cursor instant and
+ * the whole path it took within the window (runs per machine + entries into
+ * and exits from the Pit Stop buffer).
  */
 import { useTranslation } from 'react-i18next';
 import { ArrowRight, Boxes, ExternalLink, MapPin, X } from 'lucide-react';
@@ -12,7 +12,7 @@ interface Props {
   snapshot: OfSnapshot;
   cursor: number;
   timezone: string;
-  /** equipment_id → nome legível, para nomear cada passagem. */
+  /** equipment_id → readable name, to label each run. */
   machineName: (equipmentId: string | null) => string;
   onClose: () => void;
   onSeek: (at: number) => void;

@@ -1,24 +1,24 @@
 /**
- * Relógio e carregamento do Replay do Turno.
+ * Shift Replay clock and loading.
  *
- * O replay é um MODO do mapa, não uma página nova: enquanto está ativo, o
- * WebSocket ao vivo e o poll de fallback ficam suspensos (ver FactoryMap.tsx) e
- * quem pinta o mapa é `overlayAt(cursor)`. Sair do replay volta a ligar o live
- * e recarrega o mapa — nada do modo ao vivo é alterado.
+ * The replay is a MODE of the map, not a new page: while it is active, the
+ * live WebSocket and the fallback poll are suspended (see FactoryMap.tsx) and
+ * what paints the map is `overlayAt(cursor)`. Leaving the replay turns live
+ * back on and reloads the map — nothing in live mode is changed.
  *
- * A janela inteira vem num único fetch, por isso avançar/recuar/saltar no tempo
- * é instantâneo e não gera tráfego.
+ * The whole window comes in a single fetch, so moving forward/back/jumping in
+ * time is instantaneous and generates no traffic.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchReplayTimeline, type ReplayTimeline } from '../../../api/factoryReplay';
 import { ReplayIndex, ms } from './replayModel';
 
-/** Multiplicadores de velocidade (× tempo real). 900× faz um turno de 8 h em ~32 s. */
+/** Speed multipliers (× real time). 900× plays an 8 h shift in ~32 s. */
 export const REPLAY_SPEEDS = [1, 10, 60, 300, 900, 1800] as const;
 export const DEFAULT_SPEED = 300;
 
-/** Período do relógio: 5 atualizações por segundo é fluido para o olho e leve
- *  para a cena 3D (o push ao vivo corre a 1 a cada 4 s). */
+/** Clock period: 5 updates per second is smooth to the eye and light on the
+ *  3D scene (the live push runs at 1 every 4 s). */
 const TICK_MS = 200;
 
 export interface ReplayRange { start: string; end: string; label?: string; key?: string }
@@ -54,8 +54,8 @@ export function useReplay(): ReplayController {
   const [cursor, setCursor] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<number>(DEFAULT_SPEED);
-  // Cada pedido ganha um número: uma resposta de um pedido antigo (troca rápida
-  // de turno) é descartada em vez de sobrescrever o replay atual.
+  // Each request gets a number: a response to an older request (quick shift
+  // change) is discarded instead of overwriting the current replay.
   const reqRef = useRef(0);
 
   const index = useMemo(() => (timeline ? new ReplayIndex(timeline) : null), [timeline]);
@@ -85,7 +85,7 @@ export function useReplay(): ReplayController {
   }, []);
 
   const exit = useCallback(() => {
-    reqRef.current += 1;      // invalida qualquer carregamento em voo
+    reqRef.current += 1;      // invalidates any in-flight load
     setPlaying(false);
     setTimeline(null);
     setRange(null);
@@ -100,7 +100,7 @@ export function useReplay(): ReplayController {
     });
   }, []);
 
-  // O relógio: avança o cursor em tempo de fábrica e pára sozinho no fim da janela.
+  // The clock: advances the cursor in factory time and stops on its own at the window's end.
   useEffect(() => {
     if (!playing || !index) return;
     const iv = setInterval(() => {
@@ -113,7 +113,7 @@ export function useReplay(): ReplayController {
     return () => clearInterval(iv);
   }, [playing, speed, index]);
 
-  // Mantém o cursor dentro da janela sempre que a janela muda.
+  // Keeps the cursor inside the window whenever the window changes.
   useEffect(() => {
     if (!index) return;
     setCursor((cur) => Math.min(Math.max(cur, index.startMs), index.endMs));

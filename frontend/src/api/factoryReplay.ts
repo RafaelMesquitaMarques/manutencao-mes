@@ -1,13 +1,13 @@
 import api from './axios';
 
-// ─── Replay do turno ──────────────────────────────────────────────────────────
-// Leitura pura do histórico que a plataforma já grava (paradas, intervenções,
-// tickets, passagens de OF, produção horária, ledger do Pit Stop). Nenhuma
-// tabela nova: ver backend/app/services/factory_replay.py.
+// ─── Shift replay ─────────────────────────────────────────────────────────────
+// A pure read of the history the platform already records (stops, interventions,
+// tickets, OF runs, hourly production, Pit Stop ledger). No new table: see
+// backend/app/services/factory_replay.py.
 
-/** Como o estado do segmento foi obtido — a UI mostra a origem em vez de fingir
- *  que tudo foi medido. `baseline` = nenhum evento registado nesse intervalo
- *  (mesma inferência que o modo ao vivo faz); `no_history` = ativo sem camada MES. */
+/** How the segment's state was obtained — the UI shows the source instead of
+ *  pretending everything was measured. `baseline` = no event recorded in that
+ *  interval (the same inference live mode makes); `no_history` = asset with no MES layer. */
 export type ReplaySegmentSource = 'stop' | 'intervention' | 'ticket' | 'baseline' | 'no_history';
 
 export interface ReplayTechnician {
@@ -68,7 +68,7 @@ export interface ReplayRun {
   pieces: number;
   rejects: number;
   last_piece_at: string | null;
-  /** Passagem anterior à janela, só para saber o que já estava parqueado no início. */
+  /** Run from before the window, only to know what was already parked at the start. */
   carry_in: boolean;
 }
 
@@ -119,7 +119,7 @@ export interface ReplayTimeline {
 }
 
 export interface ReplayWindow {
-  key: string;                 // morning | afternoon | night | chave livre da config
+  key: string;                 // morning | afternoon | night | free-form key from the config
   start: string;
   end: string;
   machine_count: number;

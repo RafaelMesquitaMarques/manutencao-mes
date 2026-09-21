@@ -1,10 +1,10 @@
 /**
- * Painel de detalhe de UMA máquina durante o replay: o que estava a acontecer
- * no instante do cursor e a faixa de estados de toda a janela.
+ * Detail panel for ONE machine during the replay: what was happening at the
+ * cursor instant and the state strip for the whole window.
  *
- * Tudo aqui é reconstruído; cada bloco diz de onde vem (parada justificada,
- * intervenção, ticket ou ausência de evento registado) em vez de apresentar
- * números sem proveniência.
+ * Everything here is reconstructed; each block says where it comes from
+ * (justified stop, intervention, ticket or no recorded event) instead of
+ * presenting numbers without provenance.
  */
 import { useTranslation } from 'react-i18next';
 import { Boxes, Clock, ExternalLink, Wrench } from 'lucide-react';
@@ -43,7 +43,7 @@ export default function ReplayMachineDetail({
         <Clock size={12} /> {t('replay.atTime', { time: formatInTz(cursor, timezone) })}
       </p>
 
-      {/* Faixa de estados da janela inteira — clicável para saltar no tempo */}
+      {/* State strip for the whole window — clickable to jump in time */}
       {span > 0 && segments.length > 0 && (
         <>
           <div className="flex h-3 w-full rounded overflow-hidden border border-gray-800 mb-1">
@@ -70,7 +70,7 @@ export default function ReplayMachineDetail({
         </>
       )}
 
-      {/* Estado no instante + proveniência */}
+      {/* State at the instant + provenance */}
       <div className="rounded-lg bg-gray-900 border border-gray-800 px-2.5 py-2 space-y-1">
         <div className="flex items-center gap-2">
           <span style={{ width: 10, height: 10, borderRadius: '50%', background: STATUS_HEX[snapshot.status] ?? STATUS_HEX.idle }} />
@@ -110,7 +110,7 @@ export default function ReplayMachineDetail({
         </div>
       )}
 
-      {/* OF carregada + produção */}
+      {/* Loaded OF + production */}
       <p className="text-[11px] uppercase tracking-wide text-gray-500 mt-4 mb-2">{t('replay.ofAtMachine')}</p>
       {run ? (
         <button onClick={() => onOpenOf(run.job_order_id)}

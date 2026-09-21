@@ -2,24 +2,24 @@
 fastapi==0.111.0
 uvicorn[standard]==0.29.0
 
-# Banco de dados
+# Database
 sqlalchemy[asyncio]==2.0.30
 asyncpg==0.29.0
 alembic==1.13.1
 
-# Autenticação
+# Authentication
 python-jose[cryptography]==3.3.0
 bcrypt==4.1.3
 python-multipart==0.0.9
 
-# Redis / filas
+# Redis / queues
 redis==5.0.4
 celery==5.4.0
 
-# MQTT (captores IoT)
+# MQTT (IoT sensors)
 aiomqtt==1.2.1
 
-# Validação e config
+# Validation and config
 pydantic==2.7.1
 pydantic-settings==2.2.1
 python-dotenv==1.0.1
@@ -30,13 +30,13 @@ fastapi-mail==1.4.1
 # SMS
 twilio==9.3.7
 
-# IA (Maintenance Intelligence — chat tool-use agent)
+# AI (Maintenance Intelligence — chat tool-use agent)
 anthropic==0.69.0
 
-# Modbus/TCP (gateway ADAM — app.workers.adam_gateway)
+# Modbus/TCP (ADAM gateway — app.workers.adam_gateway)
 pymodbus==3.13.0
 
-# Utilitários
+# Utilities
 httpx==0.27.0
 python-dateutil==2.9.0
 openpyxl==3.1.2

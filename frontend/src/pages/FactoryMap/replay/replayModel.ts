@@ -1,12 +1,12 @@
 /**
- * Modelo do Replay do Turno — índice em memória + leitura do estado num instante.
+ * Shift Replay model — in-memory index + reading the state at a given instant.
  *
- * O backend devolve INTERVALOS (segmentos de estado, passagens de OF, spans de
- * ticket) em vez de amostras: a janela inteira cabe num fetch e a navegação no
- * tempo é local, sem rede. Aqui esses intervalos viram índices ordenados e
- * `overlayAt(t)` produz exatamente a MESMA forma que o push ao vivo do
- * WebSocket entrega a `applyStatus` — é por isso que o replay reaproveita o
- * mapa 2D, o 3D, as cores, a legenda e os filtros sem nenhuma alteração neles.
+ * The backend returns INTERVALS (state segments, OF runs, ticket spans) instead
+ * of samples: the whole window fits in one fetch and moving through time is
+ * local, with no network. Here those intervals become sorted indexes and
+ * `overlayAt(t)` produces exactly the SAME shape that the live WebSocket push
+ * delivers to `applyStatus` — that is why the replay reuses the 2D map, the 3D
+ * view, the colours, the legend and the filters without any change to them.
  */
 import type {
   ReplayEvent, ReplayProduction, ReplayRun, ReplaySegment, ReplayTechnician,
@@ -17,15 +17,15 @@ const HOUR_MS = 3_600_000;
 
 export const ms = (iso: string | null | undefined): number => (iso ? Date.parse(iso) : NaN);
 
-/** Ativo do mapa, reduzido ao que a herança de estado precisa. */
+/** Map asset, reduced to what state inheritance needs. */
 export interface ReplayAsset {
-  id: string;                          // equipment_id (o mesmo id de MapMachine)
+  id: string;                          // equipment_id (the same id as MapMachine)
   parent_equipment_id: string | null;
   block_kind: string | null;
   subtype: string | null;
 }
 
-/** Uma OF "parqueada" à saída de uma máquina no instante T. */
+/** An OF "parked" at a machine's output at instant T. */
 export interface ParkedOf {
   job_number: string;
   product_name: string | null;
@@ -33,7 +33,7 @@ export interface ParkedOf {
   job_order_id: string;
 }
 
-/** A forma que `applyStatus` consome — idêntica ao payload do WS ao vivo. */
+/** The shape `applyStatus` consumes — identical to the live WS payload. */
 export interface ReplayOverlayItem {
   id: string;
   status: string;
@@ -60,7 +60,7 @@ interface TrackIndex {
 
 interface RunIndex extends ReplayRun {
   s: number;
-  e: number;          // ended_at, ou +Infinity quando a passagem ainda estava aberta
+  e: number;          // ended_at, or +Infinity when the run was still open
 }
 
 export interface MachineSnapshot {
@@ -68,7 +68,7 @@ export interface MachineSnapshot {
   machineId: string | null;
   segment: ReplaySegment | null;
   status: string;
-  /** Estado próprio antes da herança do pai — `null` quando não há herança. */
+  /** Own state before inheriting from the parent — `null` when nothing is inherited. */
   ownStatus: string | null;
   inheritedFrom: string | null;
   technicians: ReplayTechnician[];
@@ -76,7 +76,7 @@ export interface MachineSnapshot {
   operator: string | null;
   currentRun: ReplayRun | null;
   parked: ParkedOf[];
-  /** Peças contadas nas horas JÁ COMPLETAS da janela até T (feed ADAM). */
+  /** Pieces counted in the window's ALREADY COMPLETED hours up to T (ADAM feed). */
   piecesSoFar: number;
   rejectsSoFar: number;
   hourly: ReplayProduction[];
@@ -88,9 +88,9 @@ export interface OfSnapshot {
   jobNumber: string;
   productName: string | null;
   runs: ReplayRun[];
-  /** Passagem aberta em T (OF estava nesta máquina), se houver. */
+  /** Run open at T (the OF was at this machine), if any. */
   currentRun: ReplayRun | null;
-  /** Passagem fechada mais recente até T (OF parqueada à saída), se não houver aberta. */
+  /** Most recent run closed by T (OF parked at the output), when none is open. */
   lastRun: ReplayRun | null;
   inBuffer: boolean;
   piecesSoFar: number;
@@ -158,12 +158,12 @@ export class ReplayIndex {
     return this.tracks.has(equipmentId);
   }
 
-  /** Segmentos de estado de uma máquina na janela (a faixa do painel de detalhe). */
+  /** A machine's state segments in the window (the detail panel's strip). */
   segmentsFor(equipmentId: string): ReplaySegment[] {
     return this.tracks.get(equipmentId)?.segments.map((x) => x.seg) ?? [];
   }
 
-  /** Todas as passagens de OF por uma máquina na janela (exclui a fila de arrasto). */
+  /** Every OF run through a machine in the window (excludes the carry-in parked queue). */
   runsFor(equipmentId: string): ReplayRun[] {
     return (this.runsByEquipment.get(equipmentId) ?? []).filter((r) => !r.carry_in);
   }
@@ -171,7 +171,7 @@ export class ReplayIndex {
   private segmentAt(equipmentId: string, t: number): ReplaySegment | null {
     const tr = this.tracks.get(equipmentId);
     if (!tr || tr.segments.length === 0) return null;
-    // Busca binária — os segmentos são contíguos e ordenados.
+    // Binary search — the segments are contiguous and sorted.
     let lo = 0, hi = tr.segments.length - 1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
@@ -180,7 +180,7 @@ export class ReplayIndex {
       else if (t >= s.e) lo = mid + 1;
       else return s.seg;
     }
-    // Fora do intervalo coberto: prende nas extremidades da janela.
+    // Outside the covered range: clamp to the ends of the window.
     if (t < tr.segments[0].s) return tr.segments[0].seg;
     return tr.segments[tr.segments.length - 1].seg;
   }
@@ -198,12 +198,12 @@ export class ReplayIndex {
     return list.filter((tech) => {
       const since = ms(tech.since);
       const until = tech.until ? ms(tech.until) : Infinity;
-      // Sem hora de check-in, o técnico conta durante todo o segmento roxo.
+      // With no check-in time, the technician counts for the whole purple segment.
       return Number.isNaN(since) ? true : t >= since && t < until;
     });
   }
 
-  /** Passagem aberta nesta máquina em T (a OF carregada no kiosk nesse momento). */
+  /** Run open at this machine at T (the OF loaded on the kiosk at that moment). */
   private runAt(equipmentId: string, t: number): RunIndex | null {
     const list = this.runsByEquipment.get(equipmentId);
     if (!list) return null;
@@ -216,9 +216,9 @@ export class ReplayIndex {
     return best;
   }
 
-  /** OFs paradas à saída de cada máquina em T: a última passagem da OF já tinha
-   *  fechado e nada a moveu depois (nem outra máquina, nem o Pit Stop). É a
-   *  mesma definição do badge +N ao vivo, reconstruída no tempo. */
+  /** OFs sitting at each machine's output at T: the OF's last run had already
+   *  closed and nothing moved it afterwards (neither another machine nor the Pit
+   *  Stop). It is the same definition as the live +N badge, rebuilt over time. */
   private parkedByEquipment(t: number): Map<string, ParkedOf[]> {
     const out = new Map<string, ParkedOf[]>();
     for (const [ofId, runs] of this.runsByOf) {
@@ -228,10 +228,10 @@ export class ReplayIndex {
         if (last === null || r.s >= last.s) last = r;
       }
       if (!last || !last.equipment_id) continue;
-      if (t < last.e) continue;                      // ainda em passagem → não parqueada
-      if (this.pitMovedBefore.has(ofId)) continue;   // já tinha entrado no buffer
+      if (t < last.e) continue;                      // still in a run → not parked
+      if (this.pitMovedBefore.has(ofId)) continue;   // had already entered the buffer
       const pit = this.pitByOf.get(ofId);
-      if (pit?.some((p) => ms(p.ts) <= t)) continue; // entrou/saiu do buffer antes de T
+      if (pit?.some((p) => ms(p.ts) <= t)) continue; // entered/left the buffer before T
       const age = Number.isFinite(last.e) ? Math.max(0, Math.floor((t - last.e) / 60000)) : null;
       const item: ParkedOf = {
         job_number: last.job_number, product_name: last.product_name,
@@ -246,9 +246,9 @@ export class ReplayIndex {
     return out;
   }
 
-  /** O overlay completo em T, na forma que `applyStatus` já consome.
-   *  `assets` traz o parentesco para que transportadores/cobots sigam a
-   *  máquina-mãe, exatamente como no modo ao vivo. */
+  /** The complete overlay at T, in the shape `applyStatus` already consumes.
+   *  `assets` carries the parent links so that conveyors/cobots follow the
+   *  parent machine, exactly as in live mode. */
   overlayAt(t: number, assets: ReplayAsset[]): ReplayOverlayItem[] {
     const parked = this.parkedByEquipment(t);
     const own = new Map<string, string>();
@@ -260,11 +260,11 @@ export class ReplayIndex {
     for (const a of assets) {
       const seg = this.segmentAt(a.id, t);
       let status = own.get(a.id) ?? 'idle';
-      // Herança: ao vivo, um cobot COM telemetria é independente enquanto a
-      // máquina roda e só cai quando ela cai; transportadores (e cobots sem
-      // telemetria) seguem-na sempre. No replay não há histórico de
-      // `robot_cell_states`, então todos os filhos seguem integralmente o pai —
-      // é o ramo `elif pstat` de live_status.py, e a limitação está documentada.
+      // Inheritance: in live mode a cobot WITH telemetry is independent while the
+      // machine runs and only goes down when the machine does; conveyors (and
+      // cobots without telemetry) always follow it. Replay has no history of
+      // `robot_cell_states`, so every child fully follows its parent — the
+      // `elif pstat` branch of live_status.py; the limitation is documented.
       if (a.parent_equipment_id) {
         const pstat = own.get(a.parent_equipment_id);
         if (pstat) status = pstat;
@@ -293,7 +293,7 @@ export class ReplayIndex {
     return out;
   }
 
-  /** Tudo o que o painel de detalhe mostra sobre UMA máquina no instante T. */
+  /** Everything the detail panel shows about ONE machine at instant T. */
   machineAt(equipmentId: string, t: number, assets: ReplayAsset[]): MachineSnapshot {
     const tr = this.tracks.get(equipmentId);
     const seg = this.segmentAt(equipmentId, t);
@@ -308,8 +308,8 @@ export class ReplayIndex {
     const hourly = this.productionByEquipment.get(equipmentId) ?? [];
     let pieces = 0, rejects = 0;
     for (const h of hourly) {
-      // Só horas JÁ COMPLETAS entram no acumulado — a hora em curso seria
-      // repartição inventada (o feed grava o total por hora, não por minuto).
+      // Only ALREADY COMPLETED hours enter the total — the current hour would
+      // be an invented split (the feed records per-hour totals, not per-minute).
       if (ms(h.hour) + HOUR_MS <= t) { pieces += h.count; rejects += h.reject_count; }
     }
     const run = this.runAt(equipmentId, t);
@@ -332,7 +332,7 @@ export class ReplayIndex {
     };
   }
 
-  /** O percurso de UMA OF na janela e onde ela estava em T. */
+  /** The path of ONE OF through the window and where it was at T. */
   ofAt(jobOrderId: string, t: number): OfSnapshot | null {
     const runs = this.runsByOf.get(jobOrderId);
     if (!runs?.length) return null;
@@ -362,7 +362,7 @@ export class ReplayIndex {
     };
   }
 
-  /** Todas as OFs que passaram pela janela (para o seletor do painel de OF). */
+  /** Every OF that passed through the window (for the OF panel's picker). */
   allOfs(): { jobOrderId: string; jobNumber: string; productName: string | null }[] {
     const out: { jobOrderId: string; jobNumber: string; productName: string | null }[] = [];
     for (const [id, runs] of this.runsByOf) {
@@ -373,7 +373,7 @@ export class ReplayIndex {
     return out.sort((a, b) => a.jobNumber.localeCompare(b.jobNumber));
   }
 
-  /** Marcadores da régua do tempo, já com a posição relativa (0–1) na janela. */
+  /** Timeline markers, already carrying their relative position (0–1) in the window. */
   markers(): { at: number; pos: number; kind: ReplayEvent['kind']; label: string | null; equipmentId: string | null }[] {
     const span = this.endMs - this.startMs;
     if (span <= 0) return [];

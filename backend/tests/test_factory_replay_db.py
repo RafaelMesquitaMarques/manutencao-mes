@@ -1,25 +1,25 @@
 """
-Replay do turno — reconstrução contra a base real (factory_replay).
-===================================================================
-Mesmo harness de test_of_watch.py / test_pit_stop.py: um único event loop
-partilhado e TODAS as escritas revertidas no fim. Aqui valida-se o que os testes
-puros (test_factory_replay.py) não conseguem — o SQL de verdade: o DISTINCT ON
-da fila de arrasto, os enums de categoria de parada, os joins ao operador e aos
-técnicos, e a tradução de machine_id para equipment_id.
+Shift replay — reconstruction against the real database (factory_replay).
+=========================================================================
+Same harness as test_of_watch.py / test_pit_stop.py: a single shared event
+loop and ALL writes rolled back at the end. This validates what the pure tests
+(test_factory_replay.py) cannot — the real SQL: the DISTINCT ON of the
+parked queue, the stop category enums, the joins to the operator and to the
+technicians, and the translation from machine_id to equipment_id.
 
-O cenário semeado é um quart de manhã conhecido:
+The seeded scenario is a known morning shift:
 
-  06:00  OF-1001 entra na serra
-  07:00  parada não planeada (lâmina partida) + ticket aberto
-  07:30  técnico começa a intervenção; 08:00 entra um segundo técnico
-  08:30  intervenção termina (a parada aberta volta a mandar)
-  09:00  parada e ticket fecham
-  11:00  parada de 20 min SEM categoria (rosa)
-  11:00  OF-1002 entra na serra (fica aberta até ao fim do quart)
-  12:00  pausa planeada de 30 min
-  + uma OF cuja última passagem fechou 10 h ANTES do quart (fila de arrasto)
+  06:00  OF-1001 enters the saw
+  07:00  unplanned stop (broken blade) + ticket opened
+  07:30  technician starts the intervention; 08:00 a second technician joins
+  08:30  intervention ends (the open stop takes over again)
+  09:00  stop and ticket close
+  11:00  20-min stop WITHOUT a category (pink)
+  11:00  OF-1002 enters the saw (stays open until the end of the shift)
+  12:00  30-min planned break
+  + an OF whose last run closed 10 h BEFORE the shift (parked queue)
 
-Correr (dentro do container do backend):
+Run (inside the backend container):
     pytest tests/test_factory_replay_db.py -v
 """
 import os
@@ -42,7 +42,7 @@ from db_harness import with_session    # noqa: E402
 
 
 UTC = timezone.utc
-# 06:00 → 14:00 hora de Saint-Jérôme (EDT, UTC-4) numa data fixa do passado.
+# 06:00 → 14:00 Saint-Jérôme time (EDT, UTC-4) on a fixed date in the past.
 WS = datetime(2026, 6, 16, 10, 0, tzinfo=UTC)
 WE = WS + timedelta(hours=8)
 H = timedelta(hours=1)
@@ -50,7 +50,8 @@ MIN = timedelta(minutes=1)
 
 
 async def _seed(s):
-    """O quart descrito no cabeçalho. Devolve (plant, saw, conveyor, hvac)."""
+    """The shift described in the header. Returns (plant, saw, conveyor, hvac, ofs),
+    ofs being the {a, b, old} job orders."""
     plant = Plant(code=f"T{uuid.uuid4().hex[:6]}", name="Test plant", timezone="America/Toronto")
     s.add(plant)
     await s.flush()
@@ -88,7 +89,7 @@ async def _seed(s):
                     ended_at=WS + 3 * H, stop_category_id=unplanned.id,
                     comments="Lame cassée", operator_id=op.id),
         MachineStop(machine_id=m_saw.id, plant_id=plant.id, started_at=WS + 5 * H,
-                    ended_at=WS + 5 * H + 20 * MIN),                     # sem categoria → rosa
+                    ended_at=WS + 5 * H + 20 * MIN),                     # no category → pink
         MachineStop(machine_id=m_saw.id, plant_id=plant.id, started_at=WS + 6 * H,
                     ended_at=WS + 6 * H + 30 * MIN, stop_category_id=planned.id),
     ])
@@ -150,14 +151,14 @@ def _segment_at(track, minutes):
     return None
 
 
-# ── Estados ───────────────────────────────────────────────────────────────────
+# ── States ────────────────────────────────────────────────────────────────────
 
 @with_session
-async def test_sequencia_de_estados_do_quart(s):
-    """Minuto a minuto: marcha · parada vermelha (o ticket abre, mas uma máquina
-    parada continua vermelha, como em live_status.effective_status) · roxo
-    enquanto o técnico lá está · vermelho outra vez até a parada fechar · marcha
-    · rosa sem categoria · azul na pausa planeada."""
+async def test_shift_state_sequence(s):
+    """Minute by minute: running · red stop (the ticket opens, but a stopped
+    machine stays red, as in live_status.effective_status) · purple while the
+    technician is there · red again until the stop closes · running
+    · pink without a category · blue during the planned break."""
     plant, saw, _, _, _ = await _seed(s)
     tl = await fr.build_timeline(s, plant.id, WS, WE)
     track = next(t for t in tl["tracks"] if t["equipment_id"] == str(saw.id))
@@ -171,7 +172,7 @@ async def test_sequencia_de_estados_do_quart(s):
 
 
 @with_session
-async def test_a_parada_carrega_justificacao_e_operador(s):
+async def test_the_stop_carries_justification_and_operator(s):
     plant, saw, _, _, _ = await _seed(s)
     tl = await fr.build_timeline(s, plant.id, WS, WE)
     track = next(t for t in tl["tracks"] if t["equipment_id"] == str(saw.id))
@@ -182,8 +183,8 @@ async def test_a_parada_carrega_justificacao_e_operador(s):
 
 
 @with_session
-async def test_o_ticket_fica_registado_a_parte_da_cor(s):
-    """A parada vermelha ganha o bloco, mas o badge âmbar tem de continuar exato."""
+async def test_the_ticket_is_recorded_separately_from_the_color(s):
+    """The red stop wins the block, but the amber badge must stay exact."""
     plant, saw, _, _, _ = await _seed(s)
     tl = await fr.build_timeline(s, plant.id, WS, WE)
     track = next(t for t in tl["tracks"] if t["equipment_id"] == str(saw.id))
@@ -195,7 +196,7 @@ async def test_o_ticket_fica_registado_a_parte_da_cor(s):
 
 
 @with_session
-async def test_tecnicos_com_check_in_e_check_out(s):
+async def test_technicians_with_check_in_and_check_out(s):
     plant, saw, _, _, _ = await _seed(s)
     tl = await fr.build_timeline(s, plant.id, WS, WE)
     track = next(t for t in tl["tracks"] if t["equipment_id"] == str(saw.id))
@@ -205,7 +206,7 @@ async def test_tecnicos_com_check_in_e_check_out(s):
 
 
 @with_session
-async def test_ativo_sem_camada_mes_nao_e_pintado_de_verde(s):
+async def test_asset_without_mes_layer_is_not_painted_green(s):
     plant, _, _, hvac, _ = await _seed(s)
     tl = await fr.build_timeline(s, plant.id, WS, WE)
     track = next(t for t in tl["tracks"] if t["equipment_id"] == str(hvac.id))
@@ -215,7 +216,7 @@ async def test_ativo_sem_camada_mes_nao_e_pintado_de_verde(s):
 
 
 @with_session
-async def test_os_segmentos_cobrem_a_janela_sem_buracos(s):
+async def test_the_segments_cover_the_window_without_gaps(s):
     plant, saw, _, _, _ = await _seed(s)
     tl = await fr.build_timeline(s, plant.id, WS, WE)
     track = next(t for t in tl["tracks"] if t["equipment_id"] == str(saw.id))
@@ -225,26 +226,26 @@ async def test_os_segmentos_cobrem_a_janela_sem_buracos(s):
     assert all(a["end"] == b["start"] for a, b in zip(segs, segs[1:]))
 
 
-# ── OFs, buffer e produção ────────────────────────────────────────────────────
+# ── OFs, buffer and production ────────────────────────────────────────────────
 
 @with_session
-async def test_passagens_da_janela_e_fila_de_arrasto(s):
-    """As passagens que tocam a janela, mais a última passagem fechada de cada OF
-    nas horas anteriores — é essa que reconstrói o que já estava parqueado à
-    saída quando o quart começou (o DISTINCT ON)."""
+async def test_window_runs_and_parked_queue(s):
+    """The runs that touch the window, plus the last closed run of each OF in
+    the preceding hours — that is the one that rebuilds what was already parked
+    at the output when the shift started (the DISTINCT ON)."""
     plant, saw, _, _, ofs = await _seed(s)
     tl = await fr.build_timeline(s, plant.id, WS, WE)
     runs = {r["job_number"]: r for r in tl["of_runs"]}
     assert runs[ofs["a"].job_number]["carry_in"] is False
     assert runs[ofs["a"].job_number]["ended_at"] == (WS + 4 * H).isoformat()
     assert runs[ofs["a"].job_number]["operator"] == "Opérateur A"
-    assert runs[ofs["b"].job_number]["ended_at"] is None          # ainda aberta no fim do quart
+    assert runs[ofs["b"].job_number]["ended_at"] is None          # still open at the end of the shift
     assert runs[ofs["old"].job_number]["carry_in"] is True
     assert all(r["equipment_id"] == str(saw.id) for r in tl["of_runs"])
 
 
 @with_session
-async def test_ledger_do_buffer_e_producao_horaria(s):
+async def test_buffer_ledger_and_hourly_production(s):
     plant, saw, _, _, ofs = await _seed(s)
     tl = await fr.build_timeline(s, plant.id, WS, WE)
     assert [p["job_number"] for p in tl["pit_events"]] == [ofs["a"].job_number]
@@ -254,7 +255,7 @@ async def test_ledger_do_buffer_e_producao_horaria(s):
 
 
 @with_session
-async def test_eventos_do_ticket_entram_na_regua(s):
+async def test_ticket_events_land_on_the_timeline(s):
     plant, saw, _, _, _ = await _seed(s)
     tl = await fr.build_timeline(s, plant.id, WS, WE)
     kinds = sorted(e["kind"] for e in tl["events"])
@@ -263,7 +264,7 @@ async def test_eventos_do_ticket_entram_na_regua(s):
 
 
 @with_session
-async def test_a_janela_devolvida_e_a_pedida(s):
+async def test_the_returned_window_is_the_requested_one(s):
     plant, _, _, _, _ = await _seed(s)
     tl = await fr.build_timeline(s, plant.id, WS, WE)
     assert tl["start"] == WS.isoformat()
@@ -271,15 +272,15 @@ async def test_a_janela_devolvida_e_a_pedida(s):
     assert tl["timezone"] == "America/Toronto"
 
 
-# ── Janelas de turno ──────────────────────────────────────────────────────────
+# ── Shift windows ─────────────────────────────────────────────────────────────
 
 @with_session
-async def test_turnos_do_dia_saem_de_shifts_config(s):
+async def test_the_days_shifts_come_from_shifts_config(s):
     plant, _, _, _, _ = await _seed(s)
     out = await fr.shift_windows_for_day(s, plant.id, datetime(2026, 6, 16).date())
     assert [w["key"] for w in out["windows"]] == ["morning", "afternoon"]
     assert out["windows"][0]["start"] == WS.isoformat()
     assert out["windows"][0]["end"] == WE.isoformat()
-    # Um turno partilhado por N máquinas é UMA opção com a contagem certa.
+    # A shift shared by N machines is ONE option with the right count.
     assert out["windows"][0]["machine_count"] == 1
     assert out["day"]["start"] < out["day"]["end"]

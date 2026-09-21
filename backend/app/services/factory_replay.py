@@ -1,32 +1,32 @@
-"""Replay do turno — reconstrução do passado da fábrica a partir do que JÁ é gravado.
+"""Shift replay — rebuilding the factory's past from what is ALREADY recorded.
 
-Nenhuma tabela, coluna ou linha nova: tudo aqui é leitura. O estado de uma
-máquina no instante T é *derivado* com a MESMA precedência que o modo ao vivo
-(`app/services/live_status.py`), e as OFs vêm do ledger de passagens
-(`job_order_runs`), que já é o histórico completo de onde cada OF passou.
+No new table, column or row: everything here is a read. A machine's state at
+instant T is *derived* with the SAME precedence as live mode
+(`app/services/live_status.py`), and the OFs come from the runs ledger
+(`job_order_runs`), which is already the complete history of where each OF went.
 
-Precedência de estado (espelha o live):
+State precedence (mirrors live mode):
 
-    1. intervenção ativa (técnico na máquina)            → intervention  (roxo)
-    2. parada aberta                                      → maintenance / planned_stop /
+    1. active intervention (technician at the machine)    → intervention  (purple)
+    2. open stop                                          → maintenance / planned_stop /
                                                             stopped / unjustified
-    3. ticket de manutenção aberto                        → maintenance   (âmbar)
-    4. nada registrado                                    → running       (verde)
+    3. open maintenance ticket                            → maintenance   (amber)
+    4. nothing recorded                                   → running       (green)
 
-O passo 4 é o mesmo comportamento do live (`machines.current_status` nasce
-`running` e volta a `running` quando a parada fecha), por isso é fiel — mas é uma
-*inferência por ausência de evento*, e cada segmento carrega `source` para que a
-UI possa dizer de onde ele veio.
+Step 4 is the same behavior as live mode (`machines.current_status` starts as
+`running` and goes back to `running` when the stop closes), so it is faithful — but
+it is an *inference from the absence of events*, and each segment carries `source`
+so the UI can say where it came from.
 
-Limitações conhecidas (documentadas, nunca preenchidas com dados inventados):
-  • não existe log de `machines.current_status`; o rosa `unjustified` raramente
-    reaparece porque a categoria da parada é gravada na justificativa (muitas
-    vezes depois) e o histórico guarda só o valor final;
-  • telemetria de cobot (`robot_cell_states`) é só estado atual → no replay os
-    filhos seguem integralmente a máquina-mãe (resolvido no frontend, mesma
-    regra de parentesco do live);
-  • operador ao longo do tempo é parcial (runs/paradas o carregam, o kiosk não
-    historiza `current_operator`).
+Known limitations (documented, never filled in with made-up data):
+  • there is no log of `machines.current_status`; the pink `unjustified` rarely
+    reappears because the stop category is recorded on justification (often
+    later) and the history keeps only the final value;
+  • cobot telemetry (`robot_cell_states`) is current state only → in the replay the
+    children follow the parent machine entirely (resolved in the frontend, same
+    parent–child rule as live mode);
+  • operator over time is partial (runs/stops carry it, the kiosk does not keep a
+    history of `current_operator`).
 """
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
@@ -44,26 +44,26 @@ from app.models.models import (
     StopSubcategory, TicketStatus,
 )
 
-# Janela máxima de um replay. Um turno tem 8 h; 24 h cobre "o dia inteiro" e
-# mantém o payload numa faixa que o cliente monta de uma vez e navega sem rede.
+# Maximum window of a replay. A shift is 8 h; 24 h covers "the whole day" and
+# keeps the payload in a range the client builds in one go and navigates offline.
 MAX_WINDOW_HOURS = 24
 DEFAULT_TZ = "America/Toronto"
 
-# Intervenções em que o técnico está de facto na máquina (roxo no mapa). Mesmo
-# vocabulário de live_status.ACTIVE_INTERVENTION_STATUSES.
+# Ticket statuses that still count as open (amber on the map). Same vocabulary
+# as live_status.OPEN_TICKET_STATUSES.
 _OPEN_TICKET_STATUSES = [
     TicketStatus.open, TicketStatus.in_progress,
     TicketStatus.on_hold_parts, TicketStatus.on_hold_ext,
 ]
 
-# Prioridade de camada ao resolver o estado num instante (maior ganha).
+# Layer priority when resolving the state at an instant (higher wins).
 _P_BASELINE = 0
 _P_TICKET = 1
 _P_STOP = 2
 _P_INTERVENTION = 3
 
-# Tipo da categoria da parada → estado do mapa. Sem categoria = parada sem
-# justificativa (rosa), exatamente como `machines.py::open_stop` decide ao vivo.
+# Stop category type → map state. No category = unjustified stop (pink),
+# exactly as `machines.py::open_stop` decides in live mode.
 _STOP_TYPE_STATUS = {
     StopCategoryType.maintenance: "maintenance",
     StopCategoryType.planned: "planned_stop",
@@ -89,14 +89,14 @@ def _iso(dt: Optional[datetime]) -> Optional[str]:
     return d.isoformat() if d else None
 
 
-# ─── Janelas selecionáveis (turnos do dia) ────────────────────────────────────
+# ─── Selectable windows (the day's shifts) ────────────────────────────────────
 
 def _windows_from_config(cfg: Optional[dict], for_date: date, tz: ZoneInfo) -> list[tuple[str, datetime, datetime]]:
-    """(chave, início_utc, fim_utc) por turno configurado, para uma data LOCAL.
+    """(key, start_utc, end_utc) per configured shift, for a LOCAL date.
 
-    Mesma leitura que `shift_report_service.keyed_shift_windows`: os HH:MM de
-    `shifts_config` são hora de parede da planta; um turno que vira a
-    meia-noite pertence ao dia em que começa.
+    Same reading as `shift_report_service.keyed_shift_windows`: the HH:MM in
+    `shifts_config` are plant wall-clock time; a shift that crosses
+    midnight belongs to the day it starts on.
     """
     out: list[tuple[str, datetime, datetime]] = []
     for key, c in (cfg or {}).items():
@@ -116,12 +116,12 @@ def _windows_from_config(cfg: Optional[dict], for_date: date, tz: ZoneInfo) -> l
 
 
 async def shift_windows_for_day(db: AsyncSession, plant_id, for_date: date) -> dict:
-    """Turnos selecionáveis da planta num dia local + a janela do dia inteiro.
+    """The plant's selectable shifts on a local day + the whole-day window.
 
-    Agrega os `shifts_config` das máquinas ativas: turnos idênticos (mesma
-    chave + mesmo horário) viram UMA opção, com a contagem de máquinas que os
-    usam. Plantas sem nenhum `shifts_config` recebem só a opção "dia inteiro" —
-    não inventamos turnos padrão.
+    Aggregates the `shifts_config` of the active machines: identical shifts (same
+    key + same hours) become ONE option, with the count of machines that use
+    them. Plants without any `shifts_config` get only the "whole day" option —
+    we don't invent default shifts.
     """
     plant = await db.get(Plant, plant_id)
     tz = tz_of(plant.timezone if plant else None)
@@ -155,10 +155,10 @@ async def shift_windows_for_day(db: AsyncSession, plant_id, for_date: date) -> d
     }
 
 
-# ─── Reconstrução de estados ──────────────────────────────────────────────────
+# ─── State reconstruction ─────────────────────────────────────────────────────
 
 class _Layer:
-    """Um intervalo candidato a pintar a máquina, com sua prioridade."""
+    """A candidate interval for painting the machine, with its priority."""
     __slots__ = ("start", "end", "priority", "status", "reason", "source", "ref_id", "detail")
 
     def __init__(self, start, end, priority, status, reason=None, source=None, ref_id=None, detail=None):
@@ -174,7 +174,7 @@ class _Layer:
 
 def _clip(start: Optional[datetime], end: Optional[datetime],
           w_start: datetime, w_end: datetime) -> Optional[tuple[datetime, datetime]]:
-    """Recorta [start, end) na janela. `end` nulo = ainda aberto no fim da janela."""
+    """Clips [start, end) to the window. Null `end` = still open at the end of the window."""
     s = as_utc(start) or w_start
     e = as_utc(end) or w_end
     s = max(s, w_start)
@@ -183,8 +183,8 @@ def _clip(start: Optional[datetime], end: Optional[datetime],
 
 
 def _resolve_segments(layers: list[_Layer], w_start: datetime, w_end: datetime) -> list[dict]:
-    """Varredura por fronteiras: em cada subintervalo vence a camada de maior
-    prioridade que o cobre. Segmentos adjacentes iguais são fundidos."""
+    """Boundary sweep: in each sub-interval the highest-priority layer covering
+    it wins. Identical adjacent segments are merged."""
     bounds = {w_start, w_end}
     for l in layers:
         bounds.add(l.start)
@@ -249,7 +249,7 @@ async def _stop_layers(db: AsyncSession, machine_ids: Sequence, w_start, w_end) 
 
 
 async def _intervention_layers(db: AsyncSession, machine_ids: Sequence, w_start, w_end) -> tuple[dict, dict]:
-    """(camadas roxas por máquina, técnicos presentes por intervenção)."""
+    """(purple layers per machine, technicians present per intervention)."""
     if not machine_ids:
         return {}, {}
     rows = (await db.execute(
@@ -279,8 +279,8 @@ async def _intervention_layers(db: AsyncSession, machine_ids: Sequence, w_start,
         span = _clip(iv.started_at, iv.completed_at, w_start, w_end)
         if not span:
             continue
-        # Sem check-ins gravados, o nome de quem iniciou é a única fonte —
-        # mesma regra de fallback que live_status usa para os pictogramas.
+        # With no recorded check-ins, the name of whoever started it is the only
+        # source — same fallback rule that live_status uses for the pictograms.
         present = techs.get(str(iv.id)) or (
             [{"name": iv.started_by_name, "since": _iso(iv.started_at), "until": _iso(iv.completed_at)}]
             if iv.started_by_name else []
@@ -295,7 +295,7 @@ async def _intervention_layers(db: AsyncSession, machine_ids: Sequence, w_start,
 
 
 async def _ticket_layers(db: AsyncSession, machine_ids: Sequence, w_start, w_end) -> tuple[dict, dict, list[dict]]:
-    """(camadas âmbar por máquina, intervalos de ticket por máquina, eventos da régua)."""
+    """(amber layers per machine, ticket intervals per machine, timeline events)."""
     if not machine_ids:
         return {}, {}, []
     rows = (await db.execute(
@@ -313,8 +313,8 @@ async def _ticket_layers(db: AsyncSession, machine_ids: Sequence, w_start, w_end
     spans: dict[str, list[dict]] = defaultdict(list)
     events: list[dict] = []
     for t in rows:
-        # Um ticket ainda aberto hoje segue aberto até ao fim da janela; um
-        # fechado usa completed_at (ou o fecho pelo técnico, quando existe).
+        # A ticket still open today stays open until the end of the window; a
+        # closed one uses completed_at (or the technician's close, when present).
         closed = t.completed_at or t.closed_by_technician_at
         if t.status not in _OPEN_TICKET_STATUSES and closed is None:
             continue
@@ -342,11 +342,11 @@ async def _ticket_layers(db: AsyncSession, machine_ids: Sequence, w_start, w_end
     return layers, spans, events
 
 
-# ─── OFs, produção e eventos ──────────────────────────────────────────────────
+# ─── OFs, production and events ───────────────────────────────────────────────
 
-# Quanto tempo antes da janela procuramos a ÚLTIMA passagem já fechada de uma OF.
-# É o que reconstrói a fila já parqueada na saída das máquinas quando o turno
-# começa (as badges +N do mapa); sem isso o replay começaria com filas vazias.
+# How far before the window we look for an OF's LAST already-closed run. This
+# is what rebuilds the queue already parked at the machine outputs when the shift
+# starts (the map's +N badges); without it the replay would start with empty queues.
 CARRY_IN_HOURS = 72
 
 
@@ -365,16 +365,16 @@ def _run_row(run, number, product, target, operator, carry_in: bool) -> dict:
         "pieces": run.pieces or 0,
         "rejects": run.rejects or 0,
         "last_piece_at": _iso(run.last_piece_at),
-        # True = passagem anterior à janela, trazida só para saber o que já estava
-        # parqueado no início. Nunca conta como "OF na máquina" durante o replay.
+        # True = run from before the window, brought in only to know what was already
+        # parked at the start. Never counts as "OF at the machine" during the replay.
         "carry_in": carry_in,
     }
 
 
 async def _of_runs(db: AsyncSession, machine_ids: Sequence, w_start, w_end) -> list[dict]:
-    """Passagens que tocam a janela + a última passagem fechada de cada OF nas
-    horas anteriores (fila de arrasto). Uma passagem é a fonte histórica de onde
-    a OF estava: `started_at ≤ T < ended_at` = OF na máquina no instante T."""
+    """Runs that touch the window + the last closed run of each OF in the
+    preceding hours (the parked queue). A run is the historical source of where
+    the OF was: `started_at ≤ T < ended_at` = OF at the machine at instant T."""
     if not machine_ids:
         return []
     cols = (JobOrderRun, JobOrder.job_number, JobOrder.product_name,
@@ -394,7 +394,7 @@ async def _of_runs(db: AsyncSession, machine_ids: Sequence, w_start, w_end) -> l
     out = [_run_row(*r, carry_in=False) for r in rows]
     seen_runs = {r["id"] for r in out}
 
-    # Fila de arrasto: por OF, a passagem fechada mais recente antes da janela.
+    # Parked queue: per OF, the most recent closed run before the window.
     carry = (await db.execute(
         base.where(
             JobOrderRun.machine_id.in_(machine_ids),
@@ -413,8 +413,8 @@ async def _of_runs(db: AsyncSession, machine_ids: Sequence, w_start, w_end) -> l
 
 
 async def _pit_events(db: AsyncSession, plant_id, w_start, w_end) -> list[dict]:
-    """Entradas/saídas do buffer Pit Stop na janela — agregadas por OF, direção
-    e minuto, para o traço da OF sem despejar o ledger inteiro no cliente."""
+    """Pit Stop buffer ins/outs in the window — aggregated by OF, direction
+    and minute, for the OF trace without dumping the whole ledger on the client."""
     rows = (await db.execute(
         select(PitStopMovement.job_order_id, JobOrder.job_number,
                PitStopMovement.direction, PitStopMovement.component_code,
@@ -445,9 +445,9 @@ async def _pit_events(db: AsyncSession, plant_id, w_start, w_end) -> list[dict]:
 
 
 async def _pit_moved_before(db: AsyncSession, plant_id, w_start) -> list[str]:
-    """OFs que já tinham entrado no buffer antes da janela. Uma OF que chegou ao
-    Pit Stop deixou de estar parqueada na saída da máquina — sem isto a fila de
-    arrasto contaria material que já tinha seguido em frente."""
+    """OFs that had already entered the buffer before the window. An OF that
+    reached the Pit Stop is no longer parked at the machine output — without this
+    the parked queue would count material that had already moved on."""
     rows = (await db.execute(
         select(PitStopMovement.job_order_id)
         .where(PitStopMovement.plant_id == plant_id,
@@ -458,8 +458,8 @@ async def _pit_moved_before(db: AsyncSession, plant_id, w_start) -> list[str]:
 
 
 async def _production(db: AsyncSession, machine_ids: Sequence, w_start, w_end) -> list[dict]:
-    """Contagens reais por hora (feed ADAM). A hora é truncada em UTC, então a
-    primeira hora da janela entra mesmo que a janela comece no meio dela."""
+    """Real hourly counts (ADAM feed). The hour is truncated in UTC, so the
+    window's first hour is included even if the window starts in the middle of it."""
     if not machine_ids:
         return []
     first_hour = w_start.replace(minute=0, second=0, microsecond=0)
@@ -478,8 +478,8 @@ async def _production(db: AsyncSession, machine_ids: Sequence, w_start, w_end) -
 
 
 async def _other_events(db: AsyncSession, machine_ids: Sequence, w_start, w_end) -> list[dict]:
-    """Alertas e rejeitos da janela — marcadores da régua que não vêm dos
-    segmentos nem dos runs."""
+    """Alerts and rejects in the window — timeline markers that come neither
+    from the segments nor from the runs."""
     if not machine_ids:
         return []
     events: list[dict] = []
@@ -511,22 +511,22 @@ async def _other_events(db: AsyncSession, machine_ids: Sequence, w_start, w_end)
     return sorted(events, key=lambda e: e["ts"] or "")
 
 
-# ─── Entrada pública ──────────────────────────────────────────────────────────
+# ─── Public entry point ───────────────────────────────────────────────────────
 
 async def build_timeline(db: AsyncSession, plant_id, w_start: datetime, w_end: datetime) -> dict:
-    """Todo o material do replay para uma janela, chaveado por EQUIPAMENTO — o
-    mesmo id que o mapa já usa (`MapMachine.id`), para que o frontend reaproveite
-    a geometria, as cores, os filtros e as vistas sem nenhuma tradução."""
+    """All the replay material for a window, keyed by EQUIPMENT — the same id
+    the map already uses (`MapMachine.id`), so that the frontend reuses the
+    geometry, the colors, the filters and the views without any translation."""
     w_start, w_end = as_utc(w_start), as_utc(w_end)
     plant = await db.get(Plant, plant_id)
 
     equipment = (await db.execute(
         select(Equipment).where(Equipment.plant_id == plant_id, Equipment.active == True)  # noqa: E712
     )).scalars().all()
-    # Casamos por EQUIPAMENTO, não por `machines.plant_id`: essa coluna é
-    # anulável (backfill) e uma máquina com plant_id nulo mas ligada a um
-    # equipamento desta planta perderia todo o histórico. É a mesma regra do
-    # modo ao vivo (live_status.live_details_by_equipment).
+    # We match by EQUIPMENT, not by `machines.plant_id`: that column is
+    # nullable (backfill) and a machine with a null plant_id but linked to
+    # equipment in this plant would lose its entire history. It is the same
+    # rule as live mode (live_status.live_details_by_equipment).
     machines = (await db.execute(
         select(Machine).where(
             Machine.equipment_id.in_([e.id for e in equipment]),
@@ -547,8 +547,8 @@ async def build_timeline(db: AsyncSession, plant_id, w_start: datetime, w_end: d
     pit = await _pit_events(db, plant_id, w_start, w_end)
     pit_before = await _pit_moved_before(db, plant_id, w_start)
 
-    # Paradas e runs carregam o operador do momento — a única fonte histórica
-    # (o kiosk não historiza `machines.current_operator`).
+    # Stops and runs carry the operator of the moment — the only historical source
+    # (the kiosk does not keep a history of `machines.current_operator`).
     operators_by_stop: dict[str, str] = {}
     if machine_ids:
         for stop_id, name in (await db.execute(
@@ -564,8 +564,8 @@ async def build_timeline(db: AsyncSession, plant_id, w_start: datetime, w_end: d
     for e in equipment:
         m = machine_by_eq.get(str(e.id))
         if m is None:
-            # Sem camada MES não há nenhum histórico operacional: cinza honesto
-            # ("sem atividade / desconhecido"), nunca um verde inventado.
+            # Without a MES layer there is no operational history at all: honest
+            # grey ("no activity / unknown"), never a made-up green.
             tracks.append({
                 "equipment_id": str(e.id), "machine_id": None,
                 "segments": [{"start": _iso(w_start), "end": _iso(w_end), "status": "idle",
