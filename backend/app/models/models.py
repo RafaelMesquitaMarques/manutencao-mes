@@ -853,7 +853,7 @@ class Sensor(Base):
 class SensorReading(Base):
     """
     Time-series sensor readings.
-    TimescaleDB creates a hypertable on this table via init_db.sql.
+    It becomes a TimescaleDB hypertable at backend startup (_ensure_timescale in main.py).
     """
     __tablename__ = "sensor_readings"
 

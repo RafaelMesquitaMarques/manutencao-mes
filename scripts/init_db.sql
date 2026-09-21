@@ -1,54 +1,14 @@
--- MES Maintenance Platform — database initialization
--- Executed automatically by Docker on first startup
+-- KAIZO database initialization — docker-entrypoint-initdb.d (docker-compose.yml)
+--
+-- Runs ONCE, when the db volume is brand new. At that point the backend has not
+-- created a single table yet, so nothing here may touch application tables: one
+-- failing statement aborts the first boot (ON_ERROR_STOP), Docker restarts the
+-- container and the rest of this file never runs.
+--
+-- Hypertables, compression/retention policies, the continuous aggregate and
+-- their indexes are created by the backend at startup, after create_all:
+-- _ensure_timescale() in backend/app/main.py.
 
--- Enable TimescaleDB extension (included in the base image)
+-- The timescale image's own init script already does this; kept so the
+-- database does not depend on it.
 CREATE EXTENSION IF NOT EXISTS timescaledb;
-
--- Create hypertable for IoT sensor time-series data
--- (executed after SQLAlchemy creates the table via create_all)
--- This block is idempotent: it does not fail if the hypertable already exists
-
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM information_schema.tables
-    WHERE table_name = 'sensor_readings'
-  ) THEN
-    PERFORM create_hypertable(
-      'sensor_readings', 'timestamp',
-      if_not_exists => TRUE,
-      chunk_time_interval => INTERVAL '7 days'
-    );
-
-    -- Auto-compression policy (data older than 30 days)
-    PERFORM add_compression_policy(
-      'sensor_readings',
-      INTERVAL '30 days',
-      if_not_exists => TRUE
-    );
-
-    -- Retention policy (drop data older than 2 years)
-    PERFORM add_retention_policy(
-      'sensor_readings',
-      INTERVAL '2 years',
-      if_not_exists => TRUE
-    );
-  END IF;
-END $$;
-
--- Additional performance indexes
-CREATE INDEX IF NOT EXISTS idx_sensor_readings_sensor_ts
-  ON sensor_readings (sensor_id, timestamp DESC);
-
-CREATE INDEX IF NOT EXISTS idx_sensor_readings_equip_ts
-  ON sensor_readings (equipment_id, timestamp DESC);
-
-CREATE INDEX IF NOT EXISTS idx_wo_status
-  ON work_orders (status, opened_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_wo_equipment
-  ON work_orders (equipment_id, status);
-
-CREATE INDEX IF NOT EXISTS idx_alerts_unacknowledged
-  ON alerts (acknowledged, created_at DESC)
-  WHERE acknowledged = false;

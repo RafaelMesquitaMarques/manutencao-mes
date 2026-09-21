@@ -214,11 +214,10 @@ $tsdb = "2.27.2"                       # §4: the version when the backup was ta
 
 1. Put the checkout at `C:\KAIZO` (a **local** drive), restore `.env`, and copy
    the backup file into `C:\KAIZO\backups\restore\`.
-2. Start only the database with `docker compose up -d db`. On a brand-new
-   volume the first start fails on `scripts/init_db.sql` (it indexes tables the
-   backend has not created yet), and Docker restarts it; that is expected. Wait
-   until `docker exec mes_db pg_isready -h 127.0.0.1 -U mesadmin` answers
-   `accepting connections`.
+2. Start only the database with `docker compose up -d db`, then wait until
+   `docker exec mes_db pg_isready -h 127.0.0.1 -U mesadmin` answers
+   `accepting connections`. Checking over TCP skips the temporary server that
+   the first boot runs while it initializes the volume.
 3. Set `$file` and `$tsdb` as at the top of this section, then run steps 4–6.
 4. Run `docker compose up -d --build`.
 
@@ -227,4 +226,4 @@ $tsdb = "2.27.2"                       # §4: the version when the backup was ta
 | Date | Backup | Result |
 |---|---|---|
 | 2026-09-21 | `daily/manutencao-20260921.sql.gz` (24 MB) | Loaded in 24 s with 0 errors and 0 warnings. All 173 tables identical to the dump (281,451 rows). Hypertables, 9/21 compressed chunks, the continuous aggregate, jobs, 45 RLS policies and the `kaizo_ninja` grants identical to production. Sequences ahead of their data |
-| 2026-09-21 | same | This runbook's §5 and §6 commands run verbatim in PowerShell. §6 ran against a stand-in for `mes_db` on a brand-new volume with `scripts/init_db.sql`, which failed its first boot and restarted as described. Every step exited 0, 65,843 work orders were restored and all 6 jobs came back scheduled |
+| 2026-09-21 | same | This runbook's §5 and §6 commands run verbatim in PowerShell. §6 ran against a stand-in for `mes_db` on a brand-new volume with the then-current `scripts/init_db.sql`, which failed its first boot and restarted (fixed the same day). Every step exited 0, 65,843 work orders were restored and all 6 jobs came back scheduled |

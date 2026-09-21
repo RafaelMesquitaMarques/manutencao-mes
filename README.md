@@ -29,7 +29,7 @@ manutencao-mes/
 ├── docs/                     # Integration contracts and design notes
 ├── nginx/                    # Reverse proxy
 ├── scripts/
-│   ├── init_db.sql           # TimescaleDB hypertable + indexes
+│   ├── init_db.sql           # Enables TimescaleDB on a brand-new db volume
 │   ├── mosquitto.conf        # MQTT broker (IoT sensors)
 │   └── setup.sh              # One-command setup
 ├── backups/                  # Automatic daily backups

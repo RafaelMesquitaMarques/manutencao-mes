@@ -178,7 +178,7 @@ manutencao-mes/
 │       └── types/index.ts           # All shared TypeScript interfaces
 ├── nginx/                           # Reference only — config is embedded in docker-compose.yml command
 ├── scripts/
-│   ├── init_db.sql                  # Creates hypertable on sensor_readings, indexes
+│   ├── init_db.sql                  # Enables TimescaleDB on a brand-new db volume (hypertables etc.: _ensure_timescale)
 │   └── mosquitto.conf
 ├── docker-compose.yml
 ├── .env.example
